@@ -2,6 +2,7 @@ import sys, asyncio, aiohttp, time, schedule, argparse
 from pathlib import Path
 from datetime import datetime
 from helper.config import load_config_file, get_disabled_features, get_feature_flags
+from helper.cache import begin_cache_session, flush_cache
 from helper.plex import connect_plex_library, _plex_cache
 from helper.tmdb import tmdb_response_cache
 from helper.logging import (
@@ -108,12 +109,15 @@ async def metafusion_main():
     tmdb_response_cache.clear()
 
 def run_metafusion_job():
+    begin_cache_session()
     try:
         asyncio.run(metafusion_main())
         return True
     except Exception as e:
         log_main_event("main_unhandled_exception", error=e)
         return False
+    finally:
+        flush_cache()
 
 if __name__ == "__main__":
     settings = config.get("settings", {})

@@ -1,7 +1,8 @@
 import asyncio, yaml
 from pathlib import Path
 from helper.logging import log_cleanup_event
-from helper.cache import load_cache, save_cache
+from helper.cache import load_cache, mark_cache_dirty
+from helper.io import atomic_write_yaml
 
 def safe_int(val):
     try:
@@ -18,6 +19,7 @@ async def cleanup_title_orphans(
     global_valid_cache_keys = set()
     global_existing_titles = set()
     removed_summary = {}
+    cache_changed = False
 
     if preloaded_plex_metadata is None:
         log_cleanup_event("cleanup_error")
@@ -51,6 +53,7 @@ async def cleanup_title_orphans(
         else:
             log_cleanup_event("cleanup_removed_cache_entry", key=key)
             del cache[key]
+            cache_changed = True
             orphans_removed += 1
             if title and year and safe_int(year) is not None:
                 removed_summary.setdefault((title, safe_int(year)), {"cache": False, "asset": [], "yaml": False})
@@ -68,12 +71,14 @@ async def cleanup_title_orphans(
                         log_cleanup_event("cleanup_dry_run", description="season", path=f"{cache_key} season {season_num}")
                     else:
                         del cache[cache_key]["seasons"][season_num]
+                        cache_changed = True
                         log_cleanup_event("cleanup_removed_orphaned_season_cache", show=title, year=year, season=season_num)
                         orphans_removed += 1
                         if title and year and safe_int(year) is not None:
                             removed_summary.setdefault((title, safe_int(year)), {"cache": False, "asset": [], "yaml": False})
                             removed_summary[(title, safe_int(year))]["cache"] = True
-    save_cache(cache)
+    if cache_changed:
+        mark_cache_dirty()
 
     if mode == "plex":
         log_cleanup_event("cleanup_skipped_plex_mode")
@@ -111,6 +116,7 @@ async def cleanup_title_orphans(
 
                 metadata_entries = metadata_content.get("metadata", {})
                 cleaned_metadata = {k: v for k, v in metadata_entries.items() if k in global_existing_titles}
+                yaml_changed = False
 
                 for k, v in cleaned_metadata.items():
                     t, y = extract_title_year(k)
@@ -125,6 +131,7 @@ async def cleanup_title_orphans(
                                     log_cleanup_event("cleanup_dry_run", description="season", path=f"{k} season {season_num}")
                                 else:
                                     del v["seasons"][season_num]
+                                    yaml_changed = True
                                     log_cleanup_event("cleanup_removed_orphaned_season_yaml", show=t, year=y, season=season_num)
                                     orphans_removed += 1
                                     if t and y and safe_int(y) is not None:
@@ -137,8 +144,7 @@ async def cleanup_title_orphans(
                         log_cleanup_event("cleanup_dry_run", description=cleaned_metadata, path=metadata_file)
                     else:
                         metadata_content["metadata"] = cleaned_metadata
-                        with open(metadata_file, "w", encoding="utf-8") as f:
-                            yaml.dump(metadata_content, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                        yaml_changed = True
                         log_cleanup_event("cleanup_removed_orphans", orphans_in_file=orphans_in_file, filename=metadata_file.name)
                         for orphan_title in set(metadata_entries) - set(cleaned_metadata):
                             t, y = extract_title_year(orphan_title)
@@ -147,10 +153,9 @@ async def cleanup_title_orphans(
                                 removed_summary[(t, safe_int(y))]["yaml"] = True
                     orphans_removed += orphans_in_file
 
-                if not feature_flags.get("dry_run", False):
+                if not feature_flags.get("dry_run", False) and yaml_changed:
                     metadata_content["metadata"] = cleaned_metadata
-                    with open(metadata_file, "w", encoding="utf-8") as f:
-                        yaml.dump(metadata_content, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                    atomic_write_yaml(metadata_file, metadata_content)
                         
             except Exception as e:
                 log_cleanup_event("cleanup_failed_remove_metadata", filename=metadata_file, error=str(e))

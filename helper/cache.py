@@ -10,7 +10,23 @@ from helper.logging import log_cache_event
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = CACHE_DIR / "meta_cache.json"
 
-def load_cache():
+_cache_data = None
+_cache_dirty = False
+_cache_source = None
+
+
+def begin_cache_session():
+    global _cache_data, _cache_dirty, _cache_source
+    _cache_data = None
+    _cache_dirty = False
+    _cache_source = None
+
+
+def load_cache(force_reload=False):
+    global _cache_data, _cache_dirty, _cache_source
+    if not force_reload and _cache_data is not None and _cache_source == CACHE_FILE:
+        return _cache_data
+
     if CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -18,13 +34,20 @@ def load_cache():
             if not isinstance(cache, dict):
                 raise ValueError("Cache root must be a JSON object")
             log_cache_event("cache_loaded", count=len(cache), cache_file=CACHE_FILE)
-            return cache
+            _cache_data = cache
+            _cache_dirty = False
+            _cache_source = CACHE_FILE
+            return _cache_data
         except (OSError, json.JSONDecodeError, ValueError) as error:
             log_cache_event("cache_load_failed", cache_file=CACHE_FILE, error=error)
     log_cache_event("cache_empty", cache_file=CACHE_FILE)
-    return {}
+    _cache_data = {}
+    _cache_dirty = False
+    _cache_source = CACHE_FILE
+    return _cache_data
 
-def save_cache(cache):
+
+def _write_cache(cache):
     cache_to_save = copy.deepcopy(cache)
     for entry in cache_to_save.values():
         if isinstance(entry, dict) and entry.get("media_type") == "tv":
@@ -51,6 +74,28 @@ def save_cache(cache):
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def save_cache(cache):
+    global _cache_data, _cache_dirty, _cache_source
+    _cache_data = cache
+    _cache_source = CACHE_FILE
+    _write_cache(_cache_data)
+    _cache_dirty = False
+
+
+def mark_cache_dirty():
+    global _cache_dirty
+    _cache_dirty = True
+
+
+def flush_cache():
+    global _cache_dirty
+    if _cache_dirty and _cache_data is not None:
+        _write_cache(_cache_data)
+        _cache_dirty = False
+        return True
+    return False
 
 cache_lock = asyncio.Lock()
 async def meta_cache_async(
@@ -86,4 +131,4 @@ async def meta_cache_async(
                 entry[k] = v
         cache[cache_key] = entry
         log_cache_event("cache_updated", cache_key=cache_key, media_type=media_type, title=title, year=year)
-        save_cache(cache)
+        mark_cache_dirty()
