@@ -1,8 +1,8 @@
 import asyncio, yaml
 from collections import Counter
 from pathlib import Path
-from helper.cache import save_cache, load_cache
-from helper.config import mode_check 
+from helper.config import mode_check
+from helper.io import atomic_write_yaml
 from helper.logging import log_processing_event, log_library_summary
 from helper.plex import get_plex_metadata
 from helper.identity import item_identity
@@ -260,11 +260,8 @@ async def process_library(
 
         if mode_check(config, "kometa") and not feature_flags["dry_run"]:
             try:
-                with open(output_path, "w", encoding="utf-8") as f:
-                    yaml.dump(consolidated_metadata, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                atomic_write_yaml(output_path, consolidated_metadata)
                 log_processing_event("processing_metadata_saved", output_path=output_path)
-                save_cache(load_cache())
-                log_processing_event("processing_cache_saved")
             except Exception as e:
                 log_processing_event("processing_failed_write_metadata", error=str(e))
         elif mode_check(config, "kometa") and feature_flags["dry_run"]:

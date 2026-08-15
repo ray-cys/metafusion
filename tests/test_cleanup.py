@@ -17,7 +17,7 @@ def test_cleanup_preserves_disabled_and_unmanaged_assets(monkeypatch, tmp_path):
         "movie:Generated Movie:2002": {"background_path": str(managed_background)},
     }
     monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
-    monkeypatch.setattr(cleanup_module, "save_cache", lambda value: None)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
 
     asyncio.run(
         cleanup_module.cleanup_title_orphans(
@@ -41,13 +41,13 @@ def test_cleanup_preserves_disabled_and_unmanaged_assets(monkeypatch, tmp_path):
 
 
 def test_cleanup_dry_run_does_not_persist_cache(monkeypatch, tmp_path):
-    save_calls = []
+    dirty_calls = []
     monkeypatch.setattr(
         cleanup_module,
         "load_cache",
         lambda: {"movie:Old Movie:2000": {"title": "Old Movie", "year": 2000}},
     )
-    monkeypatch.setattr(cleanup_module, "save_cache", lambda value: save_calls.append(value))
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: dirty_calls.append(True))
 
     asyncio.run(
         cleanup_module.cleanup_title_orphans(
@@ -64,4 +64,4 @@ def test_cleanup_dry_run_does_not_persist_cache(monkeypatch, tmp_path):
         )
     )
 
-    assert save_calls == []
+    assert dirty_calls == []
