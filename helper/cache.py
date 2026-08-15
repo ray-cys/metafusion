@@ -7,7 +7,6 @@ from datetime import datetime
 from helper.config import CACHE_DIR
 from helper.logging import log_cache_event
 
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = CACHE_DIR / "meta_cache.json"
 
 def load_cache():
@@ -60,10 +59,15 @@ async def meta_cache_async(
     async with cache_lock:
         cache = load_cache()
         entry = cache.get(cache_key, {})
-        entry["tmdb_id"] = tmdb_id
-        entry["title"] = title
-        entry["year"] = year
-        entry["media_type"] = media_type
+        identity_fields = {
+            "tmdb_id": tmdb_id,
+            "title": title,
+            "year": year,
+            "media_type": media_type,
+        }
+        for field, value in identity_fields.items():
+            if value is not None:
+                entry[field] = value
         now_iso = datetime.now().isoformat()
         if update_timestamp:
             entry["last_updated"] = now_iso
@@ -79,7 +83,7 @@ async def meta_cache_async(
             season_entry = seasons.setdefault(str(season_number), {})
             for k, v in kwargs.items():
                 season_entry[k] = v
-            if isinstance(season_upgraded, int) and season_upgraded == int(season_number):
+            if type(season_upgraded) is int and season_upgraded == int(season_number):
                 season_entry["season_last_upgraded"] = now_iso
         else:
             for k, v in kwargs.items():

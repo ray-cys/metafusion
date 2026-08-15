@@ -220,13 +220,13 @@ def apply_env_overrides(config, environ=None):
 def mode_check(config, mode="kometa"):
     return config.get("settings", {}).get("mode", "kometa").lower() == mode.lower()
 
-def load_config_file(config_file=None, template_file=None, environ=None):
+def load_config_file(config_file=None, template_file=None, environ=None, create_if_missing=True):
     config_file = Path(config_file) if config_file is not None else CONFIG_FILE
     template_file = Path(template_file) if template_file is not None else TEMPLATE_FILE
     environ = os.environ if environ is None else environ
     has_config_env = any(env_name in environ for env_name, _, _ in ENV_BINDINGS)
 
-    if not config_file.exists() and not has_config_env:
+    if not config_file.exists() and not has_config_env and create_if_missing:
         if template_file.exists():
             config_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(template_file, config_file)

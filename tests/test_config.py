@@ -80,3 +80,18 @@ def test_template_is_created_only_when_no_config_source_exists(tmp_path):
 
     assert config_file.exists()
     assert config["metafusion_run"] is False
+
+
+def test_dry_run_config_loading_does_not_create_template(tmp_path):
+    config_file = tmp_path / "nested" / "config.yml"
+
+    config = load_config_file(
+        config_file=config_file,
+        template_file=TEMPLATE_FILE,
+        environ={},
+        create_if_missing=False,
+    )
+
+    assert not config_file.exists()
+    assert not config_file.parent.exists()
+    assert config["settings"]["dry_run"] is False

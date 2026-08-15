@@ -123,7 +123,8 @@ async def process_library(
         if mode_check(config, "kometa"):
             kometa_root = config.get("settings", {}).get("path", ".")
             metadata_dir = Path(kometa_root) / "metadata"
-            metadata_dir.mkdir(parents=True, exist_ok=True)
+            if not feature_flags["dry_run"]:
+                metadata_dir.mkdir(parents=True, exist_ok=True)
             output_path = metadata_dir / f"{library_type}_metadata.yml"
             if output_path.exists():
                 try:

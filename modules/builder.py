@@ -214,17 +214,18 @@ async def build_movie(
         log_builder_event("builder_dry_run_metadata", media_type="Movie", full_title=full_title)
 
     cache_key = f"movie:{title}:{year}"    
-    if metadata_changed:
-        await meta_cache_async(
-            cache_key, tmdb_id, title, year, "movie",
-            collection_id=collection_id, collection_name=cleaned_collection
-        )
-        log_builder_event("builder_metadata_cached", media_type="Movie", full_title=full_title, cache_key=cache_key)
-    else:
-        await meta_cache_async(
-            cache_key, None, None, None, None,
-            collection_id=collection_id, collection_name=cleaned_collection, update_timestamp=False
-    )
+    if not feature_flags.get("dry_run", False):
+        if metadata_changed:
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "movie",
+                collection_id=collection_id, collection_name=cleaned_collection
+            )
+            log_builder_event("builder_metadata_cached", media_type="Movie", full_title=full_title, cache_key=cache_key)
+        else:
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "movie",
+                collection_id=collection_id, collection_name=cleaned_collection, update_timestamp=False
+            )
 
     async def process_poster():
         poster_size = 0
@@ -283,7 +284,11 @@ async def build_movie(
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     poster_size = asset_path.stat().st_size if asset_path.exists() else 0
-                    await meta_cache_async(cache_key, tmdb_id, title, year, "movie", poster_average=best.get("vote_average", 0))
+                    await meta_cache_async(
+                        cache_key, tmdb_id, title, year, "movie",
+                        poster_average=best.get("vote_average", 0),
+                        poster_path=str(asset_path.resolve()),
+                    )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="Movie", full_title=full_title, filesize=poster_size,
@@ -337,10 +342,8 @@ async def build_movie(
             background_action = "skipped"
             return
     
-        preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(details, "backdrops", [], path=["images"])
-        fallback = config["tmdb"].get("fallback", [])
-        best = get_best_background(config, images, preferred_language=preferred_language, fallback=fallback)
+        best = get_best_background(config, images)
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="Movie", asset_type="background", full_title=full_title, extra="")
             result["background"]["size"] = background_size
@@ -375,7 +378,11 @@ async def build_movie(
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     background_size = asset_path.stat().st_size if asset_path.exists() else 0
-                    await meta_cache_async(cache_key, tmdb_id, title, year, "movie", bg_average=best.get("vote_average", 0))
+                    await meta_cache_async(
+                        cache_key, tmdb_id, title, year, "movie",
+                        bg_average=best.get("vote_average", 0),
+                        background_path=str(asset_path.resolve()),
+                    )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="Movie", full_title=full_title, filesize=background_size,
@@ -750,7 +757,7 @@ async def build_tv(
     if feature_flags.get("dry_run", False):
         log_builder_event("builder_dry_run_metadata", media_type="TV Show", full_title=full_title)
 
-    if metadata_changed:
+    if metadata_changed and not feature_flags.get("dry_run", False):
         cache_key = f"tv:{title}:{year}"
         await meta_cache_async(cache_key, tmdb_id, title, year, "tv")
         log_builder_event("builder_metadata_cached", media_type="TV Show", full_title=full_title, cache_key=cache_key)
@@ -812,7 +819,11 @@ async def build_tv(
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     poster_size = asset_path.stat().st_size if asset_path.exists() else 0
-                    await meta_cache_async(cache_key, tmdb_id, title, year, "tv", poster_average=best.get("vote_average", 0))
+                    await meta_cache_async(
+                        cache_key, tmdb_id, title, year, "tv",
+                        poster_average=best.get("vote_average", 0),
+                        poster_path=str(asset_path.resolve()),
+                    )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="TV Show", full_title=full_title, filesize=poster_size,
@@ -867,9 +878,7 @@ async def build_tv(
             return
             
         images = get_meta_field(details, "backdrops", [], path=["images"])
-        preferred_language = config["tmdb"].get("language", "en").split("-")[0]
-        fallback = config["tmdb"].get("fallback", [])
-        best = get_best_background(config, images, preferred_language=preferred_language, fallback=fallback)
+        best = get_best_background(config, images)
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="TV Show", asset_type="background", full_title=full_title, extra="")
             result["background"]["size"] = background_size
@@ -904,7 +913,11 @@ async def build_tv(
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     background_size = asset_path.stat().st_size if asset_path.exists() else 0
-                    await meta_cache_async(cache_key, tmdb_id, title, year, "tv", bg_average=best.get("vote_average", 0))
+                    await meta_cache_async(
+                        cache_key, tmdb_id, title, year, "tv",
+                        bg_average=best.get("vote_average", 0),
+                        background_path=str(asset_path.resolve()),
+                    )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="TV Show", full_title=full_title, filesize=background_size,
@@ -1004,7 +1017,12 @@ async def build_tv(
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     season_poster_size = asset_path.stat().st_size if asset_path.exists() else 0
-                    await meta_cache_async(cache_key, tmdb_id, title, year, "tv", season_number=season_number, season_average=best.get("vote_average", 0))
+                    await meta_cache_async(
+                        cache_key, tmdb_id, title, year, "tv",
+                        season_number=season_number,
+                        season_average=best.get("vote_average", 0),
+                        season_path=str(asset_path.resolve()),
+                    )
                     if status_code == "FORCE_UPGRADE_STALE_SEASON":
                         log_builder_event(
                             "builder_force_upgrade_stale_season", media_type="TV Show", full_title=full_title,
@@ -1012,7 +1030,7 @@ async def build_tv(
                             stale_days=stale_days)
                         await meta_cache_async(
                             cache_key, tmdb_id, title, year, "tv", season_number=season_number, season_average=best.get("vote_average", 0),
-                            season_upgraded=True)
+                            season_upgraded=season_number)
                         season_poster_actions[season_number] = "upgraded"
                     elif status_code == "NO_EXISTING_ASSET_SEASON":
                         log_builder_event(

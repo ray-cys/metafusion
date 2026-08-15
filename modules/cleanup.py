@@ -32,6 +32,16 @@ async def cleanup_title_orphans(
             global_existing_titles.add(f"{title} ({year})")
 
     cache = load_cache()
+    managed_asset_paths = set()
+    for entry in cache.values():
+        if not isinstance(entry, dict):
+            continue
+        for path_key in ("poster_path", "background_path"):
+            if entry.get(path_key):
+                managed_asset_paths.add(str(Path(entry[path_key]).resolve()))
+        for season_entry in (entry.get("seasons") or {}).values():
+            if isinstance(season_entry, dict) and season_entry.get("season_path"):
+                managed_asset_paths.add(str(Path(season_entry["season_path"]).resolve()))
     cache_keys_to_remove = [
         key for key in list(cache.keys())
         if key not in global_valid_cache_keys
@@ -73,7 +83,8 @@ async def cleanup_title_orphans(
                         if title and year and safe_int(year) is not None:
                             removed_summary.setdefault((title, safe_int(year)), {"cache": False, "asset": [], "yaml": False})
                             removed_summary[(title, safe_int(year))]["cache"] = True
-    save_cache(cache)
+    if not feature_flags.get("dry_run", False):
+        save_cache(cache)
 
     if mode == "plex":
         log_cleanup_event("cleanup_skipped_plex_mode")
@@ -168,7 +179,7 @@ async def cleanup_title_orphans(
                     valid_asset_dirs.add(Path(dir_name).name)
 
         deleted_dirs = set()
-        async def remove_asset_title(path, description, strict):
+        async def remove_asset_title(path, description):
             nonlocal orphans_removed
             title, year = None, None
             try:
@@ -179,11 +190,13 @@ async def cleanup_title_orphans(
             except Exception:
                 pass
             resolved_path = str(path.resolve())
-            if strict:
-                if path.parent.name in valid_asset_dirs:
-                    return
+            if path.parent.name in valid_asset_dirs:
+                return
             if existing_assets is not None and resolved_path in existing_assets:
                 log_cleanup_event("cleanup_skipping_valid_asset", description=description, path=path)
+                return
+            if resolved_path not in managed_asset_paths:
+                log_cleanup_event("cleanup_skipping_valid_asset", description=f"unmanaged {description}", path=path)
                 return
             if feature_flags.get("dry_run", False):
                 log_cleanup_event("cleanup_dry_run", description=description, path=path)
@@ -208,17 +221,11 @@ async def cleanup_title_orphans(
 
         tasks = []
         if run_poster:
-            tasks.extend(remove_asset_title(p, "poster", True) for p in orphaned_posters)
-        else:
-            tasks.extend(remove_asset_title(p, "poster", False) for p in orphaned_posters)
+            tasks.extend(remove_asset_title(p, "poster") for p in orphaned_posters)
         if run_season:
-            tasks.extend(remove_asset_title(p, "season poster", True) for p in orphaned_season_posters)
-        else:
-            tasks.extend(remove_asset_title(p, "season poster", False) for p in orphaned_season_posters)
+            tasks.extend(remove_asset_title(p, "season poster") for p in orphaned_season_posters)
         if run_background:
-            tasks.extend(remove_asset_title(p, "background", True) for p in orphaned_backgrounds)
-        else:
-            tasks.extend(remove_asset_title(p, "background", False) for p in orphaned_backgrounds)
+            tasks.extend(remove_asset_title(p, "background") for p in orphaned_backgrounds)
         await asyncio.gather(*tasks)
 
         for dir_path_str in deleted_dirs:

@@ -47,7 +47,7 @@ def override_config_with_cli(config, args):
         config["assets"]["run_background"] = args.run_background
         
 args = parse_cli_args()
-config = load_config_file()
+config = load_config_file(create_if_missing=not args.dry_run)
 override_config_with_cli(config, args)
 logger = get_setup_logging(config)
 
