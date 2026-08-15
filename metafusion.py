@@ -70,23 +70,20 @@ async def metafusion_main():
         metadata_summaries = {}
         library_filesize = {}
 
-        tasks = []
-        for section in sections:
-            movie_cache = {}
-            season_cache = {}
-            episode_cache = {}
-
-            tasks.append(
-                process_library(
-                    library_section=section, config=config, library_item_counts=library_item_counts,
-                    metadata_summaries=metadata_summaries, library_filesize=library_filesize,
-                    season_cache=season_cache, episode_cache=episode_cache, movie_cache=movie_cache,
-                    session=session, feature_flags=feature_flags
+        if sections:
+            for section in sections:
+                await process_library(
+                    library_section=section,
+                    config=config,
+                    library_item_counts=library_item_counts,
+                    metadata_summaries=metadata_summaries,
+                    library_filesize=library_filesize,
+                    season_cache={},
+                    episode_cache={},
+                    movie_cache={},
+                    session=session,
+                    feature_flags=feature_flags,
                 )
-            )
-
-        if tasks:
-            await asyncio.gather(*tasks)
         else:
             log_main_event("main_no_libraries")
 
