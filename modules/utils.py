@@ -9,6 +9,8 @@ def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
         exclude_fields = {"last_updated", "cache_key", "poster_average", "season_average", "background_average"}
     changed_fields = []
     for key, new_value in new_metadata.items():
+        if key in exclude_fields:
+            continue
         existing_value = existing_metadata.get(key)
         if isinstance(new_value, list):
             def normalize_list(lst):
@@ -24,7 +26,11 @@ def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
             if not isinstance(existing_value, dict):
                 changed_fields.append(key)
             else:
-                nested_changes = smart_meta_update(existing_value, new_value)
+                nested_changes = smart_meta_update(
+                    existing_value,
+                    new_value,
+                    exclude_fields=exclude_fields,
+                )
                 if nested_changes:
                     changed_fields.append(key)
         else:
