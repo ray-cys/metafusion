@@ -82,6 +82,15 @@ DEFAULT_CONFIG = {
     "cleanup": {
         "run_process": False,
     },
+    "runtime": {
+        "max_concurrency": 8,
+        "request_timeout": 30.0,
+        "connect_timeout": 10.0,
+        "max_image_mb": 25,
+    },
+    "safety": {
+        "allow_ambiguous_editions": False,
+    },
     "poster_set": {
         "max_width": 2000,
         "max_height": 3000,
@@ -132,6 +141,11 @@ ENV_BINDINGS = (
     ("RUN_SEASON", ("assets", "run_season"), safe_bool),
     ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
     ("RUN_PROCESS", ("cleanup", "run_process"), safe_bool),
+    ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
+    ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
+    ("CONNECT_TIMEOUT", ("runtime", "connect_timeout"), safe_float),
+    ("MAX_IMAGE_MB", ("runtime", "max_image_mb"), safe_int),
+    ("ALLOW_AMBIGUOUS_EDITIONS", ("safety", "allow_ambiguous_editions"), safe_bool),
     ("POSTER_MAX_WIDTH", ("poster_set", "max_width"), safe_int),
     ("POSTER_MAX_HEIGHT", ("poster_set", "max_height"), safe_int),
     ("POSTER_MIN_WIDTH", ("poster_set", "min_width"), safe_int),

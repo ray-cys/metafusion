@@ -420,23 +420,23 @@ async def download_poster(config, image_path, save_path, session=None, retries=3
     url = f"https://image.tmdb.org/t/p/original{image_path or ''}"
     if session is None:
         return False, None, "HTTP session failed"
-    last_exception = None
-    for attempt in range(retries):
-        try:
-            response_content = await tmdb_api_request(config, url, raw=True, cache=False, session=session)
-            if response_content:
-                result, error = await save_poster(response_content, save_path)
-                if result is True or result == "ALREADY_UP_TO_DATE":
-                    return True, 200, error
-                else:
-                    last_exception = Exception(error or "File not saved after download")
-            else:
-                last_exception = Exception("Empty response from TMDb")
-        except Exception as e:
-            last_exception = e
-        await asyncio.sleep(1)
-    status = getattr(last_exception, "status", None)
-    return False, status, str(last_exception) if last_exception else None
+    try:
+        response_content = await tmdb_api_request(
+            config,
+            url,
+            raw=True,
+            cache=False,
+            session=session,
+            retries=retries,
+        )
+        if not response_content:
+            return False, None, "Empty or rejected response from TMDb"
+        result, error = await save_poster(response_content, save_path)
+        if result is True or result == "ALREADY_UP_TO_DATE":
+            return True, 200, error
+        return False, None, error or "File not saved after download"
+    except Exception as error:
+        return False, getattr(error, "status", None), str(error)
 
 def get_asset_path(config, meta, asset_type="poster", season_number=None):
     mode = config.get("settings", {}).get("mode", "kometa")

@@ -1,9 +1,35 @@
 import asyncio, json, hashlib
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from aiolimiter import AsyncLimiter
-from helper.logging import log_tmdb_event
+from helper.logging import log_tmdb_event, redact_secrets
 
 tmdb_response_cache = {}
 tmdb_limiter = AsyncLimiter(40, 10)
+
+
+class ResponseTooLargeError(RuntimeError):
+    pass
+
+
+async def _read_limited(response, max_bytes):
+    content_length = response.headers.get("Content-Length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise ResponseTooLargeError(
+                    f"response Content-Length exceeds {max_bytes} bytes"
+                )
+        except ValueError:
+            pass
+
+    chunks = []
+    total = 0
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise ResponseTooLargeError(f"response exceeds {max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 def _redact_query(query):
     sensitive_keys = {"api_key", "access_token", "token"}
@@ -12,9 +38,23 @@ def _redact_query(query):
         for key, value in query.items()
     }
 
+
+def _redact_url(url):
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    redacted_query = [
+        (key, "***" if key.lower() in {"api_key", "access_token", "token"} else value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(redacted_query), parts.fragment)
+    )
+
 async def tmdb_api_request(
     config, endpoint_or_url, params=None, retries=3, delay=2, backoff_factor=2, api_key=None,
-    language=None, region=None, cache=True, raw=False, session=None, **kwargs,
+    language=None, region=None, cache=True, raw=False, session=None,
+    max_response_bytes=None, **kwargs,
 ):
     if endpoint_or_url.startswith("http"):
         url = endpoint_or_url
@@ -47,41 +87,67 @@ async def tmdb_api_request(
         cache_key = f"{url}:{json.dumps(query, sort_keys=True)}"
 
     logged_query = _redact_query(query)
+    logged_url = _redact_url(url)
+    sensitive_values = [
+        value
+        for key, value in query.items()
+        if key.lower() in {"api_key", "access_token", "token"} and value
+    ]
+    if max_response_bytes is None:
+        max_image_mb = config.get("runtime", {}).get("max_image_mb", 25)
+        max_response_bytes = max(1, int(max_image_mb)) * 1024 * 1024
     if session is None:
-        log_tmdb_event("tmdb_failed", retries=retries, url=url, query=logged_query)
+        log_tmdb_event("tmdb_failed", retries=retries, url=logged_url, query=logged_query)
         return {}
 
     cache_hash = hashlib.sha256(cache_key.encode()).hexdigest()
     if cache and cache_hash in tmdb_response_cache:
-        log_tmdb_event("tmdb_cache_hit", url=url, params=logged_query)
+        log_tmdb_event("tmdb_cache_hit", url=logged_url, params=logged_query)
         return tmdb_response_cache[cache_hash]
 
     for attempt in range(1, retries + 1):
         try:
-            log_tmdb_event("tmdb_request", url=url, query=logged_query, attempt=attempt, retries=retries)
+            log_tmdb_event("tmdb_request", url=logged_url, query=logged_query, attempt=attempt, retries=retries)
             async with tmdb_limiter:
                 async with session.get(url, params=query, **kwargs) as response:
                     if response.status == 200:
                         if raw:
-                            data = await response.read()
+                            data = await _read_limited(response, max_response_bytes)
                         else:
                             data = await response.json()
                         if cache:
                             tmdb_response_cache[cache_hash] = data
-                        log_tmdb_event("tmdb_success", url=url, attempt=attempt)
+                        log_tmdb_event("tmdb_success", url=logged_url, attempt=attempt)
                         return data
                     elif response.status == 429:
-                        retry_after = int(response.headers.get("Retry-After", delay))
+                        retry_after = min(
+                            60,
+                            max(0, int(response.headers.get("Retry-After", delay))),
+                        )
                         log_tmdb_event("tmdb_rate_limited", retry_after=retry_after, query=logged_query)
                         await asyncio.sleep(retry_after)
                     else:
-                        body = await response.text()
-                        log_tmdb_event("tmdb_non_200", status=response.status, url=url, query=logged_query, body=body[:500])
+                        body = redact_secrets(await response.text(), *sensitive_values)
+                        log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
+        except ResponseTooLargeError as e:
+            log_tmdb_event(
+                "tmdb_response_too_large",
+                url=logged_url,
+                query=logged_query,
+                error=e,
+            )
+            return None
         except Exception as e:
-            log_tmdb_event("tmdb_request_failed", attempt=attempt, url=url, query=logged_query, error=e)
+            log_tmdb_event(
+                "tmdb_request_failed",
+                attempt=attempt,
+                url=logged_url,
+                query=logged_query,
+                error=redact_secrets(e, *sensitive_values),
+            )
         if attempt < retries:
             sleep_time = delay * (backoff_factor ** (attempt - 1))
             log_tmdb_event("tmdb_retrying", sleep_time=sleep_time, next_attempt=attempt + 1, retries=retries)
             await asyncio.sleep(sleep_time)
-    log_tmdb_event("tmdb_failed", retries=retries, url=url, query=logged_query)
+    log_tmdb_event("tmdb_failed", retries=retries, url=logged_url, query=logged_query)
     return None

@@ -3,6 +3,14 @@ services:
     image: ghcr.io/ray-cys/metafusion:main
     container_name: metafusion
     init: true
+    user: "${PUID:-10001}:${PGID:-10001}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     environment:
       CONFIG_DIR: /config
       KOMETA_PATH: /kometa
@@ -26,6 +34,12 @@ services:
       RUN_SEASON: ${RUN_SEASON:-True}
       RUN_BACKGROUND: ${RUN_BACKGROUND:-False}
       RUN_PROCESS: ${RUN_PROCESS:-False}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-8}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-30}
+      CONNECT_TIMEOUT: ${CONNECT_TIMEOUT:-10}
+      MAX_IMAGE_MB: ${MAX_IMAGE_MB:-25}
+      ALLOW_AMBIGUOUS_EDITIONS: ${ALLOW_AMBIGUOUS_EDITIONS:-False}
+      STATUS_FILE: /config/metafusion-status.json
       POSTER_MAX_WIDTH: ${POSTER_MAX_WIDTH:-2000}
       POSTER_MAX_HEIGHT: ${POSTER_MAX_HEIGHT:-3000}
       POSTER_MIN_WIDTH: ${POSTER_MIN_WIDTH:-1000}
@@ -50,5 +64,11 @@ services:
     volumes:
       - ${CONFIG_PATH:-./config}:/config
       - ${KOMETA_HOST_PATH:-./kometa}:/kometa
-    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 60s
     restart: unless-stopped

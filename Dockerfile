@@ -1,4 +1,4 @@
-FROM python:3.13-slim-bookworm
+FROM python:3.13-slim-bookworm@sha256:00faa2debb87529f9f0764e9491d8ba400a3678976616c3bd7cb193745ac20d1
 
 LABEL org.opencontainers.image.source="https://github.com/ray-cys/metafusion" \
       org.opencontainers.image.description="Metadata and asset generator for Plex and Kometa"
@@ -10,12 +10,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip setuptools \
-    && python -m pip install -r requirements.txt
+COPY requirements.lock .
+RUN python -m pip install --require-hashes -r requirements.lock
 
-COPY . /app
-RUN mkdir -p /config /config/logs /config/cache
+COPY --chown=10001:10001 . /app
+RUN mkdir -p /config /config/logs /config/cache /kometa \
+    && chown -R 10001:10001 /config /kometa
+
+USER 10001:10001
 
 STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["python", "healthcheck.py"]
 CMD ["python", "metafusion.py"]

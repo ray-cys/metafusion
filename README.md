@@ -1,229 +1,196 @@
-# 🎬 Metadata & Asset Generator for Plex & Kometa
+# MetaFusion
 
-A robust, multi-threaded Python tool to automate the extraction, enrichment, and management of metadata and artwork for your Plex libraries. This script fetches high-quality data from TMDb, generates [Kometa](https://kometa.wiki/) compatible YAML files, manages poster/season assets, and keeps your library clean by removing orphans—all with smart update logic and flexible configuration.
+MetaFusion scans selected Plex libraries, enriches their metadata with TMDb,
+and produces Kometa-compatible YAML and artwork. It can also place artwork
+beside Plex media when `RUN_MODE=plex`.
 
----
+The application is designed to run either once or as a long-running Docker
+scheduler. Cleanup is opt-in and guarded by a complete-library inventory.
 
-## 🚀 What Does This Script Do?
+## Current capabilities
 
-- **Connects to Plex:** Reads your Plex libraries directly.
-- **Fetches TMDb Metadata:** Pulls rich, up-to-date info for movies and TV shows.
-- **Smart Metadata Updates:** Only updates YAML if something has changed, minimizing unnecessary writes.
-- **Asset Management:** Downloads, upgrades, and manages posters and season artwork.
-- **Orphan Cleanup:** Removes unused metadata and asset files for a tidy library.
-- **Kometa-Compatible:** Outputs YAML ready for [Kometa](https://kometa.wiki/) and similar tools.
-- **Multi-threaded:** Fast, parallel processing for large libraries.
-- **Dry-Run Mode:** Test everything safely—no files are written or deleted.
-- **Highly Configurable:** Choose which libraries, asset types, and metadata to process—all via `config.yml`.
+- Movie, show, season (including Specials/Season 0), and episode metadata
+- Kometa-compatible `movie_metadata.yml` and `tv_metadata.yml`
+- Poster, background, and season artwork selection and upgrades
+- Stable Plex/cache identities for multiple editions
+- Atomic YAML and cache writes with one cache flush per run
+- True dry-run behavior for generated metadata, assets, cache, and logs
+- Bounded item concurrency, HTTP timeouts, and maximum image download size
+- Non-root, read-only Docker runtime with a scheduler health check
+- Graceful `SIGTERM` cancellation and cache flushing
 
----
+## Requirements
 
-## 🛠️ How It Works
+- Docker Compose v2, recommended; or
+- Python 3.10+
+- A reachable Plex server and Plex token
+- A TMDb API key
+- Kometa directories if using `RUN_MODE=kometa`
 
-1. **Connects to Plex** using your server URL and token.
-2. **Scans your selected libraries** for movies and TV shows.
-3. **Fetches metadata from TMDb** for each item, using smart caching and update logic.
-4. **Downloads and manages posters/season artwork** based on your preferences.
-5. **Writes YAML files** compatible with Kometa, one per library.
-6. **Optionally cleans up orphaned metadata and assets** not linked to any current Plex item.
-7. **Logs a detailed summary** of all actions and changes.
-
----
-
-## 📦 Requirements
-
-- **Python:** 3.8+
-- **Dependencies:**
-  - `requests`
-  - `plexapi`
-  - `PyYAML`
-  - `Pillow` (for image handling)
-
-Install all dependencies with:
+Dependencies are fully pinned with hashes in `requirements.lock`. For a local
+installation:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 ```
 
----
-
-## 🐳 Docker Compose Quick Start
+## Docker Compose quick start
 
 ```bash
 cp .env.example .env
-# Edit .env and set PLEX_TOKEN and TMDB_API_KEY.
+mkdir -p config kometa
+# Edit .env and add PLEX_TOKEN, TMDB_API_KEY, paths, and library names.
+docker compose config
 docker compose up -d
 docker compose logs -f metafusion
 ```
 
-The container runs as a scheduler by default. Set `METAFUSION_RUN=True` for a
-single run that exits when finished. Set `TZ` in `.env` so `RUN_TIMES` use your
-local timezone. Orphan cleanup is disabled by default; enable `RUN_PROCESS`
-only after verifying paths and using `DRY_RUN=True` first.
-
-Environment variables take precedence over values in `/config/config.yml`.
-When environment configuration is supplied, MetaFusion does not create a
-template file that can unexpectedly replace those values.
-
----
-
-## ⚙️ Configuration Guide
-
-### 1. Download and Prepare Your Config
-
-- Download the provided `config_template.yml` from the repo.
-- **Rename it to `config.yml`** (the script will only use `config.yml`).
-
-### 2. Fill in Your Details
-
-Open `config.yml` and fill in the following:
-
-```yaml
-metafusion_run: false
-
-settings:
-  schedule: true
-  run_times: ["06:00", "18:30"]
-  dry_run: false
-  log_level: "INFO"
-  mode: "kometa"
-  path: "/kometa"
-
-plex:
-  url: "http://localhost:32400"
-  token: "YOUR_PLEX_TOKEN"
-
-# TMDb API configuration
-tmdb:
-  api_key: "YOUR_TMDB_API_KEY"
-  language: "en"
-  region: "US"
-  fallback:
-    - zh
-    - ja
-    - fr
-
-# Plex libraries
-plex_libraries:
-  - Movies
-  - TV Shows
-
-metadata:
-  run_basic: true
-  run_enhanced: true
-
-assets:
-  run_poster: true
-  run_season: true
-  run_background: false
-
-cleanup:
-  run_process: false
-
-```
-
-See `config_template.yml` for image selection settings and every available
-YAML option.
-
-#### 🔑 **How to Get Your Plex Token**
-- Follow this guide: [How to find your Plex Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
-- Paste your token in the `token` field.
-
-#### 🎬 **How to Get a TMDb API Key**
-- Sign up at [TMDb](https://www.themoviedb.org/) and request an API key: [TMDb API Key Guide](https://developers.themoviedb.org/3/getting-started/introduction)
-- Paste your API key in the `api_key` field.
-
----
-
-## 🏃 Usage
-
-Run the script from your terminal:
+The image runs as an unprivileged user. `config` and `kometa` must be writable
+by the configured `PUID` and `PGID`. On Linux, either set those values to your
+host user IDs or change the directory ownership before starting:
 
 ```bash
-python metafusion.py
+id -u
+id -g
+sudo chown -R 10001:10001 config kometa
 ```
 
-Use `python metafusion.py --help` to see supported command-line overrides.
+The startup preflight exits with a clear error if `/config` or `/kometa` is not
+writable. The container otherwise uses a read-only root filesystem, drops all
+Linux capabilities, and enables `no-new-privileges`.
 
----
+### Scheduler and one-shot modes
 
-## 📝 How to Read the Output
+Compose defaults to scheduler mode. `RUN_TIMES` uses the timezone from `TZ`.
 
-- **YAML files** are generated in your `directory`, one per library.
-- **Assets** (posters, season images) are saved in your configured `path`.
-- **Logs** are written to `/config/logs/metafusion.log` in Docker (or under
-  the configured `CONFIG_DIR`) for troubleshooting and audit.
+Run one job without the Compose restart policy:
 
----
+```bash
+docker compose run --rm -e METAFUSION_RUN=True metafusion
+```
 
-## 🧹 Orphan Cleanup
+Do not set `METAFUSION_RUN=True` on the long-running service unless repeated
+one-shot execution after every restart is intentional.
 
-When enabled, the script will:
-- Remove TMDb cache entries not present in your current Plex libraries.
-- Remove metadata entries from YAML files that no longer match any Plex item.
-- Delete poster/season asset files not referenced by any current item (with safety checks to avoid accidental deletion).
+## Configuration
 
----
+Environment variables override `/config/config.yml`. If environment
+configuration is present and `config.yml` is absent, MetaFusion uses safe
+defaults without generating a template that could replace environment values.
+For YAML configuration, copy `config_template.yml` to `/config/config.yml`.
 
-## 🛡️ Safety Features
+Core options:
 
-- **Dry-Run Mode:** No files are written or deleted—perfect for testing.
-- **Smart Update:** Only writes YAML or downloads assets if something has changed.
-- **Asset Tracking:** Prevents accidental deletion of assets still in use.
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `PLEX_URL` | `http://10.0.0.1:32400` | Plex server URL |
+| `PLEX_TOKEN` | required | Plex authentication token |
+| `PLEX_LIBRARIES` | `Movies,TV Shows` | Exact Plex library names |
+| `TMDB_API_KEY` | required | TMDb API key |
+| `RUN_MODE` | `kometa` | `kometa` or `plex` output mode |
+| `RUN_SCHEDULE` | `True` | Enable scheduled operation |
+| `RUN_TIMES` | `06:00,18:30` | Daily scheduler times |
+| `DRY_RUN` | `False` | Calculate and log without generated writes/deletes |
+| `RUN_PROCESS` | `False` | Enable guarded orphan cleanup |
+| `MAX_CONCURRENCY` | `8` | Maximum items processed concurrently |
+| `REQUEST_TIMEOUT` | `30` | Total HTTP request timeout in seconds |
+| `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds |
+| `MAX_IMAGE_MB` | `25` | Maximum accepted artwork response size |
+| `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate edition matching |
+| `PUID` / `PGID` | `10001` | Container runtime user/group |
 
----
+Artwork and metadata switches and all image-selection thresholds are documented
+in `config_template.yml` and `docker-compose.yml`.
 
-## 🛠️ Roadmap & Upcoming Enhancements
+## Cleanup safety
 
-Here’s what’s coming next (and how you can help!):
+Cleanup remains disabled by default. Before enabling it:
 
-1. **Background Poster Download**  
-   - 🎨 Download TMDb backgrounds for movies and TV shows. *Done
-   - User-configurable width, height, vote average, and language preferences. *Done
+1. Confirm every `PLEX_LIBRARIES` name exactly matches Plex.
+2. Run with `DRY_RUN=True` and inspect the logs.
+3. Back up existing Kometa metadata and assets.
+4. Enable `RUN_PROCESS=True` only after the dry-run is correct.
 
-2. **Configurable Asset Types**  
-   - 🖼️ Turn season posters and background downloads on/off via config options. *Done
+MetaFusion will clean a media type only when every detected Plex library of
+that type was selected and completed successfully. For example, all movie
+libraries must be scanned before movie cache, YAML, or managed movie assets can
+be removed. A missing library, scan failure, malformed YAML file, or write
+failure aborts cleanup and marks the job failed. Only asset files previously
+recorded in MetaFusion's cache are eligible for deletion; manually managed
+Kometa assets are preserved.
 
-3. **Enhanced Episode Metadata**  
-   - 🎭 Improved fallbacks to fetch more detailed crew and cast info for episodes.
+Disabling an artwork feature also disables cleanup for that artwork type.
 
-4. **User-Configurable Metadata Limits**  
-   - 🔧 Set how many cast/crew members to include in metadata via config.
+## Multiple editions and versions
 
-5. **Franchise/Collection Extraction**  
-   - 📚 Extract franchise/collection info from TMDb and generate Kometa-compatible collection YAML files.
-   - Include poster URLs for collections and franchises.
+Give every same-title/year movie copy a unique Plex edition name. MetaFusion
+uses native Plex edition metadata and also recognizes `{edition-Name}` in the
+media filename. Distinct edition names produce distinct cache and YAML entries.
 
-6. **Speed Optimizations**  
-   - ⚡ Further parallelization and smarter caching for even faster runs. *Done at the best i could
+Two blank editions, or two copies with the same edition name, cannot be matched
+uniquely by Kometa. MetaFusion therefore fails safely and explains which items
+need edition names. `ALLOW_AMBIGUOUS_EDITIONS=True` restores permissive legacy
+behavior, but it can cause Kometa to update the wrong copy and is not
+recommended.
 
----
+## Output and health
 
-## 💡 Suggestions for a More Visual & Engaging Experience
+In Kometa mode, output is written below `KOMETA_PATH`:
 
-- **Add progress bars** (e.g., with [tqdm](https://tqdm.github.io/)) for real-time feedback.
-- **Generate HTML reports** with summary tables and asset previews.
-- **Use emojis and colorized logs** for easier reading in the terminal.
-- **Add a web dashboard** for monitoring and controlling runs (future idea!).
+```text
+metadata/movie_metadata.yml
+metadata/tv_metadata.yml
+assets/movie/...
+assets/tv/...
+```
 
-> **Want to make it even more visual?**  
-> Consider adding screenshots, flowcharts, or even short demo videos to this README.  
-> You can also use badges (e.g., build status, Python version) at the top for a more professional look.
+Logs and operational state are stored in `/config`:
 
----
+```text
+logs/metafusion.log
+cache/meta_cache.json
+metafusion-status.json
+```
 
-## 📚 Resources
+The Docker health check verifies that the process heartbeat is current and
+marks the container unhealthy when the last scheduled run failed. Inspect it
+with:
 
-- [Kometa Metadata Wiki](https://kometa.wiki/)
-- [Plex API Docs](https://python-plexapi.readthedocs.io/en/latest/)
-- [TMDb API Docs](https://developers.themoviedb.org/3/getting-started/introduction)
+```bash
+docker inspect --format '{{json .State.Health}}' metafusion
+docker compose logs --tail=200 metafusion
+```
 
----
+One-shot failures return a non-zero exit code. Scheduled failures remain in the
+status file and health state until a later run succeeds.
 
-## 📝 License
+## Development and validation
 
-MIT License
+Install the development lock and run the same checks as CI:
 
----
+```bash
+python -m pip install --require-hashes -r requirements-dev.lock
+ruff check --select F,E9 .
+pytest -q --cov=. --cov-report=term --cov-fail-under=50
+pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
+```
 
-Enjoy your perfectly organized Plex library! 🍿
+GitHub Actions tests Python 3.10 and 3.13, audits Python dependencies, scans the
+built container for fixable critical vulnerabilities, builds `linux/amd64` and
+`linux/arm64` images, and signs published images.
+
+To update dependency locks after reviewing available releases:
+
+```bash
+uv pip compile --universal --python-version 3.10 --generate-hashes requirements.in -o requirements.lock
+uv pip compile --universal --python-version 3.10 --generate-hashes requirements-dev.in -o requirements-dev.lock
+```
+
+## Resources
+
+- [Kometa metadata documentation](https://kometa.wiki/en/latest/files/metadata/)
+- [Plex token documentation](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+- [Python PlexAPI](https://python-plexapi.readthedocs.io/)
+- [TMDb API](https://developer.themoviedb.org/docs)
+
+MetaFusion is released under the MIT License.

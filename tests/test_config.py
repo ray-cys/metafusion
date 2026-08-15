@@ -95,3 +95,31 @@ def test_dry_run_config_loading_does_not_create_template(tmp_path):
     assert not config_file.exists()
     assert not config_file.parent.exists()
     assert config["settings"]["dry_run"] is False
+
+
+def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "MAX_CONCURRENCY": "4",
+            "REQUEST_TIMEOUT": "45.5",
+            "CONNECT_TIMEOUT": "7",
+            "MAX_IMAGE_MB": "12",
+            "ALLOW_AMBIGUOUS_EDITIONS": "true",
+        },
+    )
+
+    assert config["runtime"] == {
+        "max_concurrency": 4,
+        "request_timeout": 45.5,
+        "connect_timeout": 7.0,
+        "max_image_mb": 12,
+    }
+    assert config["safety"]["allow_ambiguous_editions"] is True
+
+
+def test_template_keeps_destructive_cleanup_disabled():
+    template = yaml.safe_load(TEMPLATE_FILE.read_text(encoding="utf-8"))
+
+    assert template["cleanup"]["run_process"] is False

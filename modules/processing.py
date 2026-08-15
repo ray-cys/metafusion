@@ -8,6 +8,70 @@ from helper.plex import get_plex_metadata
 from helper.identity import item_identity
 from modules.builder import build_movie, build_tv
 
+
+class ItemProcessingError(RuntimeError):
+    pass
+
+
+class LibraryProcessingError(RuntimeError):
+    pass
+
+
+class AmbiguousEditionError(LibraryProcessingError):
+    pass
+
+
+def find_ambiguous_editions(metadata):
+    groups = {}
+    for meta in metadata:
+        if (meta.get("library_type") or "").lower() != "movie":
+            continue
+        key = (meta.get("title"), meta.get("year"))
+        groups.setdefault(key, []).append(meta)
+
+    ambiguous = []
+    for (title, year), entries in groups.items():
+        if len(entries) < 2:
+            continue
+        edition_counts = Counter(entry.get("edition_title") for entry in entries)
+        duplicate_editions = [
+            "blank" if edition is None else str(edition)
+            for edition, count in edition_counts.items()
+            if count > 1
+        ]
+        if duplicate_editions:
+            ambiguous.append(
+                f"{title} ({year}): duplicate editions {', '.join(duplicate_editions)}"
+            )
+    return ambiguous
+
+
+def cleanup_inventory_errors(metadata, feature_flags):
+    errors = []
+    asset_cleanup_enabled = any(
+        feature_flags.get(name, False) for name in ("poster", "season", "background")
+    )
+    for meta in metadata:
+        media_type = (meta.get("library_type") or "").lower()
+        if media_type == "show":
+            media_type = "tv"
+        missing = [
+            field for field in ("title", "year", "ratingKey") if not meta.get(field)
+        ]
+        if asset_cleanup_enabled:
+            if media_type == "movie" and not meta.get("movie_path"):
+                missing.append("movie_path")
+            if media_type == "tv" and not meta.get("show_path"):
+                missing.append("show_path")
+        if media_type == "tv" and feature_flags.get("season", False):
+            if not isinstance(meta.get("seasons_episodes"), dict):
+                missing.append("seasons_episodes")
+        if missing:
+            errors.append(
+                f"{meta.get('title')} ({meta.get('year')}): {', '.join(missing)}"
+            )
+    return errors
+
 async def process_item(
     plex_item, consolidated_metadata, config, feature_flags=None, existing_yaml_data=None,  library_name="Unknown",
     existing_assets=None, session=None, ignored_fields=None, 
@@ -28,27 +92,27 @@ async def process_item(
     library_type = meta.get("library_type", "unknown")
 
     try:
-        async with asyncio.Lock():
-            if library_type == "movie":
-                stats = await build_movie(
-                    config, consolidated_metadata,
-                    existing_yaml_data=existing_yaml_data, session=session,
-                    ignored_fields=ignored_fields, existing_assets=existing_assets,
-                    meta=meta, feature_flags=feature_flags
-                )
-            elif library_type in ("show", "tv"):
-                stats = await build_tv(
-                    config, consolidated_metadata,
-                    existing_yaml_data=existing_yaml_data, session=session,
-                    ignored_fields=ignored_fields, existing_assets=existing_assets,
-                    meta=meta, feature_flags=feature_flags   
-                )
-            else:
-                log_processing_event("processing_unsupported_type", full_title=full_title)
-                return None
+        if library_type == "movie":
+            stats = await build_movie(
+                config, consolidated_metadata,
+                existing_yaml_data=existing_yaml_data, session=session,
+                ignored_fields=ignored_fields, existing_assets=existing_assets,
+                meta=meta, feature_flags=feature_flags
+            )
+        elif library_type in ("show", "tv"):
+            stats = await build_tv(
+                config, consolidated_metadata,
+                existing_yaml_data=existing_yaml_data, session=session,
+                ignored_fields=ignored_fields, existing_assets=existing_assets,
+                meta=meta, feature_flags=feature_flags
+            )
+        else:
+            raise ItemProcessingError(f"Unsupported library type: {library_type}")
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log_processing_event("processing_failed_item", full_title=full_title, error=str(e))
-        return None
+        raise ItemProcessingError(f"Failed to process {full_title}") from e
     return stats
 
 plex_metadata_dict = {} 
@@ -83,6 +147,7 @@ async def process_library(
         log_processing_event("processing_library_items", library_name=library_name, total_items=total_items)
 
         preloaded_metadata = []
+        metadata_errors = []
         for item in items:
             try:
                 meta = await get_plex_metadata(
@@ -104,7 +169,22 @@ async def process_library(
                     "library_type": media_type,
                     "ratingKey": getattr(item, "ratingKey", None),
                 })
+                metadata_errors.append(f"{title} ({year}): {e}")
                 log_processing_event("processing_failed_metadata", title=title, year=year, media_type=media_type, error=str(e))
+
+        if metadata_errors:
+            raise LibraryProcessingError(
+                "Plex metadata inventory was incomplete: " + "; ".join(metadata_errors)
+            )
+        if feature_flags.get("cleanup", False):
+            inventory_errors = cleanup_inventory_errors(
+                preloaded_metadata, feature_flags
+            )
+            if inventory_errors:
+                raise LibraryProcessingError(
+                    "Cleanup requires complete Plex identity/path metadata: "
+                    + "; ".join(inventory_errors)
+                )
 
         movie_groups = Counter(
             (meta.get("title"), meta.get("year"))
@@ -116,6 +196,24 @@ async def process_library(
             for meta in preloaded_metadata
             if (meta.get("library_type") or "").lower() == "movie" and meta.get("edition_title")
         )
+        ambiguous_editions = find_ambiguous_editions(preloaded_metadata)
+        if ambiguous_editions and mode_check(config, "kometa"):
+            description = "; ".join(ambiguous_editions)
+            if not config.get("safety", {}).get("allow_ambiguous_editions", False):
+                log_processing_event(
+                    "processing_ambiguous_editions",
+                    library_name=library_name,
+                    description=description,
+                )
+                raise AmbiguousEditionError(
+                    "Kometa cannot uniquely match these versions. Give every copy "
+                    f"a unique Plex edition: {description}"
+                )
+            log_processing_event(
+                "processing_ambiguous_editions_allowed",
+                library_name=library_name,
+                description=description,
+            )
         for meta in preloaded_metadata:
             media_type = (meta.get("library_type") or "").lower()
             if media_type == "show":
@@ -159,6 +257,9 @@ async def process_library(
                         existing_yaml_data = yaml.safe_load(f) or {}
                 except Exception as e:
                     log_processing_event("processing_failed_parse_yaml", output_path=output_path, error=str(e))
+                    raise LibraryProcessingError(
+                        f"Unable to parse existing metadata file: {output_path}"
+                    ) from e
             consolidated_metadata = existing_yaml_data if existing_yaml_data else {"metadata": {}}
 
         existing_assets = set()    
@@ -252,8 +353,42 @@ async def process_library(
             if library_item_counts is not None and library_name != "Unknown":
                 library_item_counts[library_name] = library_item_counts.get(library_name, 0) + 1
 
-        item_tasks = [process_and_collect(item) for item in items]
-        await asyncio.gather(*item_tasks)
+        max_concurrency = max(
+            1,
+            int(config.get("runtime", {}).get("max_concurrency", 8)),
+        )
+        queue = asyncio.Queue()
+        for item in items:
+            queue.put_nowait(item)
+        item_errors = []
+
+        async def worker():
+            while True:
+                item = await queue.get()
+                try:
+                    await process_and_collect(item)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    item_errors.append(error)
+                finally:
+                    queue.task_done()
+
+        workers = [
+            asyncio.create_task(worker())
+            for _ in range(min(max_concurrency, total_items))
+        ]
+        try:
+            await queue.join()
+        finally:
+            for worker_task in workers:
+                worker_task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        if item_errors:
+            raise LibraryProcessingError(
+                f"{len(item_errors)} of {total_items} items failed in {library_name}"
+            ) from item_errors[0]
 
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size
@@ -264,6 +399,9 @@ async def process_library(
                 log_processing_event("processing_metadata_saved", output_path=output_path)
             except Exception as e:
                 log_processing_event("processing_failed_write_metadata", error=str(e))
+                raise LibraryProcessingError(
+                    f"Unable to save metadata file: {output_path}"
+                ) from e
         elif mode_check(config, "kometa") and feature_flags["dry_run"]:
             log_processing_event("processing_metadata_dry_run", library_name=library_name)
 
@@ -304,6 +442,10 @@ async def process_library(
             }
         
         return all_stats
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log_processing_event("processing_failed_library", library_name=library_name, error=str(e))
-        return []
+        if isinstance(e, LibraryProcessingError):
+            raise
+        raise LibraryProcessingError(f"Failed to process library: {library_name}") from e

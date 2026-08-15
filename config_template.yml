@@ -45,7 +45,20 @@ assets:
   run_background: false
 
 cleanup:
-  run_process: true
+  # Cleanup is intentionally opt-in. Test with dry_run before enabling it.
+  run_process: false
+
+# Runtime limits protect large libraries from exhausting memory/connections.
+runtime:
+  max_concurrency: 8
+  request_timeout: 30
+  connect_timeout: 10
+  max_image_mb: 25
+
+safety:
+  # Kometa cannot reliably match duplicate title/year movies unless every copy
+  # has a unique Plex edition. Keep false to fail safely on ambiguous matches.
+  allow_ambiguous_editions: false
 
 # Poster selection preferences (Only if run_poster is true)
 poster_set:
