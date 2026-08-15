@@ -3,7 +3,9 @@
 **/.classpath
 **/.dockerignore
 **/.env
+**/.env.example
 **/.git
+**/.github
 **/.gitignore
 **/.project
 **/.settings
@@ -22,6 +24,7 @@
 **/npm-debug.log
 **/obj
 **/secrets.dev.yaml
+**/tests
 **/values.dev.yaml
 unraid.xml
 LICENSE

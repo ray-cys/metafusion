@@ -39,6 +39,7 @@ assets/
 
 # Sensitive or user-specific config
 config.yml
+.env
 *.profile
 
 # TMDb and other caches

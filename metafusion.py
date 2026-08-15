@@ -52,6 +52,9 @@ override_config_with_cli(config, args)
 logger = get_setup_logging(config)
 
 async def metafusion_main():
+    _plex_cache.clear()
+    plex_metadata_dict.clear()
+    tmdb_response_cache.clear()
     get_meta_banner(logger)
     check_sys_requirements(logger, config=config)
     log_main_event(
@@ -110,9 +113,10 @@ async def metafusion_main():
 def run_metafusion_job():
     try:
         asyncio.run(metafusion_main())
+        return True
     except Exception as e:
         log_main_event("main_unhandled_exception", error=e)
-        sys.exit(1)
+        return False
 
 if __name__ == "__main__":
     settings = config.get("settings", {})
@@ -121,11 +125,19 @@ if __name__ == "__main__":
     metafusion_run = config.get("metafusion_run", True)
 
     if metafusion_run:
-        run_metafusion_job()
         log_main_event("main_force_run", start_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        if not run_metafusion_job():
+            sys.exit(1)
     elif schedule_enabled and run_times:
+        scheduled_count = 0
         for t in run_times:
-            schedule.every().day.at(t).do(run_metafusion_job)
+            try:
+                schedule.every().day.at(t).do(run_metafusion_job)
+                scheduled_count += 1
+            except schedule.ScheduleValueError as error:
+                log_main_event("main_invalid_schedule_time", run_time=t, error=error)
+        if not scheduled_count:
+            sys.exit(1)
         log_main_event("main_scheduled_run", run_time=', '.join(run_times))
         while True:
             schedule.run_pending()

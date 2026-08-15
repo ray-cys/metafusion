@@ -37,7 +37,6 @@ A robust, multi-threaded Python tool to automate the extraction, enrichment, and
   - `requests`
   - `plexapi`
   - `PyYAML`
-  - `pycountry`
   - `Pillow` (for image handling)
 
 Install all dependencies with:
@@ -45,6 +44,26 @@ Install all dependencies with:
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## 🐳 Docker Compose Quick Start
+
+```bash
+cp .env.example .env
+# Edit .env and set PLEX_TOKEN and TMDB_API_KEY.
+docker compose up -d
+docker compose logs -f metafusion
+```
+
+The container runs as a scheduler by default. Set `METAFUSION_RUN=True` for a
+single run that exits when finished. Set `TZ` in `.env` so `RUN_TIMES` use your
+local timezone. Orphan cleanup is disabled by default; enable `RUN_PROCESS`
+only after verifying paths and using `DRY_RUN=True` first.
+
+Environment variables take precedence over values in `/config/config.yml`.
+When environment configuration is supplied, MetaFusion does not create a
+template file that can unexpectedly replace those values.
 
 ---
 
@@ -60,13 +79,16 @@ pip install -r requirements.txt
 Open `config.yml` and fill in the following:
 
 ```yaml
-# Dry run
-dry_run: false
+metafusion_run: false
 
-# Logging
-log_level: "INFO"
+settings:
+  schedule: true
+  run_times: ["06:00", "18:30"]
+  dry_run: false
+  log_level: "INFO"
+  mode: "kometa"
+  path: "/kometa"
 
-#Plex server configuration
 plex:
   url: "http://localhost:32400"
   token: "YOUR_PLEX_TOKEN"
@@ -86,41 +108,22 @@ plex_libraries:
   - Movies
   - TV Shows
 
-# Metadata & Asset processing
-run_basic: true
-run_poster: true
-run_season: true
-run_background: true
-cleanup_orphans: true
+metadata:
+  run_basic: true
+  run_enhanced: true
 
-# Metadata output
-directory: "/path/to/metadata/"
+assets:
+  run_poster: true
+  run_season: true
+  run_background: false
 
-# Asset management
-path: "/path/to/assets"
-
-# Poster selection preferences
-poster_settings:
-  max_width: 2000
-  max_height: 3000
-  min_width: 1000
-  min_height: 1500
-  prefer_vote: 5.0
-  vote_relaxed: 3.5
-  vote_threshold: 5.0
-
-# Background selection preferences
-background_settings:
-  max_width: 3840
-  max_height: 2160
-  min_width: 1920
-  min_height: 1080
-  prefer_vote: 5.0
-  vote_relaxed: 3.5
-  vote_threshold: 5.0
-
+cleanup:
+  run_process: false
 
 ```
+
+See `config_template.yml` for image selection settings and every available
+YAML option.
 
 #### 🔑 **How to Get Your Plex Token**
 - Follow this guide: [How to find your Plex Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
@@ -137,10 +140,10 @@ background_settings:
 Run the script from your terminal:
 
 ```bash
-python metadata_gen.py
+python metafusion.py
 ```
 
-> **Note:** All options and behaviors are controlled via your `config.yml`. There are no CLI flags—simply edit your config and run the script.
+Use `python metafusion.py --help` to see supported command-line overrides.
 
 ---
 
@@ -148,7 +151,8 @@ python metadata_gen.py
 
 - **YAML files** are generated in your `directory`, one per library.
 - **Assets** (posters, season images) are saved in your configured `path`.
-- **Logs** are written to `metadata_generator.log` for troubleshooting and audit.
+- **Logs** are written to `/config/logs/metafusion.log` in Docker (or under
+  the configured `CONFIG_DIR`) for troubleshooting and audit.
 
 ---
 

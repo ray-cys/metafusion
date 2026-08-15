@@ -85,30 +85,25 @@ def check_sys_requirements(logger, config):
         lines.extend(box_line(f"[System] Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ required. Detected: {platform.python_version()}. Exiting.", box_width))
         for line in lines:
             logger.error(line)
-        sys.exit(1)
+        raise RuntimeError(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required")
     else:
         lines.extend(box_line(f"[System] Python version detected: {platform.python_version()}", box_width))
 
     if cpu_cores is not None and cpu_cores < MIN_CPU_CORES:
-        lines.extend(box_line(f"[System] At least {MIN_CPU_CORES} CPU cores required. Detected: {cpu_cores}. Exiting.", box_width))
-        for line in lines:
-            logger.error(line)
-        sys.exit(1)
+        lines.extend(box_line(f"[System] {cpu_cores} CPU cores detected; {MIN_CPU_CORES}+ is recommended for best performance.", box_width))
     else:
         lines.extend(box_line(f"[System] CPU Cores detected: {cpu_cores} (Usage: {cpu_percent}%)", box_width))
 
     if total_gb < MIN_RAM_GB:
-        lines.extend(box_line(f"[System] {MIN_RAM_GB} GB RAM required. Detected: {total_gb:.2f} GB. Exiting.", box_width))
-        for line in lines:
-            logger.error(line)
-        sys.exit(1)
+        lines.extend(box_line(f"[System] {total_gb:.2f} GB RAM detected; {MIN_RAM_GB} GB is recommended for large libraries.", box_width))
     else:
         lines.extend(box_line(f"[System] RAM Memory detected: {total_gb:.2f} GB (Used: {used_gb:.2f} GB, Free: {free_gb:.2f} GB)", box_width))
 
     plex_url = config.get('plex', {}).get('url')
     plex_token = config.get('plex', {}).get('token')
     internal_up = False
-    if plex_url and plex_token:
+    invalid_plex_tokens = {"PLEX_TOKEN", "YOUR_PLEX_TOKEN"}
+    if plex_url and plex_token and plex_token not in invalid_plex_tokens:
         try:
             url = f"{plex_url}/?X-Plex-Token={plex_token}"
             resp = requests.get(url, timeout=2)
@@ -124,7 +119,8 @@ def check_sys_requirements(logger, config):
 
     tmdb_api_key = config.get('tmdb', {}).get('api_key')
     tmdb_up = False
-    if tmdb_api_key:
+    invalid_tmdb_keys = {"TMDB_API_KEY", "YOUR_TMDB_API_KEY"}
+    if tmdb_api_key and tmdb_api_key not in invalid_tmdb_keys:
         tmdb_url = f"https://api.themoviedb.org/3/configuration?api_key={tmdb_api_key}"
         try:
             resp = requests.get(tmdb_url, timeout=3)
@@ -143,9 +139,11 @@ def check_sys_requirements(logger, config):
         logger.info(line)
 
     if not internal_up or not tmdb_up:
-        for line in lines:
-            logger.error(line)
-        sys.exit(1)
+        logger.warning(
+            "[System] One or more external services are unavailable; "
+            "the run will continue and normal request retries will apply."
+        )
+    return internal_up and tmdb_up
 
 def log_main_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -156,6 +154,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_no_libraries": "[MetaFusion] No libraries scheduled for processing.",
         "main_unhandled_exception": "[MetaFusion] Unhandled exception: {error}",
         "main_scheduled_run": "[MetaFusion] Scheduled run at {run_time}",
+        "main_invalid_schedule_time": "[MetaFusion] Invalid schedule time '{run_time}': {error}",
     }
     levels = {
         "main_started": "info",
@@ -164,6 +163,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_no_libraries": "info",
         "main_unhandled_exception": "error",
         "main_scheduled_run": "info",
+        "main_invalid_schedule_time": "error",
     }
     msg = messages.get(event, "[MetaFusion] Unknown event")
     try:
@@ -229,12 +229,14 @@ def log_cache_event(event, logger=None, **kwargs):
     messages = {
         "cache_loaded": "[Cache] Loaded {count} entries from {cache_file}",
         "cache_empty": "[Cache] No cache file found at {cache_file}, starting with empty cache.",
+        "cache_load_failed": "[Cache] Failed to load {cache_file}: {error}. Starting with an empty cache.",
         "cache_saved": "[Cache] Saved {count} entries to {cache_file}",
         "cache_updated": "[Cache] Updated cache for key '{cache_key}' ({media_type}): {title} ({year})",
     }
     levels = {
         "cache_loaded": "debug",
         "cache_empty": "debug",
+        "cache_load_failed": "error",
         "cache_saved": "debug",
         "cache_updated": "debug",        
     }

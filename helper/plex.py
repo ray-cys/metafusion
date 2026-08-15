@@ -1,4 +1,4 @@
-import sys, asyncio
+import asyncio
 from plexapi.server import PlexServer
 from pathlib import Path
 from helper.logging import log_plex_event
@@ -298,13 +298,13 @@ def connect_plex_library(config, selected_libraries=None):
         log_plex_event("plex_connected", version=plex.version)
     except Exception as e:
         log_plex_event("plex_connect_failed", error=e)
-        sys.exit(1)
+        raise RuntimeError("Unable to connect to Plex") from e
 
     try:
         sections = list(plex.library.sections())
     except Exception as e:
         log_plex_event("plex_libraries_retrieved_failed", error=e)
-        sys.exit(1)
+        raise RuntimeError("Unable to retrieve Plex libraries") from e
 
     libraries = [{"title": section.title, "type": section.TYPE} for section in sections]
     all_libraries = libraries.copy()
@@ -329,13 +329,18 @@ def connect_plex_library(config, selected_libraries=None):
     )
     if not sections:
         log_plex_event("plex_no_libraries_found")
-        sys.exit(0)
 
     return sections, selected_libraries, all_libraries
 
 _plex_cache = {}
 async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movie_cache=None):
     global _plex_cache
+    title = getattr(item, "title", None)
+    year = getattr(item, "year", None)
+    item_key = id(item)
+    library_name = "Unknown"
+    library_type = (getattr(item, "type", None) or "unknown").lower()
+    tmdb_id = imdb_id = tvdb_id = None
     if _season_cache is None:
         _season_cache = {}
     if _episode_cache is None:
@@ -361,13 +366,10 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
     except Exception as e:
         log_plex_event("plex_failed_extract_library_type", library_name=library_name, error=e)
 
-    title = getattr(item, "title", None)
-    year = getattr(item, "year", None)
     title_year = f"{title} ({year})" if title and year else None
     ratingKey = getattr(item, "ratingKey", None)
 
     try:
-        tmdb_id = imdb_id = tvdb_id = None
         for guid in getattr(item, "guids", []):
             if guid.id.startswith("tmdb://"):
                 tmdb_id = guid.id.split("://")[1].split("?")[0]
