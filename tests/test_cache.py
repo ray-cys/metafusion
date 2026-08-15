@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 from helper import cache as cache_module
 
@@ -34,3 +35,32 @@ def test_corrupt_cache_falls_back_to_empty(monkeypatch, tmp_path):
     cache_module.CACHE_FILE.write_text("{not-json", encoding="utf-8")
 
     assert cache_module.load_cache() == {}
+
+
+def test_cache_key_migration_preserves_existing_entry(monkeypatch, tmp_path):
+    configure_cache(monkeypatch, tmp_path)
+    cache_module.save_cache({
+        "movie:Example:2020": {
+            "tmdb_id": "123",
+            "title": "Example",
+            "year": 2020,
+            "media_type": "movie",
+            "poster_average": 7.5,
+        }
+    })
+
+    asyncio.run(
+        cache_module.meta_cache_async(
+            "movie:plex:10",
+            "123",
+            "Example",
+            2020,
+            "movie",
+            legacy_cache_key="movie:Example:2020",
+            update_timestamp=False,
+        )
+    )
+    cache = cache_module.load_cache()
+
+    assert "movie:Example:2020" not in cache
+    assert cache["movie:plex:10"]["poster_average"] == 7.5

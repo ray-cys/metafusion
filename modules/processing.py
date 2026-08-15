@@ -1,9 +1,11 @@
 import asyncio, yaml
+from collections import Counter
 from pathlib import Path
 from helper.cache import save_cache, load_cache
 from helper.config import mode_check 
 from helper.logging import log_processing_event, log_library_summary
 from helper.plex import get_plex_metadata
+from helper.identity import item_identity
 from modules.builder import build_movie, build_tv
 
 async def process_item(
@@ -80,6 +82,7 @@ async def process_library(
         total_items = len(items)
         log_processing_event("processing_library_items", library_name=library_name, total_items=total_items)
 
+        preloaded_metadata = []
         for item in items:
             try:
                 meta = await get_plex_metadata(
@@ -88,20 +91,44 @@ async def process_library(
                     _episode_cache=episode_cache, 
                     _movie_cache=movie_cache
                 )
-                media_type = meta.get("library_type", "").lower()
-                if media_type == "show":
-                    media_type = "tv"
-                key = (meta.get("title"), meta.get("year"), media_type)
-                plex_metadata_dict[key] = meta
+                preloaded_metadata.append(meta)
             except Exception as e:
                 title = getattr(item, "title", None)
                 year = getattr(item, "year", None)
                 media_type = getattr(item, "type", None)
                 if media_type == "show":
                     media_type = "tv"
-                key = (title, year, media_type)
-                plex_metadata_dict[key] = {}
+                preloaded_metadata.append({
+                    "title": title,
+                    "year": year,
+                    "library_type": media_type,
+                    "ratingKey": getattr(item, "ratingKey", None),
+                })
                 log_processing_event("processing_failed_metadata", title=title, year=year, media_type=media_type, error=str(e))
+
+        movie_groups = Counter(
+            (meta.get("title"), meta.get("year"))
+            for meta in preloaded_metadata
+            if (meta.get("library_type") or "").lower() == "movie"
+        )
+        edition_groups = Counter(
+            (meta.get("title"), meta.get("year"), meta.get("edition_title"))
+            for meta in preloaded_metadata
+            if (meta.get("library_type") or "").lower() == "movie" and meta.get("edition_title")
+        )
+        for meta in preloaded_metadata:
+            media_type = (meta.get("library_type") or "").lower()
+            if media_type == "show":
+                media_type = "tv"
+            if media_type == "movie":
+                group = (meta.get("title"), meta.get("year"))
+                meta["requires_unique_key"] = movie_groups[group] > 1
+                edition_group = (*group, meta.get("edition_title"))
+                meta["edition_key_collision"] = bool(
+                    meta.get("edition_title") and edition_groups[edition_group] > 1
+                )
+            key = (meta.get("title"), meta.get("year"), media_type, item_identity(meta))
+            plex_metadata_dict[key] = meta
 
         library_type = getattr(library_section, "type", None)
         if library_type is not None:
