@@ -1,4 +1,5 @@
 import asyncio
+import re
 from plexapi.server import PlexServer
 from pathlib import Path
 from helper.logging import log_plex_event
@@ -387,6 +388,7 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
 
     movie_path = None
     movie_dir = None
+    edition_title = getattr(item, "editionTitle", None) or getattr(item, "edition", None)
     if library_type == "movie" or hasattr(item, "iterParts"):
         try:
             if item_key in _movie_cache:
@@ -398,6 +400,10 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
                 file_path = parts[0].file
                 movie_path = Path(file_path).parent.name
                 movie_dir = str(Path(file_path).parent)
+                if not edition_title:
+                    edition_match = re.search(r"\{edition-([^}]+)\}", str(file_path), re.IGNORECASE)
+                    if edition_match:
+                        edition_title = edition_match.group(1).strip()
         except Exception as e:
             log_plex_event("plex_failed_extract_movie_path", title=title, year=year, error=e)
 
@@ -455,6 +461,7 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
         "year": year,
         "title_year": title_year,
         "ratingKey": ratingKey,
+        "edition_title": edition_title,
         "tmdb_id": tmdb_id,
         "imdb_id": imdb_id,
         "tvdb_id": tvdb_id,

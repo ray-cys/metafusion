@@ -2,6 +2,7 @@ import shutil, asyncio
 from collections import defaultdict
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import meta_cache_async
+from helper.identity import cache_key_for_meta, legacy_cache_key, match_for_meta, metadata_key_for_meta
 from helper.plex import get_plex_country
 from helper.tmdb import tmdb_api_request, tmdb_response_cache
 from modules.utils import (
@@ -29,8 +30,9 @@ async def build_movie(
         existing_assets = set()
     title = meta.get("title", "Unknown") if meta else None
     year = meta.get("year", "Unknown") if meta else None
-    full_title = f"{title} ({year})"
-    cache_key = f"movie:{title}:{year}"
+    full_title = metadata_key_for_meta(meta)
+    cache_key = cache_key_for_meta(meta)
+    old_cache_key = legacy_cache_key(meta)
     movie_path = meta.get("movie_path") if meta else None
     tmdb_id = meta.get("tmdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
@@ -181,11 +183,7 @@ async def build_movie(
             metadata_action = "skipped"
         else:
             consolidated_metadata["metadata"][full_title] = {
-                "match": {
-                    "title": title,
-                    "year": year,
-                    "mapping_id": mapping_id
-                },
+                "match": match_for_meta(meta, mapping_id),
                 **new_metadata
             }
             metadata_changed = True
@@ -196,11 +194,7 @@ async def build_movie(
             metadata_action = "upgraded"
     else:
         consolidated_metadata["metadata"][full_title] = {
-            "match": {
-                "title": title,
-                "year": year,
-                "mapping_id": mapping_id
-            },
+            "match": match_for_meta(meta, mapping_id),
             **new_metadata
         }
         metadata_changed = True
@@ -213,17 +207,18 @@ async def build_movie(
     if feature_flags.get("dry_run", False):
         log_builder_event("builder_dry_run_metadata", media_type="Movie", full_title=full_title)
 
-    cache_key = f"movie:{title}:{year}"    
     if not feature_flags.get("dry_run", False):
         if metadata_changed:
             await meta_cache_async(
                 cache_key, tmdb_id, title, year, "movie",
+                legacy_cache_key=old_cache_key,
                 collection_id=collection_id, collection_name=cleaned_collection
             )
             log_builder_event("builder_metadata_cached", media_type="Movie", full_title=full_title, cache_key=cache_key)
         else:
             await meta_cache_async(
                 cache_key, tmdb_id, title, year, "movie",
+                legacy_cache_key=old_cache_key,
                 collection_id=collection_id, collection_name=cleaned_collection, update_timestamp=False
             )
 

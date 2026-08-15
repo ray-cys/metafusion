@@ -54,11 +54,15 @@ def save_cache(cache):
 cache_lock = asyncio.Lock()
 async def meta_cache_async(
     cache_key, tmdb_id, title, year, media_type, update_timestamp=True, asset_upgraded=False, 
-    poster_upgraded=False, background_upgraded=False, season_upgraded=None, **kwargs
+    poster_upgraded=False, background_upgraded=False, season_upgraded=None,
+    legacy_cache_key=None, **kwargs
 ):
     async with cache_lock:
         cache = load_cache()
-        entry = cache.get(cache_key, {})
+        if cache_key not in cache and legacy_cache_key and legacy_cache_key in cache:
+            entry = cache.pop(legacy_cache_key)
+        else:
+            entry = cache.get(cache_key, {})
         identity_fields = {
             "tmdb_id": tmdb_id,
             "title": title,

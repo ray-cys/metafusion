@@ -78,3 +78,32 @@ def test_cache_updates_preserve_identity_and_use_exact_season_number(monkeypatch
     assert entry["year"] == 2020
     assert entry["media_type"] == "tv"
     assert "season_last_upgraded" in entry["seasons"]["2"]
+
+
+def test_cache_key_migration_preserves_existing_entry(monkeypatch, tmp_path):
+    configure_cache(monkeypatch, tmp_path)
+    cache_module.save_cache({
+        "movie:Example:2020": {
+            "tmdb_id": "123",
+            "title": "Example",
+            "year": 2020,
+            "media_type": "movie",
+            "poster_average": 7.5,
+        }
+    })
+
+    asyncio.run(
+        cache_module.meta_cache_async(
+            "movie:plex:10",
+            "123",
+            "Example",
+            2020,
+            "movie",
+            legacy_cache_key="movie:Example:2020",
+            update_timestamp=False,
+        )
+    )
+    cache = cache_module.load_cache()
+
+    assert "movie:Example:2020" not in cache
+    assert cache["movie:plex:10"]["poster_average"] == 7.5

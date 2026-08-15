@@ -2,6 +2,7 @@ import asyncio, yaml
 from pathlib import Path
 from helper.logging import log_cleanup_event
 from helper.cache import load_cache, save_cache
+from helper.identity import cache_key_for_meta, metadata_key_for_meta
 
 def safe_int(val):
     try:
@@ -23,13 +24,18 @@ async def cleanup_title_orphans(
         log_cleanup_event("cleanup_error")
         return orphans_removed
 
-    for (title, year, media_type), meta in preloaded_plex_metadata.items():
+    metadata_by_yaml_key = {}
+    for meta in preloaded_plex_metadata.values():
+        title = meta.get("title")
+        year = meta.get("year")
+        media_type = (meta.get("library_type") or "").lower()
+        if media_type == "show":
+            media_type = "tv"
         if title and year:
-            if media_type in ["show", "tv"]:
-                global_valid_cache_keys.add(f"tv:{title}:{year}")
-            elif media_type == "movie":
-                global_valid_cache_keys.add(f"movie:{title}:{year}")
-            global_existing_titles.add(f"{title} ({year})")
+            global_valid_cache_keys.add(cache_key_for_meta(meta))
+            metadata_key = metadata_key_for_meta(meta)
+            global_existing_titles.add(metadata_key)
+            metadata_by_yaml_key[metadata_key] = meta
 
     cache = load_cache()
     managed_asset_paths = set()
@@ -47,13 +53,15 @@ async def cleanup_title_orphans(
         if key not in global_valid_cache_keys
     ]
     for key in cache_keys_to_remove:
-        title, year = None, None
+        cache_entry = cache.get(key) if isinstance(cache.get(key), dict) else {}
+        title = cache_entry.get("title")
+        year = cache_entry.get("year")
         if key.startswith("movie:") or key.startswith("tv:"):
             try:
                 _, rest = key.split(":", 1)
-                title, year = rest.rsplit(":", 1) if ":" in rest else rest.rsplit(",", 1)
-                title = title.strip()
-                year = year.strip()
+                parsed_title, parsed_year = rest.rsplit(":", 1) if ":" in rest else rest.rsplit(",", 1)
+                title = title or parsed_title.strip()
+                year = year or parsed_year.strip()
             except Exception:
                 pass
         if feature_flags.get("dry_run", False):
@@ -66,9 +74,12 @@ async def cleanup_title_orphans(
                 removed_summary.setdefault((title, safe_int(year)), {"cache": False, "asset": [], "yaml": False})
                 removed_summary[(title, safe_int(year))]["cache"] = True
     
-    for (title, year, media_type), meta in preloaded_plex_metadata.items():
+    for meta in preloaded_plex_metadata.values():
+        title = meta.get("title")
+        year = meta.get("year")
+        media_type = (meta.get("library_type") or "").lower()
         if media_type in ["show", "tv"] and title and year:
-            cache_key = f"tv:{title}:{year}"
+            cache_key = cache_key_for_meta(meta)
             if cache_key in cache:
                 valid_seasons = set(str(s) for s in (meta.get("seasons_episodes") or {}).keys())
                 cached_seasons = set(str(s) for s in (cache[cache_key].get("seasons") or {}).keys())
@@ -126,7 +137,7 @@ async def cleanup_title_orphans(
                 for k, v in cleaned_metadata.items():
                     t, y = extract_title_year(k)
                     if t and y and "seasons" in v:
-                        plex_meta = preloaded_plex_metadata.get((t, int(y), "tv")) or preloaded_plex_metadata.get((t, int(y), "show"))
+                        plex_meta = metadata_by_yaml_key.get(k)
                         if plex_meta:
                             valid_seasons = set(str(s) for s in (plex_meta.get("seasons_episodes") or {}).keys())
                             cached_seasons = set(str(s) for s in (v.get("seasons") or {}).keys())
@@ -168,7 +179,8 @@ async def cleanup_title_orphans(
 
     if asset_path:
         valid_asset_dirs = set()
-        for (title, year, media_type), meta in preloaded_plex_metadata.items():
+        for meta in preloaded_plex_metadata.values():
+            media_type = (meta.get("library_type") or "").lower()
             if media_type == "movie":
                 dir_name = meta.get("movie_path")
                 if dir_name:
