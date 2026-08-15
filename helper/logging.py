@@ -4,7 +4,6 @@ from pathlib import Path
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOGS_DIR / "metafusion.log"
 MIN_PYTHON = (3, 8)
 MIN_CPU_CORES = 4
@@ -12,8 +11,7 @@ MIN_RAM_GB = 4
 
 def get_setup_logging(config):
     log_file = LOG_FILE
-    log_dir = log_file.parent
-    log_dir.mkdir(parents=True, exist_ok=True)
+    dry_run = config.get("settings", {}).get("dry_run", False)
 
     log_level_str = config["settings"].get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
@@ -25,18 +23,18 @@ def get_setup_logging(config):
         logger.handlers.clear()
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
-    file_handler = TimedRotatingFileHandler(
-        log_file, when="midnight", interval=1, backupCount=7, encoding="utf-8"
-    )
-
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(log_level)
-
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
 
-    logger.addHandler(file_handler)
+    if not dry_run:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = TimedRotatingFileHandler(
+            log_file, when="midnight", interval=1, backupCount=7, encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(log_level)
+        logger.addHandler(file_handler)
     logger.addHandler(console_handler)
     return logger
 
@@ -121,16 +119,20 @@ def check_sys_requirements(logger, config):
     tmdb_up = False
     invalid_tmdb_keys = {"TMDB_API_KEY", "YOUR_TMDB_API_KEY"}
     if tmdb_api_key and tmdb_api_key not in invalid_tmdb_keys:
-        tmdb_url = f"https://api.themoviedb.org/3/configuration?api_key={tmdb_api_key}"
         try:
-            resp = requests.get(tmdb_url, timeout=3)
+            resp = requests.get(
+                "https://api.themoviedb.org/3/configuration",
+                params={"api_key": tmdb_api_key},
+                timeout=3,
+            )
             tmdb_up = resp.status_code == 200
             if tmdb_up:
                 lines.extend(box_line("[Network] TMDb API connection: UP", box_width))
             else:
                 lines.extend(box_line("[Network] TMDb API connection: DOWN", box_width))
         except Exception as e:
-            lines.extend(box_line(f"[Network] TMDb API connection check failed: {e}", box_width))
+            safe_error = str(e).replace(tmdb_api_key, "***")
+            lines.extend(box_line(f"[Network] TMDb API connection check failed: {safe_error}", box_width))
     else:
         lines.extend(box_line("[Network] TMDb API key not set in config.", box_width))
 
