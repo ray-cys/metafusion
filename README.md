@@ -98,6 +98,18 @@ absent, MetaFusion uses safe defaults without generating a template that could
 replace environment values. For YAML configuration, copy
 `config_template.yml` to `/config/config.yml`.
 
+### Secret handling
+
+Plex tokens and TMDb API keys are redacted from MetaFusion log and error
+messages. When they are supplied as environment variables, MetaFusion does not
+write them to `/config/config.yml`.
+
+Environment variables are still visible to users with permission to inspect
+the Unraid container or Docker configuration. MetaFusion does not provide a web
+login or configuration form, so browser password-manager prompts are controlled
+by the Unraid template and the browser rather than by MetaFusion. Treat Unraid
+and Docker administrative access as trusted access.
+
 Core options:
 
 | Environment variable | Default | Purpose |
