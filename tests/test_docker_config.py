@@ -69,11 +69,7 @@ def test_env_example_contains_every_current_application_binding():
         for line in (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#") and "=" in line
     }
-    expected = {
-        env_name
-        for env_name, _path, _converter in ENV_BINDINGS
-        if env_name != "RUN_PROCESS"
-    }
+    expected = {env_name for env_name, _path, _converter in ENV_BINDINGS}
     expected.update(
         file_env for file_env, _path, _direct_env in SECRET_FILE_BINDINGS
     )

@@ -195,11 +195,11 @@ def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
     assert get_image_upgrade_days(inherited, "series") == 7
 
 
-def test_run_cleanup_replaces_legacy_run_process_with_safe_precedence(tmp_path):
+def test_run_cleanup_controls_cleanup_setting(tmp_path):
     current, sources = load_config_file(
         config_file=tmp_path / "config.yml",
         template_file=TEMPLATE_FILE,
-        environ={"RUN_PROCESS": "true", "RUN_CLEANUP": "false"},
+        environ={"RUN_CLEANUP": "true"},
         return_sources=True,
     )
     legacy = load_config_file(
@@ -208,9 +208,9 @@ def test_run_cleanup_replaces_legacy_run_process_with_safe_precedence(tmp_path):
         environ={"RUN_PROCESS": "true"},
     )
 
-    assert current["cleanup"]["run_process"] is False
+    assert current["cleanup"]["run_process"] is True
     assert sources[("cleanup", "run_process")] == "RUN_CLEANUP"
-    assert legacy["cleanup"]["run_process"] is True
+    assert legacy["cleanup"]["run_process"] is False
 
 
 def test_template_keeps_destructive_cleanup_disabled():

@@ -143,9 +143,6 @@ your deployment supports protected secret mounts.
 | `RUN_BACKGROUND` | `False` | Manage movie and show backgrounds. |
 | `RUN_CLEANUP` | `False` | Enable guarded orphan cleanup. Test with dry-run first. |
 
-`RUN_PROCESS` remains accepted as a compatibility alias for older deployments,
-but new configurations should use `RUN_CLEANUP`.
-
 ### Runtime and Plex reliability
 
 | Variable | Default | Purpose |
