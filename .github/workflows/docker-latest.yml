@@ -82,7 +82,7 @@ jobs:
             if test -n "${container_id}"; then
               docker rm --force "${container_id}" >/dev/null 2>&1 || true
             fi
-            rm -rf "${config_dir}"
+            sudo rm -rf -- "${config_dir}"
           }
           trap cleanup EXIT
           chmod 0777 "${config_dir}"
@@ -109,7 +109,7 @@ jobs:
           test -f "${config_dir}/metafusion-status.json"
           test ! -e "${config_dir}/config.yml"
           docker exec --user 99:100 "${container_id}" python healthcheck.py
-          docker stop --time 10 "${container_id}"
+          docker stop --timeout 10 "${container_id}"
           docker rm "${container_id}"
           container_id=""
 
