@@ -1,10 +1,26 @@
 import asyncio, json, hashlib
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from aiolimiter import AsyncLimiter
+from helper.config import CACHE_DIR
 from helper.logging import log_tmdb_event, redact_secrets
+from helper.tmdb_cache import tmdb_response_cache
 
-tmdb_response_cache = {}
 tmdb_limiter = AsyncLimiter(40, 10)
+
+
+def begin_tmdb_cache(config):
+    cache_config = config.get("tmdb_cache", {})
+    tmdb_response_cache.configure(
+        CACHE_DIR / "tmdb_response_cache.json",
+        ttl_hours=cache_config.get("ttl_hours", 24),
+        max_entries=cache_config.get("max_entries", 5000),
+        enabled=cache_config.get("enabled", True),
+        writable=not config.get("settings", {}).get("dry_run", False),
+    )
+
+
+def flush_tmdb_cache():
+    return tmdb_response_cache.flush()
 
 
 class ResponseTooLargeError(RuntimeError):
@@ -106,6 +122,7 @@ async def tmdb_api_request(
         return tmdb_response_cache[cache_hash]
 
     for attempt in range(1, retries + 1):
+        rate_limit_waited = False
         try:
             log_tmdb_event("tmdb_request", url=logged_url, query=logged_query, attempt=attempt, retries=retries)
             async with tmdb_limiter:
@@ -126,6 +143,7 @@ async def tmdb_api_request(
                         )
                         log_tmdb_event("tmdb_rate_limited", retry_after=retry_after, query=logged_query)
                         await asyncio.sleep(retry_after)
+                        rate_limit_waited = True
                     else:
                         body = redact_secrets(await response.text(), *sensitive_values)
                         log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
@@ -145,7 +163,7 @@ async def tmdb_api_request(
                 query=logged_query,
                 error=redact_secrets(e, *sensitive_values),
             )
-        if attempt < retries:
+        if attempt < retries and not rate_limit_waited:
             sleep_time = delay * (backoff_factor ** (attempt - 1))
             log_tmdb_event("tmdb_retrying", sleep_time=sleep_time, next_attempt=attempt + 1, retries=retries)
             await asyncio.sleep(sleep_time)

@@ -162,6 +162,8 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "request_timeout": 45.5,
         "connect_timeout": 7.0,
         "plex_timeout": 8.0,
+        "plex_retries": 3,
+        "plex_retry_delay": 1.0,
         "shutdown_timeout": 12.0,
         "max_image_mb": 12,
     }

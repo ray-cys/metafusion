@@ -78,7 +78,7 @@ class RuntimeStatus:
     def run_finished(self, success, error=None):
         now = utc_now()
         values = {
-            "state": "idle" if success else "failed",
+            "state": "idle",
             "last_run_finished": now,
             "last_run_status": "success" if success else "failed",
             "last_error": None if success else str(error or "Unknown run failure"),

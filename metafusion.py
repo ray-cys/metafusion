@@ -14,9 +14,18 @@ import aiohttp
 from helper.cache import begin_cache_session, flush_cache
 from helper.config import (
     BASE_CONFIG_DIR,
+    ConfigError,
+    config_source_report,
     get_disabled_features,
     get_feature_flags,
     load_config_file,
+    mode_check,
+    validate_config,
+)
+from helper.incremental import (
+    config_fingerprint,
+    mark_full_scan_complete,
+    should_run_full_scan,
 )
 from helper.logging import (
     check_sys_requirements,
@@ -26,9 +35,14 @@ from helper.logging import (
     log_main_event,
     redact_secrets,
 )
-from helper.plex import _plex_cache, connect_plex_library
+from helper.plex import _plex_cache, connect_plex_library, connect_plex_server
 from helper.runtime import RuntimeStatus, validate_runtime_paths
-from helper.tmdb import tmdb_response_cache
+from helper.tmdb import (
+    begin_tmdb_cache,
+    flush_tmdb_cache,
+    tmdb_api_request,
+    tmdb_response_cache,
+)
 from modules.cleanup import cleanup_title_orphans
 from modules.processing import process_library, plex_metadata_dict
 
@@ -52,6 +66,33 @@ def parse_cli_args(argv=None):
     parser.add_argument("--run_poster", action="store_true", help="Run poster asset download")
     parser.add_argument("--run_season", action="store_true", help="Run season asset download")
     parser.add_argument("--run_background", action="store_true", help="Run background asset download")
+    parser.add_argument(
+        "--doctor",
+        "--check-config",
+        dest="doctor",
+        action="store_true",
+        help="Validate configuration and report value sources without running",
+    )
+    parser.add_argument(
+        "--library",
+        action="append",
+        help="Process only this Plex library; repeat or use comma-separated names",
+    )
+    parser.add_argument(
+        "--rating-key",
+        action="append",
+        help="Process only this Plex rating key; repeat or use comma-separated keys",
+    )
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Generate metadata without artwork or cleanup",
+    )
+    parser.add_argument(
+        "--full-scan",
+        action="store_true",
+        help="Bypass incremental skipping and reconcile the selected libraries",
+    )
     return parser.parse_args(argv)
 
 
@@ -78,6 +119,51 @@ def override_config_with_cli(config, args):
         config["assets"]["run_season"] = True
     if args.run_background:
         config["assets"]["run_background"] = True
+    libraries = []
+    for value in args.library or []:
+        libraries.extend(part.strip() for part in value.split(",") if part.strip())
+    if libraries:
+        config["plex_libraries"] = libraries
+    rating_keys = []
+    for value in args.rating_key or []:
+        rating_keys.extend(part.strip() for part in value.split(",") if part.strip())
+    if args.metadata_only:
+        config["assets"].update(
+            {"run_poster": False, "run_season": False, "run_background": False}
+        )
+        config["cleanup"]["run_process"] = False
+    if libraries or rating_keys:
+        config["cleanup"]["run_process"] = False
+    config["_execution"] = {
+        "rating_keys": rating_keys,
+        "targeted": bool(libraries or rating_keys),
+        "full_scan": bool(args.full_scan),
+        "metadata_only": bool(args.metadata_only),
+    }
+
+
+async def preflight_connectors(config, session):
+    plex_task = asyncio.create_task(asyncio.to_thread(connect_plex_server, config))
+    tmdb_task = asyncio.create_task(
+        tmdb_api_request(
+            config,
+            "configuration",
+            cache=False,
+            session=session,
+        )
+    )
+    plex, tmdb_result = await asyncio.gather(
+        plex_task,
+        tmdb_task,
+        return_exceptions=True,
+    )
+    if isinstance(plex, Exception):
+        raise RuntimeError("Plex connector preflight failed") from plex
+    if isinstance(tmdb_result, Exception) or not tmdb_result:
+        if isinstance(tmdb_result, Exception):
+            raise RuntimeError("TMDb connector preflight failed") from tmdb_result
+        raise RuntimeError("TMDb connector preflight returned no configuration")
+    return plex
 
 
 def normalize_library_type(value):
@@ -113,10 +199,9 @@ def complete_inventory_types(all_libraries, successful_sections):
 async def metafusion_main(config, logger):
     _plex_cache.clear()
     plex_metadata_dict.clear()
-    tmdb_response_cache.clear()
     try:
         get_meta_banner(logger)
-        check_sys_requirements(logger, config=config)
+        check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
             "main_started", start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
@@ -136,11 +221,23 @@ async def metafusion_main(config, logger):
         )
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            sections, selected_libraries, all_libraries = connect_plex_library(config)
+            plex = await preflight_connectors(config, session)
+            sections, selected_libraries, all_libraries = connect_plex_library(
+                config,
+                plex=plex,
+            )
             metadata_summaries = {}
             library_filesize = {}
             successful_sections = []
             failures = []
+            execution = config.get("_execution", {})
+            targeted = bool(execution.get("targeted"))
+            full_scan = bool(execution.get("full_scan")) or should_run_full_scan(
+                config,
+                targeted=targeted,
+            )
+            run_feature_flags = dict(feature_flags)
+            fingerprint = config_fingerprint(config)
 
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
@@ -154,6 +251,25 @@ async def metafusion_main(config, logger):
                 log_main_event("main_no_libraries")
                 failures.append("No configured Plex libraries were available")
             else:
+                if mode_check(config, "kometa") and not full_scan:
+                    metadata_dir = Path(config.get("settings", {}).get("path", ".")) / "metadata"
+                    expected_outputs = {
+                        metadata_dir
+                        / (
+                            "movie_metadata.yml"
+                            if normalize_library_type(
+                                getattr(section, "type", None)
+                                or getattr(section, "TYPE", None)
+                            )
+                            == "movie"
+                            else "tv_metadata.yml"
+                        )
+                        for section in sections
+                    }
+                    if any(not output.exists() for output in expected_outputs):
+                        full_scan = True
+                if not full_scan:
+                    run_feature_flags["cleanup"] = False
                 for section in sections:
                     try:
                         await process_library(
@@ -166,7 +282,10 @@ async def metafusion_main(config, logger):
                             episode_cache={},
                             movie_cache={},
                             session=session,
-                            feature_flags=feature_flags,
+                            feature_flags=run_feature_flags,
+                            full_scan=full_scan,
+                            rating_keys=execution.get("rating_keys"),
+                            incremental_fingerprint=fingerprint,
                         )
                         successful_sections.append(section)
                     except asyncio.CancelledError:
@@ -175,7 +294,7 @@ async def metafusion_main(config, logger):
                         failures.append(f"{section.title}: {error}")
 
             orphans_removed = 0
-            if feature_flags.get("cleanup", False):
+            if run_feature_flags.get("cleanup", False):
                 safe_library_types = set()
                 if not failures:
                     safe_library_types = complete_inventory_types(
@@ -187,7 +306,7 @@ async def metafusion_main(config, logger):
                     config=config,
                     asset_path=asset_path,
                     preloaded_plex_metadata=plex_metadata_dict,
-                    feature_flags=feature_flags,
+                    feature_flags=run_feature_flags,
                     safe_library_types=safe_library_types,
                 )
 
@@ -202,14 +321,17 @@ async def metafusion_main(config, logger):
                 selected_libraries,
                 all_libraries,
                 config,
-                feature_flags,
+                run_feature_flags,
             )
             if failures:
                 raise RuntimeError("; ".join(failures))
+            if full_scan and not targeted:
+                mark_full_scan_complete(
+                    dry_run=feature_flags.get("dry_run", False),
+                )
     finally:
         _plex_cache.clear()
         plex_metadata_dict.clear()
-        tmdb_response_cache.clear()
 
 
 def _cancel_active_job():
@@ -244,6 +366,7 @@ def request_shutdown(_signum=None, _frame=None):
 def run_metafusion_job(config, logger, runtime_status=None):
     global _active_loop, _active_task
     begin_cache_session()
+    begin_tmdb_cache(config)
     if runtime_status:
         runtime_status.run_started()
 
@@ -274,10 +397,13 @@ def run_metafusion_job(config, logger, runtime_status=None):
         _active_task = None
         try:
             flush_cache()
+            flush_tmdb_cache()
         except Exception as caught:
             success = False
-            error = f"Failed to flush cache: {caught}"
+            error = f"Failed to flush persistent cache: {caught}"
             log_main_event("main_unhandled_exception", error=error, logger=logger)
+        finally:
+            tmdb_response_cache.reset_memory()
         if runtime_status:
             runtime_status.run_finished(success, error=error)
     return success
@@ -288,8 +414,49 @@ def main(argv=None):
     shutdown_requested.clear()
     shutdown_complete.clear()
     args = parse_cli_args(argv)
-    config = load_config_file(create_if_missing=not args.dry_run)
+    try:
+        config, sources = load_config_file(
+            create_if_missing=not (args.dry_run or args.doctor),
+            return_sources=True,
+        )
+    except ConfigError as error:
+        print(f"Configuration error: {error}", file=sys.stderr)
+        return 2
     override_config_with_cli(config, args)
+    cli_sources = {
+        ("metafusion_run",): args.metafusion_run,
+        ("settings", "schedule"): args.schedule,
+        ("settings", "run_times"): args.run_times is not None,
+        ("settings", "dry_run"): args.dry_run,
+        ("settings", "mode"): args.mode is not None,
+        ("metadata", "run_basic"): args.run_basic,
+        ("metadata", "run_enhanced"): args.run_enhanced,
+        ("assets", "run_poster"): args.run_poster or args.metadata_only,
+        ("assets", "run_season"): args.run_season or args.metadata_only,
+        ("assets", "run_background"): args.run_background or args.metadata_only,
+        ("cleanup", "run_process"): args.metadata_only or bool(args.rating_key),
+        ("plex_libraries",): bool(args.library),
+    }
+    for path, used in cli_sources.items():
+        if used:
+            sources[path] = "CLI"
+
+    validation_errors = validate_config(config)
+    if args.doctor:
+        print("MetaFusion configuration sources:")
+        for line in config_source_report(config, sources):
+            print(f"  {line}")
+        if validation_errors:
+            print("Configuration errors:", file=sys.stderr)
+            for error in validation_errors:
+                print(f"  - {error}", file=sys.stderr)
+            return 2
+        print("Configuration is valid.")
+        return 0
+    if validation_errors:
+        for error in validation_errors:
+            print(f"Configuration error: {error}", file=sys.stderr)
+        return 2
     _shutdown_timeout = max(
         1.0,
         float(config.get("runtime", {}).get("shutdown_timeout", 15.0)),

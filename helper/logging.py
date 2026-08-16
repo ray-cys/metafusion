@@ -82,7 +82,7 @@ def get_meta_banner(logger=None):
         for line in lines:
             print(line)
 
-def check_sys_requirements(logger, config):
+def check_sys_requirements(logger, config, check_network=True):
     os_info = f"{platform.system()} {platform.release()}"
     py_version = sys.version_info
     cpu_cores = os.cpu_count()
@@ -90,7 +90,7 @@ def check_sys_requirements(logger, config):
     total_gb = mem.total / (1024 ** 3)
     used_gb = mem.used / (1024 ** 3)
     free_gb = mem.available / (1024 ** 3)
-    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_percent = psutil.cpu_percent(interval=None)
 
     box_width = 80
     lines = []
@@ -123,6 +123,12 @@ def check_sys_requirements(logger, config):
         lines.extend(box_line(f"[System] {total_gb:.2f} GB RAM detected; {MIN_RAM_GB} GB is recommended for large libraries.", box_width))
     else:
         lines.extend(box_line(f"[System] RAM Memory detected: {total_gb:.2f} GB (Used: {used_gb:.2f} GB, Free: {free_gb:.2f} GB)", box_width))
+
+    if not check_network:
+        lines.append(header)
+        for line in lines:
+            logger.info(line)
+        return True
 
     plex_url = config.get('plex', {}).get('url')
     plex_token = config.get('plex', {}).get('token')
@@ -809,6 +815,16 @@ def log_final_summary(
             )
         )
         lines.extend(box_line(summary_line, box_width))
+        library_items = summary.get("library_items", summary["total_items"])
+        incremental_skipped = libsum.get("incremental_skipped", 0)
+        if incremental_skipped:
+            lines.extend(
+                box_line(
+                    f"Incremental - Library items: {library_items}, "
+                    f"processed: {summary['total_items']}, unchanged skipped: {incremental_skipped}",
+                    box_width,
+                )
+            )
         lines.extend(box_line(
             f"Metadata - Downloaded: {libsum.get('meta_downloaded', 0)}, "
             f"Updated: {libsum.get('meta_upgraded', 0)}, "
@@ -855,7 +871,7 @@ def log_final_summary(
             f"Assets - {human_readable_size(asset_size)} / {human_readable_size(total_asset_size)}", box_width))
         lines.append(border)
 
-    if cleanup_title_orphans:
+    if feature_flags and feature_flags.get("cleanup", False):
         lines.extend(box_line(f"Cleanup - {orphans_removed} Titles Removed", box_width))
     if config["settings"].get("dry_run", False):
         lines.extend(box_line("[Dry Run] Completed. No files were written.", box_width))

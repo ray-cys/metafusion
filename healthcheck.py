@@ -14,7 +14,7 @@ def parse_time(value):
     return parsed
 
 
-def check_status(path, max_heartbeat_age=120):
+def check_status(path, max_heartbeat_age=120, fail_on_job_error=False):
     try:
         status = json.loads(Path(path).read_text(encoding="utf-8"))
         heartbeat = parse_time(status.get("heartbeat_at"))
@@ -26,9 +26,12 @@ def check_status(path, max_heartbeat_age=120):
 
         pid = int(status.get("pid"))
         os.kill(pid, 0)
-        if status.get("state") == "failed" or status.get("last_run_status") == "failed":
+        if fail_on_job_error and status.get("last_run_status") == "failed":
             return False, status.get("last_error") or "last run failed"
-        return True, status.get("state", "unknown")
+        state = status.get("state", "unknown")
+        if status.get("last_run_status") == "failed":
+            return True, f"{state}; last run failed: {status.get('last_error') or 'unknown error'}"
+        return True, state
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         return False, str(error)
 
@@ -36,6 +39,16 @@ def check_status(path, max_heartbeat_age=120):
 if __name__ == "__main__":
     status_path = os.environ.get("STATUS_FILE", "/config/metafusion-status.json")
     max_age = int(os.environ.get("HEALTH_MAX_HEARTBEAT_AGE", "120"))
-    healthy, message = check_status(status_path, max_heartbeat_age=max_age)
+    fail_on_job_error = os.environ.get("HEALTH_FAIL_ON_JOB_ERROR", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    healthy, message = check_status(
+        status_path,
+        max_heartbeat_age=max_age,
+        fail_on_job_error=fail_on_job_error,
+    )
     print(message)
     sys.exit(0 if healthy else 1)

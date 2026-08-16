@@ -1,12 +1,14 @@
-import asyncio, yaml
+import asyncio, copy, yaml
 from collections import Counter
 from pathlib import Path
+from helper.cache import load_cache, meta_cache_async
 from helper.config import mode_check
-from helper.io import atomic_write_yaml
+from helper.incremental import select_items
 from helper.logging import log_processing_event, log_library_summary
 from helper.plex import get_plex_metadata
-from helper.identity import item_identity
+from helper.identity import cache_key_for_meta, item_identity, legacy_cache_key
 from modules.builder import build_movie, build_tv
+from modules.kometa import validate_metadata_document, write_kometa_metadata
 
 
 class ItemProcessingError(RuntimeError):
@@ -74,7 +76,7 @@ def cleanup_inventory_errors(metadata, feature_flags):
 
 async def process_item(
     plex_item, consolidated_metadata, config, feature_flags=None, existing_yaml_data=None,  library_name="Unknown",
-    existing_assets=None, session=None, ignored_fields=None, 
+    existing_assets=None, session=None, ignored_fields=None, incremental_fingerprint=None,
 ):
     if ignored_fields is None:
         ignored_fields = set()
@@ -113,12 +115,42 @@ async def process_item(
     except Exception as e:
         log_processing_event("processing_failed_item", full_title=full_title, error=str(e))
         raise ItemProcessingError(f"Failed to process {full_title}") from e
+    failed_actions = []
+    if isinstance(stats, dict):
+        failed_actions.extend(
+            stats.get(name)
+            for name in ("metadata_action", "poster_action", "background_action")
+            if stats.get(name) == "failed"
+        )
+        failed_actions.extend(
+            action
+            for action in stats.get("season_poster_actions", {}).values()
+            if action == "failed"
+        )
+    if (
+        isinstance(stats, dict)
+        and not failed_actions
+        and not feature_flags.get("dry_run", False)
+    ):
+        await meta_cache_async(
+            cache_key_for_meta(meta),
+            meta.get("tmdb_id"),
+            meta.get("title"),
+            meta.get("year"),
+            "tv" if library_type == "show" else library_type,
+            update_timestamp=False,
+            legacy_cache_key=legacy_cache_key(meta),
+            rating_key=meta.get("ratingKey"),
+            plex_updated_at=meta.get("updatedAt"),
+            config_fingerprint=incremental_fingerprint,
+        )
     return stats
 
 plex_metadata_dict = {} 
 async def process_library(
-    library_section, config, feature_flags=None, library_item_counts=None, library_filesize=None, metadata_summaries=None, 
-    season_cache=None, episode_cache=None, movie_cache=None, session=None, ignored_fields=None
+    library_section, config, feature_flags=None, library_item_counts=None, library_filesize=None, metadata_summaries=None,
+    season_cache=None, episode_cache=None, movie_cache=None, session=None, ignored_fields=None,
+    full_scan=True, rating_keys=None, incremental_fingerprint=None,
 ):
     global plex_metadata_dict
 
@@ -126,6 +158,7 @@ async def process_library(
     if ignored_fields is None:
         ignored_fields = {"runtime", "guest"}
     existing_yaml_data = {}
+    original_yaml_data = {}
 
     if library_item_counts is not None:
         library_item_counts[library_name] = 0
@@ -142,9 +175,21 @@ async def process_library(
 
     try:
         library_name = library_section.title
-        items = await asyncio.to_thread(library_section.all)
+        all_items = await asyncio.to_thread(library_section.all)
+        items = select_items(
+            all_items,
+            load_cache(),
+            incremental_fingerprint,
+            full_scan=full_scan,
+            rating_keys=rating_keys,
+        )
+        total_library_items = len(all_items)
         total_items = len(items)
-        log_processing_event("processing_library_items", library_name=library_name, total_items=total_items)
+        log_processing_event(
+            "processing_library_items",
+            library_name=library_name,
+            total_items=total_items,
+        )
 
         preloaded_metadata = []
         metadata_errors = []
@@ -186,17 +231,28 @@ async def process_library(
                     + "; ".join(inventory_errors)
                 )
 
+        edition_inventory = preloaded_metadata if full_scan else [
+            {
+                "title": getattr(item, "title", None),
+                "year": getattr(item, "year", None),
+                "library_type": (getattr(item, "type", None) or "").lower(),
+                "edition_title": getattr(item, "editionTitle", None)
+                or getattr(item, "edition", None),
+            }
+            for item in all_items
+        ]
         movie_groups = Counter(
             (meta.get("title"), meta.get("year"))
-            for meta in preloaded_metadata
+            for meta in edition_inventory
             if (meta.get("library_type") or "").lower() == "movie"
         )
         edition_groups = Counter(
             (meta.get("title"), meta.get("year"), meta.get("edition_title"))
-            for meta in preloaded_metadata
-            if (meta.get("library_type") or "").lower() == "movie" and meta.get("edition_title")
+            for meta in edition_inventory
+            if (meta.get("library_type") or "").lower() == "movie"
+            and meta.get("edition_title")
         )
-        ambiguous_editions = find_ambiguous_editions(preloaded_metadata)
+        ambiguous_editions = find_ambiguous_editions(edition_inventory)
         if ambiguous_editions and mode_check(config, "kometa"):
             description = "; ".join(ambiguous_editions)
             if not config.get("safety", {}).get("allow_ambiguous_editions", False):
@@ -255,11 +311,14 @@ async def process_library(
                 try:
                     with open(output_path, "r", encoding="utf-8") as f:
                         existing_yaml_data = yaml.safe_load(f) or {}
+                    if config.get("output", {}).get("validate_schema", True):
+                        validate_metadata_document(existing_yaml_data)
                 except Exception as e:
                     log_processing_event("processing_failed_parse_yaml", output_path=output_path, error=str(e))
                     raise LibraryProcessingError(
                         f"Unable to parse existing metadata file: {output_path}"
                     ) from e
+            original_yaml_data = copy.deepcopy(existing_yaml_data)
             consolidated_metadata = existing_yaml_data if existing_yaml_data else {"metadata": {}}
 
         existing_assets = set()    
@@ -277,6 +336,7 @@ async def process_library(
                 feature_flags=feature_flags, existing_yaml_data=existing_yaml_data,
                 library_name=library_name, existing_assets=existing_assets,
                 session=session, ignored_fields=ignored_fields,
+                incremental_fingerprint=incremental_fingerprint,
             )
             if stats and isinstance(stats, dict):
                 all_stats.append(stats)
@@ -393,9 +453,21 @@ async def process_library(
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size
 
-        if mode_check(config, "kometa") and not feature_flags["dry_run"]:
+        output_changed = consolidated_metadata != original_yaml_data
+        if (
+            mode_check(config, "kometa")
+            and not feature_flags["dry_run"]
+            and items
+            and output_changed
+        ):
             try:
-                atomic_write_yaml(output_path, consolidated_metadata)
+                output_config = config.get("output", {})
+                write_kometa_metadata(
+                    output_path,
+                    consolidated_metadata,
+                    validate_schema=output_config.get("validate_schema", True),
+                    backup_count=output_config.get("backup_count", 3),
+                )
                 log_processing_event("processing_metadata_saved", output_path=output_path)
             except Exception as e:
                 log_processing_event("processing_failed_write_metadata", error=str(e))
@@ -406,7 +478,7 @@ async def process_library(
             log_processing_event("processing_metadata_dry_run", library_name=library_name)
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]
-        percent_complete = round((completed / total_items) * 100, 2) if total_items else 0.0
+        percent_complete = round((completed / total_items) * 100, 2) if total_items else 100.0
         percent_incomplete = round((incomplete / total_items) * 100, 2) if total_items else 0.0
 
         library_summary = {
@@ -416,7 +488,8 @@ async def process_library(
             "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_skipped": background_skipped,
             "background_failed": background_failed, "background_missing": background_missing,
             "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_skipped": season_poster_skipped,
-            "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing
+            "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
+            "incremental_skipped": total_library_items - total_items,
         }
 
         log_library_summary(
@@ -433,6 +506,7 @@ async def process_library(
                 "complete": completed,
                 "incomplete": incomplete,
                 "total_items": total_items,
+                "library_items": total_library_items,
                 "percent_complete": percent_complete if run_metadata else None,
                 "percent_incomplete": percent_incomplete if run_metadata else None,
                 "library_summary": library_summary,

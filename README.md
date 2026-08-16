@@ -14,10 +14,14 @@ scheduler. Cleanup is opt-in and guarded by a complete-library inventory.
 - Poster, background, and season artwork selection and upgrades
 - Stable Plex/cache identities for multiple editions
 - Atomic YAML and cache writes with one cache flush per run
+- Validated Kometa output with rotating known-good backups and rollback
+- Incremental Plex processing with periodic full-library reconciliation
+- Persistent, bounded, TTL-based TMDb response caching
 - True dry-run behavior for generated metadata, assets, cache, and logs
 - Bounded item concurrency, HTTP timeouts, and maximum image download size
 - Non-root, read-only Docker runtime with a scheduler health check
 - Graceful `SIGTERM` cancellation and cache flushing
+- Non-writing configuration doctor and targeted library/rating-key runs
 
 ## Requirements
 
@@ -83,12 +87,29 @@ docker compose run --rm -e METAFUSION_RUN=True metafusion
 Do not set `METAFUSION_RUN=True` on the long-running service unless repeated
 one-shot execution after every restart is intentional.
 
+Validate configuration without connecting to Plex/TMDb or creating files:
+
+```bash
+docker compose run --rm metafusion python metafusion.py --doctor
+```
+
+Run a targeted repair without scanning every item:
+
+```bash
+docker compose run --rm metafusion python metafusion.py \
+  --metafusion_run --library Movies --rating-key 12345 --metadata-only
+```
+
+`--library` and `--rating-key` may be repeated or comma-separated. Targeted
+runs always disable cleanup. Use `--full-scan` to bypass incremental skipping.
+
 ## Configuration
 
 Configuration is resolved independently for every option: built-in default,
-then `/config/config.yml`, then a non-empty environment variable. Environment
-variables therefore keep priority, while missing or blank variables fall back
-to `config.yml`. Compose no longer injects application defaults, so a YAML-only
+then `/config/config.yml`, then a configured secret file, then a non-empty
+environment variable. Direct environment variables therefore keep highest
+priority, while missing or blank variables fall back to secret files or
+`config.yml`. Compose no longer injects application defaults, so a YAML-only
 deployment works without `.env`. In Unraid, remove an unwanted variable or
 leave its value blank; any non-empty template variable intentionally overrides
 the corresponding YAML value.
@@ -104,6 +125,17 @@ Plex tokens and TMDb API keys are redacted from MetaFusion log and error
 messages. When they are supplied as environment variables, MetaFusion does not
 write them to `/config/config.yml`.
 
+For file-based secrets, mount each protected host file read-only into the
+container, leave the corresponding direct value blank, and set its file option:
+
+```text
+PLEX_TOKEN_FILE=/run/secrets/plex_token
+TMDB_API_KEY_FILE=/run/secrets/tmdb_api_key
+```
+
+If both forms are set, `PLEX_TOKEN` and `TMDB_API_KEY` win. Empty, missing, or
+unreadable secret files fail configuration validation before a run starts.
+
 Environment variables are still visible to users with permission to inspect
 the Unraid container or Docker configuration. MetaFusion does not provide a web
 login or configuration form, so browser password-manager prompts are controlled
@@ -116,8 +148,10 @@ Core options:
 | --- | --- | --- |
 | `PLEX_URL` | `http://10.0.0.1:32400` | Plex server URL |
 | `PLEX_TOKEN` | required | Plex authentication token |
+| `PLEX_TOKEN_FILE` | unset | Protected file containing the Plex token |
 | `PLEX_LIBRARIES` | `Movies,TV Shows` | Exact Plex library names |
 | `TMDB_API_KEY` | required | TMDb API key |
+| `TMDB_API_KEY_FILE` | unset | Protected file containing the TMDb API key |
 | `RUN_MODE` | `kometa` | `kometa` or `plex` output mode |
 | `RUN_SCHEDULE` | `True` | Enable scheduled operation |
 | `RUN_TIMES` | `06:00,18:30` | Daily scheduler times |
@@ -127,10 +161,20 @@ Core options:
 | `REQUEST_TIMEOUT` | `30` | Total HTTP request timeout in seconds |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds |
 | `PLEX_TIMEOUT` | `10` | Maximum duration of each blocking Plex request |
+| `PLEX_RETRIES` | `3` | Bounded Plex startup connection attempts |
+| `PLEX_RETRY_DELAY` | `1` | Base Plex retry delay in seconds |
 | `SHUTDOWN_TIMEOUT` | `15` | Graceful shutdown deadline before forced exit |
 | `STOP_GRACE_PERIOD` | `20s` | Compose/Docker outer stop deadline |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork response size |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate edition matching |
+| `INCREMENTAL` | `True` | Skip successfully processed unchanged Plex items |
+| `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum time between reconciliation scans |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb JSON responses |
+| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime |
+| `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses |
+| `VALIDATE_OUTPUT` | `True` | Validate Kometa document structure before replacement |
+| `OUTPUT_BACKUP_COUNT` | `3` | Known-good metadata backups retained per file |
+| `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Make health strict instead of liveness-only |
 | `PUID` / `PGID` | `10001` | Container runtime user/group |
 
 Artwork and metadata switches and all image-selection thresholds are documented
@@ -154,6 +198,21 @@ recorded in MetaFusion's cache are eligible for deletion; manually managed
 Kometa assets are preserved.
 
 Disabling an artwork feature also disables cleanup for that artwork type.
+Incremental runs never perform cleanup; cleanup is considered only during a
+complete reconciliation scan. The first run is always full, and a missing
+Kometa output file also forces a full scan.
+
+## Incremental processing and caches
+
+MetaFusion records each successfully processed Plex rating key, Plex update
+timestamp, and a fingerprint of output-affecting configuration. An item is
+skipped only when all three still match. Failed items, items without update
+timestamps, changed configuration, explicit rating-key targets, and full scans
+are always processed.
+
+`cache/tmdb_response_cache.json` stores successful TMDb JSON responses with a
+TTL and entry limit. It is never written during dry-run. The periodic full scan
+detects removed Plex items and is the only scan eligible for orphan cleanup.
 
 ## Multiple editions and versions
 
@@ -174,6 +233,7 @@ In Kometa mode, output is written below `KOMETA_PATH`:
 ```text
 metadata/movie_metadata.yml
 metadata/tv_metadata.yml
+metadata/.metafusion-backups/*.bak
 assets/movie/...
 assets/tv/...
 ```
@@ -183,12 +243,16 @@ Logs and operational state are stored in `/config`:
 ```text
 logs/metafusion.log
 cache/meta_cache.json
+cache/tmdb_response_cache.json
+cache/incremental_state.json
 metafusion-status.json
 ```
 
-The Docker health check verifies that the process heartbeat is current and
-marks the container unhealthy when the last scheduled run failed. Inspect it
-with:
+The Docker health check verifies process liveness using the PID and heartbeat.
+A failed scheduled job is recorded in `metafusion-status.json` and displayed by
+the health-check message, but it does not make a healthy scheduler process
+unhealthy. Set `HEALTH_FAIL_ON_JOB_ERROR=True` for strict legacy behavior.
+Inspect state with:
 
 ```bash
 docker inspect --format '{{json .State.Health}}' metafusion
@@ -196,7 +260,12 @@ docker compose logs --tail=200 metafusion
 ```
 
 One-shot failures return a non-zero exit code. Scheduled failures remain in the
-status file and health state until a later run succeeds.
+status file until a later run succeeds.
+
+Before each Kometa YAML replacement, MetaFusion validates the stable documented
+mapping structure for metadata, matches, seasons, and episodes. Existing output
+is retained as a rotating backup. A validation or post-write verification
+failure restores the prior known-good file.
 
 ### Restart behavior
 
@@ -218,7 +287,7 @@ Install the development lock and run the same checks as CI:
 ```bash
 python -m pip install --require-hashes -r requirements-dev.lock
 ruff check --select F,E9 .
-pytest -q --cov=. --cov-report=term --cov-fail-under=50
+pytest -q --cov=. --cov-report=term --cov-fail-under=60
 pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
 ```
 

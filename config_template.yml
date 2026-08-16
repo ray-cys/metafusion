@@ -54,8 +54,26 @@ runtime:
   request_timeout: 30
   connect_timeout: 10
   plex_timeout: 10
+  plex_retries: 3
+  plex_retry_delay: 1
   shutdown_timeout: 15
   max_image_mb: 25
+
+# Skip unchanged Plex items between periodic reconciliation scans.
+incremental:
+  enabled: true
+  full_scan_interval_hours: 168
+
+# Persist successful TMDb JSON responses to reduce repeated API traffic.
+tmdb_cache:
+  enabled: true
+  ttl_hours: 24
+  max_entries: 5000
+
+# Validate Kometa document structure and retain known-good output backups.
+output:
+  validate_schema: true
+  backup_count: 3
 
 safety:
   # Kometa cannot reliably match duplicate title/year movies unless every copy

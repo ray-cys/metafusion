@@ -9,13 +9,70 @@ from pathlib import Path
 import pytest
 
 import metafusion
-from helper.config import ENV_BINDINGS
+from helper.config import ENV_BINDINGS, SECRET_FILE_BINDINGS
 
 
 class Section:
     def __init__(self, title, library_type):
         self.title = title
         self.type = library_type
+
+
+def test_targeted_cli_controls_library_item_and_metadata_only_scope():
+    args = metafusion.parse_cli_args(
+        [
+            "--library",
+            "Movies,Kids Movies",
+            "--rating-key",
+            "123",
+            "--metadata-only",
+            "--full-scan",
+        ]
+    )
+    config = {
+        "plex_libraries": ["Old"],
+        "assets": {"run_poster": True, "run_season": True, "run_background": True},
+        "cleanup": {"run_process": True},
+        "metadata": {"run_basic": True, "run_enhanced": True},
+        "settings": {},
+    }
+
+    metafusion.override_config_with_cli(config, args)
+
+    assert config["plex_libraries"] == ["Movies", "Kids Movies"]
+    assert config["assets"] == {
+        "run_poster": False,
+        "run_season": False,
+        "run_background": False,
+    }
+    assert config["cleanup"]["run_process"] is False
+    assert config["_execution"] == {
+        "rating_keys": ["123"],
+        "targeted": True,
+        "full_scan": True,
+        "metadata_only": True,
+    }
+
+
+def test_connector_preflight_returns_reusable_plex_connection(monkeypatch):
+    plex = object()
+    calls = []
+
+    def fake_plex(_config):
+        calls.append("plex")
+        return plex
+
+    async def fake_tmdb(*_args, **_kwargs):
+        calls.append("tmdb")
+        return {"images": {}}
+
+    monkeypatch.setattr(metafusion, "connect_plex_server", fake_plex)
+    monkeypatch.setattr(metafusion, "tmdb_api_request", fake_tmdb)
+
+    result = asyncio.run(metafusion.preflight_connectors({}, object()))
+
+    assert result is plex
+    assert set(calls) == {"plex", "tmdb"}
 
 
 def test_complete_inventory_types_are_media_scoped():
@@ -72,10 +129,14 @@ def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(metafusion, "check_sys_requirements", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(metafusion, "get_disabled_features", lambda *_args: None)
     monkeypatch.setattr(metafusion, "log_final_summary", lambda *_args: None)
+    async def fake_preflight(_config, _session):
+        return object()
+
+    monkeypatch.setattr(metafusion, "preflight_connectors", fake_preflight)
     monkeypatch.setattr(
         metafusion,
         "connect_plex_library",
-        lambda _config: ([movie], ["Movies"], [{"title": "Movies", "type": "movie"}]),
+        lambda _config, plex=None: ([movie], ["Movies"], [{"title": "Movies", "type": "movie"}]),
     )
     monkeypatch.setattr(metafusion, "process_library", fail_library)
     monkeypatch.setattr(metafusion, "cleanup_title_orphans", capture_cleanup)
@@ -126,11 +187,16 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
     environment = os.environ.copy()
     for env_name, _path, _converter in ENV_BINDINGS:
         environment.pop(env_name, None)
+    for env_name, _path, _direct in SECRET_FILE_BINDINGS:
+        environment.pop(env_name, None)
     environment.update(
         {
             "CONFIG_DIR": str(config_dir),
             "STATUS_FILE": str(status_file),
             "KOMETA_PATH": str(tmp_path / "kometa"),
+            "PLEX_URL": "http://plex:32400",
+            "PLEX_TOKEN": "test-token",
+            "TMDB_API_KEY": "test-key",
             "METAFUSION_RUN": "false",
             "RUN_SCHEDULE": "true",
             "RUN_TIMES": "23:59",

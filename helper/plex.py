@@ -1,7 +1,10 @@
 import asyncio
 import re
-from plexapi.server import PlexServer
+import time
 from pathlib import Path
+
+from plexapi.server import PlexServer
+
 from helper.logging import log_plex_event, redact_secrets
 
 PLEX_COUNTRY_OVERRIDES = {
@@ -291,35 +294,57 @@ ISO_COUNTRY_NAMES = {
 def get_plex_country(code):
     return PLEX_COUNTRY_OVERRIDES.get(code) or ISO_COUNTRY_NAMES.get(code) or code
 
-def connect_plex_library(config, selected_libraries=None):
-    if not selected_libraries:
-        selected_libraries = config.get("plex_libraries") or ["Movies", "TV Shows"]
+def connect_plex_server(config):
+    runtime = config.get("runtime", {})
     plex_timeout = max(
         1.0,
-        float(config.get("runtime", {}).get("plex_timeout", 10.0)),
+        float(runtime.get("plex_timeout", 10.0)),
     )
-    try:
-        plex = PlexServer(
-            config["plex"]["url"],
-            config["plex"]["token"],
-            timeout=plex_timeout,
-        )
-        log_plex_event("plex_connected", version=plex.version)
-    except Exception as e:
-        log_plex_event(
-            "plex_connect_failed",
-            error=redact_secrets(e, config.get("plex", {}).get("token")),
-        )
-        raise RuntimeError("Unable to connect to Plex") from e
+    retries = max(1, int(runtime.get("plex_retries", 3)))
+    retry_delay = max(0.0, float(runtime.get("plex_retry_delay", 1.0)))
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            plex = PlexServer(
+                config["plex"]["url"],
+                config["plex"]["token"],
+                timeout=plex_timeout,
+            )
+            log_plex_event("plex_connected", version=plex.version)
+            return plex
+        except Exception as error:
+            last_error = error
+            log_plex_event(
+                "plex_connect_failed",
+                error=redact_secrets(error, config.get("plex", {}).get("token")),
+            )
+            if attempt < retries and retry_delay:
+                time.sleep(retry_delay * attempt)
+    raise RuntimeError("Unable to connect to Plex") from last_error
 
-    try:
-        sections = list(plex.library.sections())
-    except Exception as e:
-        log_plex_event(
-            "plex_libraries_retrieved_failed",
-            error=redact_secrets(e, config.get("plex", {}).get("token")),
-        )
-        raise RuntimeError("Unable to retrieve Plex libraries") from e
+
+def connect_plex_library(config, selected_libraries=None, plex=None):
+    if not selected_libraries:
+        selected_libraries = config.get("plex_libraries") or ["Movies", "TV Shows"]
+    plex = connect_plex_server(config) if plex is None else plex
+    runtime = config.get("runtime", {})
+    retries = max(1, int(runtime.get("plex_retries", 3)))
+    retry_delay = max(0.0, float(runtime.get("plex_retry_delay", 1.0)))
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            sections = list(plex.library.sections())
+            break
+        except Exception as error:
+            last_error = error
+            log_plex_event(
+                "plex_libraries_retrieved_failed",
+                error=redact_secrets(error, config.get("plex", {}).get("token")),
+            )
+            if attempt < retries and retry_delay:
+                time.sleep(retry_delay * attempt)
+    else:
+        raise RuntimeError("Unable to retrieve Plex libraries") from last_error
 
     libraries = [{"title": section.title, "type": section.TYPE} for section in sections]
     all_libraries = libraries.copy()
@@ -475,6 +500,15 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
         "year": year,
         "title_year": title_year,
         "ratingKey": ratingKey,
+        "updatedAt": (
+            getattr(item, "updatedAt", None).isoformat()
+            if hasattr(getattr(item, "updatedAt", None), "isoformat")
+            else (
+                str(getattr(item, "updatedAt", None))
+                if getattr(item, "updatedAt", None) is not None
+                else None
+            )
+        ),
         "edition_title": edition_title,
         "tmdb_id": tmdb_id,
         "imdb_id": imdb_id,

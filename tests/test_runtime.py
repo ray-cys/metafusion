@@ -107,6 +107,43 @@ def test_plex_connection_uses_configured_request_timeout(monkeypatch):
     assert calls == [("http://plex:32400", "token", 7.5)]
 
 
+def test_plex_connector_retries_then_reuses_preflight_connection(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    class Library:
+        def sections(self):
+            return []
+
+    class Server:
+        version = "test"
+        library = Library()
+
+    server = Server()
+
+    def flaky_server(*_args, **_kwargs):
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise OSError("temporary Plex failure")
+        return server
+
+    monkeypatch.setattr(plex_module, "PlexServer", flaky_server)
+    monkeypatch.setattr(plex_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    config = {
+        "plex": {"url": "http://plex:32400", "token": "token"},
+        "plex_libraries": ["Movies"],
+        "runtime": {"plex_retries": 3, "plex_retry_delay": 0.5},
+    }
+
+    connected = plex_module.connect_plex_server(config)
+    result = plex_module.connect_plex_library(config, plex=connected)
+
+    assert connected is server
+    assert len(attempts) == 3
+    assert sleeps == [0.5, 1.0]
+    assert result == ([], ["Movies"], [])
+
+
 def test_background_selection_accepts_builder_input_without_extra_arguments():
     config = {
         "background_set": {
@@ -251,3 +288,63 @@ def test_raw_tmdb_response_is_bounded(monkeypatch):
 
     assert result is None
     assert any(event == "tmdb_response_too_large" for event, _ in events)
+
+
+def test_tmdb_rate_limit_retries_and_recovers(monkeypatch):
+    sleeps = []
+
+    class Response:
+        headers = {}
+        content = None
+
+        def __init__(self, status, payload=None, retry_after=None):
+            self.status = status
+            self.payload = payload
+            if retry_after is not None:
+                self.headers = {"Retry-After": str(retry_after)}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def json(self):
+            return self.payload
+
+        async def text(self):
+            return "rate limited"
+
+    class Session:
+        def __init__(self):
+            self.responses = [Response(429, retry_after=1), Response(200, {"ok": True})]
+
+        def get(self, *_args, **_kwargs):
+            return self.responses.pop(0)
+
+    class Limiter:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tmdb_module, "tmdb_limiter", Limiter())
+    monkeypatch.setattr(tmdb_module.asyncio, "sleep", lambda seconds: _record_sleep(sleeps, seconds))
+
+    result = asyncio.run(
+        tmdb_module.tmdb_api_request(
+            {"tmdb": {"api_key": "key", "language": "en", "region": "US"}},
+            "configuration",
+            retries=2,
+            session=Session(),
+            cache=False,
+        )
+    )
+
+    assert result == {"ok": True}
+    assert sleeps == [1]
+
+
+async def _record_sleep(calls, seconds):
+    calls.append(seconds)

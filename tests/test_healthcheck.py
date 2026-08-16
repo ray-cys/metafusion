@@ -21,7 +21,7 @@ def test_runtime_status_is_healthy_after_success(tmp_path):
     assert message == "idle"
 
 
-def test_healthcheck_rejects_failed_or_stale_runs(tmp_path):
+def test_healthcheck_separates_liveness_from_failed_jobs(tmp_path):
     status_path = tmp_path / "status.json"
     stale = datetime.now(timezone.utc) - timedelta(minutes=10)
     status_path.write_text(
@@ -48,7 +48,10 @@ def test_healthcheck_rejects_failed_or_stale_runs(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert check_status(status_path)[0] is False
+    healthy, message = check_status(status_path)
+    assert healthy is True
+    assert "last run failed" in message
+    assert check_status(status_path, fail_on_job_error=True)[0] is False
 
 
 def test_runtime_path_preflight_creates_required_paths(tmp_path):

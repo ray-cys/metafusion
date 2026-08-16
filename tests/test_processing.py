@@ -127,7 +127,7 @@ def test_metadata_write_failure_propagates(monkeypatch, tmp_path):
 
     monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
     monkeypatch.setattr(processing, "process_item", fake_process_item)
-    monkeypatch.setattr(processing, "atomic_write_yaml", fail_write)
+    monkeypatch.setattr(processing, "write_kometa_metadata", fail_write)
 
     with pytest.raises(processing.LibraryProcessingError, match="Unable to save"):
         asyncio.run(
@@ -157,3 +157,63 @@ def test_cleanup_rejects_incomplete_plex_inventory(monkeypatch, tmp_path):
                 feature_flags=flags,
             )
         )
+
+
+def test_incremental_library_run_processes_only_changed_or_targeted_items(monkeypatch, tmp_path):
+    class Item:
+        type = "movie"
+        year = 2020
+        editionTitle = None
+
+        def __init__(self, rating_key, updated_at):
+            self.ratingKey = rating_key
+            self.updatedAt = updated_at
+            self.title = f"Movie {rating_key}"
+
+    items = [Item("1", "same"), Item("2", "new")]
+    seen = []
+
+    async def fake_metadata(item, **_kwargs):
+        return metadata_for(item.ratingKey)
+
+    async def fake_process_item(**kwargs):
+        seen.append(kwargs["plex_item"].ratingKey)
+        return {}
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+    monkeypatch.setattr(
+        processing,
+        "load_cache",
+        lambda: {
+            "movie:plex:1": {
+                "rating_key": "1",
+                "plex_updated_at": "same",
+                "config_fingerprint": "fingerprint",
+            }
+        },
+    )
+
+    asyncio.run(
+        processing.process_library(
+            FakeSection(items),
+            config(tmp_path),
+            feature_flags=feature_flags(),
+            full_scan=False,
+            incremental_fingerprint="fingerprint",
+        )
+    )
+    assert seen == ["2"]
+
+    seen.clear()
+    asyncio.run(
+        processing.process_library(
+            FakeSection(items),
+            config(tmp_path),
+            feature_flags=feature_flags(),
+            full_scan=False,
+            rating_keys=["1"],
+            incremental_fingerprint="fingerprint",
+        )
+    )
+    assert seen == ["1"]
