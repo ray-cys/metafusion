@@ -294,8 +294,16 @@ def get_plex_country(code):
 def connect_plex_library(config, selected_libraries=None):
     if not selected_libraries:
         selected_libraries = config.get("plex_libraries") or ["Movies", "TV Shows"]
+    plex_timeout = max(
+        1.0,
+        float(config.get("runtime", {}).get("plex_timeout", 10.0)),
+    )
     try:
-        plex = PlexServer(config["plex"]["url"], config["plex"]["token"])
+        plex = PlexServer(
+            config["plex"]["url"],
+            config["plex"]["token"],
+            timeout=plex_timeout,
+        )
         log_plex_event("plex_connected", version=plex.version)
     except Exception as e:
         log_plex_event(

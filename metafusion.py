@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import logging
 import os
 import schedule
 import signal
@@ -33,8 +34,10 @@ from modules.processing import process_library, plex_metadata_dict
 
 
 shutdown_requested = threading.Event()
+shutdown_complete = threading.Event()
 _active_loop = None
 _active_task = None
+_shutdown_timeout = 15.0
 
 
 def parse_cli_args(argv=None):
@@ -214,10 +217,28 @@ def _cancel_active_job():
         _active_task.cancel()
 
 
+def _force_exit_after_timeout(timeout):
+    if shutdown_complete.wait(timeout):
+        return
+    logging.getLogger().critical(
+        "[MetaFusion] Graceful shutdown exceeded %.1fs; forcing process exit.",
+        timeout,
+    )
+    os._exit(128 + signal.SIGTERM)
+
+
 def request_shutdown(_signum=None, _frame=None):
+    first_request = not shutdown_requested.is_set()
     shutdown_requested.set()
     if _active_loop is not None:
         _active_loop.call_soon_threadsafe(_cancel_active_job)
+    if first_request:
+        threading.Thread(
+            target=_force_exit_after_timeout,
+            args=(_shutdown_timeout,),
+            name="metafusion-shutdown-watchdog",
+            daemon=True,
+        ).start()
 
 
 def run_metafusion_job(config, logger, runtime_status=None):
@@ -263,10 +284,16 @@ def run_metafusion_job(config, logger, runtime_status=None):
 
 
 def main(argv=None):
+    global _shutdown_timeout
     shutdown_requested.clear()
+    shutdown_complete.clear()
     args = parse_cli_args(argv)
     config = load_config_file(create_if_missing=not args.dry_run)
     override_config_with_cli(config, args)
+    _shutdown_timeout = max(
+        1.0,
+        float(config.get("runtime", {}).get("shutdown_timeout", 15.0)),
+    )
     validate_runtime_paths(config, BASE_CONFIG_DIR)
     logger = get_setup_logging(config)
 
@@ -327,10 +354,13 @@ def main(argv=None):
         else:
             log_main_event("main_processing_disabled", logger=logger)
     finally:
-        runtime_status.stopping()
-        runtime_status.stop()
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
+        try:
+            runtime_status.stopping()
+            runtime_status.stop()
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+        finally:
+            shutdown_complete.set()
     return exit_code
 
 

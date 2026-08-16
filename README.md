@@ -36,6 +36,8 @@ python -m pip install --require-hashes -r requirements.lock
 
 ## Docker Compose quick start
 
+Using environment variables:
+
 ```bash
 cp .env.example .env
 mkdir -p config kometa
@@ -43,6 +45,15 @@ mkdir -p config kometa
 docker compose config
 docker compose up -d
 docker compose logs -f metafusion
+```
+
+Using only `config.yml`:
+
+```bash
+mkdir -p config kometa
+cp config_template.yml config/config.yml
+# Edit config/config.yml. A .env file is not required.
+docker compose up -d
 ```
 
 The image runs as an unprivileged user. `config` and `kometa` must be writable
@@ -74,10 +85,18 @@ one-shot execution after every restart is intentional.
 
 ## Configuration
 
-Environment variables override `/config/config.yml`. If environment
-configuration is present and `config.yml` is absent, MetaFusion uses safe
-defaults without generating a template that could replace environment values.
-For YAML configuration, copy `config_template.yml` to `/config/config.yml`.
+Configuration is resolved independently for every option: built-in default,
+then `/config/config.yml`, then a non-empty environment variable. Environment
+variables therefore keep priority, while missing or blank variables fall back
+to `config.yml`. Compose no longer injects application defaults, so a YAML-only
+deployment works without `.env`. In Unraid, remove an unwanted variable or
+leave its value blank; any non-empty template variable intentionally overrides
+the corresponding YAML value.
+
+If a non-empty environment configuration is present and `config.yml` is
+absent, MetaFusion uses safe defaults without generating a template that could
+replace environment values. For YAML configuration, copy
+`config_template.yml` to `/config/config.yml`.
 
 Core options:
 
@@ -95,6 +114,9 @@ Core options:
 | `MAX_CONCURRENCY` | `8` | Maximum items processed concurrently |
 | `REQUEST_TIMEOUT` | `30` | Total HTTP request timeout in seconds |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds |
+| `PLEX_TIMEOUT` | `10` | Maximum duration of each blocking Plex request |
+| `SHUTDOWN_TIMEOUT` | `15` | Graceful shutdown deadline before forced exit |
+| `STOP_GRACE_PERIOD` | `20s` | Compose/Docker outer stop deadline |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork response size |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate edition matching |
 | `PUID` / `PGID` | `10001` | Container runtime user/group |
@@ -163,6 +185,19 @@ docker compose logs --tail=200 metafusion
 
 One-shot failures return a non-zero exit code. Scheduled failures remain in the
 status file and health state until a later run succeeds.
+
+### Restart behavior
+
+`SIGTERM` immediately wakes an idle scheduler and cancels an active async job.
+Plex calls are bounded to `PLEX_TIMEOUT` (10 seconds by default), and cache
+changes are flushed during normal cancellation. If a blocked filesystem,
+network driver, or worker still prevents exit, the process watchdog exits after
+`SHUTDOWN_TIMEOUT` (15 seconds). Docker's default 20-second grace period is the
+final boundary. YAML and cache replacement is atomic, so a forced exit can lose
+the current in-memory batch but cannot leave a partially written output file.
+
+Keep `SHUTDOWN_TIMEOUT` lower than `STOP_GRACE_PERIOD`. The health-check startup
+window is 20 seconds and does not delay the container process itself.
 
 ## Development and validation
 

@@ -20,6 +20,6 @@ RUN mkdir -p /config /config/logs /config/cache /kometa \
 USER 10001:10001
 
 STOPSIGNAL SIGTERM
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "healthcheck.py"]
 CMD ["python", "metafusion.py"]

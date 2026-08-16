@@ -33,7 +33,7 @@ def test_environment_values_override_yaml(tmp_path):
         yaml.safe_dump(
             {
                 "metafusion_run": True,
-                "plex": {"token": "yaml-token"},
+                "plex": {"url": "http://yaml-plex:32400", "token": "yaml-token"},
                 "settings": {"run_times": ["01:00"]},
             }
         ),
@@ -51,8 +51,41 @@ def test_environment_values_override_yaml(tmp_path):
     )
 
     assert config["plex"]["token"] == "env-token"
+    assert config["plex"]["url"] == "http://yaml-plex:32400"
     assert config["settings"]["run_times"] == ["06:00", "18:30"]
     assert config["metafusion_run"] is False
+
+
+def test_blank_environment_values_fall_back_to_yaml(tmp_path):
+    config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "plex": {"url": "http://yaml-plex:32400", "token": "yaml-token"},
+                "tmdb": {"api_key": "yaml-key"},
+                "settings": {"mode": "plex"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config_file(
+        config_file=config_file,
+        template_file=TEMPLATE_FILE,
+        environ={
+            "PLEX_URL": "",
+            "PLEX_TOKEN": "   ",
+            "TMDB_API_KEY": "",
+            "RUN_MODE": "",
+        },
+    )
+
+    assert config["plex"] == {
+        "url": "http://yaml-plex:32400",
+        "token": "yaml-token",
+    }
+    assert config["tmdb"]["api_key"] == "yaml-key"
+    assert config["settings"]["mode"] == "plex"
 
 
 def test_loading_yaml_does_not_mutate_defaults(tmp_path):
@@ -82,6 +115,18 @@ def test_template_is_created_only_when_no_config_source_exists(tmp_path):
     assert config["metafusion_run"] is False
 
 
+def test_blank_environment_does_not_block_template_creation(tmp_path):
+    config_file = tmp_path / "nested" / "config.yml"
+
+    load_config_file(
+        config_file=config_file,
+        template_file=TEMPLATE_FILE,
+        environ={"PLEX_TOKEN": "", "TMDB_API_KEY": "  ", "RUN_MODE": ""},
+    )
+
+    assert config_file.exists()
+
+
 def test_dry_run_config_loading_does_not_create_template(tmp_path):
     config_file = tmp_path / "nested" / "config.yml"
 
@@ -105,6 +150,8 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
             "MAX_CONCURRENCY": "4",
             "REQUEST_TIMEOUT": "45.5",
             "CONNECT_TIMEOUT": "7",
+            "PLEX_TIMEOUT": "8",
+            "SHUTDOWN_TIMEOUT": "12",
             "MAX_IMAGE_MB": "12",
             "ALLOW_AMBIGUOUS_EDITIONS": "true",
         },
@@ -114,6 +161,8 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "max_concurrency": 4,
         "request_timeout": 45.5,
         "connect_timeout": 7.0,
+        "plex_timeout": 8.0,
+        "shutdown_timeout": 12.0,
         "max_image_mb": 12,
     }
     assert config["safety"]["allow_ambiguous_editions"] is True

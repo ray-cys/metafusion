@@ -74,6 +74,7 @@ def test_process_library_bounds_item_concurrency(monkeypatch, tmp_path):
 
     assert result == []
     assert maximum == 3
+    assert not (tmp_path / "metadata").exists()
 
 
 def test_process_library_propagates_item_failures(monkeypatch, tmp_path):

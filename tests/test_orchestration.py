@@ -1,9 +1,15 @@
 import asyncio
 import logging
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
 
 import metafusion
+from helper.config import ENV_BINDINGS
 
 
 class Section:
@@ -89,3 +95,74 @@ def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
         asyncio.run(metafusion.metafusion_main(config, logging.getLogger("main-test")))
 
     assert cleanup_scopes == [set()]
+
+
+def test_shutdown_watchdog_does_not_force_exit_after_clean_shutdown(monkeypatch):
+    exits = []
+    monkeypatch.setattr(metafusion.os, "_exit", lambda code: exits.append(code))
+    metafusion.shutdown_complete.set()
+    try:
+        metafusion._force_exit_after_timeout(0)
+    finally:
+        metafusion.shutdown_complete.clear()
+
+    assert exits == []
+
+
+def test_shutdown_watchdog_forces_bounded_exit(monkeypatch):
+    exits = []
+    monkeypatch.setattr(metafusion.os, "_exit", lambda code: exits.append(code))
+    metafusion.shutdown_complete.clear()
+
+    metafusion._force_exit_after_timeout(0)
+
+    assert exits == [128 + metafusion.signal.SIGTERM]
+
+
+def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
+    repo_root = Path(__file__).parents[1]
+    config_dir = tmp_path / "config"
+    status_file = config_dir / "status.json"
+    environment = os.environ.copy()
+    for env_name, _path, _converter in ENV_BINDINGS:
+        environment.pop(env_name, None)
+    environment.update(
+        {
+            "CONFIG_DIR": str(config_dir),
+            "STATUS_FILE": str(status_file),
+            "KOMETA_PATH": str(tmp_path / "kometa"),
+            "METAFUSION_RUN": "false",
+            "RUN_SCHEDULE": "true",
+            "RUN_TIMES": "23:59",
+            "SHUTDOWN_TIMEOUT": "2",
+            "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
+        }
+    )
+    process = subprocess.Popen(
+        [sys.executable, "metafusion.py"],
+        cwd=repo_root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not status_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not status_file.exists():
+            process.terminate()
+            output, _ = process.communicate(timeout=3)
+            pytest.fail(f"scheduler did not start: {output}")
+
+        started = time.monotonic()
+        process.terminate()
+        process.wait(timeout=3)
+        elapsed = time.monotonic() - started
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+
+    assert process.returncode == 0
+    assert elapsed < 3

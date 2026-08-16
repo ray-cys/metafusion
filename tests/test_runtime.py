@@ -4,6 +4,7 @@ import logging
 
 from helper import tmdb as tmdb_module
 from helper import logging as logging_module
+from helper import plex as plex_module
 from helper.plex import get_plex_metadata
 from modules.utils import get_best_background
 
@@ -77,6 +78,33 @@ def test_plex_metadata_error_path_has_initialized_context(monkeypatch):
 
     assert metadata["title"] == "Example"
     assert any(event == "plex_failed_extract_item_id" for event, _ in events)
+
+
+def test_plex_connection_uses_configured_request_timeout(monkeypatch):
+    calls = []
+
+    class Library:
+        def sections(self):
+            return []
+
+    class Server:
+        version = "test"
+        library = Library()
+
+    def fake_server(url, token, timeout):
+        calls.append((url, token, timeout))
+        return Server()
+
+    monkeypatch.setattr(plex_module, "PlexServer", fake_server)
+    plex_module.connect_plex_library(
+        {
+            "plex": {"url": "http://plex:32400", "token": "token"},
+            "plex_libraries": ["Movies"],
+            "runtime": {"plex_timeout": 7.5},
+        }
+    )
+
+    assert calls == [("http://plex:32400", "token", 7.5)]
 
 
 def test_background_selection_accepts_builder_input_without_extra_arguments():
