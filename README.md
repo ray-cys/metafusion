@@ -79,6 +79,27 @@ image entrypoint.
 No Docker extra parameter is required. An explicit Compose `user:` or
 `docker run --user` setting takes precedence over `PUID` and `PGID`.
 
+### Unraid template
+
+The repository includes a ready-to-import
+[Unraid Docker template](unraid/metafusion.xml). It exposes every supported
+container environment variable. Common settings remain visible in the basic
+view, while tuning and safety controls are available under **Advanced View**.
+
+The template requires only the connection, library, and output-mode values:
+
+- `RUN_MODE`
+- `PLEX_URL`
+- `PLEX_TOKEN`
+- `PLEX_LIBRARIES`
+- `TMDB_API_KEY`
+
+The `/config` mapping is also required for persistent application state.
+`/kometa` is needed only in Kometa mode. In Plex mode, add writable media path
+mappings whose container paths exactly match those reported by Plex; this is
+required for artwork to be written beside media. Keep the image entrypoint and
+Docker user settings unchanged so `PUID=99` and `PGID=100` can take effect.
+
 ## Running MetaFusion
 
 The Docker service defaults to scheduler mode. `RUN_TIMES` uses `TZ`.

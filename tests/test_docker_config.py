@@ -1,4 +1,5 @@
 from pathlib import Path
+from xml.etree import ElementTree
 
 import yaml
 
@@ -124,3 +125,59 @@ def test_readme_documents_exact_image_pinning_and_rollback():
     assert "ghcr.io/ray-cys/metafusion:1.2.3" in readme
     assert "METAFUSION_IMAGE" in readme
     assert "sha-<full-commit>" in readme
+
+
+def test_unraid_template_exposes_every_container_environment_variable():
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    expected = set(compose["services"]["metafusion"]["environment"])
+    root = ElementTree.parse(REPO_ROOT / "unraid" / "metafusion.xml").getroot()
+    variables = {
+        config.attrib["Target"]
+        for config in root.findall("Config")
+        if config.attrib.get("Type") == "Variable"
+    }
+
+    assert variables == expected
+    assert len(variables) == len(
+        [config for config in root.findall("Config") if config.attrib.get("Type") == "Variable"]
+    )
+
+
+def test_unraid_template_requires_only_core_connection_library_and_mode_variables():
+    root = ElementTree.parse(REPO_ROOT / "unraid" / "metafusion.xml").getroot()
+    configs = {
+        config.attrib.get("Target"): config
+        for config in root.findall("Config")
+        if config.attrib.get("Type") == "Variable"
+    }
+    required = {
+        target
+        for target, config in configs.items()
+        if config.attrib.get("Required") == "true"
+    }
+
+    assert required == {
+        "RUN_MODE",
+        "PLEX_URL",
+        "PLEX_TOKEN",
+        "PLEX_LIBRARIES",
+        "TMDB_API_KEY",
+    }
+    assert configs["PLEX_TOKEN"].attrib["Mask"] == "true"
+    assert configs["TMDB_API_KEY"].attrib["Mask"] == "true"
+
+
+def test_unraid_template_preserves_hardened_runtime_and_unraid_identity():
+    root = ElementTree.parse(REPO_ROOT / "unraid" / "metafusion.xml").getroot()
+    configs = {config.attrib.get("Target"): config for config in root.findall("Config")}
+    extra_params = root.findtext("ExtraParams", default="")
+
+    assert root.findtext("Repository") == "ghcr.io/ray-cys/metafusion:latest"
+    assert configs["/config"].attrib["Required"] == "true"
+    assert configs["/config"].attrib["Mode"] == "rw"
+    assert configs["PUID"].text == "99"
+    assert configs["PGID"].text == "100"
+    assert "--read-only" in extra_params
+    assert "--cap-drop=ALL" in extra_params
+    assert "--security-opt=no-new-privileges" in extra_params
+    assert "--stop-timeout=20" in extra_params
