@@ -1,6 +1,7 @@
 import shutil, asyncio
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import meta_cache_async
+from helper.config import get_image_upgrade_days
 from helper.identity import cache_key_for_meta, legacy_cache_key, match_for_meta, metadata_key_for_meta
 from helper.plex import get_plex_country
 from helper.tmdb import tmdb_api_request, tmdb_response_cache
@@ -251,6 +252,10 @@ async def build_movie(
         best = get_best_poster(config, images, preferred_language=preferred_language, fallback=fallback)
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="Movie", asset_type="poster", full_title=full_title, extra="")
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "movie",
+                update_timestamp=False, poster_checked=True,
+            )
             result["poster"]["size"] = poster_size
             poster_action = "missing"
             return   
@@ -272,11 +277,16 @@ async def build_movie(
                 )
                 poster_action = "failed"
             if success and temp_path.exists():
-                stale_days = 30
+                stale_days = get_image_upgrade_days(config, "movie")
                 should_upgrade, status_code, context = smart_asset_upgrade(
-                    config, asset_path, best, new_image_path=temp_path, asset_type="poster", cache_key=cache_key
+                    config, asset_path, best, new_image_path=temp_path, asset_type="poster",
+                    cache_key=cache_key, stale_days=stale_days,
                 )
-                await meta_cache_async(cache_key, tmdb_id, title, year, "movie", poster_average=best.get("vote_average", 0))
+                await meta_cache_async(
+                    cache_key, tmdb_id, title, year, "movie",
+                    update_timestamp=False, poster_checked=True,
+                    poster_average=best.get("vote_average", 0),
+                )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(temp_path, asset_path)
@@ -287,13 +297,13 @@ async def build_movie(
                         cache_key, tmdb_id, title, year, "movie",
                         poster_average=best.get("vote_average", 0),
                         poster_path=str(asset_path.resolve()),
+                        poster_upgraded=True,
+                        update_timestamp=False,
                     )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="Movie", full_title=full_title, filesize=poster_size,
                             last_upgraded=context.get("last_upgraded"), stale_days=stale_days)
-                        await meta_cache_async(
-                            cache_key, tmdb_id, title, year, "movie", poster_average=best.get("vote_average", 0), poster_upgraded=True)
                         poster_action = "upgraded"
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
@@ -345,6 +355,10 @@ async def build_movie(
         best = get_best_background(config, images)
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="Movie", asset_type="background", full_title=full_title, extra="")
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "movie",
+                update_timestamp=False, background_checked=True,
+            )
             result["background"]["size"] = background_size
             background_action = "missing"
             return
@@ -366,11 +380,16 @@ async def build_movie(
                 )
                 background_action = "failed"
             if success and temp_path.exists():
-                stale_days = 30
+                stale_days = get_image_upgrade_days(config, "movie")
                 should_upgrade, status_code, context = smart_asset_upgrade(
-                    config, asset_path, best, new_image_path=temp_path, asset_type="background", cache_key=cache_key
+                    config, asset_path, best, new_image_path=temp_path, asset_type="background",
+                    cache_key=cache_key, stale_days=stale_days,
                 )
-                await meta_cache_async(cache_key, tmdb_id, title, year, "movie", bg_average=best.get("vote_average", 0))
+                await meta_cache_async(
+                    cache_key, tmdb_id, title, year, "movie",
+                    update_timestamp=False, background_checked=True,
+                    bg_average=best.get("vote_average", 0),
+                )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(temp_path, asset_path)
@@ -381,13 +400,13 @@ async def build_movie(
                         cache_key, tmdb_id, title, year, "movie",
                         bg_average=best.get("vote_average", 0),
                         background_path=str(asset_path.resolve()),
+                        background_upgraded=True,
+                        update_timestamp=False,
                     )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="Movie", full_title=full_title, filesize=background_size,
                             last_upgraded=context.get("last_upgraded"), stale_days=stale_days)
-                        await meta_cache_async(
-                            cache_key, tmdb_id, title, year, "movie", bg_average=best.get("vote_average", 0), background_upgraded=True)
                         background_action = "upgraded"
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
@@ -721,6 +740,10 @@ async def build_tv(
         best = get_best_poster(config, images, preferred_language=preferred_language, fallback=fallback)
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="TV Show", asset_type="poster", full_title=full_title, extra="")
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "tv",
+                update_timestamp=False, poster_checked=True,
+            )
             result["poster"]["size"] = poster_size
             poster_action = "missing"
             return
@@ -742,11 +765,16 @@ async def build_tv(
                 )
                 poster_action = "failed"
             if success and temp_path.exists():
-                stale_days = 30
+                stale_days = get_image_upgrade_days(config, "series")
                 should_upgrade, status_code, context = smart_asset_upgrade(
-                    config, asset_path, best, new_image_path=temp_path, asset_type="poster", cache_key=cache_key
+                    config, asset_path, best, new_image_path=temp_path, asset_type="poster",
+                    cache_key=cache_key, stale_days=stale_days,
                 )
-                await meta_cache_async(cache_key, tmdb_id, title, year, "tv", poster_average=best.get("vote_average", 0))
+                await meta_cache_async(
+                    cache_key, tmdb_id, title, year, "tv",
+                    update_timestamp=False, poster_checked=True,
+                    poster_average=best.get("vote_average", 0),
+                )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(temp_path, asset_path)
@@ -757,13 +785,13 @@ async def build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         poster_average=best.get("vote_average", 0),
                         poster_path=str(asset_path.resolve()),
+                        poster_upgraded=True,
+                        update_timestamp=False,
                     )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="TV Show", full_title=full_title, filesize=poster_size,
                             last_upgraded=context.get("last_upgraded"), stale_days=stale_days)
-                        await meta_cache_async(
-                            cache_key, tmdb_id, title, year, "tv", poster_average=best.get("vote_average", 0), poster_upgraded=True)
                         poster_action = "upgraded"
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
@@ -815,6 +843,10 @@ async def build_tv(
         best = get_best_background(config, images)
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="TV Show", asset_type="background", full_title=full_title, extra="")
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "tv",
+                update_timestamp=False, background_checked=True,
+            )
             result["background"]["size"] = background_size
             background_action = "missing"
             return
@@ -836,11 +868,16 @@ async def build_tv(
                 )
                 background_action = "failed"
             if success and temp_path.exists():
-                stale_days = 30
+                stale_days = get_image_upgrade_days(config, "series")
                 should_upgrade, status_code, context = smart_asset_upgrade(
-                    config, asset_path, best, new_image_path=temp_path, asset_type="background", cache_key=cache_key
+                    config, asset_path, best, new_image_path=temp_path, asset_type="background",
+                    cache_key=cache_key, stale_days=stale_days,
                 )
-                await meta_cache_async(cache_key, tmdb_id, title, year, "tv", bg_average=best.get("vote_average", 0))
+                await meta_cache_async(
+                    cache_key, tmdb_id, title, year, "tv",
+                    update_timestamp=False, background_checked=True,
+                    bg_average=best.get("vote_average", 0),
+                )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(temp_path, asset_path)
@@ -851,13 +888,13 @@ async def build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         bg_average=best.get("vote_average", 0),
                         background_path=str(asset_path.resolve()),
+                        background_upgraded=True,
+                        update_timestamp=False,
                     )
                     if status_code == "FORCE_UPGRADE_STALE":
                         log_builder_event(
                             "builder_force_upgrade_stale", media_type="TV Show", full_title=full_title, filesize=background_size,
                             last_upgraded=context.get("last_upgraded"), stale_days=stale_days)
-                        await meta_cache_async(
-                            cache_key, tmdb_id, title, year, "tv", bg_average=best.get("vote_average", 0), background_upgraded=True)
                         background_action = "upgraded"
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
@@ -940,11 +977,17 @@ async def build_tv(
                 )
                 season_poster_actions[season_number] = "failed"
             if success and temp_path.exists():
-                stale_days = 30
+                stale_days = get_image_upgrade_days(config, "season")
                 should_upgrade, status_code, context = smart_season_asset_upgrade(
-                    config, asset_path, best, new_image_path=temp_path, cache_key=cache_key, season_number=season_number
+                    config, asset_path, best, new_image_path=temp_path,
+                    cache_key=cache_key, season_number=season_number,
+                    stale_days=stale_days,
                 )
-                await meta_cache_async(cache_key, tmdb_id, title, year, "tv", season_number=season_number, season_average=best.get("vote_average", 0))
+                await meta_cache_async(
+                    cache_key, tmdb_id, title, year, "tv",
+                    update_timestamp=False, season_number=season_number,
+                    season_average=best.get("vote_average", 0),
+                )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(temp_path, asset_path)
@@ -956,15 +999,14 @@ async def build_tv(
                         season_number=season_number,
                         season_average=best.get("vote_average", 0),
                         season_path=str(asset_path.resolve()),
+                        season_upgraded=season_number,
+                        update_timestamp=False,
                     )
                     if status_code == "FORCE_UPGRADE_STALE_SEASON":
                         log_builder_event(
                             "builder_force_upgrade_stale_season", media_type="TV Show", full_title=full_title,
                             season_number=season_number, filesize=season_poster_size, last_upgraded=context.get("last_upgraded"),
                             stale_days=stale_days)
-                        await meta_cache_async(
-                            cache_key, tmdb_id, title, year, "tv", season_number=season_number, season_average=best.get("vote_average", 0),
-                            season_upgraded=season_number)
                         season_poster_actions[season_number] = "upgraded"
                     elif status_code == "NO_EXISTING_ASSET_SEASON":
                         log_builder_event(
@@ -1006,6 +1048,16 @@ async def build_tv(
         process_tv_background(),
         *season_poster_tasks
     )
+    if (
+        feature_flags
+        and feature_flags.get("season", True)
+        and not feature_flags.get("dry_run", False)
+        and "failed" not in season_poster_actions.values()
+    ):
+        await meta_cache_async(
+            cache_key, tmdb_id, title, year, "tv",
+            update_timestamp=False, season_checked=True,
+        )
 
     return {
         "percent": grand_percent,

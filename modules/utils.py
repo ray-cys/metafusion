@@ -244,12 +244,18 @@ def get_best_background(
     return None
 
 def stale_image(last_upgraded, days=30):
+    try:
+        interval = datetime.timedelta(days=float(days))
+    except (TypeError, ValueError, OverflowError):
+        return True
+    if interval <= datetime.timedelta(0):
+        return False
     if not last_upgraded:
         return True
     try:
         last_dt = datetime.datetime.fromisoformat(str(last_upgraded).replace("Z", "+00:00"))
         now = datetime.datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.datetime.now()
-        return (now - last_dt).days >= days
+        return now - last_dt >= interval
     except (TypeError, ValueError):
         return True
     
@@ -293,11 +299,11 @@ def smart_asset_upgrade(
         "last_upgraded": last_upgraded
     }
 
-    if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE", context
-
     if not asset_path.exists():
         return True, "NO_EXISTING_ASSET", context
+
+    if stale_image(last_upgraded, stale_days):
+        return True, "FORCE_UPGRADE_STALE", context
 
     if new_image_path and new_image_path.exists():
         try:
@@ -374,11 +380,11 @@ def smart_season_asset_upgrade(
         "last_upgraded": last_upgraded
     }
 
-    if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE_SEASON", context
-
     if not asset_path.exists():
         return True, "NO_EXISTING_ASSET_SEASON", context
+
+    if stale_image(last_upgraded, stale_days):
+        return True, "FORCE_UPGRADE_STALE_SEASON", context
 
     if new_image_path and new_image_path.exists():
         try:

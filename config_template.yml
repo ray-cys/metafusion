@@ -64,6 +64,16 @@ incremental:
   enabled: true
   full_scan_interval_hours: 168
 
+# Unchanged items become eligible for an artwork refresh when these intervals
+# expire. Per-type null values inherit default_days. Set an interval to 0 to
+# disable timed refreshes for that type; changed items and full scans can still
+# install missing or objectively better artwork.
+image_upgrades:
+  default_days: 30
+  movie_days: null
+  series_days: null
+  season_days: null
+
 # Persist successful TMDb JSON responses to reduce repeated API traffic.
 tmdb_cache:
   enabled: true

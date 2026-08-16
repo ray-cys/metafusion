@@ -261,6 +261,68 @@ def test_movie_builder_writes_enhanced_metadata_and_both_assets(monkeypatch, tmp
     assert cache_calls
 
 
+def test_builders_apply_per_type_upgrade_intervals_and_record_checks(
+    monkeypatch, tmp_path
+):
+    cache_calls = install_successful_asset_mocks(monkeypatch)
+    asset_decisions = []
+    season_decisions = []
+
+    def asset_decision(*_args, **kwargs):
+        asset_decisions.append(kwargs)
+        return True, "NO_EXISTING_ASSET", {}
+
+    def season_decision(*_args, **kwargs):
+        season_decisions.append(kwargs)
+        return True, "NO_EXISTING_ASSET_SEASON", {}
+
+    monkeypatch.setattr(builder, "smart_asset_upgrade", asset_decision)
+    monkeypatch.setattr(builder, "smart_season_asset_upgrade", season_decision)
+    tmdb_response_cache["movie/100"] = movie_details()
+    tmdb_response_cache["tv/200"] = tv_details()
+    tmdb_response_cache["tv/200/season/0"] = season_details(0)
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    config = build_config(tmp_path)
+    config["image_upgrades"] = {
+        "default_days": 30,
+        "movie_days": 30,
+        "series_days": 15,
+        "season_days": 7,
+    }
+
+    asyncio.run(
+        builder.build_movie(
+            config,
+            {"metadata": {}},
+            feature_flags=feature_flags(),
+            meta=movie_meta(),
+            session=object(),
+        )
+    )
+    movie_decisions = list(asset_decisions)
+    asset_decisions.clear()
+    asyncio.run(
+        builder.build_tv(
+            config,
+            {"metadata": {}},
+            feature_flags=feature_flags(),
+            meta=tv_meta(),
+            session=object(),
+        )
+    )
+
+    assert {call["stale_days"] for call in movie_decisions} == {30}
+    assert {call["stale_days"] for call in asset_decisions} == {15}
+    assert {call["stale_days"] for call in season_decisions} == {7}
+    assert any(call.get("poster_checked") for _, call in cache_calls)
+    assert any(call.get("background_checked") for _, call in cache_calls)
+    assert any(call.get("season_checked") for _, call in cache_calls)
+    assert any(call.get("poster_upgraded") for _, call in cache_calls)
+    assert any(call.get("background_upgraded") for _, call in cache_calls)
+    assert sum(bool(call.get("season_upgraded")) for _, call in cache_calls) == 1
+    assert any(call.get("season_upgraded") == 0 for _, call in cache_calls)
+
+
 def test_movie_builder_unchanged_metadata_preserves_cache_identity(
     monkeypatch, tmp_path
 ):

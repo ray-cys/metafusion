@@ -2,7 +2,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-from helper.config import CACHE_DIR
+from helper.config import CACHE_DIR, get_image_upgrade_days
 from helper.io import atomic_write_json
 
 
@@ -27,6 +27,7 @@ def config_fingerprint(config):
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
         "assets": config.get("assets", {}),
+        "image_upgrades": config.get("image_upgrades", {}),
         "tmdb": {
             "language": config.get("tmdb", {}).get("language"),
             "fallback": config.get("tmdb", {}).get("fallback"),
@@ -83,7 +84,83 @@ def mark_full_scan_complete(dry_run=False, path=None, now=None):
     return True
 
 
-def select_items(items, cache, fingerprint, full_scan=False, rating_keys=None):
+def timestamp_due(value, days, now=None):
+    """Return whether an optional ISO timestamp has reached an interval."""
+    try:
+        interval_days = float(days)
+    except (TypeError, ValueError):
+        return True
+    if interval_days <= 0:
+        return False
+    if not value:
+        return True
+    try:
+        last_value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if last_value.tzinfo is None:
+        last_value = last_value.astimezone()
+    now = utc_now() if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now - last_value >= timedelta(days=interval_days)
+
+
+def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
+    """Return whether enabled artwork makes an unchanged item eligible."""
+    if not isinstance(cached, dict) or not config:
+        return False
+    assets = config.get("assets", {})
+    flags = feature_flags or {
+        "poster": assets.get("run_poster", True),
+        "season": assets.get("run_season", True),
+        "background": assets.get("run_background", False),
+    }
+    normalized_type = str(media_type or cached.get("media_type") or "").lower()
+    if normalized_type in {"show", "shows"}:
+        normalized_type = "tv"
+    if normalized_type == "movies":
+        normalized_type = "movie"
+
+    if normalized_type == "movie":
+        days = get_image_upgrade_days(config, "movie")
+    elif normalized_type == "tv":
+        days = get_image_upgrade_days(config, "series")
+    else:
+        return False
+
+    if flags.get("poster", False) and timestamp_due(
+        cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
+        days,
+        now=now,
+    ):
+        return True
+    if flags.get("background", False) and timestamp_due(
+        cached.get("background_last_checked")
+        or cached.get("background_last_upgraded"),
+        days,
+        now=now,
+    ):
+        return True
+    if normalized_type == "tv" and flags.get("season", False):
+        return timestamp_due(
+            cached.get("season_last_checked"),
+            get_image_upgrade_days(config, "season"),
+            now=now,
+        )
+    return False
+
+
+def select_items(
+    items,
+    cache,
+    fingerprint,
+    full_scan=False,
+    rating_keys=None,
+    config=None,
+    feature_flags=None,
+    now=None,
+):
     target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
     candidates = [
         item
@@ -108,6 +185,13 @@ def select_items(items, cache, fingerprint, full_scan=False, rating_keys=None):
             or updated_at is None
             or cached.get("plex_updated_at") != updated_at
             or cached.get("config_fingerprint") != fingerprint
+            or image_upgrade_due(
+                cached,
+                getattr(item, "type", None),
+                config,
+                feature_flags=feature_flags,
+                now=now,
+            )
         ):
             changed.append(item)
     return changed

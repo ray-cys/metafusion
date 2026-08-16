@@ -102,6 +102,12 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "full_scan_interval_hours": 168.0,
     },
+    "image_upgrades": {
+        "default_days": 30.0,
+        "movie_days": None,
+        "series_days": None,
+        "season_days": None,
+    },
     "tmdb_cache": {
         "enabled": True,
         "ttl_hours": 24.0,
@@ -174,6 +180,10 @@ ENV_BINDINGS = (
     ("MAX_IMAGE_MB", ("runtime", "max_image_mb"), safe_int),
     ("INCREMENTAL", ("incremental", "enabled"), safe_bool),
     ("FULL_SCAN_INTERVAL_HOURS", ("incremental", "full_scan_interval_hours"), safe_float),
+    ("IMAGE_UPGRADE_DAYS", ("image_upgrades", "default_days"), safe_float),
+    ("MOVIE_IMAGE_UPGRADE_DAYS", ("image_upgrades", "movie_days"), safe_float),
+    ("SERIES_IMAGE_UPGRADE_DAYS", ("image_upgrades", "series_days"), safe_float),
+    ("SEASON_IMAGE_UPGRADE_DAYS", ("image_upgrades", "season_days"), safe_float),
     ("TMDB_CACHE_ENABLED", ("tmdb_cache", "enabled"), safe_bool),
     ("TMDB_CACHE_TTL_HOURS", ("tmdb_cache", "ttl_hours"), safe_float),
     ("TMDB_CACHE_MAX_ENTRIES", ("tmdb_cache", "max_entries"), safe_int),
@@ -253,6 +263,25 @@ def get_feature_flags(config):
         "cleanup": config.get("cleanup", {}).get("run_process", False),
     }
     return feature_flags
+
+
+def get_image_upgrade_days(config, media_type):
+    """Return the effective forced artwork refresh interval for a media type."""
+    upgrades = config.get("image_upgrades", {})
+    key = {
+        "movie": "movie_days",
+        "series": "series_days",
+        "tv": "series_days",
+        "show": "series_days",
+        "season": "season_days",
+    }.get(str(media_type).lower())
+    value = upgrades.get(key) if key else None
+    if value is None:
+        value = upgrades.get("default_days", 30.0)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 30.0
 
 def warn_unknown_keys(user_cfg, default_cfg, parent_key=""):
     for key in user_cfg:
@@ -406,6 +435,12 @@ def validate_config(config):
             1,
             8760,
         ),
+        (
+            "image_upgrades.default_days",
+            config.get("image_upgrades", {}).get("default_days"),
+            0,
+            3650,
+        ),
         ("tmdb_cache.ttl_hours", config.get("tmdb_cache", {}).get("ttl_hours"), 0.1, 8760),
         ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 1, 100000),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),
@@ -418,6 +453,18 @@ def validate_config(config):
             continue
         if numeric_value < minimum or numeric_value > maximum:
             errors.append(f"{name} must be between {minimum} and {maximum}")
+
+    for key in ("movie_days", "series_days", "season_days"):
+        value = config.get("image_upgrades", {}).get(key)
+        if value is None:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            errors.append(f"image_upgrades.{key} must be numeric or null")
+            continue
+        if numeric_value < 0 or numeric_value > 3650:
+            errors.append(f"image_upgrades.{key} must be between 0 and 3650")
     try:
         if float(runtime.get("request_timeout")) < float(runtime.get("connect_timeout")):
             errors.append("runtime.request_timeout must be at least runtime.connect_timeout")

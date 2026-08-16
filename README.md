@@ -16,6 +16,7 @@ scheduler. Cleanup is opt-in and guarded by a complete-library inventory.
 - Atomic YAML and cache writes with one cache flush per run
 - Validated Kometa output with rotating known-good backups and rollback
 - Incremental Plex processing with periodic full-library reconciliation
+- Independent movie, series, and season artwork refresh intervals
 - Persistent, bounded, TTL-based TMDb response caching
 - True dry-run behavior for generated metadata, assets, cache, and logs
 - Bounded item concurrency, HTTP timeouts, and maximum image download size
@@ -189,6 +190,10 @@ Core options:
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate edition matching |
 | `INCREMENTAL` | `True` | Skip successfully processed unchanged Plex items |
 | `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum time between reconciliation scans |
+| `IMAGE_UPGRADE_DAYS` | `30` | Default timed artwork refresh interval; `0` disables timed refreshes |
+| `MOVIE_IMAGE_UPGRADE_DAYS` | unset | Movie poster/background override |
+| `SERIES_IMAGE_UPGRADE_DAYS` | unset | Series poster/background override |
+| `SEASON_IMAGE_UPGRADE_DAYS` | unset | Season-poster override |
 | `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb JSON responses |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime |
 | `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses |
@@ -233,6 +238,41 @@ are always processed.
 `cache/tmdb_response_cache.json` stores successful TMDb JSON responses with a
 TTL and entry limit. It is never written during dry-run. The periodic full scan
 detects removed Plex items and is the only scan eligible for orphan cleanup.
+
+### Artwork refresh intervals
+
+Timed artwork refreshes work with incremental processing. On each normal
+scheduled run, an otherwise unchanged item becomes eligible when an enabled
+artwork type reaches its configured interval. This avoids waiting for the next
+full reconciliation scan and does not make every run process the entire
+library.
+
+For example, to refresh movie artwork every 30 days and both series and season
+artwork every 15 days:
+
+```text
+IMAGE_UPGRADE_DAYS=30
+MOVIE_IMAGE_UPGRADE_DAYS=30
+SERIES_IMAGE_UPGRADE_DAYS=15
+SEASON_IMAGE_UPGRADE_DAYS=15
+```
+
+Blank per-type variables inherit `IMAGE_UPGRADE_DAYS`. Decimal values are
+accepted, so `0.5` means 12 hours. `0` disables timed refresh eligibility for
+that type; Plex changes, targeted/full scans, missing artwork, and objectively
+better artwork can still cause work when the item is otherwise processed.
+
+The interval is a minimum age rather than an exact wall-clock appointment. The
+refresh occurs at the first `RUN_TIMES` execution after it becomes due. Movie
+intervals apply to movie posters and backgrounds, series intervals to show
+posters and backgrounds, and season intervals to season posters. Disabled asset
+features do not make an item eligible. MetaFusion does not generate episode
+artwork.
+
+Phase 8 adds artwork-check timestamps to the cache and includes these settings
+in the incremental fingerprint. The first run after upgrading therefore
+processes the selected libraries once to seed the new schedule; later runs
+return to normal incremental behavior.
 
 ## Multiple editions and versions
 

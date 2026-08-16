@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from helper.incremental import (
     config_fingerprint,
+    image_upgrade_due,
     item_updated_at,
     load_state,
     mark_full_scan_complete,
@@ -16,6 +17,12 @@ def incremental_config():
         "settings": {"mode": "kometa"},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "assets": {"run_poster": True},
+        "image_upgrades": {
+            "default_days": 30,
+            "movie_days": None,
+            "series_days": None,
+            "season_days": None,
+        },
         "tmdb": {"language": "en", "fallback": ["fr"], "region": "US"},
         "poster_set": {},
         "season_set": {},
@@ -82,3 +89,99 @@ def test_dry_run_does_not_persist_incremental_state(tmp_path):
     assert mark_full_scan_complete(dry_run=True, path=state_path) is False
     assert not state_path.exists()
     assert item_updated_at(SimpleNamespace(updatedAt=123)) == "123"
+
+
+def test_per_type_artwork_intervals_select_only_due_unchanged_items():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["assets"] = {
+        "run_poster": True,
+        "run_background": True,
+        "run_season": True,
+    }
+    config["image_upgrades"].update(
+        {"movie_days": 30, "series_days": 15, "season_days": 7}
+    )
+    fingerprint = config_fingerprint(config)
+    items = [
+        SimpleNamespace(ratingKey="movie", updatedAt=updated, type="movie"),
+        SimpleNamespace(ratingKey="show", updatedAt=updated, type="show"),
+    ]
+    cache = {
+        "movie": {
+            "rating_key": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "poster_last_checked": (now - timedelta(days=29)).isoformat(),
+            "background_last_checked": (now - timedelta(days=29)).isoformat(),
+        },
+        "show": {
+            "rating_key": "show",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "poster_last_checked": (now - timedelta(days=14)).isoformat(),
+            "background_last_checked": (now - timedelta(days=14)).isoformat(),
+            "season_last_checked": (now - timedelta(days=8)).isoformat(),
+        },
+    }
+
+    selected = select_items(
+        items,
+        cache,
+        fingerprint,
+        config=config,
+        feature_flags={"poster": True, "background": True, "season": True},
+        now=now,
+    )
+
+    assert [item.ratingKey for item in selected] == ["show"]
+
+
+def test_artwork_schedule_respects_disabled_features_and_zero_intervals():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["image_upgrades"].update(
+        {"movie_days": 0, "series_days": 0, "season_days": 0}
+    )
+    missing_timestamps = {"media_type": "tv"}
+
+    assert image_upgrade_due(
+        missing_timestamps,
+        "show",
+        config,
+        feature_flags={"poster": True, "background": True, "season": True},
+        now=now,
+    ) is False
+    assert image_upgrade_due(
+        missing_timestamps,
+        "show",
+        incremental_config(),
+        feature_flags={"poster": False, "background": False, "season": False},
+        now=now,
+    ) is False
+
+
+def test_artwork_schedule_uses_legacy_upgrade_timestamp_during_migration():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    cached = {
+        "media_type": "movie",
+        "poster_last_upgraded": (now - timedelta(days=29)).isoformat(),
+    }
+
+    assert image_upgrade_due(
+        cached,
+        "movie",
+        config,
+        feature_flags={"poster": True, "background": False, "season": False},
+        now=now,
+    ) is False
+    cached["poster_last_upgraded"] = (now - timedelta(days=31)).isoformat()
+    assert image_upgrade_due(
+        cached,
+        "movie",
+        config,
+        feature_flags={"poster": True, "background": False, "season": False},
+        now=now,
+    ) is True

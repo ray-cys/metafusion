@@ -94,6 +94,7 @@ def test_stale_image_handles_recent_old_and_invalid_dates():
     assert stale_image("not-a-date", days=30) is True
     assert stale_image(None, days=30) is True
     assert stale_image(recent.replace("+00:00", "Z"), days=30) is False
+    assert stale_image(old, days=0) is False
 
 
 def test_background_selection_and_asset_paths_cover_plex_and_kometa(tmp_path):

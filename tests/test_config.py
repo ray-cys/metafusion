@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from helper.config import DEFAULT_CONFIG, load_config_file
+from helper.config import DEFAULT_CONFIG, get_image_upgrade_days, load_config_file
 
 
 TEMPLATE_FILE = Path(__file__).parents[1] / "config_template.yml"
@@ -168,6 +168,31 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "max_image_mb": 12,
     }
     assert config["safety"]["allow_ambiguous_editions"] is True
+
+
+def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "IMAGE_UPGRADE_DAYS": "7",
+            "MOVIE_IMAGE_UPGRADE_DAYS": "30",
+            "SERIES_IMAGE_UPGRADE_DAYS": "15",
+            "SEASON_IMAGE_UPGRADE_DAYS": "0.5",
+        },
+    )
+
+    assert get_image_upgrade_days(config, "movie") == 30
+    assert get_image_upgrade_days(config, "tv") == 15
+    assert get_image_upgrade_days(config, "season") == 0.5
+
+    inherited = load_config_file(
+        config_file=tmp_path / "other.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"IMAGE_UPGRADE_DAYS": "7"},
+    )
+    assert get_image_upgrade_days(inherited, "movie") == 7
+    assert get_image_upgrade_days(inherited, "series") == 7
 
 
 def test_template_keeps_destructive_cleanup_disabled():
