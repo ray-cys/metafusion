@@ -1,7 +1,9 @@
 import asyncio, hashlib, uuid, re, datetime
+from io import BytesIO
 from pathlib import Path
 from helper.config import mode_check
 from helper.cache import load_cache
+from helper.io import atomic_write_bytes
 from helper.tmdb import tmdb_api_request
 
 def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
@@ -79,11 +81,13 @@ def get_best_poster(
         return None
     if fallback is None:
         fallback = config["tmdb"].get("fallback", [])
+    if isinstance(fallback, str):
+        fallback = [fallback]
+    else:
+        fallback = list(fallback or [])
     for val in (None, ""):
         if val not in fallback:
             fallback.append(val)
-    if isinstance(fallback, str):
-        fallback = [fallback]
     language_priority = [preferred_language] + fallback
     poster_sel = config["poster_set"]
     default_sel = poster_sel
@@ -138,11 +142,13 @@ def get_best_season(
         return None
     if fallback is None:
         fallback = config["tmdb"].get("fallback", [])
+    if isinstance(fallback, str):
+        fallback = [fallback]
+    else:
+        fallback = list(fallback or [])
     for val in (None, ""):
         if val not in fallback:
             fallback.append(val)
-    if isinstance(fallback, str):
-        fallback = [fallback]
     language_priority = [preferred_language] + fallback
     season_sel = config["season_set"]
     default_sel = season_sel
@@ -241,9 +247,10 @@ def stale_image(last_upgraded, days=30):
     if not last_upgraded:
         return True
     try:
-        last_dt = datetime.datetime.fromisoformat(last_upgraded)
-        return (datetime.datetime.now() - last_dt).days >= days
-    except Exception:
+        last_dt = datetime.datetime.fromisoformat(str(last_upgraded).replace("Z", "+00:00"))
+        now = datetime.datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.datetime.now()
+        return (now - last_dt).days >= days
+    except (TypeError, ValueError):
         return True
     
 def smart_asset_upgrade(
@@ -494,15 +501,21 @@ def asset_temp_path(config, meta, extension="jpg"):
 
 async def save_poster(image_content, save_path):
     try:
+        from PIL import Image
+
+        def validate_image():
+            with Image.open(BytesIO(image_content)) as image:
+                image.verify()
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, validate_image)
         new_checksum = hashlib.md5(image_content).hexdigest()
         if save_path.exists():
             with open(save_path, "rb") as existing_file:
                 existing_checksum = hashlib.md5(existing_file.read()).hexdigest()
             if existing_checksum == new_checksum:
                 return "ALREADY_UP_TO_DATE", None
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, save_path.write_bytes, image_content)
+        await loop.run_in_executor(None, atomic_write_bytes, save_path, image_content)
         return True, None
     except Exception as e:
         return False, str(e)

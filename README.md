@@ -296,6 +296,9 @@ network driver, or worker still prevents exit, the process watchdog exits after
 `SHUTDOWN_TIMEOUT` (15 seconds). Docker's default 20-second grace period is the
 final boundary. YAML and cache replacement is atomic, so a forced exit can lose
 the current in-memory batch but cannot leave a partially written output file.
+Downloaded artwork is decoded and verified before an atomic staging write, so
+an HTML error response, corrupt image, or failed replacement cannot overwrite a
+known-good asset.
 
 Keep `SHUTDOWN_TIMEOUT` lower than `STOP_GRACE_PERIOD`. The health-check startup
 window is 20 seconds and does not delay the container process itself.
@@ -307,7 +310,7 @@ Install the development lock and run the same checks as CI:
 ```bash
 python -m pip install --require-hashes -r requirements-dev.lock
 ruff check --select F,E9 .
-pytest -q --cov=. --cov-report=term --cov-fail-under=60
+pytest -q --cov=. --cov-report=term --cov-fail-under=75
 pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
 ```
 

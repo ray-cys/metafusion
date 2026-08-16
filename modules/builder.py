@@ -795,7 +795,7 @@ async def build_tv(
     async def process_tv_background():
         background_size = 0
         nonlocal background_action
-        if not config["assets"].get("run_background", True):
+        if not feature_flags or not feature_flags.get("background", True):
             result["background"]["size"] = background_size
             background_action = "skipped"
             return
@@ -995,7 +995,7 @@ async def build_tv(
         result["season_posters"][season_number] = season_poster_size
     
     season_poster_tasks = []
-    if config["assets"].get("run_season", True):
+    if feature_flags and feature_flags.get("season", True):
         for season_info in season_infos:
             season_number = season_info.get("season_number")
             if season_number is not None:

@@ -28,3 +28,19 @@ def test_atomic_yaml_failure_preserves_previous_file(monkeypatch, tmp_path):
 
     assert target.read_text(encoding="utf-8") == "metadata:\n  old: true\n"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_atomic_bytes_failure_preserves_previous_file(monkeypatch, tmp_path):
+    target = tmp_path / "poster.jpg"
+    target.write_bytes(b"old-image")
+
+    def fail_replace(source, destination):
+        raise OSError("simulated replacement failure")
+
+    monkeypatch.setattr(io_module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replacement failure"):
+        io_module.atomic_write_bytes(target, b"new-image")
+
+    assert target.read_bytes() == b"old-image"
+    assert list(tmp_path.glob("*.tmp")) == []

@@ -1,7 +1,9 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from modules import utils as utils_module
 from modules.utils import (
@@ -42,6 +44,12 @@ def image_config():
     }
 
 
+def encoded_image(color):
+    output = BytesIO()
+    Image.new("RGB", (8, 8), color=color).save(output, format="JPEG")
+    return output.getvalue()
+
+
 def test_poster_and_season_selection_respect_language_and_thresholds():
     images = [
         {
@@ -78,13 +86,14 @@ def test_metadata_helpers_detect_nested_changes_and_format_runtime():
 
 
 def test_stale_image_handles_recent_old_and_invalid_dates():
-    recent = datetime.now().isoformat()
-    old = (datetime.now() - timedelta(days=31)).isoformat()
+    recent = datetime.now(timezone.utc).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
 
     assert stale_image(recent, days=30) is False
     assert stale_image(old, days=30) is True
     assert stale_image("not-a-date", days=30) is True
     assert stale_image(None, days=30) is True
+    assert stale_image(recent.replace("+00:00", "Z"), days=30) is False
 
 
 def test_background_selection_and_asset_paths_cover_plex_and_kometa(tmp_path):
@@ -121,8 +130,10 @@ def test_background_selection_and_asset_paths_cover_plex_and_kometa(tmp_path):
 
 def test_save_and_download_poster_handle_success_duplicate_and_missing_session(monkeypatch, tmp_path):
     path = tmp_path / "poster.jpg"
-    assert asyncio.run(save_poster(b"image", path)) == (True, None)
-    assert asyncio.run(save_poster(b"image", path)) == ("ALREADY_UP_TO_DATE", None)
+    first_image = encoded_image("red")
+    second_image = encoded_image("blue")
+    assert asyncio.run(save_poster(first_image, path)) == (True, None)
+    assert asyncio.run(save_poster(first_image, path)) == ("ALREADY_UP_TO_DATE", None)
 
     assert asyncio.run(download_poster({}, "/poster.jpg", path, session=None)) == (
         False,
@@ -131,14 +142,14 @@ def test_save_and_download_poster_handle_success_duplicate_and_missing_session(m
     )
 
     async def fake_request(*_args, **_kwargs):
-        return b"new-image"
+        return second_image
 
     monkeypatch.setattr(utils_module, "tmdb_api_request", fake_request)
     success, status, error = asyncio.run(
         download_poster({}, "/poster.jpg", path, session=object())
     )
     assert (success, status, error) == (True, 200, None)
-    assert path.read_bytes() == b"new-image"
+    assert path.read_bytes() == second_image
 
 
 def test_download_cancellation_propagates_without_partial_output(monkeypatch, tmp_path):

@@ -114,13 +114,16 @@ async def cleanup_title_orphans(
             cache_key = cache_key_for_meta(meta)
             if cache_key in cache:
                 valid_seasons = set(str(s) for s in (meta.get("seasons_episodes") or {}).keys())
-                cached_seasons = set(str(s) for s in (cache[cache_key].get("seasons") or {}).keys())
-                orphaned_seasons = cached_seasons - valid_seasons
+                cached_season_keys = {
+                    str(value): value
+                    for value in (cache[cache_key].get("seasons") or {}).keys()
+                }
+                orphaned_seasons = set(cached_season_keys) - valid_seasons
                 for season_num in orphaned_seasons:
                     if feature_flags.get("dry_run", False):
                         log_cleanup_event("cleanup_dry_run", description="season", path=f"{cache_key} season {season_num}")
                     else:
-                        del cache[cache_key]["seasons"][season_num]
+                        del cache[cache_key]["seasons"][cached_season_keys[season_num]]
                         cache_changed = True
                         log_cleanup_event("cleanup_removed_orphaned_season_cache", show=title, year=year, season=season_num)
                         orphans_removed += 1
@@ -173,13 +176,16 @@ async def cleanup_title_orphans(
                         plex_meta = metadata_by_yaml_key.get(k)
                         if plex_meta:
                             valid_seasons = set(str(s) for s in (plex_meta.get("seasons_episodes") or {}).keys())
-                            cached_seasons = set(str(s) for s in (v.get("seasons") or {}).keys())
-                            orphaned_seasons = cached_seasons - valid_seasons
+                            yaml_season_keys = {
+                                str(value): value
+                                for value in (v.get("seasons") or {}).keys()
+                            }
+                            orphaned_seasons = set(yaml_season_keys) - valid_seasons
                             for season_num in orphaned_seasons:
                                 if feature_flags.get("dry_run", False):
                                     log_cleanup_event("cleanup_dry_run", description="season", path=f"{k} season {season_num}")
                                 else:
-                                    del v["seasons"][season_num]
+                                    del v["seasons"][yaml_season_keys[season_num]]
                                     yaml_changed = True
                                     log_cleanup_event("cleanup_removed_orphaned_season_yaml", show=t, year=y, season=season_num)
                                     orphans_removed += 1
