@@ -65,19 +65,14 @@ PGID=100
 ```
 
 The mapped `/config` directory and, in Kometa mode, `/kometa` directory must be
-writable by `99:100`. The container prepares only its managed `/config`,
-`/config/logs`, and `/config/cache` paths. It does not recursively change the
-ownership of a large Kometa tree, which keeps container startup fast.
+writable by `99:100`. New files are created as `0664` and owned by
+`nobody:users`; existing metadata and artwork retain their ownership and
+permissions. Container startup adjusts only MetaFusion's managed state under
+`/config`, not the complete Kometa or media tree.
 
-When replacing an existing metadata YAML or artwork file, MetaFusion preserves
-that file's UID, GID, and permission mode. New files are created as `0664` and
-owned by the configured runtime identity. MetaFusion also refuses to process as
-UID `0`, preventing an accidentally bypassed entrypoint from creating
-root-owned files. On Unraid, keep `PUID=99`, `PGID=100`, and do not override the
-image entrypoint.
-
-No Docker extra parameter is required. An explicit Compose `user:` or
-`docker run --user` setting takes precedence over `PUID` and `PGID`.
+Keep the image entrypoint unchanged and do not set a Docker user. An explicit
+Compose `user:` or `docker run --user` setting overrides `PUID` and `PGID` and
+can create files with the wrong owner.
 
 ### Unraid template
 
@@ -104,51 +99,37 @@ Docker user settings unchanged so `PUID=99` and `PGID=100` can take effect.
 
 The Docker service defaults to scheduler mode. `RUN_TIMES` uses `TZ`.
 
-Run one job:
+Common commands:
 
 ```bash
+# Run one job now
 docker compose run --rm -e METAFUSION_RUN=True metafusion
-```
 
-Validate configuration without contacting Plex or TMDb and without creating
-files:
-
-```bash
+# Validate configuration without contacting Plex or TMDb
 docker compose run --rm metafusion python metafusion.py --doctor
-```
 
-Run a targeted metadata repair:
-
-```bash
-docker compose run --rm metafusion python metafusion.py \
-  --metafusion_run --library Movies --rating-key 12345 --metadata-only
-```
-
-`--library` and `--rating-key` may be repeated or comma-separated. Targeted
-runs always disable cleanup. Add `--full-scan` to bypass incremental skipping.
-
-Run a targeted artwork repair without regenerating metadata:
-
-```bash
-docker compose run --rm metafusion python metafusion.py \
-  --metafusion_run --library "TV Shows" --rating-key 12345 --asset-only
-```
-
-Explain why an item would be selected without processing or writing:
-
-```bash
-docker compose run --rm metafusion python metafusion.py \
-  --metafusion_run --library "TV Shows" --rating-key 12345 --explain-selection
-```
-
-Print the current scheduler status and recent job history:
-
-```bash
+# Show scheduler status and recent jobs
 docker compose exec metafusion python metafusion.py --status
 ```
 
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
+
+For a targeted repair, supply a Plex library and rating key:
+
+```bash
+# Repair metadata only
+docker compose run --rm metafusion python metafusion.py \
+  --metafusion_run --library Movies --rating-key 12345 --metadata-only
+
+# Repair artwork only
+docker compose run --rm metafusion python metafusion.py \
+  --metafusion_run --library "TV Shows" --rating-key 12345 --asset-only
+```
+
+Targeted runs disable cleanup. `--library` and `--rating-key` may be repeated or
+comma-separated. Add `--full-scan` to ignore incremental state, or
+`--explain-selection` to report why an item is due without processing it.
 
 ## Environment variables
 
@@ -227,7 +208,7 @@ your deployment supports protected secret mounts.
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum health heartbeat age in seconds. |
 
-### Poster selection
+### Artwork selection (advanced)
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -238,11 +219,6 @@ your deployment supports protected secret mounts.
 | `POSTER_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
 | `POSTER_VOTE_RELAXED` | `3.5` | Relaxed fallback vote score. |
 | `POSTER_VOTE_THRESHOLD` | `5.0` | Score used when deciding artwork upgrades. |
-
-### Season-poster selection
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
 | `SEASON_MAX_WIDTH` | `2000` | Preferred maximum season-poster width. |
 | `SEASON_MAX_HEIGHT` | `3000` | Preferred maximum season-poster height. |
 | `SEASON_MIN_WIDTH` | `1000` | Minimum preferred season-poster width. |
@@ -250,11 +226,6 @@ your deployment supports protected secret mounts.
 | `SEASON_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
 | `SEASON_VOTE_RELAXED` | `0.5` | Relaxed fallback vote score. |
 | `SEASON_VOTE_THRESHOLD` | `3.0` | Score used when deciding season-poster upgrades. |
-
-### Background selection
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
 | `BG_MAX_WIDTH` | `3840` | Preferred maximum background width. |
 | `BG_MAX_HEIGHT` | `2160` | Preferred maximum background height. |
 | `BG_MIN_WIDTH` | `1920` | Minimum preferred background width. |
@@ -316,12 +287,6 @@ library_overrides:
 Only `image_upgrades` is accepted inside a library override. Library names
 must exactly match Plex. `--doctor` validates the override structure.
 
-Incremental selection keeps separate reasons for metadata, posters,
-backgrounds, and season posters. An artwork-only cadence does not regenerate
-episode metadata or execute artwork types that are not due. A known TMDb image
-source is marked checked without downloading it again while its managed file
-still exists.
-
 ## Cleanup safety
 
 Cleanup is disabled by default. Before setting `RUN_CLEANUP=True`:
@@ -348,13 +313,14 @@ wrong copy and is not recommended.
 
 ## Versioned Docker releases and rollback
 
-`main` and `latest` are moving public tags built from the default branch. A
-Git tag such as `v1.2.3` runs the complete tests, dependency audit, image scan,
-and multi-architecture build before publishing these signed GHCR tags:
+Pin an exact release for production and soak testing. `main` and `latest` move
+whenever the default branch is updated, while version and SHA tags identify a
+specific build. Published images support AMD64 and ARM64 and are signed.
 
 | Image tag | Behavior |
 | --- | --- |
 | `1.2.3` | Exact release; recommended production pin. |
+| `1.2.3-rc.1` | Exact prerelease; intended for testing. |
 | `1.2` | Moves to the newest patch in the `1.2` line. |
 | `1` | Moves to the newest release in the `1` line. |
 | `sha-<full-commit>` | Immutable build for exact recovery or diagnosis. |
@@ -396,16 +362,10 @@ assets/tv/...
 
 Plex mode places artwork beside media and does not create Kometa metadata YAML.
 
-Operational files are stored under `/config`:
+The main diagnostic files are stored under `/config`:
 
 ```text
 logs/metafusion.log
-cache/meta_cache.json
-cache/meta_cache.json.bak
-cache/tmdb_response_cache.json
-cache/tmdb_response_cache.json.bak
-cache/incremental_state.json
-cache/incremental_state.json.bak
 metafusion-status.json
 ```
 
@@ -421,14 +381,15 @@ the health message. By default, the scheduler remains healthy so a failed job
 does not create a restart loop. Set `HEALTH_FAIL_ON_JOB_ERROR=True` if Docker
 should mark the container unhealthy after a job failure.
 
-The status file keeps the ten most recent job results. Cache and incremental
-state writes retain a last-known-good backup and recover from it automatically
-if the primary JSON file is damaged.
+Common problems:
 
-The container handles `SIGTERM`, cancels active work, and flushes cache changes.
-Keep `SHUTDOWN_TIMEOUT` below `STOP_GRACE_PERIOD`. Metadata, cache, and artwork
-replacement use validated/atomic writes so an interrupted run cannot replace a
-known-good file with a partial download.
+| Symptom | Check |
+| --- | --- |
+| `/config` or `/kometa` permission error | Confirm the host path is writable by `PUID:PGID` (`99:100` on Unraid). |
+| Plex mode does not write artwork | Map media paths with the same container paths that Plex reports. |
+| Kometa output is missing | Confirm `RUN_MODE=kometa`, `KOMETA_PATH`, and the writable `/kometa` mapping. |
+| Scheduled runs do not start | Check `RUN_SCHEDULE`, `RUN_TIMES`, and `TZ`. |
+| Container is slow to stop | Keep `SHUTDOWN_TIMEOUT` lower than `STOP_GRACE_PERIOD` and do not bypass the image entrypoint. |
 
 ## References
 
