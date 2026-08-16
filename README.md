@@ -199,9 +199,10 @@ your deployment supports protected secret mounts.
 | `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background interval. |
 | `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background interval. |
 | `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster interval. |
-| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb JSON responses. |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
 | `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
+| `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables it. |
 | `VALIDATE_OUTPUT` | `True` | Validate Kometa YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Metadata backups retained per output file. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Allow unsafe duplicate edition matching. |
@@ -286,6 +287,24 @@ library_overrides:
 
 Only `image_upgrades` is accepted inside a library override. Library names
 must exactly match Plex. `--doctor` validates the override structure.
+
+## TMDb response cache
+
+MetaFusion stores successful TMDb responses as compressed rows in
+`/config/cache/tmdb_response_cache.sqlite3`. It reads and updates individual
+responses instead of loading and rewriting one large JSON document. The cache
+is disposable: database corruption causes a clean cache rebuild and does not
+remove generated metadata or artwork.
+
+On the first Phase 10 start, MetaFusion creates and validates the SQLite
+database before removing the obsolete `tmdb_response_cache.json` and `.bak`
+files. No JSON response import is attempted because those entries expire after
+`TMDB_CACHE_TTL_HOURS` and importing a large document would recreate the memory
+and I/O spike this backend avoids.
+
+`TMDB_CACHE_MAX_ENTRIES` remains the primary bound. Set `TMDB_CACHE_MAX_MB` to
+an optional compressed-payload limit when appdata space matters; its default
+of `0` preserves the existing entry capacity without a byte cap.
 
 ## Cleanup safety
 

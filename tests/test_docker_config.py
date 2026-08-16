@@ -33,6 +33,7 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert environment["SHUTDOWN_TIMEOUT"] == "${SHUTDOWN_TIMEOUT-}"
     assert environment["INCREMENTAL"] == "${INCREMENTAL-}"
     assert environment["TMDB_CACHE_ENABLED"] == "${TMDB_CACHE_ENABLED-}"
+    assert environment["TMDB_CACHE_MAX_MB"] == "${TMDB_CACHE_MAX_MB-}"
     assert environment["VALIDATE_OUTPUT"] == "${VALIDATE_OUTPUT-}"
     assert environment["HEALTH_FAIL_ON_JOB_ERROR"] == "${HEALTH_FAIL_ON_JOB_ERROR:-False}"
     assert environment["HEALTH_MAX_HEARTBEAT_AGE"] == "${HEALTH_MAX_HEARTBEAT_AGE:-120}"

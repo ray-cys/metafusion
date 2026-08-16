@@ -86,6 +86,7 @@ tmdb_cache:
   enabled: true
   ttl_hours: 24
   max_entries: 5000
+  max_mb: 0  # Optional compressed-payload limit; 0 disables the byte cap.
 
 # Validate Kometa document structure and retain known-good output backups.
 output:

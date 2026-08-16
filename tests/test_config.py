@@ -201,6 +201,25 @@ def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
     assert get_image_upgrade_days(inherited, "series") == 7
 
 
+def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "missing.yml",
+        environ={
+            "TMDB_CACHE_ENABLED": "true",
+            "TMDB_CACHE_TTL_HOURS": "12",
+            "TMDB_CACHE_MAX_ENTRIES": "3000",
+            "TMDB_CACHE_MAX_MB": "128.5",
+        },
+    )
+
+    assert config["tmdb_cache"] == {
+        "enabled": True,
+        "ttl_hours": 12.0,
+        "max_entries": 3000,
+        "max_mb": 128.5,
+    }
+
+
 def test_run_cleanup_controls_cleanup_setting(tmp_path):
     current, sources = load_config_file(
         config_file=tmp_path / "config.yml",

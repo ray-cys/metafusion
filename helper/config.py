@@ -114,6 +114,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "ttl_hours": 24.0,
         "max_entries": 5000,
+        "max_mb": 0.0,
     },
     "output": {
         "validate_schema": True,
@@ -190,6 +191,7 @@ ENV_BINDINGS = (
     ("TMDB_CACHE_ENABLED", ("tmdb_cache", "enabled"), safe_bool),
     ("TMDB_CACHE_TTL_HOURS", ("tmdb_cache", "ttl_hours"), safe_float),
     ("TMDB_CACHE_MAX_ENTRIES", ("tmdb_cache", "max_entries"), safe_int),
+    ("TMDB_CACHE_MAX_MB", ("tmdb_cache", "max_mb"), safe_float),
     ("VALIDATE_OUTPUT", ("output", "validate_schema"), safe_bool),
     ("OUTPUT_BACKUP_COUNT", ("output", "backup_count"), safe_int),
     ("ALLOW_AMBIGUOUS_EDITIONS", ("safety", "allow_ambiguous_editions"), safe_bool),
@@ -460,6 +462,7 @@ def validate_config(config):
         ),
         ("tmdb_cache.ttl_hours", config.get("tmdb_cache", {}).get("ttl_hours"), 0.1, 8760),
         ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 1, 100000),
+        ("tmdb_cache.max_mb", config.get("tmdb_cache", {}).get("max_mb"), 0, 102400),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),
     )
     for name, value, minimum, maximum in numeric_rules:

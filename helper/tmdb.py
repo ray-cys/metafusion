@@ -7,6 +7,7 @@ from helper.tmdb_cache import tmdb_response_cache
 
 _tmdb_limiter = None
 _tmdb_limiter_loop = None
+_CACHE_MISS = object()
 
 
 def get_tmdb_limiter():
@@ -22,11 +23,13 @@ def get_tmdb_limiter():
 def begin_tmdb_cache(config):
     cache_config = config.get("tmdb_cache", {})
     tmdb_response_cache.configure(
-        CACHE_DIR / "tmdb_response_cache.json",
+        CACHE_DIR / "tmdb_response_cache.sqlite3",
         ttl_hours=cache_config.get("ttl_hours", 24),
         max_entries=cache_config.get("max_entries", 5000),
+        max_mb=cache_config.get("max_mb", 0),
         enabled=cache_config.get("enabled", True),
         writable=not config.get("settings", {}).get("dry_run", False),
+        legacy_paths=[CACHE_DIR / "tmdb_response_cache.json"],
     )
 
 
@@ -149,9 +152,12 @@ async def tmdb_api_request(
         return {}
 
     cache_hash = hashlib.sha256(cache_key.encode()).hexdigest()
-    if cache and cache_hash in tmdb_response_cache:
+    cached_response = (
+        tmdb_response_cache.get(cache_hash, _CACHE_MISS) if cache else _CACHE_MISS
+    )
+    if cached_response is not _CACHE_MISS:
         log_tmdb_event("tmdb_cache_hit", url=logged_url, params=logged_query)
-        return tmdb_response_cache[cache_hash]
+        return cached_response
 
     for attempt in range(1, retries + 1):
         rate_limit_waited = False
