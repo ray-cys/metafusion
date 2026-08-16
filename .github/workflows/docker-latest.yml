@@ -64,6 +64,17 @@ jobs:
       - name: Build image for vulnerability scan
         run: docker build --tag metafusion-ci:${GITHUB_SHA} .
 
+      - name: Smoke test Unraid UID/GID remapping
+        run: |
+          config_dir="$(mktemp -d)"
+          docker run --rm \
+            --env PUID=99 \
+            --env PGID=100 \
+            --volume "${config_dir}:/config" \
+            metafusion-ci:${GITHUB_SHA} \
+            python -c 'import os; from pathlib import Path; assert (os.getuid(), os.getgid()) == (99, 100); Path("/config/.ci-write-test").write_text("ok", encoding="utf-8")'
+          test "$(stat -c '%u:%g' "${config_dir}/.ci-write-test")" = "99:100"
+
       - name: Scan image for fixable critical vulnerabilities
         run: |
           docker run --rm \

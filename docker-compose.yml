@@ -13,6 +13,8 @@ services:
       - /tmp:size=256m,mode=1777
     environment:
       CONFIG_DIR: /config
+      PUID: ${PUID:-10001}
+      PGID: ${PGID:-10001}
       KOMETA_PATH: ${KOMETA_PATH-}
       TZ: ${TZ:-UTC}
       PLEX_URL: ${PLEX_URL-}

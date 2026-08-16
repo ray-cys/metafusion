@@ -17,9 +17,8 @@ COPY --chown=10001:10001 . /app
 RUN mkdir -p /config /config/logs /config/cache /kometa \
     && chown -R 10001:10001 /config /kometa
 
-USER 10001:10001
-
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "healthcheck.py"]
+    CMD ["python", "/app/docker_entrypoint.py", "--healthcheck", "python", "healthcheck.py"]
+ENTRYPOINT ["python", "/app/docker_entrypoint.py"]
 CMD ["python", "metafusion.py"]

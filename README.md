@@ -60,15 +60,35 @@ cp config_template.yml config/config.yml
 docker compose up -d
 ```
 
-The image runs as an unprivileged user. `config` and `kometa` must be writable
-by the configured `PUID` and `PGID`. On Linux, either set those values to your
-host user IDs or change the directory ownership before starting:
+The MetaFusion process runs as an unprivileged user. When Docker starts the
+image normally, its entrypoint prepares MetaFusion's managed `/config` state
+and drops privileges to the configured `PUID` and `PGID`. An explicit Compose
+`user:` or `docker run --user` setting takes precedence and is used directly.
+
+`config` and `kometa` must be writable by that identity. On Linux, set `PUID`
+and `PGID` to your host user IDs or change the directory ownership before
+starting:
 
 ```bash
 id -u
 id -g
 sudo chown -R 10001:10001 config kometa
 ```
+
+For Unraid's standard `nobody:users` ownership, add or update these container
+variables; no Docker extra parameter is required:
+
+```text
+PUID=99
+PGID=100
+```
+
+The entrypoint never recursively changes the Kometa tree, avoiding long starts
+for large libraries. The mapped Kometa directory must therefore already be
+writable by `99:100`, as normal Unraid appdata and share paths are. It only
+repairs ownership for `/config`, `/config/logs`, `/config/cache`, and the
+MetaFusion status file. Existing `config.yml` and secret files are not made
+writable or rewritten.
 
 The startup preflight exits with a clear error if `/config` or `/kometa` is not
 writable. The container otherwise uses a read-only root filesystem, drops all
@@ -175,7 +195,7 @@ Core options:
 | `VALIDATE_OUTPUT` | `True` | Validate Kometa document structure before replacement |
 | `OUTPUT_BACKUP_COUNT` | `3` | Known-good metadata backups retained per file |
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Make health strict instead of liveness-only |
-| `PUID` / `PGID` | `10001` | Container runtime user/group |
+| `PUID` / `PGID` | `10001` | Runtime identity; use `99` / `100` on Unraid |
 
 Artwork and metadata switches and all image-selection thresholds are documented
 in `config_template.yml` and `docker-compose.yml`.

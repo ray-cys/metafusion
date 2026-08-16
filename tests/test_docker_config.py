@@ -2,7 +2,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).parents[1]
 
 
@@ -23,6 +22,8 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert environment["PLEX_TOKEN_FILE"] == "${PLEX_TOKEN_FILE-}"
     assert environment["TMDB_API_KEY"] == "${TMDB_API_KEY-}"
     assert environment["TMDB_API_KEY_FILE"] == "${TMDB_API_KEY_FILE-}"
+    assert environment["PUID"] == "${PUID:-10001}"
+    assert environment["PGID"] == "${PGID:-10001}"
     assert environment["PLEX_TIMEOUT"] == "${PLEX_TIMEOUT-}"
     assert environment["SHUTDOWN_TIMEOUT"] == "${SHUTDOWN_TIMEOUT-}"
     assert environment["INCREMENTAL"] == "${INCREMENTAL-}"
@@ -40,5 +41,18 @@ def test_dockerfile_uses_stable_python_minor_without_os_upgrade():
     assert "apt-get upgrade" not in dockerfile
     assert "PIP_NO_CACHE_DIR=1" in dockerfile
     assert "--require-hashes -r requirements.lock" in dockerfile
-    assert "USER 10001:10001" in dockerfile
+    assert "USER 10001:10001" not in dockerfile
+    assert 'ENTRYPOINT ["python", "/app/docker_entrypoint.py"]' in dockerfile
+    assert '"--healthcheck"' in dockerfile
     assert "HEALTHCHECK" in dockerfile
+
+
+def test_ci_smoke_tests_unraid_runtime_identity():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Smoke test Unraid UID/GID remapping" in workflow
+    assert "--env PUID=99" in workflow
+    assert "--env PGID=100" in workflow
+    assert "(os.getuid(), os.getgid()) == (99, 100)" in workflow
