@@ -2,13 +2,13 @@ import json
 import time
 from pathlib import Path
 
-from helper.io import atomic_write_json
+from helper.io import atomic_write_json, backup_path_for, read_json_with_backup
 
 
 class PersistentTTLCache(dict):
     """Small JSON-backed cache that remains dict-compatible for the builders."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self):
         super().__init__()
@@ -20,6 +20,9 @@ class PersistentTTLCache(dict):
         self._expires = {}
         self._touched = {}
         self._dirty = False
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
 
     def configure(self, path, ttl_hours=24, max_entries=5000, enabled=True, writable=True):
         self.reset_memory()
@@ -28,10 +31,12 @@ class PersistentTTLCache(dict):
         self.max_entries = max(1, int(max_entries))
         self.enabled = bool(enabled)
         self.writable = bool(writable)
-        if not self.enabled or not self.path.exists():
+        if not self.enabled or not (
+            self.path.exists() or backup_path_for(self.path).exists()
+        ):
             return
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
+            document = read_json_with_backup(self.path, default={})
             if document.get("schema_version") != self.SCHEMA_VERSION:
                 return
             now = time.time()
@@ -51,6 +56,9 @@ class PersistentTTLCache(dict):
         self._expires = {}
         self._touched = {}
         self._dirty = False
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
 
     def _expire(self, key):
         if dict.__contains__(self, key) and self._expires.get(key, 0) <= time.time():
@@ -64,12 +72,17 @@ class PersistentTTLCache(dict):
     def __contains__(self, key):
         present = dict.__contains__(self, key)
         if not present:
+            self._misses += 1
             return False
-        return not self._expire(key)
+        if self._expire(key):
+            self._misses += 1
+            return False
+        return True
 
     def __getitem__(self, key):
         if key not in self:
             raise KeyError(key)
+        self._hits += 1
         self._touched[key] = time.time()
         return dict.__getitem__(self, key)
 
@@ -113,6 +126,15 @@ class PersistentTTLCache(dict):
         oldest = sorted(self._touched, key=self._touched.get)[:overflow]
         for key in oldest:
             self.__delitem__(key)
+            self._evictions += 1
+
+    def stats(self):
+        return {
+            "entries": len(self),
+            "hits": self._hits,
+            "misses": self._misses,
+            "evictions": self._evictions,
+        }
 
     def flush(self):
         if not self.enabled or not self.writable or not self.path or not self._dirty:
@@ -132,7 +154,7 @@ class PersistentTTLCache(dict):
                 for key in dict.keys(self)
             },
         }
-        atomic_write_json(self.path, document)
+        atomic_write_json(self.path, document, backup=True)
         self._dirty = False
         return True
 

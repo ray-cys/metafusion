@@ -1,10 +1,9 @@
 import asyncio
 import copy
 import json
-import os
-import tempfile
 from datetime import datetime
 from helper.config import CACHE_DIR
+from helper.io import atomic_write_json, backup_path_for, read_json_with_backup
 from helper.logging import log_cache_event
 
 CACHE_FILE = CACHE_DIR / "meta_cache.json"
@@ -12,13 +11,17 @@ CACHE_FILE = CACHE_DIR / "meta_cache.json"
 _cache_data = None
 _cache_dirty = False
 _cache_source = None
+_cache_lock = None
+_cache_lock_loop = None
 
 
 def begin_cache_session():
-    global _cache_data, _cache_dirty, _cache_source
+    global _cache_data, _cache_dirty, _cache_source, _cache_lock, _cache_lock_loop
     _cache_data = None
     _cache_dirty = False
     _cache_source = None
+    _cache_lock = None
+    _cache_lock_loop = None
 
 
 def load_cache(force_reload=False):
@@ -26,10 +29,12 @@ def load_cache(force_reload=False):
     if not force_reload and _cache_data is not None and _cache_source == CACHE_FILE:
         return _cache_data
 
-    if CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
+    if (
+        (CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0)
+        or backup_path_for(CACHE_FILE).exists()
+    ):
         try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                cache = json.load(f)
+            cache = read_json_with_backup(CACHE_FILE)
             if not isinstance(cache, dict):
                 raise ValueError("Cache root must be a JSON object")
             log_cache_event("cache_loaded", count=len(cache), cache_file=CACHE_FILE)
@@ -53,26 +58,8 @@ def _write_cache(cache):
             entry.pop("season_average", None)
             entry.pop("season_number", None)
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=CACHE_DIR,
-            prefix=f".{CACHE_FILE.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = temp_file.name
-            json.dump(cache_to_save, temp_file, indent=2, ensure_ascii=False)
-            temp_file.flush()
-            os.fsync(temp_file.fileno())
-        os.replace(temp_path, CACHE_FILE)
-        log_cache_event("cache_saved", count=len(cache_to_save), cache_file=CACHE_FILE)
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.unlink(temp_path)
+    atomic_write_json(CACHE_FILE, cache_to_save, backup=True)
+    log_cache_event("cache_saved", count=len(cache_to_save), cache_file=CACHE_FILE)
 
 
 def save_cache(cache):
@@ -96,14 +83,23 @@ def flush_cache():
         return True
     return False
 
-cache_lock = asyncio.Lock()
+def get_cache_lock():
+    """Return a cache lock bound to the active scheduled job's event loop."""
+    global _cache_lock, _cache_lock_loop
+    loop = asyncio.get_running_loop()
+    if _cache_lock is None or _cache_lock_loop is not loop:
+        _cache_lock = asyncio.Lock()
+        _cache_lock_loop = loop
+    return _cache_lock
+
+
 async def meta_cache_async(
     cache_key, tmdb_id, title, year, media_type, update_timestamp=True, asset_upgraded=False, 
     poster_upgraded=False, background_upgraded=False, season_upgraded=None,
     poster_checked=False, background_checked=False, season_checked=False,
     legacy_cache_key=None, **kwargs
 ):
-    async with cache_lock:
+    async with get_cache_lock():
         cache = load_cache()
         if cache_key not in cache and legacy_cache_key and legacy_cache_key in cache:
             entry = cache.pop(legacy_cache_key)

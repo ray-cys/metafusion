@@ -1,12 +1,21 @@
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from helper.config import CACHE_DIR, get_image_upgrade_days
-from helper.io import atomic_write_json
+from helper.io import atomic_write_json, read_json_with_backup
 
 
 STATE_FILE = CACHE_DIR / "incremental_state.json"
+
+
+@dataclass(frozen=True)
+class PlannedItem:
+    """A Plex item paired with the exact operations selected for this run."""
+
+    item: object
+    reasons: frozenset[str]
 
 
 def utc_now():
@@ -24,6 +33,7 @@ def item_updated_at(item):
 
 def config_fingerprint(config):
     relevant = {
+        "library_name": config.get("_library_name"),
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
         "assets": config.get("assets", {}),
@@ -43,11 +53,8 @@ def config_fingerprint(config):
 
 def load_state(path=None):
     path = STATE_FILE if path is None else path
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-        return document if isinstance(document, dict) else {}
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return {}
+    document = read_json_with_backup(path, default={})
+    return document if isinstance(document, dict) else {}
 
 
 def should_run_full_scan(config, targeted=False, state=None, now=None):
@@ -80,7 +87,7 @@ def mark_full_scan_complete(dry_run=False, path=None, now=None):
         return False
     path = STATE_FILE if path is None else path
     now = utc_now() if now is None else now
-    atomic_write_json(path, {"last_full_scan": now.isoformat()})
+    atomic_write_json(path, {"last_full_scan": now.isoformat()}, backup=True)
     return True
 
 
@@ -106,10 +113,10 @@ def timestamp_due(value, days, now=None):
     return now - last_value >= timedelta(days=interval_days)
 
 
-def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
-    """Return whether enabled artwork makes an unchanged item eligible."""
+def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=None):
+    """Return the artwork operations due for an otherwise unchanged item."""
     if not isinstance(cached, dict) or not config:
-        return False
+        return set()
     assets = config.get("assets", {})
     flags = feature_flags or {
         "poster": assets.get("run_poster", True),
@@ -127,28 +134,126 @@ def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
     elif normalized_type == "tv":
         days = get_image_upgrade_days(config, "series")
     else:
-        return False
+        return set()
 
+    reasons = set()
     if flags.get("poster", False) and timestamp_due(
         cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
         days,
         now=now,
     ):
-        return True
+        reasons.add("poster")
     if flags.get("background", False) and timestamp_due(
         cached.get("background_last_checked")
         or cached.get("background_last_upgraded"),
         days,
         now=now,
     ):
-        return True
+        reasons.add("background")
     if normalized_type == "tv" and flags.get("season", False):
-        return timestamp_due(
+        if timestamp_due(
             cached.get("season_last_checked"),
             get_image_upgrade_days(config, "season"),
             now=now,
+        ):
+            reasons.add("season")
+    return reasons
+
+
+def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
+    """Return whether enabled artwork makes an unchanged item eligible."""
+    return bool(
+        image_upgrade_reasons(
+            cached,
+            media_type,
+            config,
+            feature_flags=feature_flags,
+            now=now,
         )
-    return False
+    )
+
+
+def enabled_work_reasons(media_type, feature_flags=None):
+    flags = feature_flags or {}
+    normalized_type = str(media_type or "").lower()
+    if normalized_type in {"show", "shows"}:
+        normalized_type = "tv"
+    if normalized_type == "movies":
+        normalized_type = "movie"
+
+    reasons = set()
+    if flags.get("metadata_basic", True) or flags.get("metadata_enhanced", False):
+        reasons.add("metadata")
+    if flags.get("poster", False):
+        reasons.add("poster")
+    if flags.get("background", False):
+        reasons.add("background")
+    if normalized_type == "tv" and flags.get("season", False):
+        reasons.add("season")
+    return reasons or {"identity"}
+
+
+def plan_items(
+    items,
+    cache,
+    fingerprint,
+    full_scan=False,
+    rating_keys=None,
+    config=None,
+    feature_flags=None,
+    now=None,
+):
+    """Plan selected items without losing which operations made them eligible."""
+    target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
+    candidates = [
+        item
+        for item in items
+        if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
+    ]
+    if full_scan or target_keys:
+        return [
+            PlannedItem(
+                item,
+                frozenset(
+                    enabled_work_reasons(
+                        getattr(item, "type", None), feature_flags=feature_flags
+                    )
+                ),
+            )
+            for item in candidates
+        ]
+
+    cache_by_rating_key = {
+        str(entry.get("rating_key")): entry
+        for entry in cache.values()
+        if isinstance(entry, dict) and entry.get("rating_key") is not None
+    }
+    planned = []
+    for item in candidates:
+        rating_key = str(getattr(item, "ratingKey", ""))
+        updated_at = item_updated_at(item)
+        cached = cache_by_rating_key.get(rating_key)
+        changed = (
+            not cached
+            or updated_at is None
+            or cached.get("plex_updated_at") != updated_at
+            or cached.get("config_fingerprint") != fingerprint
+        )
+        if changed:
+            reasons = enabled_work_reasons(
+                getattr(item, "type", None), feature_flags=feature_flags
+            )
+        else:
+            reasons = image_upgrade_reasons(
+                cached,
+                getattr(item, "type", None),
+                config,
+                feature_flags=feature_flags,
+                now=now,
+            )
+        if reasons:
+            planned.append(PlannedItem(item, frozenset(reasons)))
+    return planned
 
 
 def select_items(
@@ -161,37 +266,16 @@ def select_items(
     feature_flags=None,
     now=None,
 ):
-    target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
-    candidates = [
-        item
-        for item in items
-        if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
+    return [
+        planned.item
+        for planned in plan_items(
+            items,
+            cache,
+            fingerprint,
+            full_scan=full_scan,
+            rating_keys=rating_keys,
+            config=config,
+            feature_flags=feature_flags,
+            now=now,
+        )
     ]
-    if full_scan or target_keys:
-        return candidates
-
-    cache_by_rating_key = {
-        str(entry.get("rating_key")): entry
-        for entry in cache.values()
-        if isinstance(entry, dict) and entry.get("rating_key") is not None
-    }
-    changed = []
-    for item in candidates:
-        rating_key = str(getattr(item, "ratingKey", ""))
-        updated_at = item_updated_at(item)
-        cached = cache_by_rating_key.get(rating_key)
-        if (
-            not cached
-            or updated_at is None
-            or cached.get("plex_updated_at") != updated_at
-            or cached.get("config_fingerprint") != fingerprint
-            or image_upgrade_due(
-                cached,
-                getattr(item, "type", None),
-                config,
-                feature_flags=feature_flags,
-                now=now,
-            )
-        ):
-            changed.append(item)
-    return changed

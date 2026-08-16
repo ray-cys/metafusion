@@ -5,7 +5,18 @@ from helper.config import CACHE_DIR
 from helper.logging import log_tmdb_event, redact_secrets
 from helper.tmdb_cache import tmdb_response_cache
 
-tmdb_limiter = AsyncLimiter(40, 10)
+_tmdb_limiter = None
+_tmdb_limiter_loop = None
+
+
+def get_tmdb_limiter():
+    """Return a limiter bound to the current job's event loop."""
+    global _tmdb_limiter, _tmdb_limiter_loop
+    loop = asyncio.get_running_loop()
+    if _tmdb_limiter is None or _tmdb_limiter_loop is not loop:
+        _tmdb_limiter = AsyncLimiter(40, 10)
+        _tmdb_limiter_loop = loop
+    return _tmdb_limiter
 
 
 def begin_tmdb_cache(config):
@@ -20,7 +31,28 @@ def begin_tmdb_cache(config):
 
 
 def flush_tmdb_cache():
-    return tmdb_response_cache.flush()
+    result = tmdb_response_cache.flush()
+    log_tmdb_event("tmdb_cache_stats", **tmdb_response_cache.stats())
+    return result
+
+
+def artwork_language_codes(config):
+    """Return TMDb image languages without changing the metadata language."""
+    tmdb_config = config.get("tmdb", {})
+    fallback = tmdb_config.get("fallback", [])
+    if isinstance(fallback, str):
+        fallback = [fallback]
+    candidates = [tmdb_config.get("language", "en-US"), *(fallback or []), "null"]
+    languages = []
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value.lower() != "null":
+            value = value.split("-", 1)[0].lower()
+        else:
+            value = "null"
+        if value and value not in languages:
+            languages.append(value)
+    return ",".join(languages)
 
 
 class ResponseTooLargeError(RuntimeError):
@@ -89,7 +121,7 @@ async def tmdb_api_request(
                     },
                 )
         if language is None:
-            language = config.get("tmdb", {}).get("language", "en")
+            language = config.get("tmdb", {}).get("language", "en-US")
         if region is None:
             region = config.get("tmdb", {}).get("region", "US")
         url = f"https://api.themoviedb.org/3/{endpoint_or_url}"
@@ -125,7 +157,7 @@ async def tmdb_api_request(
         rate_limit_waited = False
         try:
             log_tmdb_event("tmdb_request", url=logged_url, query=logged_query, attempt=attempt, retries=retries)
-            async with tmdb_limiter:
+            async with get_tmdb_limiter():
                 async with session.get(url, params=query, **kwargs) as response:
                     if response.status == 200:
                         if raw:
@@ -168,4 +200,35 @@ async def tmdb_api_request(
             log_tmdb_event("tmdb_retrying", sleep_time=sleep_time, next_attempt=attempt + 1, retries=retries)
             await asyncio.sleep(sleep_time)
     log_tmdb_event("tmdb_failed", retries=retries, url=logged_url, query=logged_query)
+    return None
+
+
+async def resolve_tmdb_id(
+    config,
+    media_type,
+    tmdb_id=None,
+    imdb_id=None,
+    tvdb_id=None,
+    session=None,
+):
+    """Resolve a missing TMDb ID from IDs exposed by Plex legacy agents."""
+    if tmdb_id:
+        return str(tmdb_id)
+    normalized_type = str(media_type or "").lower()
+    candidates = []
+    if imdb_id:
+        candidates.append((str(imdb_id), "imdb_id"))
+    if normalized_type in {"tv", "show", "shows"} and tvdb_id:
+        candidates.append((str(tvdb_id), "tvdb_id"))
+    result_key = "movie_results" if normalized_type in {"movie", "movies"} else "tv_results"
+    for external_id, source in candidates:
+        result = await tmdb_api_request(
+            config,
+            f"find/{external_id}",
+            params={"external_source": source},
+            session=session,
+        )
+        matches = result.get(result_key, []) if isinstance(result, dict) else []
+        if matches and matches[0].get("id") is not None:
+            return str(matches[0]["id"])
     return None

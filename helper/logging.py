@@ -311,6 +311,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_failed_extract_movie_path": "[Plex] Failed to extract movie path for {title} ({year}): {error}",
         "plex_failed_extract_show_path": "[Plex] Failed to extract show path for {title} ({year}): {error}",
         "plex_failed_extract_seasons_episodes": "[Plex] Failed to extract seasons/episodes for {title} ({year}): {error}",
+        "plex_operation_failed": "[Plex] {description} failed (attempt {attempt}/{retries}): {error}",
         "plex_critical_metadata_missing": "[Plex] Critical metadata missing for item [ratingKey={item_key}]: {missing_critical}. Extracted: {result}",
     }
     levels = {
@@ -326,6 +327,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_failed_extract_movie_path": "warning",
         "plex_failed_extract_show_path": "warning",
         "plex_failed_extract_seasons_episodes": "warning",
+        "plex_operation_failed": "warning",
         "plex_critical_metadata_missing": "warning",
     }
     msg = messages.get(event, "[Plex] Unknown event")
@@ -356,6 +358,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_request_failed": "[TMDb] Attempt {attempt}: Request failed for URL {url} with params {query}: {error}",
         "tmdb_retrying": "[TMDb] Retrying in {sleep_time}s... (Attempt {next_attempt}/{retries})",
         "tmdb_failed": "[TMDb] Failed after {retries} attempts for {url} with params {query}",
+        "tmdb_cache_stats": "[TMDb] Cache entries: {entries}, hits: {hits}, misses: {misses}, evictions: {evictions}",
     }
     levels = {
         "tmdb_no_api_key": "error",
@@ -368,6 +371,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_request_failed": "warning",
         "tmdb_retrying": "info",
         "tmdb_failed": "error",
+        "tmdb_cache_stats": "debug",
     }
     msg = messages.get(event, "[TMDb] Unknown event")
     try:
@@ -398,6 +402,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_failed_write_metadata": "[Processing] Failed to write YAML: {error}",
         "processing_metadata_dry_run": "[Dry Run] Metadata for {library_name} generated but not saved.",
         "processing_failed_library": "[Processing] Failed to process library '{library_name}': {error}",
+        "processing_selection_reason": "[Processing] Selected {title} (rating key {rating_key}) from {library_name}: {reasons}",
         "processing_ambiguous_editions": "[Processing] Unsafe duplicate editions in '{library_name}': {description}",
         "processing_ambiguous_editions_allowed": "[Processing] Ambiguous editions allowed in '{library_name}': {description}",
     }
@@ -413,6 +418,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_failed_write_metadata": "error",
         "processing_metadata_dry_run": "info",
         "processing_failed_library": "error",
+        "processing_selection_reason": "info",
         "processing_ambiguous_editions": "error",
         "processing_ambiguous_editions_allowed": "warning",
     }

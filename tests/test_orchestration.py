@@ -1,4 +1,6 @@
 import asyncio
+import copy
+import json
 import logging
 import os
 import subprocess
@@ -9,13 +11,17 @@ from pathlib import Path
 import pytest
 
 import metafusion
-from helper.config import ENV_BINDINGS, SECRET_FILE_BINDINGS
+from helper.config import DEFAULT_CONFIG, ENV_BINDINGS, SECRET_FILE_BINDINGS
 
 
 class Section:
-    def __init__(self, title, library_type):
+    def __init__(self, title, library_type, items=None):
         self.title = title
         self.type = library_type
+        self._items = list(items or [])
+
+    def all(self):
+        return list(self._items)
 
 
 def test_targeted_cli_controls_library_item_and_metadata_only_scope():
@@ -51,7 +57,56 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
         "targeted": True,
         "full_scan": True,
         "metadata_only": True,
+        "asset_only": False,
+        "explain_selection": False,
     }
+
+
+def test_asset_only_cli_disables_metadata_and_cleanup():
+    args = metafusion.parse_cli_args(["--asset-only"])
+    config = {
+        "plex_libraries": ["Movies"],
+        "assets": {
+            "run_poster": True,
+            "run_season": False,
+            "run_background": True,
+        },
+        "cleanup": {"run_process": True},
+        "metadata": {"run_basic": True, "run_enhanced": True},
+        "settings": {"dry_run": False},
+    }
+
+    metafusion.override_config_with_cli(config, args)
+
+    assert config["metadata"] == {"run_basic": False, "run_enhanced": False}
+    assert config["cleanup"]["run_process"] is False
+    assert config["assets"] == {
+        "run_poster": True,
+        "run_season": False,
+        "run_background": True,
+    }
+    assert config["_execution"]["asset_only"] is True
+
+
+def test_explain_selection_cli_is_read_only():
+    args = metafusion.parse_cli_args(["--explain-selection"])
+    config = {
+        "plex_libraries": ["Movies"],
+        "assets": {
+            "run_poster": True,
+            "run_season": False,
+            "run_background": False,
+        },
+        "cleanup": {"run_process": True},
+        "metadata": {"run_basic": True, "run_enhanced": True},
+        "settings": {"dry_run": False},
+    }
+
+    metafusion.override_config_with_cli(config, args)
+
+    assert config["settings"]["dry_run"] is True
+    assert config["cleanup"]["run_process"] is False
+    assert config["_execution"]["explain_selection"] is True
 
 
 def test_connector_preflight_returns_reusable_plex_connection(monkeypatch):
@@ -168,6 +223,65 @@ def test_shutdown_watchdog_does_not_force_exit_after_clean_shutdown(monkeypatch)
         metafusion.shutdown_complete.clear()
 
     assert exits == []
+
+
+def test_status_command_does_not_require_connector_configuration(
+    monkeypatch, tmp_path, capsys
+):
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps({"state": "idle"}), encoding="utf-8")
+    monkeypatch.setenv("STATUS_FILE", str(status_path))
+
+    assert metafusion.main(["--status"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"state": "idle"}
+
+
+def test_scheduler_run_on_start_executes_before_wait_loop(monkeypatch, tmp_path):
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["settings"].update(
+        {"run_on_start": True, "schedule": True, "run_times": ["23:59"]}
+    )
+    config["metafusion_run"] = False
+    calls = []
+
+    class Status:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, _mode):
+            pass
+
+        def idle(self):
+            pass
+
+        def stopping(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def run_job(*_args, **_kwargs):
+        calls.append("run")
+        metafusion.shutdown_requested.set()
+        return True
+
+    monkeypatch.setattr(
+        metafusion, "load_config_file", lambda **_kwargs: (config, {})
+    )
+    monkeypatch.setattr(metafusion, "validate_config", lambda _config: [])
+    monkeypatch.setattr(metafusion, "validate_runtime_paths", lambda *_args: None)
+    monkeypatch.setattr(
+        metafusion, "get_setup_logging", lambda _config: logging.getLogger("run-on-start")
+    )
+    monkeypatch.setattr(metafusion, "RuntimeStatus", Status)
+    monkeypatch.setattr(metafusion, "run_metafusion_job", run_job)
+    metafusion.schedule.clear()
+    try:
+        assert metafusion.main([]) == 0
+    finally:
+        metafusion.schedule.clear()
+
+    assert calls == ["run"]
 
 
 def test_shutdown_watchdog_forces_bounded_exit(monkeypatch):

@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
     "metafusion_run": False,
     "settings": {
         "schedule": True,
+        "run_on_start": False,
         "run_times": ["06:00", "18:30"],
         "dry_run": False,
         "log_level": "INFO",
@@ -72,7 +73,7 @@ DEFAULT_CONFIG = {
     "plex_libraries": ["Movies", "TV Shows"],
     "tmdb": {
         "api_key": "TMDB_API_KEY",
-        "language": "en",
+        "language": "en-US",
         "fallback": ["zh", "ja"],
         "region": "US",
     },
@@ -108,6 +109,7 @@ DEFAULT_CONFIG = {
         "series_days": None,
         "season_days": None,
     },
+    "library_overrides": {},
     "tmdb_cache": {
         "enabled": True,
         "ttl_hours": 24.0,
@@ -152,6 +154,7 @@ DEFAULT_CONFIG = {
 ENV_BINDINGS = (
     ("METAFUSION_RUN", ("metafusion_run",), safe_bool),
     ("RUN_SCHEDULE", ("settings", "schedule"), safe_bool),
+    ("RUN_ON_START", ("settings", "run_on_start"), safe_bool),
     ("RUN_TIMES", ("settings", "run_times"), safe_list),
     ("DRY_RUN", ("settings", "dry_run"), safe_bool),
     ("LOG_LEVEL", ("settings", "log_level"), None),
@@ -284,6 +287,8 @@ def get_image_upgrade_days(config, media_type):
         return 30.0
 
 def warn_unknown_keys(user_cfg, default_cfg, parent_key=""):
+    if parent_key == "library_overrides":
+        return
     for key in user_cfg:
         if key not in default_cfg:
             full_key = f"{parent_key}.{key}" if parent_key else key
@@ -299,6 +304,18 @@ def merge_config_dicts(default, user, sources=None, prefix=()):
             default[k] = v
             if sources is not None:
                 _mark_sources(v, "config.yml", sources, (*prefix, k))
+
+
+def config_for_library(config, library_name):
+    """Apply an advanced library's artwork cadence over global defaults."""
+    effective = copy.deepcopy(config)
+    effective["_library_name"] = library_name
+    override = config.get("library_overrides", {}).get(library_name, {})
+    if isinstance(override, dict):
+        upgrades = override.get("image_upgrades")
+        if isinstance(upgrades, dict):
+            effective["image_upgrades"].update(upgrades)
+    return effective
 
 def _set_path(config, path, value):
     parent = config
@@ -465,6 +482,50 @@ def validate_config(config):
             continue
         if numeric_value < 0 or numeric_value > 3650:
             errors.append(f"image_upgrades.{key} must be between 0 and 3650")
+    library_overrides = config.get("library_overrides", {})
+    if not isinstance(library_overrides, dict):
+        errors.append("library_overrides must be a mapping keyed by Plex library name")
+    else:
+        allowed_override_keys = {"image_upgrades"}
+        allowed_image_keys = {
+            "default_days", "movie_days", "series_days", "season_days"
+        }
+        for library_name, override in library_overrides.items():
+            if not isinstance(override, dict):
+                errors.append(f"library_overrides.{library_name} must be a mapping")
+                continue
+            unexpected = set(override) - allowed_override_keys
+            if unexpected:
+                errors.append(
+                    f"library_overrides.{library_name} contains unsupported keys: "
+                    + ", ".join(sorted(unexpected))
+                )
+            upgrades = override.get("image_upgrades", {})
+            if not isinstance(upgrades, dict):
+                errors.append(
+                    f"library_overrides.{library_name}.image_upgrades must be a mapping"
+                )
+                continue
+            unexpected = set(upgrades) - allowed_image_keys
+            if unexpected:
+                errors.append(
+                    f"library_overrides.{library_name}.image_upgrades contains unsupported keys: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for key, value in upgrades.items():
+                if value is None:
+                    continue
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"library_overrides.{library_name}.image_upgrades.{key} must be numeric or null"
+                    )
+                    continue
+                if numeric_value < 0 or numeric_value > 3650:
+                    errors.append(
+                        f"library_overrides.{library_name}.image_upgrades.{key} must be between 0 and 3650"
+                    )
     try:
         if float(runtime.get("request_timeout")) < float(runtime.get("connect_timeout")):
             errors.append("runtime.request_timeout must be at least runtime.connect_timeout")
@@ -473,12 +534,12 @@ def validate_config(config):
 
     metadata = config.get("metadata", {})
     assets = config.get("assets", {})
-    dependent_features = metadata.get("run_enhanced", False) or any(
+    if metadata.get("run_enhanced", False) and not metadata.get("run_basic", False):
+        errors.append("metadata.run_basic must be enabled for enhanced metadata")
+    any_processing = metadata.get("run_basic", False) or any(
         assets.get(key, False) for key in ("run_poster", "run_season", "run_background")
-    )
-    if dependent_features and not metadata.get("run_basic", False):
-        errors.append("metadata.run_basic must be enabled for enhanced metadata or artwork")
-    if not metadata.get("run_basic", False) and not config.get("cleanup", {}).get("run_process", False):
+    ) or config.get("cleanup", {}).get("run_process", False)
+    if not any_processing:
         errors.append("No processing feature is enabled")
 
     for section_name in ("poster_set", "season_set", "background_set"):

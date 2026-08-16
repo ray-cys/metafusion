@@ -13,7 +13,7 @@ def test_persistent_tmdb_cache_round_trips_and_expires(monkeypatch, tmp_path):
     cache["movie/1"] = {"title": "Example"}
 
     assert cache.flush() is True
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 2
 
     reloaded = PersistentTTLCache()
     clock[0] += 30
@@ -60,3 +60,20 @@ def test_disabled_tmdb_cache_does_not_store_values(tmp_path):
 
     assert cache == {}
     assert cache.flush() is False
+
+
+def test_tmdb_cache_recovers_backup_and_reports_usage(tmp_path):
+    path = tmp_path / "tmdb.json"
+    cache = PersistentTTLCache()
+    cache.configure(path, ttl_hours=1, max_entries=10)
+    cache["first"] = {"value": 1}
+    cache.flush()
+    cache["second"] = {"value": 2}
+    cache.flush()
+    path.write_text("{broken", encoding="utf-8")
+
+    recovered = PersistentTTLCache()
+    recovered.configure(path, ttl_hours=1, max_entries=10)
+
+    assert recovered["first"] == {"value": 1}
+    assert recovered.stats()["hits"] == 1

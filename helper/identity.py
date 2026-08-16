@@ -31,18 +31,19 @@ def cache_key_for_meta(meta):
     media_type = (meta.get("library_type") or "unknown").lower()
     if media_type == "show":
         media_type = "tv"
-    if media_type != "movie":
-        return legacy_cache_key(meta)
-
     identity = item_identity(meta)
     if identity == legacy_cache_key(meta):
         return identity
-    return f"movie:{identity}"
+    return f"{media_type}:{identity}"
 
 
 def metadata_key_for_meta(meta):
     base = f"{meta.get('title')} ({meta.get('year')})"
-    if (meta.get("library_type") or "").lower() != "movie":
+    media_type = (meta.get("library_type") or "").lower()
+    if media_type != "movie":
+        if meta.get("requires_unique_key"):
+            library_name = meta.get("library_name") or "Library"
+            return f"{base} [{library_name} - {item_identity(meta)}]"
         return base
 
     edition_title = meta.get("edition_title")

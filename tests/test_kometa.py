@@ -86,6 +86,11 @@ def test_specials_are_emitted_as_season_zero(monkeypatch):
             }
         ],
     }
+
+    async def cached_request(_config, endpoint, **_kwargs):
+        return tmdb_response_cache.get(endpoint)
+
+    monkeypatch.setattr(builder_module, "tmdb_api_request", cached_request)
     config = {
         "settings": {"mode": "kometa"},
         "tmdb": {"language": "en", "region": "US"},

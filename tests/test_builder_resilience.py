@@ -198,9 +198,14 @@ def season_details(number):
 
 
 @pytest.fixture(autouse=True)
-def isolated_tmdb_cache(tmp_path):
+def isolated_tmdb_cache(tmp_path, monkeypatch):
     tmdb_response_cache.configure(tmp_path / "tmdb-cache.json")
     tmdb_response_cache.clear()
+
+    async def cached_request(_config, endpoint, **_kwargs):
+        return tmdb_response_cache.get(endpoint)
+
+    monkeypatch.setattr(builder, "tmdb_api_request", cached_request)
     yield
     tmdb_response_cache.clear()
 
@@ -378,17 +383,15 @@ def test_movie_builder_dry_run_and_missing_identifiers_do_not_write_cache(
     assert result["poster_action"] == "skipped"
     assert result["background_action"] == "skipped"
     assert calls == []
-    assert (
-        asyncio.run(
-            builder.build_movie(
-                build_config(tmp_path),
-                {"metadata": {}},
-                feature_flags=feature_flags(),
-                meta=missing,
-            )
+    missing_result = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(),
+            meta=missing,
         )
-        is None
     )
+    assert missing_result["metadata_action"] == "failed"
 
 
 def test_movie_builder_handles_invalid_tmdb_and_asset_download_failure(
@@ -398,19 +401,22 @@ def test_movie_builder_handles_invalid_tmdb_and_asset_download_failure(
         return None
 
     monkeypatch.setattr(builder, "tmdb_api_request", no_details)
-    assert (
-        asyncio.run(
-            builder.build_movie(
-                build_config(tmp_path),
-                {"metadata": {}},
-                feature_flags=feature_flags(),
-                meta=movie_meta(),
-            )
+    invalid_result = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(),
+            meta=movie_meta(),
         )
-        is None
     )
+    assert invalid_result["metadata_action"] == "failed"
 
     tmdb_response_cache["movie/100"] = movie_details()
+
+    async def cached_details(_config, endpoint, **_kwargs):
+        return tmdb_response_cache.get(endpoint)
+
+    monkeypatch.setattr(builder, "tmdb_api_request", cached_details)
 
     async def no_cache(*_args, **_kwargs):
         return None
@@ -492,8 +498,8 @@ def test_tv_effective_metadata_only_flags_disable_every_asset(monkeypatch, tmp_p
     )
 
     assert calls == []
-    assert result["poster_action"] == "skipped"
-    assert result["background_action"] == "skipped"
+    assert result["poster_action"] == "not_due"
+    assert result["background_action"] == "not_due"
     assert result["season_poster_actions"] == {}
 
 
@@ -543,14 +549,144 @@ def test_tv_builder_requires_a_mapping_identifier(monkeypatch, tmp_path):
     meta = tv_meta()
     meta.update({"tvdb_id": None, "imdb_id": None})
 
-    assert (
-        asyncio.run(
-            builder.build_tv(
-                build_config(tmp_path),
-                {"metadata": {}},
-                feature_flags=feature_flags(),
-                meta=meta,
-            )
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(),
+            meta=meta,
         )
-        is None
     )
+    assert result["metadata_action"] == "failed"
+
+
+def test_season_only_work_does_not_generate_metadata_or_other_artwork(
+    monkeypatch, tmp_path
+):
+    downloads = []
+
+    async def cache_write(*_args, **_kwargs):
+        return None
+
+    async def download(_config, image_path, save_path, **_kwargs):
+        downloads.append(image_path)
+        save_path.write_bytes(image_path.encode())
+        return True, 200, None
+
+    monkeypatch.setattr(builder, "meta_cache_async", cache_write)
+    monkeypatch.setattr(builder, "download_poster", download)
+    monkeypatch.setattr(
+        builder,
+        "smart_season_asset_upgrade",
+        lambda *_args, **_kwargs: (True, "NO_EXISTING_ASSET_SEASON", {}),
+    )
+    tmdb_response_cache["tv/200"] = tv_details()
+    tmdb_response_cache["tv/200/season/0"] = season_details(0)
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    consolidated = {"metadata": {}}
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            consolidated,
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                poster=False,
+                background=False,
+                season=True,
+            ),
+            meta=tv_meta(),
+            session=object(),
+        )
+    )
+
+    assert consolidated == {"metadata": {}}
+    assert result["metadata_action"] == "not_due"
+    assert result["poster_action"] == "not_due"
+    assert result["background_action"] == "not_due"
+    assert set(result["season_poster_actions"]) == {0, 1}
+    assert set(downloads) == {"/season-0.jpg", "/season-1.jpg"}
+
+
+def test_metadata_certifications_follow_configured_region_with_us_fallback():
+    movie_ratings = [
+        {"iso_3166_1": "US", "release_dates": [{"certification": "PG-13"}]},
+        {"iso_3166_1": "SG", "release_dates": [{"certification": "PG"}]},
+    ]
+    tv_ratings = [
+        {"iso_3166_1": "US", "rating": "TV-14"},
+        {"iso_3166_1": "SG", "rating": "PG13"},
+    ]
+
+    assert builder.regional_movie_certification(movie_ratings, "SG") == "PG"
+    assert builder.regional_movie_certification(movie_ratings, "AU") == "PG-13"
+    assert builder.regional_tv_certification(tv_ratings, "SG") == "PG13"
+    assert builder.regional_tv_certification(tv_ratings, "AU") == "TV-14"
+
+
+def test_artwork_fallback_languages_do_not_replace_metadata_language():
+    config = {
+        "tmdb": {
+            "language": "en-US",
+            "fallback": ["zh-CN", "ja", "en"],
+        }
+    }
+
+    assert builder.artwork_language_codes(config) == "en,zh,ja,null"
+    assert config["tmdb"]["language"] == "en-US"
+
+
+def test_movie_request_keeps_metadata_language_while_including_artwork_fallbacks(
+    monkeypatch, tmp_path
+):
+    requests = []
+
+    async def request(_config, endpoint, params=None, **_kwargs):
+        requests.append((endpoint, params))
+        return movie_details()
+
+    async def no_cache_write(*_args, **_kwargs):
+        return None
+
+    config = build_config(tmp_path)
+    config["tmdb"]["fallback"] = ["zh-CN", "ja"]
+    monkeypatch.setattr(builder, "tmdb_api_request", request)
+    monkeypatch.setattr(builder, "meta_cache_async", no_cache_write)
+
+    asyncio.run(
+        builder.build_movie(
+            config,
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                poster=False,
+                season=False,
+                background=False,
+            ),
+            meta=movie_meta(),
+            session=object(),
+        )
+    )
+
+    endpoint, params = requests[0]
+    assert endpoint == "movie/100"
+    assert params["language"] == "en-US"
+    assert params["region"] == "US"
+    assert params["include_image_language"] == "en,zh,ja,null"
+
+
+def test_cached_tmdb_source_can_skip_artwork_download(monkeypatch, tmp_path):
+    asset = tmp_path / "poster.jpg"
+    asset.write_bytes(b"managed")
+    monkeypatch.setattr(
+        builder,
+        "load_cache",
+        lambda: {"movie:plex:1": {"poster_source_path": "/poster.jpg"}},
+    )
+
+    assert builder.cached_source_matches(
+        "movie:plex:1", "/poster.jpg", asset, "poster"
+    ) is True
+    assert builder.cached_source_matches(
+        "movie:plex:1", "/different.jpg", asset, "poster"
+    ) is False

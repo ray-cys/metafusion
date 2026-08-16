@@ -3,10 +3,12 @@ from types import SimpleNamespace
 
 from helper.incremental import (
     config_fingerprint,
+    image_upgrade_reasons,
     image_upgrade_due,
     item_updated_at,
     load_state,
     mark_full_scan_complete,
+    plan_items,
     select_items,
     should_run_full_scan,
 )
@@ -89,6 +91,17 @@ def test_dry_run_does_not_persist_incremental_state(tmp_path):
     assert mark_full_scan_complete(dry_run=True, path=state_path) is False
     assert not state_path.exists()
     assert item_updated_at(SimpleNamespace(updatedAt=123)) == "123"
+
+
+def test_incremental_state_recovers_from_backup(tmp_path):
+    state_path = tmp_path / "incremental.json"
+    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    second = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    mark_full_scan_complete(path=state_path, now=first)
+    mark_full_scan_complete(path=state_path, now=second)
+    state_path.write_text("{broken", encoding="utf-8")
+
+    assert load_state(state_path)["last_full_scan"] == first.isoformat()
 
 
 def test_per_type_artwork_intervals_select_only_due_unchanged_items():
@@ -185,3 +198,49 @@ def test_artwork_schedule_uses_legacy_upgrade_timestamp_during_migration():
         feature_flags={"poster": True, "background": False, "season": False},
         now=now,
     ) is True
+
+
+def test_planner_preserves_independent_artwork_reasons():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["assets"] = {
+        "run_poster": True,
+        "run_background": True,
+        "run_season": True,
+    }
+    config["image_upgrades"].update({"series_days": 30, "season_days": 15})
+    fingerprint = config_fingerprint(config)
+    item = SimpleNamespace(
+        ratingKey="show", updatedAt=updated, type="show", title="Show"
+    )
+    cached = {
+        "rating_key": "show",
+        "plex_updated_at": updated.isoformat(),
+        "config_fingerprint": fingerprint,
+        "poster_last_checked": (now - timedelta(days=10)).isoformat(),
+        "background_last_checked": (now - timedelta(days=10)).isoformat(),
+        "season_last_checked": (now - timedelta(days=16)).isoformat(),
+    }
+
+    assert image_upgrade_reasons(
+        cached,
+        "show",
+        config,
+        feature_flags={"poster": True, "background": True, "season": True},
+        now=now,
+    ) == {"season"}
+    planned = plan_items(
+        [item],
+        {"show": cached},
+        fingerprint,
+        config=config,
+        feature_flags={
+            "metadata_basic": True,
+            "poster": True,
+            "background": True,
+            "season": True,
+        },
+        now=now,
+    )
+    assert planned[0].reasons == frozenset({"season"})

@@ -4,6 +4,16 @@ import asyncio
 from helper import cache as cache_module
 
 
+def test_cache_lock_is_recreated_for_each_scheduled_event_loop():
+    async def current_lock():
+        return cache_module.get_cache_lock()
+
+    first = asyncio.run(current_lock())
+    second = asyncio.run(current_lock())
+
+    assert first is not second
+
+
 def configure_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(cache_module, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(cache_module, "CACHE_FILE", tmp_path / "meta_cache.json")
@@ -171,16 +181,28 @@ def test_cache_file_is_loaded_once_per_session(monkeypatch, tmp_path):
     configure_cache(monkeypatch, tmp_path)
     cache_module.CACHE_FILE.write_text('{"movie:Example:2020": {}}', encoding="utf-8")
     load_calls = []
-    real_json_load = cache_module.json.load
+    real_json_loads = cache_module.json.loads
 
-    def counted_load(handle):
-        load_calls.append(handle.name)
-        return real_json_load(handle)
+    def counted_loads(value):
+        load_calls.append(True)
+        return real_json_loads(value)
 
-    monkeypatch.setattr(cache_module.json, "load", counted_load)
+    monkeypatch.setattr("helper.io.json.loads", counted_loads)
 
     first = cache_module.load_cache()
     second = cache_module.load_cache()
 
     assert first is second
     assert len(load_calls) == 1
+
+
+def test_corrupt_primary_cache_recovers_last_known_good_backup(monkeypatch, tmp_path):
+    configure_cache(monkeypatch, tmp_path)
+    cache_module.save_cache({"movie:one": {"title": "One"}})
+    cache_module.save_cache({"movie:two": {"title": "Two"}})
+    cache_module.CACHE_FILE.write_text("{broken", encoding="utf-8")
+    cache_module.begin_cache_session()
+
+    recovered = cache_module.load_cache()
+
+    assert recovered == {"movie:one": {"title": "One"}}

@@ -99,6 +99,26 @@ docker compose run --rm metafusion python metafusion.py \
 `--library` and `--rating-key` may be repeated or comma-separated. Targeted
 runs always disable cleanup. Add `--full-scan` to bypass incremental skipping.
 
+Run a targeted artwork repair without regenerating metadata:
+
+```bash
+docker compose run --rm metafusion python metafusion.py \
+  --metafusion_run --library "TV Shows" --rating-key 12345 --asset-only
+```
+
+Explain why an item would be selected without processing or writing:
+
+```bash
+docker compose run --rm metafusion python metafusion.py \
+  --metafusion_run --library "TV Shows" --rating-key 12345 --explain-selection
+```
+
+Print the current scheduler status and recent job history:
+
+```bash
+docker compose exec metafusion python metafusion.py --status
+```
+
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
 
@@ -116,9 +136,9 @@ The tables below list every supported user-configurable Docker variable.
 | `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | File containing the TMDb key; direct key wins. |
-| `TMDB_LANGUAGE` | `en` | Preferred TMDb language. |
-| `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered fallback languages. |
-| `TMDB_REGION` | `US` | TMDb release/certification region. |
+| `TMDB_LANGUAGE` | `en-US` | TMDb metadata language and primary artwork language. |
+| `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered artwork-only language fallbacks; these never change metadata text. |
+| `TMDB_REGION` | `US` | Metadata release/certification region, with US as the fallback. |
 | `RUN_MODE` | `kometa` | `kometa` or `plex`. Plex mode does not create Kometa YAML. |
 | `KOMETA_PATH` | `/kometa` | Container path for Kometa metadata and assets. |
 
@@ -132,11 +152,12 @@ your deployment supports protected secret mounts.
 | --- | --- | --- |
 | `METAFUSION_RUN` | `False` | Run once instead of waiting for the scheduler. |
 | `RUN_SCHEDULE` | `True` | Enable the long-running scheduler. |
+| `RUN_ON_START` | `False` | Run one job when scheduler mode starts, then continue normally. |
 | `RUN_TIMES` | `06:00,18:30` | Comma-separated daily run times. |
 | `TZ` | `UTC` | Container timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate and log without writing generated data or deleting files. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-| `RUN_BASIC` | `True` | Generate core metadata. Required by enhanced metadata and artwork. |
+| `RUN_BASIC` | `True` | Generate core metadata. Required by enhanced metadata, but not artwork-only runs. |
 | `RUN_ENHANCED` | `True` | Generate extended cast/crew metadata. |
 | `RUN_POSTER` | `True` | Manage movie and show posters. |
 | `RUN_SEASON` | `True` | Manage season posters, including Specials. |
@@ -246,11 +267,31 @@ The interval is a minimum age: work starts at the first `RUN_TIMES` execution
 after the interval expires.
 
 Movie settings apply to every configured movie library. Series and season
-settings apply to every configured TV library. MetaFusion does not generate
-episode artwork.
+settings apply to every configured TV library unless a `config.yml` library
+override is present. MetaFusion does not generate episode artwork.
 
-The first Phase 8 run processes selected libraries once to establish artwork
-check timestamps. Later runs return to normal incremental behavior.
+For different cadences within the same media type, use advanced per-library
+overrides in `config.yml`. Global environment variables remain the defaults:
+
+```yaml
+library_overrides:
+  Movies 4K:
+    image_upgrades:
+      movie_days: 60
+  Anime:
+    image_upgrades:
+      series_days: 7
+      season_days: 7
+```
+
+Only `image_upgrades` is accepted inside a library override. Library names
+must exactly match Plex. `--doctor` validates the override structure.
+
+Incremental selection keeps separate reasons for metadata, posters,
+backgrounds, and season posters. An artwork-only cadence does not regenerate
+episode metadata or execute artwork types that are not due. A known TMDb image
+source is marked checked without downloading it again while its managed file
+still exists.
 
 ## Cleanup safety
 
@@ -295,8 +336,11 @@ Operational files are stored under `/config`:
 ```text
 logs/metafusion.log
 cache/meta_cache.json
+cache/meta_cache.json.bak
 cache/tmdb_response_cache.json
+cache/tmdb_response_cache.json.bak
 cache/incremental_state.json
+cache/incremental_state.json.bak
 metafusion-status.json
 ```
 
@@ -311,6 +355,10 @@ A scheduled-job failure is recorded in `metafusion-status.json` and shown in
 the health message. By default, the scheduler remains healthy so a failed job
 does not create a restart loop. Set `HEALTH_FAIL_ON_JOB_ERROR=True` if Docker
 should mark the container unhealthy after a job failure.
+
+The status file keeps the ten most recent job results. Cache and incremental
+state writes retain a last-known-good backup and recover from it automatically
+if the primary JSON file is damaged.
 
 The container handles `SIGTERM`, cancels active work, and flushes cache changes.
 Keep `SHUTDOWN_TIMEOUT` below `STOP_GRACE_PERIOD`. Metadata, cache, and artwork

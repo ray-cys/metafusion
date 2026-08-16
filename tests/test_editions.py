@@ -37,6 +37,24 @@ def test_movie_identity_and_yaml_keys_do_not_collapse():
     assert match_for_meta(no_edition, 123)["blank_edition"] is True
 
 
+def test_duplicate_tv_libraries_use_distinct_cache_and_yaml_keys():
+    first = {
+        "library_type": "tv",
+        "library_name": "TV Shows",
+        "title": "Example",
+        "year": 2020,
+        "ratingKey": "100",
+        "requires_unique_key": True,
+    }
+    second = {**first, "library_name": "Anime", "ratingKey": "200"}
+
+    assert cache_key_for_meta(first) == "tv:plex:100"
+    assert cache_key_for_meta(second) == "tv:plex:200"
+    assert metadata_key_for_meta(first) != metadata_key_for_meta(second)
+    assert "TV Shows" in metadata_key_for_meta(first)
+    assert "Anime" in metadata_key_for_meta(second)
+
+
 def test_plex_metadata_reads_edition_and_filename_fallback():
     class Movie:
         title = "Example"
@@ -81,6 +99,11 @@ def test_builder_emits_distinct_kometa_entries_for_editions(monkeypatch):
         "runtime": 100,
         "overview": "Example overview",
     }
+
+    async def cached_request(_config, endpoint, **_kwargs):
+        return tmdb_response_cache.get(endpoint)
+
+    monkeypatch.setattr(builder_module, "tmdb_api_request", cached_request)
     config = {
         "settings": {"mode": "kometa"},
         "tmdb": {"language": "en", "region": "US"},

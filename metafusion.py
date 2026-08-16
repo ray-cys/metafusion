@@ -1,11 +1,13 @@
 import argparse
 import asyncio
+import json
 import logging
 import os
 import schedule
 import signal
 import sys
 import threading
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from helper.cache import begin_cache_session, flush_cache
 from helper.config import (
     BASE_CONFIG_DIR,
     ConfigError,
+    config_for_library,
     config_source_report,
     get_disabled_features,
     get_feature_flags,
@@ -35,7 +38,12 @@ from helper.logging import (
     log_main_event,
     redact_secrets,
 )
-from helper.plex import _plex_cache, connect_plex_library, connect_plex_server
+from helper.plex import (
+    _plex_cache,
+    connect_plex_library,
+    connect_plex_server,
+    plex_operation,
+)
 from helper.runtime import RuntimeStatus, validate_runtime_paths
 from helper.tmdb import (
     begin_tmdb_cache,
@@ -66,6 +74,21 @@ def parse_cli_args(argv=None):
     parser.add_argument("--run_poster", action="store_true", help="Run poster asset download")
     parser.add_argument("--run_season", action="store_true", help="Run season asset download")
     parser.add_argument("--run_background", action="store_true", help="Run background asset download")
+    parser.add_argument(
+        "--asset-only",
+        action="store_true",
+        help="Process enabled artwork without regenerating metadata",
+    )
+    parser.add_argument(
+        "--explain-selection",
+        action="store_true",
+        help="Explain incremental selection without processing or writing",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Print the current runtime status JSON and exit",
+    )
     parser.add_argument(
         "--doctor",
         "--check-config",
@@ -132,6 +155,12 @@ def override_config_with_cli(config, args):
             {"run_poster": False, "run_season": False, "run_background": False}
         )
         config["cleanup"]["run_process"] = False
+    if args.asset_only:
+        config["metadata"].update({"run_basic": False, "run_enhanced": False})
+        config["cleanup"]["run_process"] = False
+    if args.explain_selection:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_process"] = False
     if libraries or rating_keys:
         config["cleanup"]["run_process"] = False
     config["_execution"] = {
@@ -139,6 +168,8 @@ def override_config_with_cli(config, args):
         "targeted": bool(libraries or rating_keys),
         "full_scan": bool(args.full_scan),
         "metadata_only": bool(args.metadata_only),
+        "asset_only": bool(args.asset_only),
+        "explain_selection": bool(args.explain_selection),
     }
 
 
@@ -237,7 +268,6 @@ async def metafusion_main(config, logger):
                 targeted=targeted,
             )
             run_feature_flags = dict(feature_flags)
-            fingerprint = config_fingerprint(config)
 
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
@@ -270,11 +300,45 @@ async def metafusion_main(config, logger):
                         full_scan = True
                 if not full_scan:
                     run_feature_flags["cleanup"] = False
+                section_items = {}
+                identity_counts = Counter()
+                edition_counts = Counter()
                 for section in sections:
                     try:
+                        inventory = await plex_operation(
+                            lambda current=section: list(current.all()),
+                            runtime_config,
+                            description=f"List library {section.title}",
+                        )
+                        section_items[section.title] = inventory
+                        for item in inventory:
+                            media_type = normalize_library_type(
+                                getattr(item, "type", None)
+                            )
+                            title = getattr(item, "title", None)
+                            year = getattr(item, "year", None)
+                            identity_counts[(media_type, title, year)] += 1
+                            if media_type == "movie":
+                                edition = getattr(item, "editionTitle", None) or getattr(
+                                    item, "edition", None
+                                )
+                                edition_counts[(title, year, edition)] += 1
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        failures.append(f"{section.title}: {error}")
+
+                for section in sections:
+                    if section.title not in section_items:
+                        continue
+                    try:
+                        library_config = config_for_library(config, section.title)
+                        library_flags = dict(get_feature_flags(library_config))
+                        if not full_scan:
+                            library_flags["cleanup"] = False
                         await process_library(
                             library_section=section,
-                            config=config,
+                            config=library_config,
                             library_item_counts=library_item_counts,
                             metadata_summaries=metadata_summaries,
                             library_filesize=library_filesize,
@@ -282,10 +346,14 @@ async def metafusion_main(config, logger):
                             episode_cache={},
                             movie_cache={},
                             session=session,
-                            feature_flags=run_feature_flags,
+                            feature_flags=library_flags,
                             full_scan=full_scan,
                             rating_keys=execution.get("rating_keys"),
-                            incremental_fingerprint=fingerprint,
+                            incremental_fingerprint=config_fingerprint(library_config),
+                            all_items=section_items[section.title],
+                            global_identity_counts=identity_counts,
+                            global_edition_counts=edition_counts,
+                            explain_selection=bool(execution.get("explain_selection")),
                         )
                         successful_sections.append(section)
                     except asyncio.CancelledError:
@@ -414,6 +482,20 @@ def main(argv=None):
     shutdown_requested.clear()
     shutdown_complete.clear()
     args = parse_cli_args(argv)
+    if args.metadata_only and args.asset_only:
+        print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
+        return 2
+    if args.status:
+        status_path = Path(
+            os.environ.get("STATUS_FILE", str(BASE_CONFIG_DIR / "metafusion-status.json"))
+        )
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            print(f"Unable to read runtime status: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return 0
     try:
         config, sources = load_config_file(
             create_if_missing=not (args.dry_run or args.doctor),
@@ -429,12 +511,12 @@ def main(argv=None):
         ("settings", "run_times"): args.run_times is not None,
         ("settings", "dry_run"): args.dry_run,
         ("settings", "mode"): args.mode is not None,
-        ("metadata", "run_basic"): args.run_basic,
-        ("metadata", "run_enhanced"): args.run_enhanced,
+        ("metadata", "run_basic"): args.run_basic or args.asset_only,
+        ("metadata", "run_enhanced"): args.run_enhanced or args.asset_only,
         ("assets", "run_poster"): args.run_poster or args.metadata_only,
         ("assets", "run_season"): args.run_season or args.metadata_only,
         ("assets", "run_background"): args.run_background or args.metadata_only,
-        ("cleanup", "run_process"): args.metadata_only or bool(args.rating_key),
+        ("cleanup", "run_process"): args.metadata_only or args.asset_only or bool(args.rating_key),
         ("plex_libraries",): bool(args.library),
     }
     for path, used in cli_sources.items():
@@ -494,6 +576,8 @@ def main(argv=None):
             if not run_metafusion_job(config, logger, runtime_status):
                 exit_code = 1
         elif schedule_enabled and run_times:
+            if settings.get("run_on_start", False) and not shutdown_requested.is_set():
+                run_metafusion_job(config, logger, runtime_status)
             scheduled_count = 0
             for run_time in run_times:
                 try:

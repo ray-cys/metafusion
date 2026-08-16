@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+from types import SimpleNamespace
 
 from helper import tmdb as tmdb_module
 from helper import logging as logging_module
@@ -28,6 +29,86 @@ def test_tmdb_request_without_session_does_not_raise_or_log_secret(monkeypatch):
     assert result == {}
     assert events[-1][1]["query"]["api_key"] == "***"
     assert "super-secret" not in repr(events)
+
+
+def test_tmdb_id_resolution_uses_external_ids_and_active_session(monkeypatch):
+    calls = []
+    active_session = object()
+
+    async def request(_config, endpoint, params=None, session=None, **_kwargs):
+        calls.append((endpoint, params, session))
+        return {"tv_results": [{"id": 321}]}
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {}, "tv", tvdb_id="123", session=active_session
+        )
+    )
+
+    assert resolved == "321"
+    assert calls == [
+        ("find/123", {"external_source": "tvdb_id"}, active_session)
+    ]
+
+
+def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():
+    calls = []
+
+    class Show:
+        title = "Example"
+        year = 2020
+        type = "show"
+        ratingKey = "phase9-show"
+        librarySection = SimpleNamespace(title="TV Shows", type="show")
+        guids = [SimpleNamespace(id="tmdb://123")]
+
+        def episodes(self):
+            calls.append("episodes")
+            part = SimpleNamespace(file="/tv/Example/Season 00/Special.mkv")
+            media = SimpleNamespace(parts=[part])
+            return [
+                SimpleNamespace(seasonNumber=0, episodeNumber=1, media=[media]),
+                SimpleNamespace(seasonNumber=1, episodeNumber=2, media=[]),
+            ]
+
+        def seasons(self):
+            raise AssertionError("season inventory should be derived from episodes")
+
+    plex_module._plex_cache.clear()
+    metadata = asyncio.run(
+        plex_module.get_plex_metadata(
+            Show(), _runtime_config={"plex_retries": 1}
+        )
+    )
+
+    assert calls == ["episodes"]
+    assert metadata["seasons_episodes"] == {0: [1], 1: [2]}
+
+
+def test_plex_operation_retries_transient_failures(monkeypatch):
+    attempts = []
+
+    def operation():
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise OSError("temporary")
+        return "ok"
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(plex_module.asyncio, "sleep", no_sleep)
+    result = asyncio.run(
+        plex_module.plex_operation(
+            operation,
+            {"plex_retries": 3, "plex_retry_delay": 1},
+            description="test operation",
+        )
+    )
+
+    assert result == "ok"
+    assert len(attempts) == 3
 
 
 def test_tmdb_redacts_secrets_embedded_in_external_url(monkeypatch):
@@ -329,7 +410,7 @@ def test_tmdb_rate_limit_retries_and_recovers(monkeypatch):
         async def __aexit__(self, *_args):
             return False
 
-    monkeypatch.setattr(tmdb_module, "tmdb_limiter", Limiter())
+    monkeypatch.setattr(tmdb_module, "get_tmdb_limiter", lambda: Limiter())
     monkeypatch.setattr(tmdb_module.asyncio, "sleep", lambda seconds: _record_sleep(sleeps, seconds))
 
     result = asyncio.run(

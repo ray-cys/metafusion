@@ -373,7 +373,38 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     return sections, selected_libraries, all_libraries
 
 _plex_cache = {}
-async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movie_cache=None):
+
+
+async def plex_operation(operation, runtime=None, description="Plex operation"):
+    """Run a blocking Plex operation with the configured bounded retry policy."""
+    runtime = runtime or {}
+    retries = max(1, int(runtime.get("plex_retries", 3)))
+    retry_delay = max(0.0, float(runtime.get("plex_retry_delay", 1.0)))
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            return await asyncio.to_thread(operation)
+        except Exception as error:
+            last_error = error
+            log_plex_event(
+                "plex_operation_failed",
+                description=description,
+                attempt=attempt,
+                retries=retries,
+                error=error,
+            )
+            if attempt < retries and retry_delay:
+                await asyncio.sleep(retry_delay * attempt)
+    raise RuntimeError(f"{description} failed after {retries} attempts") from last_error
+
+
+async def get_plex_metadata(
+    item,
+    _season_cache=None,
+    _episode_cache=None,
+    _movie_cache=None,
+    _runtime_config=None,
+):
     global _plex_cache
     title = getattr(item, "title", None)
     year = getattr(item, "year", None)
@@ -433,7 +464,11 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
             if item_key in _movie_cache:
                 parts = _movie_cache[item_key]
             else:
-                parts = await asyncio.to_thread(lambda: list(item.iterParts())) if hasattr(item, 'iterParts') else []
+                parts = await plex_operation(
+                    lambda: list(item.iterParts()),
+                    _runtime_config,
+                    description=f"Read movie parts for {title} ({year})",
+                ) if hasattr(item, 'iterParts') else []
                 _movie_cache[item_key] = parts
             if parts:
                 file_path = parts[0].file
@@ -448,12 +483,17 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
 
     show_path = None
     show_dir = None
+    episodes = []
     if library_type in ("show", "tv") or hasattr(item, "episodes"):
         try:
             if item_key in _episode_cache:
                 episodes = _episode_cache[item_key]
             else:
-                episodes = await asyncio.to_thread(lambda: list(item.episodes())) if hasattr(item, 'episodes') else []
+                episodes = await plex_operation(
+                    lambda: list(item.episodes()),
+                    _runtime_config,
+                    description=f"Read episodes for {title} ({year})",
+                ) if hasattr(item, 'episodes') else []
                 _episode_cache[item_key] = episodes
             found = False
             for episode in episodes:
@@ -472,24 +512,23 @@ async def get_plex_metadata(item, _season_cache=None, _episode_cache=None, _movi
             log_plex_event("plex_failed_extract_show_path", title=title, year=year, error=e)
     
     seasons_episodes = None
-    if library_type in ("show", "tv") or hasattr(item, "seasons"):
+    if library_type in ("show", "tv") or episodes:
         try:
-            if item_key in _season_cache:
-                seasons = _season_cache[item_key]
-            else:
-                seasons = await asyncio.to_thread(lambda: list(item.seasons())) if hasattr(item, 'seasons') else []
-                _season_cache[item_key] = seasons
-
             seasons_episodes = {}
-            for season in seasons:
-                season_key = getattr(season, 'ratingKey', id(season))
-                if season_key in _episode_cache:
-                    episodes = _episode_cache[season_key]
-                else:
-                    episodes = await asyncio.to_thread(lambda: list(season.episodes()))
-                    _episode_cache[season_key] = episodes
-                episode_numbers = [ep.episodeNumber for ep in episodes]
-                seasons_episodes[season.index] = episode_numbers
+            for episode in episodes:
+                season_number = getattr(
+                    episode,
+                    "seasonNumber",
+                    getattr(episode, "parentIndex", None),
+                )
+                episode_number = getattr(
+                    episode,
+                    "episodeNumber",
+                    getattr(episode, "index", None),
+                )
+                if season_number is None or episode_number is None:
+                    continue
+                seasons_episodes.setdefault(season_number, []).append(episode_number)
         except Exception as e:
             log_plex_event("plex_failed_extract_seasons_episodes", title=title, year=year, error=e)
             

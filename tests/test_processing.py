@@ -217,3 +217,41 @@ def test_incremental_library_run_processes_only_changed_or_targeted_items(monkey
         )
     )
     assert seen == ["1"]
+
+
+def test_incremental_success_marker_waits_for_metadata_commit(monkeypatch, tmp_path):
+    marker_calls = []
+
+    async def fake_metadata(item, **_kwargs):
+        value = metadata_for(item)
+        value["updatedAt"] = "updated"
+        return value
+
+    async def fake_process_item(**kwargs):
+        kwargs["consolidated_metadata"]["metadata"]["Movie 1 (2020)"] = {
+            "summary": "new"
+        }
+        return {"_incremental_success": True}
+
+    async def record_marker(*args, **kwargs):
+        marker_calls.append((args, kwargs))
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+    monkeypatch.setattr(processing, "meta_cache_async", record_marker)
+    monkeypatch.setattr(processing, "write_kometa_metadata", fail_write)
+
+    with pytest.raises(processing.LibraryProcessingError, match="Unable to save"):
+        asyncio.run(
+            processing.process_library(
+                FakeSection([1]),
+                config(tmp_path, mode="kometa"),
+                feature_flags={**feature_flags(), "metadata_basic": True},
+                incremental_fingerprint="fingerprint",
+            )
+        )
+
+    assert marker_calls == []

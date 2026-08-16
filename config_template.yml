@@ -6,6 +6,7 @@ metafusion_run: false
 # Dry run and logging configuration
 settings:
   schedule: true
+  run_on_start: false
   run_times:
     - "06:00"
     - "18:30"
@@ -27,12 +28,12 @@ plex_libraries:
 # TMDb API configuration
 tmdb:
   api_key: "YOUR_TMDB_API_KEY"
-  language: "en"
+  # Metadata language. Artwork fallbacks below do not change metadata text.
+  language: "en-US"
   region: "US"
   fallback:
     - zh
     - ja
-    - fr
 
 # Metadata and asset processing options
 metadata:
@@ -73,6 +74,12 @@ image_upgrades:
   movie_days: null
   series_days: null
   season_days: null
+
+# Optional per-library artwork cadence. Global values remain the defaults.
+library_overrides: {}
+#  Movies 4K:
+#    image_upgrades:
+#      movie_days: 60
 
 # Persist successful TMDb JSON responses to reduce repeated API traffic.
 tmdb_cache:

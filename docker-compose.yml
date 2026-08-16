@@ -30,6 +30,7 @@ services:
       METAFUSION_RUN: ${METAFUSION_RUN-}
       DRY_RUN: ${DRY_RUN-}
       RUN_SCHEDULE: ${RUN_SCHEDULE-}
+      RUN_ON_START: ${RUN_ON_START-}
       RUN_TIMES: ${RUN_TIMES-}
       LOG_LEVEL: ${LOG_LEVEL-}
       RUN_BASIC: ${RUN_BASIC-}

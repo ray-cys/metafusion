@@ -74,6 +74,45 @@ jobs:
             metafusion-ci:${GITHUB_SHA} \
             python -c 'import os; from pathlib import Path; assert (os.getuid(), os.getgid()) == (99, 100); target = Path("/config/.ci-write-test"); target.write_text("ok", encoding="utf-8"); status = target.stat(); assert (status.st_uid, status.st_gid) == (99, 100)'
 
+      - name: Exercise environment-only read-only scheduler lifecycle
+        run: |
+          config_dir="$(mktemp -d)"
+          container_id=""
+          cleanup() {
+            if test -n "${container_id}"; then
+              docker rm --force "${container_id}" >/dev/null 2>&1 || true
+            fi
+            rm -rf "${config_dir}"
+          }
+          trap cleanup EXIT
+          chmod 0777 "${config_dir}"
+          past_time="$(date -u -d '2 minutes ago' +%H:%M)"
+          container_id="$(docker run --detach \
+            --read-only \
+            --tmpfs /tmp:size=64m,mode=1777 \
+            --env PUID=99 \
+            --env PGID=100 \
+            --env RUN_MODE=plex \
+            --env PLEX_URL=http://127.0.0.1:32400 \
+            --env PLEX_TOKEN=ci-plex-token \
+            --env PLEX_LIBRARIES=Movies \
+            --env TMDB_API_KEY=ci-tmdb-key \
+            --env RUN_SCHEDULE=True \
+            --env RUN_ON_START=False \
+            --env RUN_TIMES="${past_time}" \
+            --volume "${config_dir}:/config" \
+            metafusion-ci:${GITHUB_SHA})"
+          for attempt in $(seq 1 20); do
+            test -f "${config_dir}/metafusion-status.json" && break
+            sleep 1
+          done
+          test -f "${config_dir}/metafusion-status.json"
+          test ! -e "${config_dir}/config.yml"
+          docker exec --user 99:100 "${container_id}" python healthcheck.py
+          docker stop --time 10 "${container_id}"
+          docker rm "${container_id}"
+          container_id=""
+
       - name: Scan image for fixable critical vulnerabilities
         run: |
           docker run --rm \

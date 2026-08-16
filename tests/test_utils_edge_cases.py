@@ -149,6 +149,17 @@ def test_movie_asset_upgrade_decision_matrix(monkeypatch, tmp_path):
     )
     assert decision[0:2] == (False, "ALREADY_UP_TO_DATE")
 
+    monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: True)
+    decision = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {"width": 32, "height": 32, "vote_average": 8},
+        new_image_path=candidate,
+        cache_key="movie",
+    )
+    assert decision[0:2] == (False, "ALREADY_UP_TO_DATE")
+    monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)
+
     candidate.write_bytes(encoded_image("green", (32, 32)))
     decision = utils.smart_asset_upgrade(
         config,

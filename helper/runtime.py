@@ -34,9 +34,10 @@ def validate_runtime_paths(config, config_dir):
 
 
 class RuntimeStatus:
-    def __init__(self, path, heartbeat_seconds=30):
+    def __init__(self, path, heartbeat_seconds=30, history_limit=10):
         self.path = Path(path)
         self.heartbeat_seconds = heartbeat_seconds
+        self.history_limit = max(1, int(history_limit))
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -85,6 +86,16 @@ class RuntimeStatus:
         }
         if success:
             values["last_success"] = now
+        history = list(self._data.get("history", []))
+        history.append(
+            {
+                "started_at": self._data.get("last_run_started"),
+                "finished_at": now,
+                "status": values["last_run_status"],
+                "error": values["last_error"],
+            }
+        )
+        values["history"] = history[-self.history_limit :]
         self._update(**values)
 
     def stopping(self):

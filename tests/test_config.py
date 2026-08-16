@@ -2,7 +2,13 @@ from pathlib import Path
 
 import yaml
 
-from helper.config import DEFAULT_CONFIG, get_image_upgrade_days, load_config_file
+from helper.config import (
+    DEFAULT_CONFIG,
+    config_for_library,
+    get_image_upgrade_days,
+    load_config_file,
+    validate_config,
+)
 
 
 TEMPLATE_FILE = Path(__file__).parents[1] / "config_template.yml"
@@ -217,3 +223,23 @@ def test_template_keeps_destructive_cleanup_disabled():
     template = yaml.safe_load(TEMPLATE_FILE.read_text(encoding="utf-8"))
 
     assert template["cleanup"]["run_process"] is False
+
+
+def test_library_artwork_overrides_inherit_global_configuration():
+    config = {**DEFAULT_CONFIG, "image_upgrades": dict(DEFAULT_CONFIG["image_upgrades"])}
+    config["library_overrides"] = {
+        "Anime": {"image_upgrades": {"series_days": 7, "season_days": 3}}
+    }
+
+    anime = config_for_library(config, "Anime")
+    movies = config_for_library(config, "Movies")
+
+    assert get_image_upgrade_days(anime, "series") == 7
+    assert get_image_upgrade_days(anime, "season") == 3
+    assert get_image_upgrade_days(movies, "series") == 30
+    assert anime["_library_name"] == "Anime"
+
+
+def test_library_override_validation_rejects_unsupported_features():
+    config = {**DEFAULT_CONFIG, "library_overrides": {"Anime": {"cleanup": True}}}
+    assert any("unsupported keys" in error for error in validate_config(config))

@@ -302,9 +302,6 @@ def smart_asset_upgrade(
     if not asset_path.exists():
         return True, "NO_EXISTING_ASSET", context
 
-    if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE", context
-
     if new_image_path and new_image_path.exists():
         try:
             with open(asset_path, "rb") as f:
@@ -320,6 +317,9 @@ def smart_asset_upgrade(
             return False, "ERROR_IMAGE_COMPARE", context
     else:
         return False, "NO_IMAGE_FOR_COMPARE", context
+
+    if stale_image(last_upgraded, stale_days):
+        return True, "FORCE_UPGRADE_STALE", context
 
     if cached_votes < vote_threshold and new_votes >= vote_threshold:
         return True, "UPGRADE_THRESHOLD", context
@@ -383,9 +383,6 @@ def smart_season_asset_upgrade(
     if not asset_path.exists():
         return True, "NO_EXISTING_ASSET_SEASON", context
 
-    if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE_SEASON", context
-
     if new_image_path and new_image_path.exists():
         try:
             with open(asset_path, "rb") as f:
@@ -401,6 +398,9 @@ def smart_season_asset_upgrade(
             return False, "ERROR_IMAGE_COMPARE_SEASON", context
     else:
         return False, "NO_IMAGE_FOR_COMPARE_SEASON", context
+
+    if stale_image(last_upgraded, stale_days):
+        return True, "FORCE_UPGRADE_STALE_SEASON", context
 
     try:
         with Image.open(asset_path) as img:
