@@ -56,3 +56,4 @@ def test_ci_smoke_tests_unraid_runtime_identity():
     assert "--env PUID=99" in workflow
     assert "--env PGID=100" in workflow
     assert "(os.getuid(), os.getgid()) == (99, 100)" in workflow
+    assert "(status.st_uid, status.st_gid) == (99, 100)" in workflow

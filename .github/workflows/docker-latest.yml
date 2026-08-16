@@ -72,8 +72,7 @@ jobs:
             --env PGID=100 \
             --volume "${config_dir}:/config" \
             metafusion-ci:${GITHUB_SHA} \
-            python -c 'import os; from pathlib import Path; assert (os.getuid(), os.getgid()) == (99, 100); Path("/config/.ci-write-test").write_text("ok", encoding="utf-8")'
-          test "$(stat -c '%u:%g' "${config_dir}/.ci-write-test")" = "99:100"
+            python -c 'import os; from pathlib import Path; assert (os.getuid(), os.getgid()) == (99, 100); target = Path("/config/.ci-write-test"); target.write_text("ok", encoding="utf-8"); status = target.stat(); assert (status.st_uid, status.st_gid) == (99, 100)'
 
       - name: Scan image for fixable critical vulnerabilities
         run: |
