@@ -239,5 +239,3 @@ uv pip compile --universal --python-version 3.10 --generate-hashes requirements-
 - [Plex token documentation](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
 - [Python PlexAPI](https://python-plexapi.readthedocs.io/)
 - [TMDb API](https://developer.themoviedb.org/docs)
-
-MetaFusion is released under the MIT License.
