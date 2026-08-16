@@ -170,6 +170,7 @@ ENV_BINDINGS = (
     ("RUN_SEASON", ("assets", "run_season"), safe_bool),
     ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
     ("RUN_PROCESS", ("cleanup", "run_process"), safe_bool),
+    ("RUN_CLEANUP", ("cleanup", "run_process"), safe_bool),
     ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
     ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
     ("CONNECT_TIMEOUT", ("runtime", "connect_timeout"), safe_float),
@@ -356,6 +357,12 @@ def apply_secret_file_overrides(config, environ=None, sources=None):
 def apply_env_overrides(config, environ=None, sources=None):
     environ = os.environ if environ is None else environ
     for env_name, path, converter in ENV_BINDINGS:
+        if (
+            env_name == "RUN_PROCESS"
+            and environ.get("RUN_CLEANUP") is not None
+            and str(environ.get("RUN_CLEANUP")).strip()
+        ):
+            continue
         if env_name not in environ:
             continue
         raw_value = environ[env_name]

@@ -195,6 +195,24 @@ def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
     assert get_image_upgrade_days(inherited, "series") == 7
 
 
+def test_run_cleanup_replaces_legacy_run_process_with_safe_precedence(tmp_path):
+    current, sources = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"RUN_PROCESS": "true", "RUN_CLEANUP": "false"},
+        return_sources=True,
+    )
+    legacy = load_config_file(
+        config_file=tmp_path / "legacy.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"RUN_PROCESS": "true"},
+    )
+
+    assert current["cleanup"]["run_process"] is False
+    assert sources[("cleanup", "run_process")] == "RUN_CLEANUP"
+    assert legacy["cleanup"]["run_process"] is True
+
+
 def test_template_keeps_destructive_cleanup_disabled():
     template = yaml.safe_load(TEMPLATE_FILE.read_text(encoding="utf-8"))
 
