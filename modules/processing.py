@@ -182,6 +182,8 @@ async def process_library(
             incremental_fingerprint,
             full_scan=full_scan,
             rating_keys=rating_keys,
+            config=config,
+            feature_flags=feature_flags,
         )
         total_library_items = len(all_items)
         total_items = len(items)

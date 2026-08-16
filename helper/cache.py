@@ -100,6 +100,7 @@ cache_lock = asyncio.Lock()
 async def meta_cache_async(
     cache_key, tmdb_id, title, year, media_type, update_timestamp=True, asset_upgraded=False, 
     poster_upgraded=False, background_upgraded=False, season_upgraded=None,
+    poster_checked=False, background_checked=False, season_checked=False,
     legacy_cache_key=None, **kwargs
 ):
     async with cache_lock:
@@ -117,7 +118,7 @@ async def meta_cache_async(
         for field, value in identity_fields.items():
             if value is not None:
                 entry[field] = value
-        now_iso = datetime.now().isoformat()
+        now_iso = datetime.now().astimezone().isoformat()
         if update_timestamp:
             entry["last_updated"] = now_iso
         if asset_upgraded:
@@ -126,6 +127,12 @@ async def meta_cache_async(
             entry["poster_last_upgraded"] = now_iso
         if background_upgraded:
             entry["background_last_upgraded"] = now_iso
+        if poster_checked:
+            entry["poster_last_checked"] = now_iso
+        if background_checked:
+            entry["background_last_checked"] = now_iso
+        if season_checked:
+            entry["season_last_checked"] = now_iso
         season_number = kwargs.pop("season_number", None)
         if season_number is not None:
             seasons = entry.setdefault("seasons", {})

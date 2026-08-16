@@ -1,57 +1,40 @@
 # MetaFusion
 
-MetaFusion scans selected Plex libraries, enriches their metadata with TMDb,
-and produces Kometa-compatible YAML and artwork. It can also place artwork
-beside Plex media when `RUN_MODE=plex`.
+MetaFusion reads selected Plex libraries, enriches their metadata with TMDb,
+and manages posters, backgrounds, and season artwork. It can create
+Kometa-compatible metadata files or place artwork beside Plex media.
 
-The application is designed to run either once or as a long-running Docker
-scheduler. Cleanup is opt-in and guarded by a complete-library inventory.
+## What it does
 
-## Current capabilities
-
-- Movie, show, season (including Specials/Season 0), and episode metadata
-- Kometa-compatible `movie_metadata.yml` and `tv_metadata.yml`
-- Poster, background, and season artwork selection and upgrades
-- Stable Plex/cache identities for multiple editions
-- Atomic YAML and cache writes with one cache flush per run
-- Validated Kometa output with rotating known-good backups and rollback
-- Incremental Plex processing with periodic full-library reconciliation
-- Persistent, bounded, TTL-based TMDb response caching
-- True dry-run behavior for generated metadata, assets, cache, and logs
-- Bounded item concurrency, HTTP timeouts, and maximum image download size
-- Non-root, read-only Docker runtime with a scheduler health check
-- Graceful `SIGTERM` cancellation and cache flushing
-- Non-writing configuration doctor and targeted library/rating-key runs
+- Generates movie, show, season, Specials/Season 0, and episode metadata.
+- Downloads and upgrades movie/show posters, backgrounds, and season posters.
+- Supports Kometa metadata output and Plex-side artwork output.
+- Skips unchanged Plex items between periodic reconciliation scans.
+- Supports separate movie, series, and season artwork refresh intervals.
+- Preserves manually managed assets during guarded, opt-in cleanup.
+- Handles multiple movie editions when Plex edition names are unique.
+- Runs once or as a long-running Docker scheduler.
 
 ## Requirements
 
-- Docker Compose v2, recommended; or
-- Python 3.10+
-- A reachable Plex server and Plex token
-- A TMDb API key
-- Kometa directories if using `RUN_MODE=kometa`
+- A reachable Plex server and Plex token.
+- A TMDb API key.
+- Docker Compose v2 or an Unraid Docker installation.
+- A writable Kometa path when `RUN_MODE=kometa`.
 
-Dependencies are fully pinned with hashes in `requirements.lock`. For a local
-installation:
+## Quick start
 
-```bash
-python -m pip install --require-hashes -r requirements.lock
-```
-
-## Docker Compose quick start
-
-Using environment variables:
+### Environment-variable configuration
 
 ```bash
 cp .env.example .env
 mkdir -p config kometa
-# Edit .env and add PLEX_TOKEN, TMDB_API_KEY, paths, and library names.
-docker compose config
+# Add your Plex token, TMDb key, library names, and host paths to .env.
 docker compose up -d
 docker compose logs -f metafusion
 ```
 
-Using only `config.yml`:
+### `config.yml` configuration
 
 ```bash
 mkdir -p config kometa
@@ -60,60 +43,53 @@ cp config_template.yml config/config.yml
 docker compose up -d
 ```
 
-The MetaFusion process runs as an unprivileged user. When Docker starts the
-image normally, its entrypoint prepares MetaFusion's managed `/config` state
-and drops privileges to the configured `PUID` and `PGID`. An explicit Compose
-`user:` or `docker run --user` setting takes precedence and is used directly.
+Configuration priority is:
 
-`config` and `kometa` must be writable by that identity. On Linux, set `PUID`
-and `PGID` to your host user IDs or change the directory ownership before
-starting:
+1. Built-in defaults.
+2. `/config/config.yml`.
+3. Secret files.
+4. Non-empty environment variables.
 
-```bash
-id -u
-id -g
-sudo chown -R 10001:10001 config kometa
-```
+Environment variables have the highest priority. A missing or blank variable
+falls back to a secret file, `config.yml`, or the built-in default. When
+environment configuration is supplied without `config.yml`, MetaFusion does
+not generate a file containing those values.
 
-For Unraid's standard `nobody:users` ownership, add or update these container
-variables; no Docker extra parameter is required:
+## Unraid permissions
+
+Use Unraid's standard `nobody:users` identity:
 
 ```text
 PUID=99
 PGID=100
 ```
 
-The entrypoint never recursively changes the Kometa tree, avoiding long starts
-for large libraries. The mapped Kometa directory must therefore already be
-writable by `99:100`, as normal Unraid appdata and share paths are. It only
-repairs ownership for `/config`, `/config/logs`, `/config/cache`, and the
-MetaFusion status file. Existing `config.yml` and secret files are not made
-writable or rewritten.
+The mapped `/config` directory and, in Kometa mode, `/kometa` directory must be
+writable by `99:100`. The container prepares only its managed `/config`,
+`/config/logs`, and `/config/cache` paths. It does not recursively change the
+ownership of a large Kometa tree, which keeps container startup fast.
 
-The startup preflight exits with a clear error if `/config` or `/kometa` is not
-writable. The container otherwise uses a read-only root filesystem, drops all
-Linux capabilities, and enables `no-new-privileges`.
+No Docker extra parameter is required. An explicit Compose `user:` or
+`docker run --user` setting takes precedence over `PUID` and `PGID`.
 
-### Scheduler and one-shot modes
+## Running MetaFusion
 
-Compose defaults to scheduler mode. `RUN_TIMES` uses the timezone from `TZ`.
+The Docker service defaults to scheduler mode. `RUN_TIMES` uses `TZ`.
 
-Run one job without the Compose restart policy:
+Run one job:
 
 ```bash
 docker compose run --rm -e METAFUSION_RUN=True metafusion
 ```
 
-Do not set `METAFUSION_RUN=True` on the long-running service unless repeated
-one-shot execution after every restart is intentional.
-
-Validate configuration without connecting to Plex/TMDb or creating files:
+Validate configuration without contacting Plex or TMDb and without creating
+files:
 
 ```bash
 docker compose run --rm metafusion python metafusion.py --doctor
 ```
 
-Run a targeted repair without scanning every item:
+Run a targeted metadata repair:
 
 ```bash
 docker compose run --rm metafusion python metafusion.py \
@@ -121,134 +97,188 @@ docker compose run --rm metafusion python metafusion.py \
 ```
 
 `--library` and `--rating-key` may be repeated or comma-separated. Targeted
-runs always disable cleanup. Use `--full-scan` to bypass incremental skipping.
+runs always disable cleanup. Add `--full-scan` to bypass incremental skipping.
 
-## Configuration
+Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
+one-shot run after every container restart is intentional.
 
-Configuration is resolved independently for every option: built-in default,
-then `/config/config.yml`, then a configured secret file, then a non-empty
-environment variable. Direct environment variables therefore keep highest
-priority, while missing or blank variables fall back to secret files or
-`config.yml`. Compose no longer injects application defaults, so a YAML-only
-deployment works without `.env`. In Unraid, remove an unwanted variable or
-leave its value blank; any non-empty template variable intentionally overrides
-the corresponding YAML value.
+## Environment variables
 
-If a non-empty environment configuration is present and `config.yml` is
-absent, MetaFusion uses safe defaults without generating a template that could
-replace environment values. For YAML configuration, copy
-`config_template.yml` to `/config/config.yml`.
+The tables below list every supported user-configurable Docker variable.
 
-### Secret handling
+### Connections, libraries, and output mode
 
-Plex tokens and TMDb API keys are redacted from MetaFusion log and error
-messages. When they are supplied as environment variables, MetaFusion does not
-write them to `/config/config.yml`.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PLEX_URL` | `http://10.0.0.1:32400` | Complete Plex server URL. |
+| `PLEX_TOKEN` | required | Plex authentication token. |
+| `PLEX_TOKEN_FILE` | unset | File containing the Plex token; direct token wins. |
+| `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
+| `TMDB_API_KEY` | required | TMDb API key. |
+| `TMDB_API_KEY_FILE` | unset | File containing the TMDb key; direct key wins. |
+| `TMDB_LANGUAGE` | `en` | Preferred TMDb language. |
+| `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered fallback languages. |
+| `TMDB_REGION` | `US` | TMDb release/certification region. |
+| `RUN_MODE` | `kometa` | `kometa` or `plex`. Plex mode does not create Kometa YAML. |
+| `KOMETA_PATH` | `/kometa` | Container path for Kometa metadata and assets. |
 
-For file-based secrets, mount each protected host file read-only into the
-container, leave the corresponding direct value blank, and set its file option:
+Tokens and API keys are redacted from MetaFusion logs. Environment values
+remain visible to Docker/Unraid administrators. Use the `*_FILE` options when
+your deployment supports protected secret mounts.
+
+### Scheduling and processing
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `METAFUSION_RUN` | `False` | Run once instead of waiting for the scheduler. |
+| `RUN_SCHEDULE` | `True` | Enable the long-running scheduler. |
+| `RUN_TIMES` | `06:00,18:30` | Comma-separated daily run times. |
+| `TZ` | `UTC` | Container timezone used by the scheduler. |
+| `DRY_RUN` | `False` | Calculate and log without writing generated data or deleting files. |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
+| `RUN_BASIC` | `True` | Generate core metadata. Required by enhanced metadata and artwork. |
+| `RUN_ENHANCED` | `True` | Generate extended cast/crew metadata. |
+| `RUN_POSTER` | `True` | Manage movie and show posters. |
+| `RUN_SEASON` | `True` | Manage season posters, including Specials. |
+| `RUN_BACKGROUND` | `False` | Manage movie and show backgrounds. |
+| `RUN_CLEANUP` | `False` | Enable guarded orphan cleanup. Test with dry-run first. |
+
+### Runtime and Plex reliability
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MAX_CONCURRENCY` | `8` | Maximum media items processed concurrently. |
+| `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
+| `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds. |
+| `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |
+| `PLEX_RETRIES` | `3` | Plex startup connection attempts. |
+| `PLEX_RETRY_DELAY` | `1` | Base Plex retry delay in seconds. |
+| `SHUTDOWN_TIMEOUT` | `15` | Internal graceful-shutdown deadline in seconds. |
+| `STOP_GRACE_PERIOD` | `20s` | Docker/Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
+| `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size. |
+| `PUID` | `10001` | Runtime user ID; use `99` on Unraid. |
+| `PGID` | `10001` | Runtime group ID; use `100` on Unraid. |
+
+### Incremental processing, artwork cadence, cache, and health
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INCREMENTAL` | `True` | Skip successfully processed unchanged items. |
+| `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between reconciliation scans. |
+| `IMAGE_UPGRADE_DAYS` | `30` | Default timed artwork refresh interval; `0` disables it. |
+| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background interval. |
+| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background interval. |
+| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster interval. |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb JSON responses. |
+| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
+| `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
+| `VALIDATE_OUTPUT` | `True` | Validate Kometa YAML before replacing known-good output. |
+| `OUTPUT_BACKUP_COUNT` | `3` | Metadata backups retained per output file. |
+| `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Allow unsafe duplicate edition matching. |
+| `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job. |
+| `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum health heartbeat age in seconds. |
+
+### Poster selection
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTER_MAX_WIDTH` | `2000` | Preferred maximum poster width. |
+| `POSTER_MAX_HEIGHT` | `3000` | Preferred maximum poster height. |
+| `POSTER_MIN_WIDTH` | `1000` | Minimum preferred poster width. |
+| `POSTER_MIN_HEIGHT` | `1500` | Minimum preferred poster height. |
+| `POSTER_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
+| `POSTER_VOTE_RELAXED` | `3.5` | Relaxed fallback vote score. |
+| `POSTER_VOTE_THRESHOLD` | `5.0` | Score used when deciding artwork upgrades. |
+
+### Season-poster selection
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SEASON_MAX_WIDTH` | `2000` | Preferred maximum season-poster width. |
+| `SEASON_MAX_HEIGHT` | `3000` | Preferred maximum season-poster height. |
+| `SEASON_MIN_WIDTH` | `1000` | Minimum preferred season-poster width. |
+| `SEASON_MIN_HEIGHT` | `1500` | Minimum preferred season-poster height. |
+| `SEASON_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
+| `SEASON_VOTE_RELAXED` | `0.5` | Relaxed fallback vote score. |
+| `SEASON_VOTE_THRESHOLD` | `3.0` | Score used when deciding season-poster upgrades. |
+
+### Background selection
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BG_MAX_WIDTH` | `3840` | Preferred maximum background width. |
+| `BG_MAX_HEIGHT` | `2160` | Preferred maximum background height. |
+| `BG_MIN_WIDTH` | `1920` | Minimum preferred background width. |
+| `BG_MIN_HEIGHT` | `1080` | Minimum preferred background height. |
+| `BG_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
+| `BG_VOTE_RELAXED` | `3.5` | Relaxed fallback vote score. |
+| `BG_VOTE_THRESHOLD` | `5.0` | Score used when deciding background upgrades. |
+
+### Paths used by Docker Compose
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CONFIG_PATH` | `./config` | Host path mounted at `/config`. |
+| `KOMETA_HOST_PATH` | `./kometa` | Host path mounted at `/kometa`. |
+| `CONFIG_DIR` | `/config` | Container configuration/state directory. |
+| `STATUS_FILE` | `/config/metafusion-status.json` | Container health/status file. |
+
+`CONFIG_DIR` and `STATUS_FILE` are normally left at their image defaults.
+
+## Artwork refresh intervals
+
+Timed artwork refreshes work with incremental processing. On every scheduled
+run, MetaFusion selects an otherwise unchanged item only when an enabled
+artwork type is due.
+
+Example: movies every 30 days, series and seasons every 15 days:
 
 ```text
-PLEX_TOKEN_FILE=/run/secrets/plex_token
-TMDB_API_KEY_FILE=/run/secrets/tmdb_api_key
+IMAGE_UPGRADE_DAYS=30
+MOVIE_IMAGE_UPGRADE_DAYS=30
+SERIES_IMAGE_UPGRADE_DAYS=15
+SEASON_IMAGE_UPGRADE_DAYS=15
 ```
 
-If both forms are set, `PLEX_TOKEN` and `TMDB_API_KEY` win. Empty, missing, or
-unreadable secret files fail configuration validation before a run starts.
+Blank per-type values inherit `IMAGE_UPGRADE_DAYS`. Decimal values are
+supported (`0.5` is 12 hours), and `0` disables timed refreshes for that type.
+The interval is a minimum age: work starts at the first `RUN_TIMES` execution
+after the interval expires.
 
-Environment variables are still visible to users with permission to inspect
-the Unraid container or Docker configuration. MetaFusion does not provide a web
-login or configuration form, so browser password-manager prompts are controlled
-by the Unraid template and the browser rather than by MetaFusion. Treat Unraid
-and Docker administrative access as trusted access.
+Movie settings apply to every configured movie library. Series and season
+settings apply to every configured TV library. MetaFusion does not generate
+episode artwork.
 
-Core options:
-
-| Environment variable | Default | Purpose |
-| --- | --- | --- |
-| `PLEX_URL` | `http://10.0.0.1:32400` | Plex server URL |
-| `PLEX_TOKEN` | required | Plex authentication token |
-| `PLEX_TOKEN_FILE` | unset | Protected file containing the Plex token |
-| `PLEX_LIBRARIES` | `Movies,TV Shows` | Exact Plex library names |
-| `TMDB_API_KEY` | required | TMDb API key |
-| `TMDB_API_KEY_FILE` | unset | Protected file containing the TMDb API key |
-| `RUN_MODE` | `kometa` | `kometa` or `plex` output mode |
-| `RUN_SCHEDULE` | `True` | Enable scheduled operation |
-| `RUN_TIMES` | `06:00,18:30` | Daily scheduler times |
-| `DRY_RUN` | `False` | Calculate and log without generated writes/deletes |
-| `RUN_PROCESS` | `False` | Enable guarded orphan cleanup |
-| `MAX_CONCURRENCY` | `8` | Maximum items processed concurrently |
-| `REQUEST_TIMEOUT` | `30` | Total HTTP request timeout in seconds |
-| `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds |
-| `PLEX_TIMEOUT` | `10` | Maximum duration of each blocking Plex request |
-| `PLEX_RETRIES` | `3` | Bounded Plex startup connection attempts |
-| `PLEX_RETRY_DELAY` | `1` | Base Plex retry delay in seconds |
-| `SHUTDOWN_TIMEOUT` | `15` | Graceful shutdown deadline before forced exit |
-| `STOP_GRACE_PERIOD` | `20s` | Compose/Docker outer stop deadline |
-| `MAX_IMAGE_MB` | `25` | Maximum accepted artwork response size |
-| `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate edition matching |
-| `INCREMENTAL` | `True` | Skip successfully processed unchanged Plex items |
-| `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum time between reconciliation scans |
-| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb JSON responses |
-| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime |
-| `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses |
-| `VALIDATE_OUTPUT` | `True` | Validate Kometa document structure before replacement |
-| `OUTPUT_BACKUP_COUNT` | `3` | Known-good metadata backups retained per file |
-| `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Make health strict instead of liveness-only |
-| `PUID` / `PGID` | `10001` | Runtime identity; use `99` / `100` on Unraid |
-
-Artwork and metadata switches and all image-selection thresholds are documented
-in `config_template.yml` and `docker-compose.yml`.
+The first Phase 8 run processes selected libraries once to establish artwork
+check timestamps. Later runs return to normal incremental behavior.
 
 ## Cleanup safety
 
-Cleanup remains disabled by default. Before enabling it:
+Cleanup is disabled by default. Before setting `RUN_CLEANUP=True`:
 
 1. Confirm every `PLEX_LIBRARIES` name exactly matches Plex.
-2. Run with `DRY_RUN=True` and inspect the logs.
-3. Back up existing Kometa metadata and assets.
-4. Enable `RUN_PROCESS=True` only after the dry-run is correct.
+2. Back up existing Kometa metadata and assets.
+3. Run once with `DRY_RUN=True` and inspect the logs.
+4. Enable cleanup only after the dry-run result is correct.
 
-MetaFusion will clean a media type only when every detected Plex library of
-that type was selected and completed successfully. For example, all movie
-libraries must be scanned before movie cache, YAML, or managed movie assets can
-be removed. A missing library, scan failure, malformed YAML file, or write
-failure aborts cleanup and marks the job failed. Only asset files previously
-recorded in MetaFusion's cache are eligible for deletion; manually managed
-Kometa assets are preserved.
+Cleanup runs only during a complete reconciliation scan and only after every
+configured library of that media type completes successfully. A missing
+library, failed scan, malformed YAML file, or write failure aborts cleanup.
+Only assets previously recorded in MetaFusion's cache are eligible for
+deletion; manually managed assets are preserved. Disabling an artwork feature
+also disables cleanup for that artwork type.
 
-Disabling an artwork feature also disables cleanup for that artwork type.
-Incremental runs never perform cleanup; cleanup is considered only during a
-complete reconciliation scan. The first run is always full, and a missing
-Kometa output file also forces a full scan.
+## Multiple editions
 
-## Incremental processing and caches
+Give every same-title/year movie copy a unique Plex edition name. Two blank
+editions or duplicate edition names cannot be matched safely by Kometa, so
+MetaFusion stops and identifies the affected movies. Setting
+`ALLOW_AMBIGUOUS_EDITIONS=True` restores permissive behavior but can update the
+wrong copy and is not recommended.
 
-MetaFusion records each successfully processed Plex rating key, Plex update
-timestamp, and a fingerprint of output-affecting configuration. An item is
-skipped only when all three still match. Failed items, items without update
-timestamps, changed configuration, explicit rating-key targets, and full scans
-are always processed.
+## Output, health, and troubleshooting
 
-`cache/tmdb_response_cache.json` stores successful TMDb JSON responses with a
-TTL and entry limit. It is never written during dry-run. The periodic full scan
-detects removed Plex items and is the only scan eligible for orphan cleanup.
-
-## Multiple editions and versions
-
-Give every same-title/year movie copy a unique Plex edition name. MetaFusion
-uses native Plex edition metadata and also recognizes `{edition-Name}` in the
-media filename. Distinct edition names produce distinct cache and YAML entries.
-
-Two blank editions, or two copies with the same edition name, cannot be matched
-uniquely by Kometa. MetaFusion therefore fails safely and explains which items
-need edition names. `ALLOW_AMBIGUOUS_EDITIONS=True` restores permissive legacy
-behavior, but it can cause Kometa to update the wrong copy and is not
-recommended.
-
-## Output and health
-
-In Kometa mode, output is written below `KOMETA_PATH`:
+Kometa mode writes below `KOMETA_PATH`:
 
 ```text
 metadata/movie_metadata.yml
@@ -258,7 +288,9 @@ assets/movie/...
 assets/tv/...
 ```
 
-Logs and operational state are stored in `/config`:
+Plex mode places artwork beside media and does not create Kometa metadata YAML.
+
+Operational files are stored under `/config`:
 
 ```text
 logs/metafusion.log
@@ -268,66 +300,25 @@ cache/incremental_state.json
 metafusion-status.json
 ```
 
-The Docker health check verifies process liveness using the PID and heartbeat.
-A failed scheduled job is recorded in `metafusion-status.json` and displayed by
-the health-check message, but it does not make a healthy scheduler process
-unhealthy. Set `HEALTH_FAIL_ON_JOB_ERROR=True` for strict legacy behavior.
-Inspect state with:
+Inspect logs and container health with:
 
 ```bash
-docker inspect --format '{{json .State.Health}}' metafusion
 docker compose logs --tail=200 metafusion
+docker inspect --format '{{json .State.Health}}' metafusion
 ```
 
-One-shot failures return a non-zero exit code. Scheduled failures remain in the
-status file until a later run succeeds.
+A scheduled-job failure is recorded in `metafusion-status.json` and shown in
+the health message. By default, the scheduler remains healthy so a failed job
+does not create a restart loop. Set `HEALTH_FAIL_ON_JOB_ERROR=True` if Docker
+should mark the container unhealthy after a job failure.
 
-Before each Kometa YAML replacement, MetaFusion validates the stable documented
-mapping structure for metadata, matches, seasons, and episodes. Existing output
-is retained as a rotating backup. A validation or post-write verification
-failure restores the prior known-good file.
+The container handles `SIGTERM`, cancels active work, and flushes cache changes.
+Keep `SHUTDOWN_TIMEOUT` below `STOP_GRACE_PERIOD`. Metadata, cache, and artwork
+replacement use validated/atomic writes so an interrupted run cannot replace a
+known-good file with a partial download.
 
-### Restart behavior
+## References
 
-`SIGTERM` immediately wakes an idle scheduler and cancels an active async job.
-Plex calls are bounded to `PLEX_TIMEOUT` (10 seconds by default), and cache
-changes are flushed during normal cancellation. If a blocked filesystem,
-network driver, or worker still prevents exit, the process watchdog exits after
-`SHUTDOWN_TIMEOUT` (15 seconds). Docker's default 20-second grace period is the
-final boundary. YAML and cache replacement is atomic, so a forced exit can lose
-the current in-memory batch but cannot leave a partially written output file.
-Downloaded artwork is decoded and verified before an atomic staging write, so
-an HTML error response, corrupt image, or failed replacement cannot overwrite a
-known-good asset.
-
-Keep `SHUTDOWN_TIMEOUT` lower than `STOP_GRACE_PERIOD`. The health-check startup
-window is 20 seconds and does not delay the container process itself.
-
-## Development and validation
-
-Install the development lock and run the same checks as CI:
-
-```bash
-python -m pip install --require-hashes -r requirements-dev.lock
-ruff check --select F,E9 .
-pytest -q --cov=. --cov-report=term --cov-fail-under=75
-pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
-```
-
-GitHub Actions tests Python 3.10 and 3.13, audits Python dependencies, scans the
-built container for fixable critical vulnerabilities, builds `linux/amd64` and
-`linux/arm64` images, and signs published images.
-
-To update dependency locks after reviewing available releases:
-
-```bash
-uv pip compile --universal --python-version 3.10 --generate-hashes requirements.in -o requirements.lock
-uv pip compile --universal --python-version 3.10 --generate-hashes requirements-dev.in -o requirements-dev.lock
-```
-
-## Resources
-
-- [Kometa metadata documentation](https://kometa.wiki/en/latest/files/metadata/)
-- [Plex token documentation](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
-- [Python PlexAPI](https://python-plexapi.readthedocs.io/)
-- [TMDb API](https://developer.themoviedb.org/docs)
+- [Kometa metadata files](https://kometa.wiki/en/latest/files/metadata/)
+- [Finding a Plex token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+- [TMDb API documentation](https://developer.themoviedb.org/docs)

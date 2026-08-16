@@ -200,6 +200,16 @@ def test_asset_upgrade_stale_background_and_corrupt_existing(monkeypatch, tmp_pa
         new_image_path=candidate,
         cache_key="movie",
         asset_type="background",
+    )[0:2] == (True, "NO_EXISTING_ASSET")
+
+    asset.write_bytes(encoded_image("red"))
+    assert utils.smart_asset_upgrade(
+        config,
+        asset,
+        {"width": 16, "height": 16, "vote_average": 1},
+        new_image_path=candidate,
+        cache_key="movie",
+        asset_type="background",
     )[0:2] == (True, "FORCE_UPGRADE_STALE")
 
     monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)

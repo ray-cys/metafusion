@@ -110,6 +110,30 @@ def test_cache_key_migration_preserves_existing_entry(monkeypatch, tmp_path):
     assert cache["movie:plex:10"]["poster_average"] == 7.5
 
 
+def test_cache_records_independent_artwork_check_timestamps(monkeypatch, tmp_path):
+    configure_cache(monkeypatch, tmp_path)
+
+    asyncio.run(
+        cache_module.meta_cache_async(
+            "tv:Example:2020",
+            123,
+            "Example",
+            2020,
+            "tv",
+            update_timestamp=False,
+            poster_checked=True,
+            background_checked=True,
+            season_checked=True,
+        )
+    )
+    entry = cache_module.load_cache()["tv:Example:2020"]
+
+    assert "poster_last_checked" in entry
+    assert "background_last_checked" in entry
+    assert "season_last_checked" in entry
+    assert "last_updated" not in entry
+
+
 def test_cache_updates_are_batched_until_flush(monkeypatch, tmp_path):
     configure_cache(monkeypatch, tmp_path)
     write_calls = []

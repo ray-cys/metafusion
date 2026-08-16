@@ -2,6 +2,8 @@ from pathlib import Path
 
 import yaml
 
+from helper.config import ENV_BINDINGS, SECRET_FILE_BINDINGS
+
 REPO_ROOT = Path(__file__).parents[1]
 
 
@@ -17,7 +19,8 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert "no-new-privileges:true" in service["security_opt"]
     assert "healthcheck" in service
     assert environment["METAFUSION_RUN"] == "${METAFUSION_RUN-}"
-    assert environment["RUN_PROCESS"] == "${RUN_PROCESS-}"
+    assert environment["RUN_CLEANUP"] == "${RUN_CLEANUP-}"
+    assert "RUN_PROCESS" not in environment
     assert environment["PLEX_TOKEN"] == "${PLEX_TOKEN-}"
     assert environment["PLEX_TOKEN_FILE"] == "${PLEX_TOKEN_FILE-}"
     assert environment["TMDB_API_KEY"] == "${TMDB_API_KEY-}"
@@ -30,8 +33,48 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert environment["TMDB_CACHE_ENABLED"] == "${TMDB_CACHE_ENABLED-}"
     assert environment["VALIDATE_OUTPUT"] == "${VALIDATE_OUTPUT-}"
     assert environment["HEALTH_FAIL_ON_JOB_ERROR"] == "${HEALTH_FAIL_ON_JOB_ERROR:-False}"
+    assert environment["HEALTH_MAX_HEARTBEAT_AGE"] == "${HEALTH_MAX_HEARTBEAT_AGE:-120}"
     assert service["stop_grace_period"] == "${STOP_GRACE_PERIOD:-20s}"
     assert service["healthcheck"]["start_period"] == "20s"
+
+
+def test_readme_documents_every_supported_environment_variable():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    documented = {env_name for env_name, _path, _converter in ENV_BINDINGS}
+    documented.update(
+        file_env for file_env, _path, _direct_env in SECRET_FILE_BINDINGS
+    )
+    documented.update(
+        {
+            "CONFIG_DIR",
+            "STATUS_FILE",
+            "HEALTH_MAX_HEARTBEAT_AGE",
+            "HEALTH_FAIL_ON_JOB_ERROR",
+            "PUID",
+            "PGID",
+            "TZ",
+            "CONFIG_PATH",
+            "KOMETA_HOST_PATH",
+            "STOP_GRACE_PERIOD",
+        }
+    )
+
+    missing = sorted(name for name in documented if f"`{name}`" not in readme)
+    assert missing == []
+
+
+def test_env_example_contains_every_current_application_binding():
+    names = {
+        line.split("=", 1)[0]
+        for line in (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+    expected = {env_name for env_name, _path, _converter in ENV_BINDINGS}
+    expected.update(
+        file_env for file_env, _path, _direct_env in SECRET_FILE_BINDINGS
+    )
+
+    assert sorted(expected - names) == []
 
 
 def test_dockerfile_uses_stable_python_minor_without_os_upgrade():
