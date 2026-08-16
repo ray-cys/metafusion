@@ -296,11 +296,11 @@ responses instead of loading and rewriting one large JSON document. The cache
 is disposable: database corruption causes a clean cache rebuild and does not
 remove generated metadata or artwork.
 
-On the first Phase 10 start, MetaFusion creates and validates the SQLite
-database before removing the obsolete `tmdb_response_cache.json` and `.bak`
-files. No JSON response import is attempted because those entries expire after
+No JSON response import is attempted because those entries expire after
 `TMDB_CACHE_TTL_HOURS` and importing a large document would recreate the memory
-and I/O spike this backend avoids.
+and I/O spike this backend avoids. MetaFusion leaves the obsolete
+`tmdb_response_cache.json` and `.bak` files untouched; they can be removed
+manually after the SQLite cache has been tested.
 
 `TMDB_CACHE_MAX_ENTRIES` remains the primary bound. Set `TMDB_CACHE_MAX_MB` to
 an optional compressed-payload limit when appdata space matters; its default

@@ -44,7 +44,6 @@ class PersistentTTLCache(MutableMapping):
         max_mb=0,
         enabled=True,
         writable=True,
-        legacy_paths=None,
     ):
         self.reset_memory()
         self.path = Path(path)
@@ -75,8 +74,6 @@ class PersistentTTLCache(MutableMapping):
                 self._trim_database()
             except sqlite3.Error as error:
                 self._handle_database_error(error)
-            if self._connection is not None:
-                self._remove_legacy_files(legacy_paths or [])
 
     @staticmethod
     def _is_corruption_error(error):
@@ -196,17 +193,6 @@ class PersistentTTLCache(MutableMapping):
             Path(f"{self.path}-wal"),
             Path(f"{self.path}-shm"),
         ]
-
-    def _remove_legacy_files(self, legacy_paths):
-        for legacy_path in legacy_paths:
-            legacy = Path(legacy_path)
-            for candidate in (legacy, legacy.with_name(f"{legacy.name}.bak")):
-                try:
-                    candidate.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    continue
 
     def _close_database(self):
         if self._connection is None:

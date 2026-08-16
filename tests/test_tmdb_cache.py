@@ -184,18 +184,18 @@ def test_corrupt_cached_response_becomes_a_miss_instead_of_failing_the_job(tmp_p
     assert cache.flush() is True
 
 
-def test_legacy_json_cache_is_removed_only_after_sqlite_initializes(tmp_path):
+def test_legacy_json_cache_is_left_for_manual_removal(tmp_path):
     legacy = tmp_path / "tmdb_response_cache.json"
     legacy_backup = tmp_path / "tmdb_response_cache.json.bak"
     legacy.write_text("{}", encoding="utf-8")
     legacy_backup.write_text("{}", encoding="utf-8")
     path = tmp_path / "tmdb_response_cache.sqlite3"
     cache = PersistentTTLCache()
-    cache.configure(path, legacy_paths=[legacy])
+    cache.configure(path)
 
     assert path.exists()
-    assert not legacy.exists()
-    assert not legacy_backup.exists()
+    assert legacy.exists()
+    assert legacy_backup.exists()
 
 
 def test_single_cache_update_does_not_create_a_full_file_copy(tmp_path):

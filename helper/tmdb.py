@@ -29,7 +29,6 @@ def begin_tmdb_cache(config):
         max_mb=cache_config.get("max_mb", 0),
         enabled=cache_config.get("enabled", True),
         writable=not config.get("settings", {}).get("dry_run", False),
-        legacy_paths=[CACHE_DIR / "tmdb_response_cache.json"],
     )
 
 
