@@ -5,6 +5,19 @@ from helper.cache import load_cache, mark_cache_dirty
 from helper.identity import cache_key_for_meta, metadata_key_for_meta
 from helper.io import atomic_write_yaml
 
+
+class CleanupError(RuntimeError):
+    pass
+
+
+def normalize_library_type(value):
+    media_type = (value or "").lower()
+    if media_type in {"movies"}:
+        return "movie"
+    if media_type in {"show", "shows"}:
+        return "tv"
+    return media_type
+
 def safe_int(val):
     try:
         return int(val)
@@ -12,7 +25,8 @@ def safe_int(val):
         return None
     
 async def cleanup_title_orphans(
-    config, feature_flags, asset_path=None, existing_assets=None, preloaded_plex_metadata=None
+    config, feature_flags, asset_path=None, existing_assets=None,
+    preloaded_plex_metadata=None, safe_library_types=None,
 ):
     mode = config.get("settings", {}).get("mode", "kometa")
     log_cleanup_event("cleanup_start")
@@ -22,17 +36,26 @@ async def cleanup_title_orphans(
     removed_summary = {}
     cache_changed = False
 
+    safe_library_types = {
+        normalize_library_type(value) for value in (safe_library_types or set())
+    }
+    safe_library_types &= {"movie", "tv"}
     if preloaded_plex_metadata is None:
         log_cleanup_event("cleanup_error")
         return orphans_removed
+    if not safe_library_types:
+        log_cleanup_event("cleanup_unsafe_scope")
+        return orphans_removed
 
     metadata_by_yaml_key = {}
-    for meta in preloaded_plex_metadata.values():
+    safe_metadata = [
+        meta for meta in preloaded_plex_metadata.values()
+        if normalize_library_type(meta.get("library_type")) in safe_library_types
+    ]
+    for meta in safe_metadata:
         title = meta.get("title")
         year = meta.get("year")
-        media_type = (meta.get("library_type") or "").lower()
-        if media_type == "show":
-            media_type = "tv"
+        media_type = normalize_library_type(meta.get("library_type"))
         if title and year:
             global_valid_cache_keys.add(cache_key_for_meta(meta))
             metadata_key = metadata_key_for_meta(meta)
@@ -50,9 +73,15 @@ async def cleanup_title_orphans(
         for season_entry in (entry.get("seasons") or {}).values():
             if isinstance(season_entry, dict) and season_entry.get("season_path"):
                 managed_asset_paths.add(str(Path(season_entry["season_path"]).resolve()))
+    def cached_media_type(key, entry):
+        if isinstance(entry, dict) and entry.get("media_type"):
+            return normalize_library_type(entry.get("media_type"))
+        return normalize_library_type(str(key).split(":", 1)[0])
+
     cache_keys_to_remove = [
         key for key in list(cache.keys())
-        if key not in global_valid_cache_keys
+        if cached_media_type(key, cache.get(key)) in safe_library_types
+        and key not in global_valid_cache_keys
     ]
     for key in cache_keys_to_remove:
         cache_entry = cache.get(key) if isinstance(cache.get(key), dict) else {}
@@ -77,10 +106,10 @@ async def cleanup_title_orphans(
                 removed_summary.setdefault((title, safe_int(year)), {"cache": False, "asset": [], "yaml": False})
                 removed_summary[(title, safe_int(year))]["cache"] = True
     
-    for meta in preloaded_plex_metadata.values():
+    for meta in safe_metadata:
         title = meta.get("title")
         year = meta.get("year")
-        media_type = (meta.get("library_type") or "").lower()
+        media_type = normalize_library_type(meta.get("library_type"))
         if media_type in ["show", "tv"] and title and year:
             cache_key = cache_key_for_meta(meta)
             if cache_key in cache:
@@ -109,8 +138,7 @@ async def cleanup_title_orphans(
         log_cleanup_event("cleanup_total_removed", orphans_removed=len(unique_titles_removed))
         return len(unique_titles_removed)
     
-    library_types = {"movie", "tv", "show"} 
-    preferred_filenames = {f"{lt}_metadata.yml" for lt in library_types}
+    preferred_filenames = {f"{lt}_metadata.yml" for lt in safe_library_types}
     metadata_dir = Path(config.get("settings", {}).get("path", ".")) / "metadata"
     def extract_title_year(orphan_title):
         if " (" in orphan_title and orphan_title.endswith(")"):
@@ -180,11 +208,14 @@ async def cleanup_title_orphans(
                         
             except Exception as e:
                 log_cleanup_event("cleanup_failed_remove_metadata", filename=metadata_file, error=str(e))
+                raise CleanupError(
+                    f"Failed to clean metadata file: {metadata_file}"
+                ) from e
 
     if asset_path:
         valid_asset_dirs = set()
-        for meta in preloaded_plex_metadata.values():
-            media_type = (meta.get("library_type") or "").lower()
+        for meta in safe_metadata:
+            media_type = normalize_library_type(meta.get("library_type"))
             if media_type == "movie":
                 dir_name = meta.get("movie_path")
                 if dir_name:
@@ -230,10 +261,21 @@ async def cleanup_title_orphans(
                         log_cleanup_event("cleanup_failed_remove_asset", description=description, path=path, error="File does not exist")
                 except Exception as e:
                     log_cleanup_event("cleanup_failed_remove_asset", description=description, path=path, error=str(e))
+                    raise CleanupError(f"Failed to remove managed asset: {path}") from e
 
-        orphaned_posters = [p for p in Path(asset_path).rglob("poster.jpg")]
-        orphaned_season_posters = [p for p in Path(asset_path).rglob("Season*.jpg")]
-        orphaned_backgrounds = [p for p in Path(asset_path).rglob("fanart.jpg")]
+        safe_asset_roots = [Path(asset_path) / value for value in safe_library_types]
+        orphaned_posters = [
+            path for root in safe_asset_roots if root.exists()
+            for path in root.rglob("poster.jpg")
+        ]
+        orphaned_season_posters = [
+            path for root in safe_asset_roots if root.exists()
+            for path in root.rglob("Season*.jpg")
+        ]
+        orphaned_backgrounds = [
+            path for root in safe_asset_roots if root.exists()
+            for path in root.rglob("fanart.jpg")
+        ]
 
         tasks = []
         if run_poster:
@@ -255,6 +297,7 @@ async def cleanup_title_orphans(
                         await asyncio.to_thread(dir_path.rmdir)
             except Exception as e:
                 log_cleanup_event("cleanup_failed_remove_asset", description="directory", path=dir_path, error=str(e))
+                raise CleanupError(f"Failed to remove empty asset directory: {dir_path}") from e
 
     if removed_summary:
         log_cleanup_event("cleanup_consolidated_removed", removed_summary=removed_summary)

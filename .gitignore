@@ -52,10 +52,9 @@ test_output/
 coverage/
 htmlcov/
 *.cover
-
-# Ignore requirements lock if present
-poetry.lock
-Pipfile.lock
+.coverage
+.pytest_cache/
+.ruff_cache/
 
 # Ignore Jupyter notebooks (if any)
 *.ipynb

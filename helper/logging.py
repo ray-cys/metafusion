@@ -5,9 +5,28 @@ from pathlib import Path
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
 LOG_FILE = LOGS_DIR / "metafusion.log"
-MIN_PYTHON = (3, 8)
+MIN_PYTHON = (3, 10)
 MIN_CPU_CORES = 4
 MIN_RAM_GB = 4
+
+
+def redact_secrets(value, *secrets):
+    redacted = str(value)
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(str(secret), "***")
+    return redacted
+
+
+class SecretRedactionFilter(logging.Filter):
+    def __init__(self, secrets):
+        super().__init__()
+        self.secrets = tuple(secret for secret in secrets if secret)
+
+    def filter(self, record):
+        record.msg = redact_secrets(record.getMessage(), *self.secrets)
+        record.args = ()
+        return True
 
 def get_setup_logging(config):
     log_file = LOG_FILE
@@ -26,6 +45,13 @@ def get_setup_logging(config):
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
+    secret_filter = SecretRedactionFilter(
+        (
+            config.get("plex", {}).get("token"),
+            config.get("tmdb", {}).get("api_key"),
+        )
+    )
+    console_handler.addFilter(secret_filter)
 
     if not dry_run:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -34,6 +60,7 @@ def get_setup_logging(config):
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(log_level)
+        file_handler.addFilter(secret_filter)
         logger.addHandler(file_handler)
     logger.addHandler(console_handler)
     return logger
@@ -103,15 +130,19 @@ def check_sys_requirements(logger, config):
     invalid_plex_tokens = {"PLEX_TOKEN", "YOUR_PLEX_TOKEN"}
     if plex_url and plex_token and plex_token not in invalid_plex_tokens:
         try:
-            url = f"{plex_url}/?X-Plex-Token={plex_token}"
-            resp = requests.get(url, timeout=2)
+            resp = requests.get(
+                plex_url,
+                headers={"X-Plex-Token": plex_token},
+                timeout=2,
+            )
             internal_up = resp.status_code in (200, 401)
             if internal_up:
                 lines.extend(box_line("[Network] Plex Media Server connection: UP", box_width))
             else:
                 lines.extend(box_line("[Network] Plex Media Server connection: DOWN", box_width))
         except Exception as e:
-            lines.extend(box_line(f"[Network] Plex Media Server connection check failed: {e}", box_width))
+            safe_error = redact_secrets(e, plex_token)
+            lines.extend(box_line(f"[Network] Plex Media Server connection check failed: {safe_error}", box_width))
     else:
         lines.extend(box_line("[Network] Plex Media Server URL or token not set. Check configuration...", box_width))
 
@@ -131,7 +162,7 @@ def check_sys_requirements(logger, config):
             else:
                 lines.extend(box_line("[Network] TMDb API connection: DOWN", box_width))
         except Exception as e:
-            safe_error = str(e).replace(tmdb_api_key, "***")
+            safe_error = redact_secrets(e, tmdb_api_key)
             lines.extend(box_line(f"[Network] TMDb API connection check failed: {safe_error}", box_width))
     else:
         lines.extend(box_line("[Network] TMDb API key not set in config.", box_width))
@@ -157,6 +188,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_unhandled_exception": "[MetaFusion] Unhandled exception: {error}",
         "main_scheduled_run": "[MetaFusion] Scheduled run at {run_time}",
         "main_invalid_schedule_time": "[MetaFusion] Invalid schedule time '{run_time}': {error}",
+        "main_shutdown_requested": "[MetaFusion] Shutdown requested; stopping safely.",
     }
     levels = {
         "main_started": "info",
@@ -166,6 +198,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_unhandled_exception": "error",
         "main_scheduled_run": "info",
         "main_invalid_schedule_time": "error",
+        "main_shutdown_requested": "warning",
     }
     msg = messages.get(event, "[MetaFusion] Unknown event")
     try:
@@ -313,6 +346,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_success": "[TMDb] Successful response for {url} (Attempt {attempt})",
         "tmdb_rate_limited": "[TMDb] Rate limited (HTTP 429). Sleeping {retry_after}s before retry... Params: {query}",
         "tmdb_non_200": "[TMDb] Non-200 response {status} for {url} params: {query} body: {body}",
+        "tmdb_response_too_large": "[TMDb] Response rejected for {url} params {query}: {error}",
         "tmdb_request_failed": "[TMDb] Attempt {attempt}: Request failed for URL {url} with params {query}: {error}",
         "tmdb_retrying": "[TMDb] Retrying in {sleep_time}s... (Attempt {next_attempt}/{retries})",
         "tmdb_failed": "[TMDb] Failed after {retries} attempts for {url} with params {query}",
@@ -324,6 +358,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_success": "debug",
         "tmdb_rate_limited": "warning",
         "tmdb_non_200": "warning",
+        "tmdb_response_too_large": "error",
         "tmdb_request_failed": "warning",
         "tmdb_retrying": "info",
         "tmdb_failed": "error",
@@ -357,6 +392,8 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_failed_write_metadata": "[Processing] Failed to write YAML: {error}",
         "processing_metadata_dry_run": "[Dry Run] Metadata for {library_name} generated but not saved.",
         "processing_failed_library": "[Processing] Failed to process library '{library_name}': {error}",
+        "processing_ambiguous_editions": "[Processing] Unsafe duplicate editions in '{library_name}': {description}",
+        "processing_ambiguous_editions_allowed": "[Processing] Ambiguous editions allowed in '{library_name}': {description}",
     }
     levels = {
         "processing_no_item": "warning",
@@ -370,6 +407,8 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_failed_write_metadata": "error",
         "processing_metadata_dry_run": "info",
         "processing_failed_library": "error",
+        "processing_ambiguous_editions": "error",
+        "processing_ambiguous_editions_allowed": "warning",
     }
     msg = messages.get(event, "[Processing] Unknown event")
     try:
@@ -545,6 +584,7 @@ def log_cleanup_event(event, logger=None, **kwargs):
     messages = {
         "cleanup_start": "[Cleanup] Libraries cleanup process starting...",
         "cleanup_error": "[Cleanup] Plex metadata is required but was not provided. Cleanup aborted...",
+        "cleanup_unsafe_scope": "[Cleanup] No fully scanned library type is available. Cleanup aborted.",
         "cleanup_removed_cache_entry": "[Cleanup] Removing TMDb cache entry: {key}",
         "cleanup_skipped_plex_mode": "[Cleanup] Skipping metadata and asset removal in Plex mode.",
         "cleanup_skipping_nonpreferred": "[Cleanup] Skipping non-preferred library: {filename}",
@@ -561,6 +601,7 @@ def log_cleanup_event(event, logger=None, **kwargs):
     levels = {
         "cleanup_start": "info",
         "cleanup_error": "error",
+        "cleanup_unsafe_scope": "warning",
         "cleanup_removed_cache_entry": "debug",
         "cleanup_skipped_plex_mode": "info",
         "cleanup_skipping_nonpreferred": "info",

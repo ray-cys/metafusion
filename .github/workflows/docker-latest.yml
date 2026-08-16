@@ -9,7 +9,7 @@ on:
   # schedule:
   #   - cron: '32 6 * * *'
   push:
-    branches: [ "main" ]
+    branches: [ "main", "codex/**" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
@@ -29,7 +29,7 @@ jobs:
       contents: read
     strategy:
       matrix:
-        python-version: ["3.9", "3.13"]
+        python-version: ["3.10", "3.13"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -41,16 +41,39 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt pytest ruff
+        run: python -m pip install --require-hashes -r requirements-dev.lock
 
       - name: Run static checks
         run: ruff check --select F,E9 .
 
       - name: Run tests
-        run: pytest -q
+        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=50
+
+      - name: Audit Python dependencies
+        run: pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
+
+  security:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Build image for vulnerability scan
+        run: docker build --tag metafusion-ci:${GITHUB_SHA} .
+
+      - name: Scan image for fixable critical vulnerabilities
+        run: |
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.65.0@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 image \
+            --exit-code 1 --ignore-unfixed --severity CRITICAL \
+            metafusion-ci:${GITHUB_SHA}
 
   build:
-    needs: test
+    needs: [test, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read

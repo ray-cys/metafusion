@@ -1,9 +1,1 @@
-# MetaFusion Requirements
-requests
-schedule
-psutil
-plexapi
-pyyaml
-Pillow
-aiohttp
-aiolimiter
+-r requirements.lock

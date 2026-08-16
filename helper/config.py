@@ -82,6 +82,17 @@ DEFAULT_CONFIG = {
     "cleanup": {
         "run_process": False,
     },
+    "runtime": {
+        "max_concurrency": 8,
+        "request_timeout": 30.0,
+        "connect_timeout": 10.0,
+        "plex_timeout": 10.0,
+        "shutdown_timeout": 15.0,
+        "max_image_mb": 25,
+    },
+    "safety": {
+        "allow_ambiguous_editions": False,
+    },
     "poster_set": {
         "max_width": 2000,
         "max_height": 3000,
@@ -132,6 +143,13 @@ ENV_BINDINGS = (
     ("RUN_SEASON", ("assets", "run_season"), safe_bool),
     ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
     ("RUN_PROCESS", ("cleanup", "run_process"), safe_bool),
+    ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
+    ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
+    ("CONNECT_TIMEOUT", ("runtime", "connect_timeout"), safe_float),
+    ("PLEX_TIMEOUT", ("runtime", "plex_timeout"), safe_float),
+    ("SHUTDOWN_TIMEOUT", ("runtime", "shutdown_timeout"), safe_float),
+    ("MAX_IMAGE_MB", ("runtime", "max_image_mb"), safe_int),
+    ("ALLOW_AMBIGUOUS_EDITIONS", ("safety", "allow_ambiguous_editions"), safe_bool),
     ("POSTER_MAX_WIDTH", ("poster_set", "max_width"), safe_int),
     ("POSTER_MAX_HEIGHT", ("poster_set", "max_height"), safe_int),
     ("POSTER_MIN_WIDTH", ("poster_set", "min_width"), safe_int),
@@ -206,11 +224,13 @@ def apply_env_overrides(config, environ=None):
     for env_name, path, converter in ENV_BINDINGS:
         if env_name not in environ:
             continue
+        raw_value = environ[env_name]
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            continue
         parent = config
         for key in path[:-1]:
             parent = parent[key]
         key = path[-1]
-        raw_value = environ[env_name]
         if converter is None:
             parent[key] = raw_value
         else:
@@ -224,7 +244,12 @@ def load_config_file(config_file=None, template_file=None, environ=None, create_
     config_file = Path(config_file) if config_file is not None else CONFIG_FILE
     template_file = Path(template_file) if template_file is not None else TEMPLATE_FILE
     environ = os.environ if environ is None else environ
-    has_config_env = any(env_name in environ for env_name, _, _ in ENV_BINDINGS)
+    has_config_env = any(
+        env_name in environ
+        and environ[env_name] is not None
+        and str(environ[env_name]).strip()
+        for env_name, _, _ in ENV_BINDINGS
+    )
 
     if not config_file.exists() and not has_config_env and create_if_missing:
         if template_file.exists():

@@ -1,0 +1,9 @@
+[run]
+source = .
+omit =
+    .venv/*
+    tests/*
+
+[report]
+fail_under = 50
+show_missing = True
