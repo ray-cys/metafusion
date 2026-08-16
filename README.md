@@ -298,10 +298,24 @@ Cleanup is disabled by default. Before setting `RUN_CLEANUP=True`:
 
 Cleanup runs only during a complete reconciliation scan and only after every
 configured library of that media type completes successfully. A missing
-library, failed scan, malformed YAML file, or write failure aborts cleanup.
-Only assets previously recorded in MetaFusion's cache are eligible for
-deletion; manually managed assets are preserved. Disabling an artwork feature
-also disables cleanup for that artwork type.
+library, failed scan, incomplete season/episode inventory, malformed YAML
+file, or write failure aborts cleanup. Incremental and targeted runs report
+that cleanup was skipped instead of showing a misleading zero.
+
+In Kometa mode, cleanup reconciles MetaFusion's generated metadata files,
+removing Plex titles, seasons, and episodes that no longer exist. Artwork is
+deleted only when its exact path and content checksum match the file
+MetaFusion previously created. A manually replaced file, symbolic link,
+unmanaged file, or legacy cache record without a checksum is preserved.
+Disabling an artwork feature also disables cleanup for that artwork type.
+Season 0/Specials are retained whenever they remain in Plex. Plex mode cleans
+stale MetaFusion cache entries only; it does not remove YAML or artwork.
+Neither mode deletes Plex media files.
+
+The final report separates title, season, episode, and artwork counts. A dry
+run reports the same proposed counts without changing cache, YAML, or assets.
+For a one-time complete dry-run test, set `INCREMENTAL=False`,
+`RUN_CLEANUP=True`, and `DRY_RUN=True`, then restore your normal settings.
 
 ## Multiple editions
 

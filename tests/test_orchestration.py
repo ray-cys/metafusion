@@ -294,6 +294,50 @@ def test_shutdown_watchdog_forces_bounded_exit(monkeypatch):
     assert exits == [128 + metafusion.signal.SIGTERM]
 
 
+def test_signal_handlers_are_installed_before_runtime_status_is_published(
+    monkeypatch, tmp_path
+):
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["metafusion_run"] = False
+    config["settings"].update({"schedule": False, "run_times": []})
+    handlers_seen = []
+    previous_term_handler = metafusion.signal.getsignal(metafusion.signal.SIGTERM)
+
+    class Status:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, _mode):
+            handlers_seen.append(
+                metafusion.signal.getsignal(metafusion.signal.SIGTERM)
+            )
+
+        def stopping(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(
+        metafusion, "load_config_file", lambda **_kwargs: (config, {})
+    )
+    monkeypatch.setattr(metafusion, "validate_config", lambda _config: [])
+    monkeypatch.setattr(metafusion, "validate_runtime_paths", lambda *_args: None)
+    monkeypatch.setattr(
+        metafusion,
+        "get_setup_logging",
+        lambda _config: logging.getLogger("signal-order"),
+    )
+    monkeypatch.setattr(metafusion, "RuntimeStatus", Status)
+
+    assert metafusion.main([]) == 0
+    assert handlers_seen == [metafusion.request_shutdown]
+    assert (
+        metafusion.signal.getsignal(metafusion.signal.SIGTERM)
+        is previous_term_handler
+    )
+
+
 def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
     repo_root = Path(__file__).parents[1]
     config_dir = tmp_path / "config"

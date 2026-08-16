@@ -597,34 +597,46 @@ def log_cleanup_event(event, logger=None, **kwargs):
         "cleanup_start": "[Cleanup] Libraries cleanup process starting...",
         "cleanup_error": "[Cleanup] Plex metadata is required but was not provided. Cleanup aborted...",
         "cleanup_unsafe_scope": "[Cleanup] No fully scanned library type is available. Cleanup aborted.",
+        "cleanup_incomplete_episode_inventory": "[Cleanup] Plex season/episode inventory is incomplete for {titles}. Cleanup aborted.",
+        "cleanup_skipped_run_scope": "[Cleanup] Cleanup skipped: {reason}.",
         "cleanup_removed_cache_entry": "[Cleanup] Removing TMDb cache entry: {key}",
+        "cleanup_removed_orphaned_season_cache": "[Cleanup] Removing orphaned season cache: {show} ({year}) Season {season}",
         "cleanup_skipped_plex_mode": "[Cleanup] Skipping metadata and asset removal in Plex mode.",
         "cleanup_skipping_nonpreferred": "[Cleanup] Skipping non-preferred library: {filename}",
         "cleanup_removed_orphans": "[Cleanup] Removing {orphans_in_file} entries: {filename}",
+        "cleanup_removed_orphaned_season_yaml": "[Cleanup] Removing orphaned season metadata: {show} ({year}) Season {season}",
+        "cleanup_removed_orphaned_episode_yaml": "[Cleanup] Removing orphaned episode metadata: {show} ({year}) S{season}E{episode}",
         "cleanup_failed_remove_metadata": "[Cleanup] Failed to remove {filename}: {error}",
         "cleanup_skipping_valid_asset": "[Cleanup] Skipping valid asset {description}: {path}",
+        "cleanup_preserving_modified_asset": "[Cleanup] Preserving {description} {path}: {reason}.",
         "cleanup_removing_asset": "[Cleanup] Removing {description} asset: {path}",
         "cleanup_removing_empty_dir": "[Cleanup] Removing empty asset path: {parent}",
         "cleanup_failed_remove_asset": "[Cleanup] Failed to remove {description} {path}: {error}",
         "cleanup_consolidated_removed": "[Cleanup] {summary}",
-        "cleanup_total_removed": "[Cleanup] Total titles removed: {orphans_removed}",
+        "cleanup_totals": "[Cleanup] {action} - Titles: {titles}, Seasons: {seasons}, Episodes: {episodes}, Assets: {assets}",
         "cleanup_dry_run": "[Cleanup] [Dry Run] Would remove {description}: {path}",
     }
     levels = {
         "cleanup_start": "info",
         "cleanup_error": "error",
         "cleanup_unsafe_scope": "warning",
+        "cleanup_incomplete_episode_inventory": "warning",
+        "cleanup_skipped_run_scope": "info",
         "cleanup_removed_cache_entry": "debug",
+        "cleanup_removed_orphaned_season_cache": "debug",
         "cleanup_skipped_plex_mode": "info",
         "cleanup_skipping_nonpreferred": "info",
         "cleanup_removed_orphans": "debug",
+        "cleanup_removed_orphaned_season_yaml": "debug",
+        "cleanup_removed_orphaned_episode_yaml": "debug",
         "cleanup_failed_remove_metadata": "error",
         "cleanup_skipping_valid_asset": "info",
+        "cleanup_preserving_modified_asset": "warning",
         "cleanup_removing_asset": "debug",
         "cleanup_removing_empty_dir": "debug",
         "cleanup_failed_remove_asset": "warning",
         "cleanup_consolidated_removed": "info",
-        "cleanup_total_removed": "info",
+        "cleanup_totals": "info",
         "cleanup_dry_run": "info",
     }
     
@@ -766,7 +778,7 @@ def log_library_summary(
         logger.info(line)
 
 def log_final_summary(
-    logger, elapsed_time, metadata_summaries, library_filesize, orphans_removed, cleanup_title_orphans, 
+    logger, elapsed_time, metadata_summaries, library_filesize, cleanup_result, cleanup_title_orphans,
     selected_libraries, libraries, config, feature_flags=None
 ):
     box_width = 80
@@ -877,8 +889,26 @@ def log_final_summary(
             f"Assets - {human_readable_size(asset_size)} / {human_readable_size(total_asset_size)}", box_width))
         lines.append(border)
 
-    if feature_flags and feature_flags.get("cleanup", False):
-        lines.extend(box_line(f"Cleanup - {orphans_removed} Titles Removed", box_width))
+    if cleanup_result is not None and getattr(cleanup_result, "skipped_reason", None):
+        lines.extend(
+            box_line(f"Cleanup - Skipped ({cleanup_result.skipped_reason})", box_width)
+        )
+    elif feature_flags and feature_flags.get("cleanup", False):
+        if hasattr(cleanup_result, "titles"):
+            action = "Would remove" if cleanup_result.dry_run else "Removed"
+            lines.extend(
+                box_line(
+                    f"Cleanup - {action}: Titles: {cleanup_result.titles}, "
+                    f"Seasons: {cleanup_result.seasons}, "
+                    f"Episodes: {cleanup_result.episodes}, "
+                    f"Assets: {cleanup_result.assets}",
+                    box_width,
+                )
+            )
+        else:
+            lines.extend(
+                box_line(f"Cleanup - {cleanup_result or 0} Titles Removed", box_width)
+            )
     if config["settings"].get("dry_run", False):
         lines.extend(box_line("[Dry Run] Completed. No files were written.", box_width))
     lines.append(border)

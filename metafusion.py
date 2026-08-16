@@ -34,6 +34,7 @@ from helper.logging import (
     check_sys_requirements,
     get_meta_banner,
     get_setup_logging,
+    log_cleanup_event,
     log_final_summary,
     log_main_event,
     redact_secrets,
@@ -51,7 +52,7 @@ from helper.tmdb import (
     tmdb_api_request,
     tmdb_response_cache,
 )
-from modules.cleanup import cleanup_title_orphans
+from modules.cleanup import CleanupResult, cleanup_title_orphans
 from modules.processing import process_library, plex_metadata_dict
 
 
@@ -268,6 +269,7 @@ async def metafusion_main(config, logger):
                 targeted=targeted,
             )
             run_feature_flags = dict(feature_flags)
+            cleanup_skip_reason = None
 
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
@@ -298,7 +300,17 @@ async def metafusion_main(config, logger):
                     }
                     if any(not output.exists() for output in expected_outputs):
                         full_scan = True
-                if not full_scan:
+                if targeted and feature_flags.get("cleanup", False):
+                    cleanup_skip_reason = (
+                        "targeted run; full reconciliation requires every configured "
+                        "library"
+                    )
+                    run_feature_flags["cleanup"] = False
+                elif not full_scan:
+                    if feature_flags.get("cleanup", False):
+                        cleanup_skip_reason = (
+                            "incremental run; full reconciliation required"
+                        )
                     run_feature_flags["cleanup"] = False
                 section_items = {}
                 identity_counts = Counter()
@@ -361,7 +373,7 @@ async def metafusion_main(config, logger):
                     except Exception as error:
                         failures.append(f"{section.title}: {error}")
 
-            orphans_removed = 0
+            cleanup_result = CleanupResult()
             if run_feature_flags.get("cleanup", False):
                 safe_library_types = set()
                 if not failures:
@@ -370,12 +382,17 @@ async def metafusion_main(config, logger):
                     )
                 kometa_root = config.get("settings", {}).get("path", ".")
                 asset_path = Path(kometa_root) / "assets"
-                orphans_removed = await cleanup_title_orphans(
+                cleanup_result = await cleanup_title_orphans(
                     config=config,
                     asset_path=asset_path,
                     preloaded_plex_metadata=plex_metadata_dict,
                     feature_flags=run_feature_flags,
                     safe_library_types=safe_library_types,
+                )
+            elif cleanup_skip_reason:
+                cleanup_result.skipped_reason = cleanup_skip_reason
+                log_cleanup_event(
+                    "cleanup_skipped_run_scope", reason=cleanup_skip_reason
                 )
 
             elapsed_time = (datetime.now() - start_time).total_seconds()
@@ -384,7 +401,7 @@ async def metafusion_main(config, logger):
                 elapsed_time,
                 metadata_summaries,
                 library_filesize,
-                orphans_removed,
+                cleanup_result,
                 cleanup_title_orphans,
                 selected_libraries,
                 all_libraries,
@@ -558,7 +575,6 @@ def main(argv=None):
     schedule_enabled = settings.get("schedule", False)
     metafusion_run = config.get("metafusion_run", True)
     mode = "oneshot" if metafusion_run else "scheduler"
-    runtime_status.start(mode)
 
     previous_handlers = {}
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -566,15 +582,19 @@ def main(argv=None):
         signal.signal(signum, request_shutdown)
 
     exit_code = 0
+    status_started = False
     try:
+        runtime_status.start(mode)
+        status_started = True
         if metafusion_run:
-            log_main_event(
-                "main_force_run",
-                start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                logger=logger,
-            )
-            if not run_metafusion_job(config, logger, runtime_status):
-                exit_code = 1
+            if not shutdown_requested.is_set():
+                log_main_event(
+                    "main_force_run",
+                    start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    logger=logger,
+                )
+                if not run_metafusion_job(config, logger, runtime_status):
+                    exit_code = 1
         elif schedule_enabled and run_times:
             if settings.get("run_on_start", False) and not shutdown_requested.is_set():
                 run_metafusion_job(config, logger, runtime_status)
@@ -606,11 +626,14 @@ def main(argv=None):
             log_main_event("main_processing_disabled", logger=logger)
     finally:
         try:
-            runtime_status.stopping()
-            runtime_status.stop()
+            if status_started:
+                try:
+                    runtime_status.stopping()
+                finally:
+                    runtime_status.stop()
+        finally:
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
-        finally:
             shutdown_complete.set()
     return exit_code
 

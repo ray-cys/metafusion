@@ -49,7 +49,12 @@ def test_cleanup_reconciles_yaml_cache_and_specials_with_complete_inventory(
                 "metadata": {
                     "Keep Show (2021)": {
                         "seasons": {
-                            0: {"episodes": {1: {"title": "Special"}}},
+                            0: {
+                                "episodes": {
+                                    1: {"title": "Special"},
+                                    2: {"title": "Removed special"},
+                                }
+                            },
                             1: {"episodes": {1: {"title": "Removed"}}},
                         }
                     }
@@ -101,10 +106,15 @@ def test_cleanup_reconciles_yaml_cache_and_specials_with_complete_inventory(
     tv_doc = yaml.safe_load(tv_file.read_text(encoding="utf-8"))
     assert set(movie_doc["metadata"]) == {"Keep Movie (2020)"}
     assert set(tv_doc["metadata"]["Keep Show (2021)"]["seasons"]) == {0}
+    assert set(
+        tv_doc["metadata"]["Keep Show (2021)"]["seasons"][0]["episodes"]
+    ) == {1}
     assert set(cache) == {"movie:Keep Movie:2020", "tv:Keep Show:2021"}
     assert set(cache["tv:Keep Show:2021"]["seasons"]) == {"0"}
     assert dirty
-    assert removed >= 1
+    assert removed.titles == 1
+    assert removed.seasons == 1
+    assert removed.episodes == 1
 
 
 def test_cleanup_removes_only_cache_managed_assets_and_empty_directory(
@@ -125,8 +135,15 @@ def test_cleanup_removes_only_cache_managed_assets_and_empty_directory(
             "title": "Old Movie",
             "year": 2000,
             "poster_path": str(poster),
+            "poster_checksum": cleanup_module.sha256_file(poster),
             "background_path": str(background),
-            "seasons": {"0": {"season_path": str(season)}},
+            "background_checksum": cleanup_module.sha256_file(background),
+            "seasons": {
+                "0": {
+                    "season_path": str(season),
+                    "season_checksum": cleanup_module.sha256_file(season),
+                }
+            },
         }
     }
     monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
@@ -142,7 +159,8 @@ def test_cleanup_removes_only_cache_managed_assets_and_empty_directory(
         )
     )
 
-    assert removed == 1
+    assert removed.titles == 1
+    assert removed.assets == 3
     assert not title_dir.exists()
     assert cache == {}
 
@@ -156,6 +174,7 @@ def test_cleanup_preserves_asset_confirmed_by_current_run(monkeypatch, tmp_path)
         "movie:Old Movie:2000": {
             "media_type": "movie",
             "poster_path": str(poster),
+            "poster_checksum": cleanup_module.sha256_file(poster),
         }
     }
     monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
@@ -202,6 +221,29 @@ def test_cleanup_malformed_yaml_fails_without_overwriting(monkeypatch, tmp_path)
     assert metadata_file.read_text(encoding="utf-8") == original
 
 
+def test_cleanup_validates_all_yaml_before_writing_any_file(monkeypatch, tmp_path):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    movie_file = metadata_dir / "movie_metadata.yml"
+    tv_file = metadata_dir / "tv_metadata.yml"
+    original_movie = "metadata:\n  Old Movie (2000): {}\n"
+    movie_file.write_text(original_movie, encoding="utf-8")
+    tv_file.write_text("metadata: [unterminated\n", encoding="utf-8")
+    monkeypatch.setattr(cleanup_module, "load_cache", dict)
+
+    with pytest.raises(cleanup_module.CleanupError, match="Failed to clean"):
+        asyncio.run(
+            cleanup_module.cleanup_title_orphans(
+                kometa_config(tmp_path),
+                flags(poster=False, season=False, background=False),
+                preloaded_plex_metadata={},
+                safe_library_types={"movie", "tv"},
+            )
+        )
+
+    assert movie_file.read_text(encoding="utf-8") == original_movie
+
+
 def test_cleanup_asset_permission_failure_is_recoverable(monkeypatch, tmp_path):
     asset_root = tmp_path / "assets"
     poster = asset_root / "movie" / "Old Movie (2000)" / "poster.jpg"
@@ -211,6 +253,7 @@ def test_cleanup_asset_permission_failure_is_recoverable(monkeypatch, tmp_path):
         "movie:Old Movie:2000": {
             "media_type": "movie",
             "poster_path": str(poster),
+            "poster_checksum": cleanup_module.sha256_file(poster),
         }
     }
     original_unlink = Path.unlink
@@ -241,9 +284,10 @@ def test_cleanup_asset_permission_failure_is_recoverable(monkeypatch, tmp_path):
         )
 
     assert poster.exists()
+    assert "movie:Old Movie:2000" in cache
 
 
-def test_cleanup_unlinks_managed_symlink_without_touching_external_target(
+def test_cleanup_preserves_managed_path_replaced_by_symlink(
     monkeypatch, tmp_path
 ):
     external = tmp_path / "manual-poster.jpg"
@@ -276,8 +320,251 @@ def test_cleanup_unlinks_managed_symlink_without_touching_external_target(
         )
     )
 
-    assert not poster.exists()
+    assert poster.is_symlink()
     assert external.read_bytes() == b"manual"
+
+
+def test_cleanup_removes_orphaned_season_poster_from_valid_show(
+    monkeypatch, tmp_path
+):
+    asset_root = tmp_path / "assets"
+    show_dir = asset_root / "tv" / "Keep Show (2021)"
+    special = show_dir / "Season00.jpg"
+    removed_season = show_dir / "Season01.jpg"
+    show_dir.mkdir(parents=True)
+    special.write_bytes(b"special")
+    removed_season.write_bytes(b"season-one")
+    cache = {
+        "tv:Keep Show:2021": {
+            "media_type": "tv",
+            "title": "Keep Show",
+            "year": 2021,
+            "seasons": {
+                "0": {
+                    "season_path": str(special),
+                    "season_checksum": cleanup_module.sha256_file(special),
+                },
+                "1": {
+                    "season_path": str(removed_season),
+                    "season_checksum": cleanup_module.sha256_file(removed_season),
+                },
+            },
+        }
+    }
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            kometa_config(tmp_path),
+            flags(metadata_basic=False, metadata_enhanced=False),
+            asset_path=asset_root,
+            preloaded_plex_metadata={
+                "show": {
+                    "library_type": "tv",
+                    "title": "Keep Show",
+                    "year": 2021,
+                    "show_path": "/media/Keep Show (2021)",
+                    "seasons_episodes": {0: [1]},
+                }
+            },
+            safe_library_types={"tv"},
+        )
+    )
+
+    assert special.exists()
+    assert not removed_season.exists()
+    assert set(cache["tv:Keep Show:2021"]["seasons"]) == {"0"}
+    assert result.seasons == 1
+    assert result.assets == 1
+    assert result.titles == 0
+
+
+def test_cleanup_preserves_manually_replaced_artwork(monkeypatch, tmp_path):
+    asset_root = tmp_path / "assets"
+    poster = asset_root / "movie" / "Old Movie (2000)" / "poster.jpg"
+    poster.parent.mkdir(parents=True)
+    poster.write_bytes(b"generated")
+    generated_checksum = cleanup_module.sha256_file(poster)
+    poster.write_bytes(b"manual replacement")
+    cache = {
+        "movie:Old Movie:2000": {
+            "media_type": "movie",
+            "title": "Old Movie",
+            "year": 2000,
+            "poster_path": str(poster),
+            "poster_checksum": generated_checksum,
+        }
+    }
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            kometa_config(tmp_path),
+            flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                season=False,
+                background=False,
+            ),
+            asset_path=asset_root,
+            preloaded_plex_metadata={},
+            safe_library_types={"movie"},
+        )
+    )
+
+    assert poster.read_bytes() == b"manual replacement"
+    assert result.assets == 0
+
+
+def test_cleanup_preserves_legacy_managed_artwork_without_checksum(
+    monkeypatch, tmp_path
+):
+    asset_root = tmp_path / "assets"
+    poster = asset_root / "movie" / "Old Movie (2000)" / "poster.jpg"
+    poster.parent.mkdir(parents=True)
+    poster.write_bytes(b"legacy generated file")
+    cache = {
+        "movie:Old Movie:2000": {
+            "media_type": "movie",
+            "title": "Old Movie",
+            "year": 2000,
+            "poster_path": str(poster),
+        }
+    }
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            kometa_config(tmp_path),
+            flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                season=False,
+                background=False,
+            ),
+            asset_path=asset_root,
+            preloaded_plex_metadata={},
+            safe_library_types={"movie"},
+        )
+    )
+
+    assert poster.read_bytes() == b"legacy generated file"
+    assert result.assets == 0
+
+
+def test_cleanup_scopes_same_named_asset_directories_by_media_type(
+    monkeypatch, tmp_path
+):
+    asset_root = tmp_path / "assets"
+    movie_poster = asset_root / "movie" / "Shared (2020)" / "poster.jpg"
+    movie_poster.parent.mkdir(parents=True)
+    movie_poster.write_bytes(b"stale movie")
+    cache = {
+        "movie:Shared:2020": {
+            "media_type": "movie",
+            "title": "Shared",
+            "year": 2020,
+            "poster_path": str(movie_poster),
+            "poster_checksum": cleanup_module.sha256_file(movie_poster),
+        },
+        "tv:Shared:2020": {
+            "media_type": "tv",
+            "title": "Shared",
+            "year": 2020,
+        },
+    }
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            kometa_config(tmp_path),
+            flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                season=False,
+                background=False,
+            ),
+            asset_path=asset_root,
+            preloaded_plex_metadata={
+                "show": {
+                    "library_type": "tv",
+                    "title": "Shared",
+                    "year": 2020,
+                    "show_path": "/media/Shared (2020)",
+                }
+            },
+            safe_library_types={"movie", "tv"},
+        )
+    )
+
+    assert not movie_poster.exists()
+    assert result.assets == 1
+
+
+def test_cleanup_scopes_same_named_yaml_titles_by_media_type(monkeypatch, tmp_path):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    movie_file = metadata_dir / "movie_metadata.yml"
+    tv_file = metadata_dir / "tv_metadata.yml"
+    document = {"metadata": {"Shared (2020)": {"summary": "generated"}}}
+    movie_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    tv_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    monkeypatch.setattr(cleanup_module, "load_cache", dict)
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            kometa_config(tmp_path),
+            flags(poster=False, season=False, background=False),
+            preloaded_plex_metadata={
+                "show": {
+                    "library_type": "tv",
+                    "title": "Shared",
+                    "year": 2020,
+                    "seasons_episodes": {},
+                }
+            },
+            safe_library_types={"movie", "tv"},
+        )
+    )
+
+    assert yaml.safe_load(movie_file.read_text(encoding="utf-8"))["metadata"] == {}
+    assert set(yaml.safe_load(tv_file.read_text(encoding="utf-8"))["metadata"]) == {
+        "Shared (2020)"
+    }
+    assert result.titles == 1
+
+
+def test_cleanup_aborts_before_writes_for_incomplete_episode_inventory(
+    monkeypatch, tmp_path
+):
+    cache = {"tv:Old Show:2000": {"media_type": "tv"}}
+    dirty = []
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: dirty.append(True))
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            kometa_config(tmp_path),
+            flags(poster=False, season=False, background=False),
+            preloaded_plex_metadata={
+                "show": {
+                    "library_type": "tv",
+                    "title": "Keep Show",
+                    "year": 2021,
+                    "seasons_episodes": None,
+                }
+            },
+            safe_library_types={"tv"},
+        )
+    )
+
+    assert result.skipped_reason == "Plex season/episode inventory was incomplete"
+    assert cache == {"tv:Old Show:2000": {"media_type": "tv"}}
+    assert dirty == []
 
 
 def test_cleanup_plex_mode_removes_only_stale_cache_and_no_yaml(monkeypatch, tmp_path):

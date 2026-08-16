@@ -159,6 +159,26 @@ def test_cleanup_rejects_incomplete_plex_inventory(monkeypatch, tmp_path):
         )
 
 
+def test_metadata_cleanup_requires_complete_tv_episode_inventory():
+    flags = feature_flags()
+    flags.update({"cleanup": True, "metadata_basic": True})
+
+    errors = processing.cleanup_inventory_errors(
+        [
+            {
+                "title": "Show",
+                "year": 2020,
+                "ratingKey": "1",
+                "library_type": "tv",
+                "seasons_episodes": None,
+            }
+        ],
+        flags,
+    )
+
+    assert errors == ["Show (2020): seasons_episodes"]
+
+
 def test_incremental_library_run_processes_only_changed_or_targeted_items(monkeypatch, tmp_path):
     class Item:
         type = "movie"

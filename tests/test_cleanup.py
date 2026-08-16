@@ -14,7 +14,10 @@ def test_cleanup_preserves_disabled_and_unmanaged_assets(monkeypatch, tmp_path):
 
     cache = {
         "movie:Old Movie:2000": {"poster_path": str(disabled_poster)},
-        "movie:Generated Movie:2002": {"background_path": str(managed_background)},
+        "movie:Generated Movie:2002": {
+            "background_path": str(managed_background),
+            "background_checksum": cleanup_module.sha256_file(managed_background),
+        },
     }
     monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
     monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
@@ -50,7 +53,7 @@ def test_cleanup_dry_run_does_not_persist_cache(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: dirty_calls.append(True))
 
-    asyncio.run(
+    result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
             {"settings": {"mode": "kometa", "path": str(tmp_path)}},
             {
@@ -67,6 +70,8 @@ def test_cleanup_dry_run_does_not_persist_cache(monkeypatch, tmp_path):
     )
 
     assert dirty_calls == []
+    assert result.dry_run is True
+    assert result.titles == 1
 
 
 def test_cleanup_requires_an_explicit_complete_inventory(monkeypatch, tmp_path):
@@ -85,7 +90,8 @@ def test_cleanup_requires_an_explicit_complete_inventory(monkeypatch, tmp_path):
         )
     )
 
-    assert removed == 0
+    assert removed.titles == 0
+    assert removed.skipped_reason
     assert "movie:Old Movie:2000" in cache
     assert dirty_calls == []
 

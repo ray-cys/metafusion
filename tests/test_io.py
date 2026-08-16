@@ -4,6 +4,15 @@ import yaml
 from helper import io as io_module
 
 
+def test_sha256_file_streams_a_stable_content_fingerprint(tmp_path):
+    target = tmp_path / "asset.jpg"
+    target.write_bytes(b"MetaFusion managed artwork")
+
+    assert io_module.sha256_file(target) == (
+        "7f7d50425c1a89cbd1861dce6756d91e14b1fdc3b468163292ce05ee7832150a"
+    )
+
+
 def test_atomic_yaml_write_replaces_complete_document(tmp_path):
     target = tmp_path / "metadata" / "movie_metadata.yml"
     data = {"metadata": {"Example (2020)": {"summary": "Complete"}}}

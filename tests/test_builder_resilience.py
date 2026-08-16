@@ -264,6 +264,14 @@ def test_movie_builder_writes_enhanced_metadata_and_both_assets(monkeypatch, tmp
     assert len(existing_assets) == 2
     assert all(tmp_path in path.parents for path in map(type(tmp_path), existing_assets))
     assert cache_calls
+    poster_cache = next(
+        kwargs for _, kwargs in cache_calls if kwargs.get("poster_path")
+    )
+    background_cache = next(
+        kwargs for _, kwargs in cache_calls if kwargs.get("background_path")
+    )
+    assert len(poster_cache["poster_checksum"]) == 64
+    assert len(background_cache["background_checksum"]) == 64
 
 
 def test_builders_apply_per_type_upgrade_intervals_and_record_checks(
@@ -326,6 +334,16 @@ def test_builders_apply_per_type_upgrade_intervals_and_record_checks(
     assert any(call.get("background_upgraded") for _, call in cache_calls)
     assert sum(bool(call.get("season_upgraded")) for _, call in cache_calls) == 1
     assert any(call.get("season_upgraded") == 0 for _, call in cache_calls)
+    assert all(
+        len(call[checksum_field]) == 64
+        for _, call in cache_calls
+        for path_field, checksum_field in (
+            ("poster_path", "poster_checksum"),
+            ("background_path", "background_checksum"),
+            ("season_path", "season_checksum"),
+        )
+        if call.get(path_field)
+    )
 
 
 def test_movie_builder_unchanged_metadata_preserves_cache_identity(

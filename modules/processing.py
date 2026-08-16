@@ -65,7 +65,11 @@ def cleanup_inventory_errors(metadata, feature_flags):
                 missing.append("movie_path")
             if media_type == "tv" and not meta.get("show_path"):
                 missing.append("show_path")
-        if media_type == "tv" and feature_flags.get("season", False):
+        tv_inventory_cleanup_enabled = media_type == "tv" and any(
+            feature_flags.get(name, False)
+            for name in ("metadata_basic", "metadata_enhanced", "season")
+        )
+        if tv_inventory_cleanup_enabled:
             if not isinstance(meta.get("seasons_episodes"), dict):
                 missing.append("seasons_episodes")
         if missing:

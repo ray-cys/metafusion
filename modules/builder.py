@@ -3,7 +3,7 @@ from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
 from helper.config import get_image_upgrade_days
 from helper.identity import cache_key_for_meta, legacy_cache_key, match_for_meta, metadata_key_for_meta
-from helper.io import atomic_replace_file
+from helper.io import atomic_replace_file, sha256_file
 from helper.plex import get_plex_country
 from helper.tmdb import artwork_language_codes, resolve_tmdb_id, tmdb_api_request
 from modules.utils import (
@@ -376,6 +376,7 @@ async def build_movie(
                         cache_key, tmdb_id, title, year, "movie",
                         poster_average=best.get("vote_average", 0),
                         poster_path=str(asset_path.resolve()),
+                        poster_checksum=await asyncio.to_thread(sha256_file, asset_path),
                         poster_upgraded=True,
                         update_timestamp=False,
                     )
@@ -495,6 +496,7 @@ async def build_movie(
                         cache_key, tmdb_id, title, year, "movie",
                         bg_average=best.get("vote_average", 0),
                         background_path=str(asset_path.resolve()),
+                        background_checksum=await asyncio.to_thread(sha256_file, asset_path),
                         background_upgraded=True,
                         update_timestamp=False,
                     )
@@ -946,6 +948,7 @@ async def build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         poster_average=best.get("vote_average", 0),
                         poster_path=str(asset_path.resolve()),
+                        poster_checksum=await asyncio.to_thread(sha256_file, asset_path),
                         poster_upgraded=True,
                         update_timestamp=False,
                     )
@@ -1065,6 +1068,7 @@ async def build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         bg_average=best.get("vote_average", 0),
                         background_path=str(asset_path.resolve()),
+                        background_checksum=await asyncio.to_thread(sha256_file, asset_path),
                         background_upgraded=True,
                         update_timestamp=False,
                     )
@@ -1195,6 +1199,7 @@ async def build_tv(
                         season_number=season_number,
                         season_average=best.get("vote_average", 0),
                         season_path=str(asset_path.resolve()),
+                        season_checksum=await asyncio.to_thread(sha256_file, asset_path),
                         season_upgraded=season_number,
                         update_timestamp=False,
                     )
