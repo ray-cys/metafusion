@@ -69,6 +69,13 @@ writable by `99:100`. The container prepares only its managed `/config`,
 `/config/logs`, and `/config/cache` paths. It does not recursively change the
 ownership of a large Kometa tree, which keeps container startup fast.
 
+When replacing an existing metadata YAML or artwork file, MetaFusion preserves
+that file's UID, GID, and permission mode. New files are created as `0664` and
+owned by the configured runtime identity. MetaFusion also refuses to process as
+UID `0`, preventing an accidentally bypassed entrypoint from creating
+root-owned files. On Unraid, keep `PUID=99`, `PGID=100`, and do not override the
+image entrypoint.
+
 No Docker extra parameter is required. An explicit Compose `user:` or
 `docker run --user` setting takes precedence over `PUID` and `PGID`.
 
@@ -239,6 +246,7 @@ your deployment supports protected secret mounts.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `METAFUSION_IMAGE` | `ghcr.io/ray-cys/metafusion:main` | Compose image tag or digest; pin an exact version for rollback. |
 | `CONFIG_PATH` | `./config` | Host path mounted at `/config`. |
 | `KOMETA_HOST_PATH` | `./kometa` | Host path mounted at `/kometa`. |
 | `CONFIG_DIR` | `/config` | Container configuration/state directory. |
@@ -316,6 +324,42 @@ editions or duplicate edition names cannot be matched safely by Kometa, so
 MetaFusion stops and identifies the affected movies. Setting
 `ALLOW_AMBIGUOUS_EDITIONS=True` restores permissive behavior but can update the
 wrong copy and is not recommended.
+
+## Versioned Docker releases and rollback
+
+`main` and `latest` are moving public tags built from the default branch. A
+Git tag such as `v1.2.3` runs the complete tests, dependency audit, image scan,
+and multi-architecture build before publishing these signed GHCR tags:
+
+| Image tag | Behavior |
+| --- | --- |
+| `1.2.3` | Exact release; recommended production pin. |
+| `1.2` | Moves to the newest patch in the `1.2` line. |
+| `1` | Moves to the newest release in the `1` line. |
+| `sha-<full-commit>` | Immutable build for exact recovery or diagnosis. |
+| `main`, `latest` | Move with successful builds from `main`. |
+
+For Docker Compose, pin a tested version in `.env`:
+
+```text
+METAFUSION_IMAGE=ghcr.io/ray-cys/metafusion:1.2.3
+```
+
+Then apply it without changing the mounted configuration or media data:
+
+```bash
+docker compose pull metafusion
+docker compose up -d metafusion
+```
+
+To roll back, change only `METAFUSION_IMAGE` to the previous exact release or
+an immutable `sha-...` tag and run the same two commands. Do not delete or
+recreate `/config` or `/kometa` during rollback.
+
+On Unraid, set the container's **Repository** field to an exact image such as
+`ghcr.io/ray-cys/metafusion:1.2.3`. Roll back by selecting the prior exact tag,
+applying the template, and restarting the container. Keep `PUID=99`,
+`PGID=100`, and all existing path mappings unchanged.
 
 ## Output, health, and troubleshooting
 

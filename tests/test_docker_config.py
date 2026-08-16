@@ -13,6 +13,7 @@ def test_compose_defaults_are_safe_for_scheduler():
     environment = service["environment"]
 
     assert "version" not in compose
+    assert service["image"] == "${METAFUSION_IMAGE:-ghcr.io/ray-cys/metafusion:main}"
     assert service["init"] is True
     assert service["read_only"] is True
     assert service["cap_drop"] == ["ALL"]
@@ -56,6 +57,7 @@ def test_readme_documents_every_supported_environment_variable():
             "CONFIG_PATH",
             "KOMETA_HOST_PATH",
             "STOP_GRACE_PERIOD",
+            "METAFUSION_IMAGE",
         }
     )
 
@@ -100,3 +102,25 @@ def test_ci_smoke_tests_unraid_runtime_identity():
     assert "--env PGID=100" in workflow
     assert "(os.getuid(), os.getgid()) == (99, 100)" in workflow
     assert "(status.st_uid, status.st_gid) == (99, 100)" in workflow
+
+
+def test_ci_publishes_versioned_and_immutable_signed_images():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "tags: [ 'v*.*.*' ]" in workflow
+    assert "type=semver,pattern={{version}}" in workflow
+    assert "type=semver,pattern={{major}}.{{minor}}" in workflow
+    assert "type=semver,pattern={{major}}" in workflow
+    assert "type=sha,prefix=sha-,format=long" in workflow
+    assert "cosign sign --yes" in workflow
+
+
+def test_readme_documents_exact_image_pinning_and_rollback():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "## Versioned Docker releases and rollback" in readme
+    assert "ghcr.io/ray-cys/metafusion:1.2.3" in readme
+    assert "METAFUSION_IMAGE" in readme
+    assert "sha-<full-commit>" in readme

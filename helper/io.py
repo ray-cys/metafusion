@@ -3,8 +3,12 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from stat import S_IMODE
 
 import yaml
+
+
+DEFAULT_FILE_MODE = 0o664
 
 
 def _fsync_directory(path):
@@ -23,6 +27,33 @@ def _fsync_directory(path):
 def backup_path_for(path):
     path = Path(path)
     return path.with_name(f"{path.name}.bak")
+
+
+def atomic_replace_file(source, destination, new_file_mode=DEFAULT_FILE_MODE):
+    """Install a file atomically without changing an existing target's owner/mode."""
+    source = Path(source)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target_status = destination.stat()
+    except FileNotFoundError:
+        os.chmod(source, new_file_mode)
+    else:
+        source_status = source.stat()
+        if (source_status.st_uid, source_status.st_gid) != (
+            target_status.st_uid,
+            target_status.st_gid,
+        ):
+            try:
+                os.chown(source, target_status.st_uid, target_status.st_gid)
+            except PermissionError as error:
+                raise PermissionError(
+                    "Cannot preserve ownership while replacing "
+                    f"{destination}; run MetaFusion with the file owner's PUID/PGID"
+                ) from error
+        os.chmod(source, S_IMODE(target_status.st_mode))
+    os.replace(source, destination)
+    _fsync_directory(destination.parent)
 
 
 def read_json_with_backup(path, default=None):
@@ -59,8 +90,7 @@ def atomic_write_yaml(path, data):
             )
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, path)
-        _fsync_directory(path.parent)
+        atomic_replace_file(temp_path, path)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
@@ -98,8 +128,7 @@ def atomic_write_json(path, data, backup=False):
             temp_file.write("\n")
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, path)
-        _fsync_directory(path.parent)
+        atomic_replace_file(temp_path, path)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
@@ -121,8 +150,7 @@ def atomic_write_bytes(path, data):
             temp_file.write(data)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, path)
-        _fsync_directory(path.parent)
+        atomic_replace_file(temp_path, path)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)

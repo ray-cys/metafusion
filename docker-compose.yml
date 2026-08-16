@@ -1,6 +1,6 @@
 services:
   metafusion:
-    image: ghcr.io/ray-cys/metafusion:main
+    image: "${METAFUSION_IMAGE:-ghcr.io/ray-cys/metafusion:main}"
     container_name: metafusion
     init: true
     user: "${PUID:-10001}:${PGID:-10001}"

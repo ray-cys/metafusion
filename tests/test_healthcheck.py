@@ -2,7 +2,10 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from healthcheck import check_status
+from helper import runtime as runtime_module
 from helper.runtime import RuntimeStatus, validate_runtime_paths
 
 
@@ -88,3 +91,15 @@ def test_runtime_path_preflight_creates_required_paths(tmp_path):
     assert (config_dir / "logs").is_dir()
     assert (config_dir / "cache").is_dir()
     assert kometa_dir.is_dir()
+
+
+def test_runtime_refuses_accidental_root_execution(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_module.os, "geteuid", lambda: 0)
+
+    with pytest.raises(RuntimeError, match="refuses to run as root"):
+        validate_runtime_paths(
+            {"settings": {"dry_run": False, "mode": "plex"}},
+            tmp_path / "config",
+        )
+
+    assert not (tmp_path / "config").exists()

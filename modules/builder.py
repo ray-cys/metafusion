@@ -1,8 +1,9 @@
-import shutil, asyncio
+import asyncio
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
 from helper.config import get_image_upgrade_days
 from helper.identity import cache_key_for_meta, legacy_cache_key, match_for_meta, metadata_key_for_meta
+from helper.io import atomic_replace_file
 from helper.plex import get_plex_country
 from helper.tmdb import artwork_language_codes, resolve_tmdb_id, tmdb_api_request
 from modules.utils import (
@@ -367,7 +368,7 @@ async def build_movie(
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(temp_path, asset_path)
+                    atomic_replace_file(temp_path, asset_path)
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     poster_size = asset_path.stat().st_size if asset_path.exists() else 0
@@ -486,7 +487,7 @@ async def build_movie(
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(temp_path, asset_path)
+                    atomic_replace_file(temp_path, asset_path)
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     background_size = asset_path.stat().st_size if asset_path.exists() else 0
@@ -937,7 +938,7 @@ async def build_tv(
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(temp_path, asset_path)
+                    atomic_replace_file(temp_path, asset_path)
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     poster_size = asset_path.stat().st_size if asset_path.exists() else 0
@@ -1056,7 +1057,7 @@ async def build_tv(
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(temp_path, asset_path)
+                    atomic_replace_file(temp_path, asset_path)
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     background_size = asset_path.stat().st_size if asset_path.exists() else 0
@@ -1185,7 +1186,7 @@ async def build_tv(
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(temp_path, asset_path)
+                    atomic_replace_file(temp_path, asset_path)
                     if temp_path.exists():
                         temp_path.unlink(missing_ok=True)
                     season_poster_size = asset_path.stat().st_size if asset_path.exists() else 0

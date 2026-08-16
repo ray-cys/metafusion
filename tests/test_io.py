@@ -11,7 +11,21 @@ def test_atomic_yaml_write_replaces_complete_document(tmp_path):
     io_module.atomic_write_yaml(target, data)
 
     assert yaml.safe_load(target.read_text(encoding="utf-8")) == data
+    assert target.stat().st_mode & 0o777 == 0o664
     assert list(target.parent.glob("*.tmp")) == []
+
+
+def test_atomic_yaml_write_preserves_existing_owner_group_and_mode(tmp_path):
+    target = tmp_path / "movie_metadata.yml"
+    target.write_text("metadata:\n  old: true\n", encoding="utf-8")
+    target.chmod(0o640)
+    before = target.stat()
+
+    io_module.atomic_write_yaml(target, {"metadata": {"new": True}})
+
+    after = target.stat()
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+    assert after.st_mode & 0o777 == 0o640
 
 
 def test_atomic_yaml_failure_preserves_previous_file(monkeypatch, tmp_path):
@@ -44,3 +58,17 @@ def test_atomic_bytes_failure_preserves_previous_file(monkeypatch, tmp_path):
 
     assert target.read_bytes() == b"old-image"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_atomic_bytes_write_preserves_existing_asset_identity_and_mode(tmp_path):
+    target = tmp_path / "poster.jpg"
+    target.write_bytes(b"old-image")
+    target.chmod(0o660)
+    before = target.stat()
+
+    io_module.atomic_write_bytes(target, b"new-image")
+
+    after = target.stat()
+    assert target.read_bytes() == b"new-image"
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+    assert after.st_mode & 0o777 == 0o660

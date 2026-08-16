@@ -13,6 +13,13 @@ def utc_now():
 
 def validate_runtime_paths(config, config_dir):
     """Create and verify only the writable paths required by a real run."""
+    get_effective_uid = getattr(os, "geteuid", None)
+    if get_effective_uid is not None and get_effective_uid() == 0:
+        raise RuntimeError(
+            "MetaFusion refuses to run as root because generated files would become "
+            "root-owned. Keep the Docker entrypoint enabled and set PUID/PGID to the "
+            "host owner (99:100 on standard Unraid installations)."
+        )
     if config.get("settings", {}).get("dry_run", False):
         return
 
