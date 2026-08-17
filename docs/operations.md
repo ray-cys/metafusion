@@ -50,12 +50,26 @@ one-shot run after every container restart is intentional.
 # Validate configuration and show value sources without contacting connectors
 python metafusion.py --doctor
 
+# Contact Plex and TMDb, verify selected libraries and inspect mapped storage
+# without creating or changing configuration, metadata, artwork, or state
+python metafusion.py --preflight
+
+# Perform a read-only full artwork selection and ownership/quality audit
+python metafusion.py --asset-audit
+
 # Show live scheduler state, effective build, library counts, and recent jobs
 python metafusion.py --status
 
 # Write a value-free diagnostic report under /config/reports
 python metafusion.py --support-report
 ```
+
+Preflight fails when authentication, selected library names, mapping roots, or
+required storage are unavailable. It does not create missing directories or
+probe files. The asset audit contacts Plex and TMDb and can take about as long
+as a full artwork evaluation, but it does not update YAML, artwork, ownership,
+incremental state, or TMDb cache. Its deliberate output is a value-safe
+`asset-audit-*.txt` report.
 
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
@@ -192,12 +206,17 @@ Shared reports and logs are:
 ```text
 /config/logs/metafusion.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
+/config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/metafusion-support-*.txt
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
+Asset-audit reports include the selected candidate's language, dimensions,
+vote score, ownership status, existing dimensions, and the action a real run
+would consider. They omit filesystem paths and do not prove that a later
+download will succeed.
 Destination-history reports identify old and current artwork paths after a
 Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
 reports identify fields and outcomes. Reports are bounded. Destination reports
@@ -215,6 +234,13 @@ and large libraries every 100 items or 5%, whichever interval is larger. A
 30-second minimum gap prevents log flooding, a 60-second heartbeat covers slow
 shows, and start/final progress is always logged. TV progress counts top-level
 shows while their seasons and episodes remain part of each show operation.
+
+Every completed job also logs one local performance summary: total, Plex
+inventory and library-processing time; items per minute; TMDb requests,
+cache hits/misses, retries and rate-limit waits; and the five slowest items by
+library plus Plex rating key. It intentionally omits media paths and metadata
+values. Use it to compare full and incremental runs without adding a metrics
+service.
 
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` is also checked at

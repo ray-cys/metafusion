@@ -97,6 +97,80 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
     return path
 
 
+def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
+    """Write the explicit read-only artwork audit without exposing host paths."""
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"asset-audit-{timestamp}.txt"
+    current_build = build_info()
+    ordered = sorted(
+        (record for record in (records or []) if isinstance(record, dict)),
+        key=lambda record: (
+            str(record.get("library") or "").casefold(),
+            str(record.get("title") or "").casefold(),
+            str(record.get("asset_type") or ""),
+            int(record.get("season_number") or -1),
+        ),
+    )
+    lines = [
+        "MetaFusion read-only asset audit",
+        f"Generated: {generated.isoformat()}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Candidates: {len(ordered)}",
+        f"Gaps: {len(gaps or [])}",
+        "",
+        "Candidate decisions",
+    ]
+    if not ordered:
+        lines.append("- none")
+    for record in ordered:
+        candidate = record.get("candidate") or {}
+        asset = str(record.get("asset_type") or "artwork")
+        if record.get("season_number") is not None:
+            asset += f" {record['season_number']}"
+        existing = ""
+        if record.get("existing_width") and record.get("existing_height"):
+            existing = (
+                f" | existing {record['existing_width']}x"
+                f"{record['existing_height']}"
+            )
+        lines.append(
+            f"- [{record.get('action') or 'unknown'}] "
+            f"{record.get('library') or 'Unknown library'} | "
+            f"{record.get('media_type') or 'Unknown'} | "
+            f"{record.get('title') or 'Unknown title'} | {asset} | "
+            f"candidate {candidate.get('width', 0)}x{candidate.get('height', 0)} "
+            f"lang={candidate.get('language', 'untagged')} "
+            f"vote={candidate.get('vote', 0):g} | "
+            f"ownership={record.get('ownership') or 'unknown'}{existing}"
+        )
+    lines.extend(("", "Missing, rejected, and failed candidates"))
+    if not gaps:
+        lines.append("- none")
+    for gap in gaps or []:
+        if not isinstance(gap, dict):
+            continue
+        detail = f" | {gap.get('detail')}" if gap.get("detail") else ""
+        lines.append(
+            f"- [{gap.get('category') or 'unknown'}] "
+            f"{gap.get('library') or 'Unknown library'} | "
+            f"{gap.get('media_type') or 'Unknown'} | "
+            f"{gap.get('title') or 'Unknown title'} | "
+            f"{gap.get('asset_type') or 'metadata'}{detail}"
+        )
+    atomic_write_text(path, "\n".join(lines) + "\n")
+
+    reports = sorted(report_dir.glob("asset-audit-*.txt"), reverse=True)
+    for stale in reports[max(1, int(retention)):]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return path
+
+
 def write_destination_history_report(cache, base_dir=None, retention=10):
     """Report renamed artwork destinations without deleting either location."""
     pending = []

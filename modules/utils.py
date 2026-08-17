@@ -1,4 +1,4 @@
-import asyncio, hashlib, uuid, re, datetime, os
+import asyncio, hashlib, uuid, re, datetime, os, tempfile
 from io import BytesIO
 from pathlib import Path
 from helper.config import mode_check
@@ -6,6 +6,16 @@ from helper.cache import load_cache
 from helper.io import atomic_write_bytes, sha256_file
 from helper.runtime import ensure_storage_available
 from helper.tmdb import tmdb_api_request
+
+_CACHE_ENTRY_UNSET = object()
+
+
+def _md5_file(path):
+    digest = hashlib.md5()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
     if exclude_fields is None:
@@ -265,7 +275,14 @@ def _normalized_asset_path(path):
     return str(Path(path).absolute()) if path else None
 
 
-def asset_write_allowed(config, cache_key, asset_path, asset_type, season_number=None):
+def asset_write_allowed(
+    config,
+    cache_key,
+    asset_path,
+    asset_type,
+    season_number=None,
+    cached_entry=_CACHE_ENTRY_UNSET,
+):
     """Return whether an existing artwork file is still owned by MetaFusion."""
     if not asset_path.exists():
         return True, "missing"
@@ -276,7 +293,11 @@ def asset_write_allowed(config, cache_key, asset_path, asset_type, season_number
     if policy == "fill_missing":
         return False, "fill_missing"
 
-    cached = load_cache().get(cache_key, {})
+    cached = (
+        load_cache().get(cache_key, {})
+        if cached_entry is _CACHE_ENTRY_UNSET
+        else cached_entry
+    )
     if not isinstance(cached, dict):
         return False, "no_ownership_record"
     if asset_type == "season":
@@ -313,7 +334,7 @@ def claim_asset_destination(registry, cache_key, asset_path):
 
 def smart_asset_upgrade(
     config, asset_path, new_image_data, new_image_path=None, cache_key=None,
-    asset_type="poster", stale_days=30
+    asset_type="poster", stale_days=30, cached_entry=_CACHE_ENTRY_UNSET,
 ):
     from PIL import Image
 
@@ -334,8 +355,11 @@ def smart_asset_upgrade(
     cached_votes = 0
     last_upgraded = None
     if cache_key:
-        cache = load_cache()
-        cached = cache.get(cache_key, {})
+        cached = (
+            load_cache().get(cache_key, {})
+            if cached_entry is _CACHE_ENTRY_UNSET
+            else cached_entry
+        )
         cached_votes = cached.get(cache_key_name, 0)
         last_upgraded = cached.get(last_upgraded_key)
 
@@ -356,10 +380,8 @@ def smart_asset_upgrade(
 
     if new_image_path and new_image_path.exists():
         try:
-            with open(asset_path, "rb") as f:
-                existing_checksum = hashlib.md5(f.read()).hexdigest()
-            with open(new_image_path, "rb") as f:
-                new_checksum = hashlib.md5(f.read()).hexdigest()
+            existing_checksum = _md5_file(asset_path)
+            new_checksum = _md5_file(new_image_path)
             context["existing_checksum"] = existing_checksum
             context["new_checksum"] = new_checksum
             if existing_checksum == new_checksum:
@@ -404,7 +426,7 @@ def smart_asset_upgrade(
 
 def smart_season_asset_upgrade(
     config, asset_path, new_image_data, new_image_path=None, cache_key=None, 
-    season_number=None, stale_days=30
+    season_number=None, stale_days=30, cached_entry=_CACHE_ENTRY_UNSET,
 ):
     from PIL import Image
 
@@ -419,8 +441,11 @@ def smart_season_asset_upgrade(
     cached_votes = 0
     last_upgraded = None
     if cache_key:
-        cache = load_cache()
-        cached = cache.get(cache_key)
+        cached = (
+            load_cache().get(cache_key)
+            if cached_entry is _CACHE_ENTRY_UNSET
+            else cached_entry
+        )
         if isinstance(cached, dict) and season_number is not None:
             seasons = cached.get("seasons", {})
             season_entry = seasons.get(str(season_number), {})
@@ -444,10 +469,8 @@ def smart_season_asset_upgrade(
 
     if new_image_path and new_image_path.exists():
         try:
-            with open(asset_path, "rb") as f:
-                existing_checksum = hashlib.md5(f.read()).hexdigest()
-            with open(new_image_path, "rb") as f:
-                new_checksum = hashlib.md5(f.read()).hexdigest()
+            existing_checksum = _md5_file(asset_path)
+            new_checksum = _md5_file(new_image_path)
             context["existing_checksum"] = existing_checksum
             context["new_checksum"] = new_checksum
             if existing_checksum == new_checksum:
@@ -561,7 +584,6 @@ def get_asset_path(config, meta, asset_type="poster", season_number=None):
     else:
         kometa_root = config.get("settings", {}).get("path", ".")
         assets_path = Path(kometa_root) / "assets" / library_type
-        assets_path.mkdir(parents=True, exist_ok=True)
         if asset_type == "poster":
             if library_type == "movie":
                 return assets_path / movie_path / "poster.jpg"
@@ -577,7 +599,9 @@ def get_asset_path(config, meta, asset_type="poster", season_number=None):
     return None
 
 def asset_temp_path(config, meta, extension="jpg"):
-    if mode_check(config, "kometa"):
+    if config.get("settings", {}).get("dry_run", False):
+        assets_path = Path(tempfile.gettempdir()) / "metafusion-artwork"
+    elif mode_check(config, "kometa"):
         kometa_root = config.get("settings", {}).get("path", ".")
         library_type = meta.get("library_type", "movie")
         assets_path = Path(kometa_root) / "assets" / library_type
@@ -589,12 +613,17 @@ def asset_temp_path(config, meta, extension="jpg"):
             assets_path = Path(meta["show_dir"])
         else:
             assets_path = Path(".")
-    if mode_check(config, "kometa"):
+    if config.get("settings", {}).get("dry_run", False):
+        assets_path.mkdir(parents=True, exist_ok=True)
+    elif mode_check(config, "kometa"):
         assets_path.mkdir(parents=True, exist_ok=True)
     ensure_storage_available(
         config,
         assets_path,
-        create=mode_check(config, "kometa"),
+        create=(
+            config.get("settings", {}).get("dry_run", False)
+            or mode_check(config, "kometa")
+        ),
         description="artwork destination",
     )
     temp_filename = f"temp_{uuid.uuid4().hex}.{extension}"
@@ -612,8 +641,7 @@ async def save_poster(image_content, save_path):
         await loop.run_in_executor(None, validate_image)
         new_checksum = hashlib.md5(image_content).hexdigest()
         if save_path.exists():
-            with open(save_path, "rb") as existing_file:
-                existing_checksum = hashlib.md5(existing_file.read()).hexdigest()
+            existing_checksum = await asyncio.to_thread(_md5_file, save_path)
             if existing_checksum == new_checksum:
                 return "ALREADY_UP_TO_DATE", None
         await loop.run_in_executor(None, atomic_write_bytes, save_path, image_content)
