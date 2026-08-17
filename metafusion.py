@@ -33,7 +33,11 @@ from helper.incremental import (
     mark_library_scan_complete,
     mark_library_scan_started,
 )
-from helper.diagnostics import write_artwork_gap_report, write_support_report
+from helper.diagnostics import (
+    write_artwork_gap_report,
+    write_destination_history_report,
+    write_support_report,
+)
 from helper.logging import (
     check_sys_requirements,
     get_meta_banner,
@@ -763,6 +767,17 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     if gap_report:
                         logger.info(
                             "[Diagnostics] Artwork gap report saved to %s", gap_report
+                        )
+                    destination_report = write_destination_history_report(
+                        load_cache(),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    if destination_report:
+                        logger.info(
+                            "[Diagnostics] Artwork destination history saved to %s",
+                            destination_report,
                         )
                 except OSError as caught:
                     logger.warning(

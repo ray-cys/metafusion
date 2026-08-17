@@ -842,6 +842,7 @@ def test_tv_builder_maps_provider_split_anthology_seasons(tmp_path):
     assert seasons[1]["episodes"][1]["title"] == "Episode 1"
     assert seasons[2]["title"] == "The Haunting of Bly Manor"
     assert seasons[2]["episodes"][1]["title"] == "The Great Good Place"
+    assert "summary" not in consolidated["metadata"]["The Haunting (2018)"]
 
 
 def test_tv_builder_treats_future_tmdb_episode_as_pending(tmp_path):
@@ -868,6 +869,7 @@ def test_tv_builder_treats_future_tmdb_episode_as_pending(tmp_path):
 
     assert result["metadata_action"] == "downloaded"
     assert result["is_complete"] is True
+    assert result["metadata_pending_count"] == 1
 
 
 def test_tv_builder_treats_announced_empty_season_as_pending(tmp_path):
@@ -894,6 +896,115 @@ def test_tv_builder_treats_announced_empty_season_as_pending(tmp_path):
 
     assert result["metadata_action"] == "downloaded"
     assert result["is_complete"] is True
+    assert result["metadata_pending_count"] == 1
+
+
+def test_tv_builder_applies_explicit_episode_number_override(tmp_path):
+    meta = tv_meta()
+    meta["seasons_episodes"] = {1: [1]}
+    details = tv_details()
+    details["seasons"] = [{"season_number": 1}]
+    tmdb_response_cache["tv/200"] = details
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    target = season_details(2)
+    target["episodes"] = [
+        {
+            "episode_number": 3,
+            "name": "Mapped Episode",
+            "air_date": "2022-03-04",
+            "overview": "Mapped summary",
+            "crew": [],
+        }
+    ]
+    tmdb_response_cache["tv/200/season/2"] = target
+    config = build_config(tmp_path)
+    config["tmdb"]["episode_overrides"] = {
+        "tvdb:300": {"S01E01": "S02E03"}
+    }
+    consolidated = {"metadata": {}}
+
+    result = asyncio.run(
+        builder.build_tv(
+            config,
+            consolidated,
+            feature_flags=feature_flags(
+                poster=False, season=False, background=False
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    generated = consolidated["metadata"]["Example Show (2021)"]
+    assert generated["seasons"][1]["episodes"][1]["title"] == "Mapped Episode"
+    assert result["metadata_pending_count"] == 0
+
+
+def test_split_series_preserve_policy_skips_top_level_artwork(tmp_path):
+    meta = tv_meta()
+    meta.update(
+        {
+            "title": "The Haunting",
+            "year": 2018,
+            "tmdb_id": "72844",
+            "tvdb_id": "345246",
+            "seasons_episodes": {1: [1]},
+        }
+    )
+    details = tv_details()
+    details.update(
+        {
+            "name": "The Haunting of Hill House",
+            "first_air_date": "2018-10-12",
+            "seasons": [{"season_number": 1}],
+        }
+    )
+    tmdb_response_cache["tv/72844"] = details
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                poster=True,
+                season=False,
+                background=True,
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["poster_action"] == "skipped"
+    assert result["background_action"] == "skipped"
+
+
+def test_tmdb_details_recovery_replaces_external_id_conflict(monkeypatch):
+    async def request(_config, endpoint, **_kwargs):
+        if endpoint == "movie/100":
+            return {"external_ids": {"imdb_id": "tt-wrong"}}
+        if endpoint == "movie/101":
+            return {"external_ids": {"imdb_id": "tt-right"}}
+        raise AssertionError(endpoint)
+
+    async def resolve(*_args, **kwargs):
+        assert kwargs["excluded_ids"] == {"100"}
+        return "101"
+
+    monkeypatch.setattr(builder, "tmdb_api_request", request)
+    monkeypatch.setattr(builder, "resolve_tmdb_id", resolve)
+
+    resolved, details, recovered = asyncio.run(
+        builder.tmdb_details_with_recovery(
+            {}, "movie", "100", imdb_id="tt-right", session=object()
+        )
+    )
+
+    assert resolved == "101"
+    assert recovered == "100"
+    assert details["external_ids"]["imdb_id"] == "tt-right"
 
 
 def test_movie_builder_dry_run_and_missing_identifiers_do_not_write_cache(

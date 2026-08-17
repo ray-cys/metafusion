@@ -295,7 +295,9 @@ file.
 ## TMDb identity and episode policies
 
 MetaFusion prefers usable Plex external IDs and validates the returned TMDb
-title/type/year before accepting the identity. A year embedded at the end of a
+title/type/year before accepting the identity. Independent Plex IMDb/TVDB IDs
+are compared with the selected TMDb record: a conflict triggers recovery to a
+matching TMDb record or safe rejection. A year embedded at the end of a
 Plex title can resolve a conflicting Plex year when the embedded year matches
 the TMDb release year and the result came from a Plex external ID. Title-search
 results do not receive this exception, and ordinary unexplained year mismatches
@@ -314,11 +316,24 @@ that TheTVDB/Plex stores as one multi-season show but TMDb stores as separate
 series. The original Plex season number remains in the output while metadata
 and season artwork come from the corresponding TMDb series. Current mappings
 cover `The Haunting` (TheTVDB 345246) and `Monster` (TheTVDB 389492).
+Additional verified mappings can be supplied with
+`TMDB_SPLIT_SERIES_MAPPINGS`. A mapping is an explicit exception to the normal
+TVDB consensus rule. The default `preserve` show policy leaves existing
+top-level show metadata and artwork untouched while mapped season metadata,
+episode metadata, and season artwork continue to update. `primary` opts into
+using the primary TMDb series for top-level show data.
 
 When Plex lists a future episode beyond TMDb's latest episode for that season,
 MetaFusion records an `INFO` message and preserves existing metadata. It does
-not fail or repeatedly retry the whole show. A gap inside the available TMDb
+not fail the show, and schedules a focused metadata recheck after
+`METADATA_PENDING_RECHECK_HOURS`. A gap inside the available TMDb
 episode range is still treated as an unresolved ordering warning.
+
+Known stable numbering exceptions can use `TMDB_EPISODE_OVERRIDES`. The
+override maps one Plex `SxxExx` position to one TMDb `SxxExx` source and never
+renumbers Plex or generated Kometa output. Automatic episode-group resolution
+remains preferred; explicit overrides apply when configured and disable that
+automatic fallback for the affected show.
 
 For multiple same-title/year movie copies, unique Plex edition names are the
 safe identity. `ALLOW_AMBIGUOUS_EDITIONS=True` disables that fail-safe and can

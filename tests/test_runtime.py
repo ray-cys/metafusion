@@ -192,6 +192,30 @@ def test_tmdb_identity_does_not_weaken_genuine_year_rejections(
     assert actual_reason == reason
 
 
+def test_tmdb_external_id_consensus_trusts_match_and_rejects_conflict():
+    details = {"external_ids": {"imdb_id": "tt123", "tvdb_id": 456}}
+
+    assert tmdb_module.tmdb_external_id_consensus(
+        "tv", details, imdb_id="TT123", tvdb_id="456"
+    ) == (True, True, "matched IMDb, TVDB")
+
+    accepted, trusted, reason = tmdb_module.tmdb_external_id_consensus(
+        "tv", details, imdb_id="tt999", tvdb_id="456"
+    )
+    assert accepted is False
+    assert trusted is False
+    assert "IMDb tt999 vs tt123" in reason
+
+
+def test_tmdb_external_id_consensus_allows_explicit_split_tvdb_mapping():
+    assert tmdb_module.tmdb_external_id_consensus(
+        "tv",
+        {"external_ids": {"tvdb_id": 999}},
+        tvdb_id="456",
+        allow_tvdb_mismatch=True,
+    ) == (True, True, "accepted configured split-series TVDB mapping")
+
+
 def test_tmdb_id_resolution_excludes_a_rejected_external_match(monkeypatch):
     async def request(_config, endpoint, **_kwargs):
         assert endpoint == "find/tt123"

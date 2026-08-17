@@ -547,9 +547,19 @@ async def process_library(
                     stats.pop("_incremental_success", False)
                     and not feature_flags.get("dry_run", False)
                 ):
-                    pending_incremental.append(meta_by_rating_key.get(
-                        str(getattr(item, "ratingKey", ""))
-                    ))
+                    pending_count = (
+                        stats.get("metadata_pending_count", 0)
+                        if "metadata" in planned.reasons
+                        else None
+                    )
+                    pending_incremental.append(
+                        (
+                            meta_by_rating_key.get(
+                                str(getattr(item, "ratingKey", ""))
+                            ),
+                            pending_count,
+                        )
+                    )
 
                 action = stats.get("metadata_action")
                 if action == "downloaded":
@@ -717,7 +727,7 @@ async def process_library(
         elif mode_check(config, "kometa") and feature_flags["dry_run"]:
             log_processing_event("processing_metadata_dry_run", library_name=library_name)
 
-        for meta in pending_incremental:
+        for meta, metadata_pending_count in pending_incremental:
             if not meta:
                 continue
             media_type = (meta.get("library_type") or "unknown").lower()
@@ -733,6 +743,7 @@ async def process_library(
                 rating_key=meta.get("ratingKey"),
                 plex_updated_at=meta.get("updatedAt"),
                 config_fingerprint=incremental_fingerprint,
+                metadata_pending_count=metadata_pending_count,
             )
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]

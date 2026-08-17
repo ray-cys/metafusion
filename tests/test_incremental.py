@@ -253,9 +253,52 @@ def test_artwork_schedule_respects_disabled_features_and_zero_intervals():
         missing_timestamps,
         "show",
         incremental_config(),
-        feature_flags={"poster": False, "background": False, "season": False},
+        feature_flags={
+            "metadata_basic": True,
+            "poster": False,
+            "background": False,
+            "season": False,
+        },
         now=now,
     ) is False
+
+
+def test_pending_episode_metadata_uses_short_recheck_queue():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["incremental"]["metadata_pending_recheck_hours"] = 6
+    cached = {
+        "media_type": "tv",
+        "metadata_pending_count": 2,
+        "metadata_pending_at": (now - timedelta(hours=7)).isoformat(),
+    }
+
+    assert image_upgrade_reasons(
+        cached,
+        "show",
+        config,
+        feature_flags={
+            "metadata_basic": True,
+            "poster": False,
+            "background": False,
+            "season": False,
+        },
+        now=now,
+    ) == {"metadata"}
+
+    cached["metadata_pending_at"] = (now - timedelta(hours=5)).isoformat()
+    assert image_upgrade_reasons(
+        cached,
+        "show",
+        config,
+        feature_flags={
+            "metadata_basic": True,
+            "poster": False,
+            "background": False,
+            "season": False,
+        },
+        now=now,
+    ) == set()
 
 
 def test_artwork_schedule_uses_legacy_upgrade_timestamp_during_migration():

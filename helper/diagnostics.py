@@ -1,3 +1,4 @@
+import copy
 import os
 import platform
 import sqlite3
@@ -88,6 +89,66 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
     atomic_write_text(path, "\n".join(lines) + "\n")
 
     reports = sorted(report_dir.glob("artwork-gaps-*.txt"), reverse=True)
+    for stale in reports[max(1, int(retention)):]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return path
+
+
+def write_destination_history_report(cache, base_dir=None, retention=10):
+    """Report renamed artwork destinations without deleting either location."""
+    pending = []
+    for cache_key, entry in cache.items():
+        if not isinstance(entry, dict):
+            continue
+        for index, event in enumerate(entry.get("destination_history") or []):
+            if isinstance(event, dict) and not event.get("reported_at"):
+                pending.append((cache_key, entry, index, event))
+    if not pending:
+        return None
+
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated_at = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"destination-history-{timestamp}.txt"
+    current_build = build_info()
+    lines = [
+        "MetaFusion artwork destination history",
+        f"Generated: {generated_at}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Entries: {len(pending)}",
+        "",
+        "Old destinations are reported for manual review and are never deleted automatically.",
+        "",
+    ]
+    for cache_key, entry, _index, event in sorted(
+        pending,
+        key=lambda value: (
+            str(value[1].get("title") or "").casefold(),
+            str(value[3].get("asset_type") or ""),
+        ),
+    ):
+        asset_label = str(event.get("asset_type") or "artwork")
+        if event.get("season_number") is not None:
+            asset_label += f" season {event['season_number']}"
+        lines.append(
+            f"- {entry.get('title') or cache_key} ({entry.get('year') or 'unknown year'}) "
+            f"| {asset_label} | old: {event.get('previous_destination')} "
+            f"| current: {event.get('new_destination')}"
+        )
+    atomic_write_text(path, "\n".join(lines) + "\n")
+
+    changed = {}
+    for cache_key, entry, index, _event in pending:
+        updated = changed.setdefault(cache_key, copy.deepcopy(entry))
+        updated["destination_history"][index]["reported_at"] = generated_at
+    for cache_key, entry in changed.items():
+        cache[cache_key] = entry
+
+    reports = sorted(report_dir.glob("destination-history-*.txt"), reverse=True)
     for stale in reports[max(1, int(retention)):]:
         try:
             stale.unlink()

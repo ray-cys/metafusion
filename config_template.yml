@@ -47,6 +47,21 @@ tmdb:
   title_search_fallback: false
   # Safely use a TMDb episode group only when it uniquely matches Plex numbering.
   episode_group_fallback: true
+  # For Plex series represented by multiple TMDb shows, preserve top-level show
+  # metadata/artwork by default while updating mapped seasons and episodes.
+  split_series_show_policy: "preserve"  # preserve or primary
+  split_series_mappings: {}
+  # Example:
+  #   "tvdb:345246":
+  #     show_policy: preserve
+  #     seasons:
+  #       1: {tmdb_id: 72844, season_number: 1}
+  #       2: {tmdb_id: 109958, season_number: 1}
+  # Deterministic Plex episode -> TMDb episode corrections for known exceptions.
+  episode_overrides: {}
+  # Example:
+  #   "tvdb:12345":
+  #     "S01E01": "S01E02"
 
 # Metadata and asset processing options
 metadata:
@@ -92,11 +107,15 @@ runtime:
   plex_retry_delay: 1
   shutdown_timeout: 15
   max_image_mb: 25
+  validate_media_mounts: true
+  min_free_space_mb: 256
 
 # Skip unchanged Plex items between periodic reconciliation scans.
 incremental:
   enabled: true
   full_scan_interval_hours: 168
+  # Revisit future Plex episodes whose TMDb metadata was not published yet.
+  metadata_pending_recheck_hours: 24
 
 # Unchanged items become eligible for an artwork refresh when these intervals
 # expire. Per-type null values inherit default_days. Set an interval to 0 to
@@ -129,6 +148,7 @@ tmdb_cache:
 output:
   validate_schema: true
   backup_count: 3
+  destination_history_report_retention: 10
 
 safety:
   # Kometa cannot reliably match duplicate title/year movies unless every copy

@@ -4,6 +4,7 @@ from pathlib import Path
 from helper.config import mode_check
 from helper.cache import load_cache
 from helper.io import atomic_write_bytes, sha256_file
+from helper.runtime import ensure_storage_available
 from helper.tmdb import tmdb_api_request
 
 def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
@@ -590,6 +591,12 @@ def asset_temp_path(config, meta, extension="jpg"):
             assets_path = Path(".")
     if mode_check(config, "kometa"):
         assets_path.mkdir(parents=True, exist_ok=True)
+    ensure_storage_available(
+        config,
+        assets_path,
+        create=mode_check(config, "kometa"),
+        description="artwork destination",
+    )
     temp_filename = f"temp_{uuid.uuid4().hex}.{extension}"
     return assets_path / temp_filename
 

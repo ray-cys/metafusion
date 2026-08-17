@@ -3,6 +3,7 @@ import copy
 from contextvars import ContextVar
 from datetime import datetime
 
+from helper.asset_registry import normalize_destination
 from helper.logging import log_cache_event
 from helper.state_db import STATE_DATABASE, MediaStateStore
 
@@ -84,6 +85,50 @@ def get_cache_lock():
     return _cache_lock
 
 
+def _record_destination_change(
+    entry,
+    asset_type,
+    previous,
+    current,
+    now_iso,
+    *,
+    season_number=None,
+    previous_checksum=None,
+):
+    if not previous or not current:
+        return
+    old_path = normalize_destination(previous)
+    new_path = normalize_destination(current)
+    if not old_path or old_path == new_path:
+        return
+    history = entry.get("destination_history")
+    if not isinstance(history, list):
+        history = []
+        entry["destination_history"] = history
+    duplicate = any(
+        event.get("asset_type") == asset_type
+        and event.get("season_number") == season_number
+        and event.get("previous_destination") == old_path
+        and event.get("new_destination") == new_path
+        for event in history[-20:]
+        if isinstance(event, dict)
+    )
+    if duplicate:
+        return
+    history.append(
+        {
+            "asset_type": asset_type,
+            "season_number": season_number,
+            "previous_destination": old_path,
+            "new_destination": new_path,
+            "previous_checksum": previous_checksum,
+            "detected_at": now_iso,
+            "reported_at": None,
+        }
+    )
+    del history[:-100]
+
+
 async def meta_cache_async(
     cache_key,
     tmdb_id,
@@ -99,6 +144,7 @@ async def meta_cache_async(
     background_checked=False,
     season_checked=False,
     plex_metadata_checked=False,
+    metadata_pending_count=None,
     **kwargs,
 ):
     async with get_cache_lock():
@@ -131,15 +177,42 @@ async def meta_cache_async(
             entry["season_last_checked"] = now_iso
         if plex_metadata_checked:
             entry["plex_metadata_last_checked"] = now_iso
+        if metadata_pending_count is not None:
+            pending_count = max(0, int(metadata_pending_count))
+            entry["metadata_pending_count"] = pending_count
+            entry["metadata_pending_at"] = now_iso if pending_count else ""
         season_number = kwargs.pop("season_number", None)
         if season_number is not None:
             seasons = entry.setdefault("seasons", {})
             season_entry = seasons.setdefault(str(season_number), {})
+            if "season_path" in kwargs:
+                _record_destination_change(
+                    entry,
+                    "season",
+                    season_entry.get("season_path"),
+                    kwargs.get("season_path"),
+                    now_iso,
+                    season_number=int(season_number),
+                    previous_checksum=season_entry.get("season_checksum"),
+                )
             for key, value in kwargs.items():
                 season_entry[key] = value
             if type(season_upgraded) is int and season_upgraded == int(season_number):
                 season_entry["season_last_upgraded"] = now_iso
         else:
+            for asset_type, path_field, checksum_field in (
+                ("poster", "poster_path", "poster_checksum"),
+                ("background", "background_path", "background_checksum"),
+            ):
+                if path_field in kwargs:
+                    _record_destination_change(
+                        entry,
+                        asset_type,
+                        entry.get(path_field),
+                        kwargs.get(path_field),
+                        now_iso,
+                        previous_checksum=entry.get(checksum_field),
+                    )
             for key, value in kwargs.items():
                 entry[key] = value
         cache[cache_key] = entry

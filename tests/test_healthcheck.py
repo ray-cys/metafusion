@@ -1,12 +1,17 @@
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from healthcheck import check_status
 from helper import runtime as runtime_module
-from helper.runtime import RuntimeStatus, validate_runtime_paths
+from helper.runtime import (
+    RuntimeStatus,
+    ensure_storage_available,
+    validate_runtime_paths,
+)
 from helper.state_db import recent_job_runs
 
 
@@ -130,3 +135,41 @@ def test_runtime_refuses_accidental_root_execution(monkeypatch, tmp_path):
         )
 
     assert not (tmp_path / "config").exists()
+
+
+def test_plex_mount_preflight_rejects_missing_mapping_destination(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(runtime_module.os, "geteuid", lambda: 99)
+    with pytest.raises(RuntimeError, match="mapping destination is unavailable"):
+        validate_runtime_paths(
+            {
+                "settings": {"dry_run": False, "mode": "plex"},
+                "assets": {"run_poster": True},
+                "plex": {
+                    "path_mappings": [
+                        f"/plex/movies=>{tmp_path / 'missing-media'}"
+                    ]
+                },
+                "runtime": {
+                    "validate_media_mounts": True,
+                    "min_free_space_mb": 0,
+                },
+            },
+            tmp_path / "config",
+        )
+
+
+def test_storage_preflight_rejects_low_free_space(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runtime_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=1024, used=1023, free=1),
+    )
+
+    with pytest.raises(RuntimeError, match="MIN_FREE_SPACE_MB requires 10 MiB"):
+        ensure_storage_available(
+            {"runtime": {"min_free_space_mb": 10}},
+            tmp_path,
+            description="test destination",
+        )

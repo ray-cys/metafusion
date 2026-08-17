@@ -98,6 +98,11 @@ Cleanup is considered only on a complete reconciliation. Incremental and
 targeted runs explicitly report that cleanup was skipped; they do not print a
 misleading `0 Titles Removed` result.
 
+Future episodes whose Plex records arrive before TMDb publishes episode data
+are marked pending in SQLite. They are selected for metadata-only evaluation
+after `METADATA_PENDING_RECHECK_HOURS` even if Plex's update timestamp is
+unchanged; the marker clears automatically once every pending episode resolves.
+
 ## Artwork refresh timing
 
 Unchanged artwork can become due independently for movies, series, and
@@ -187,13 +192,23 @@ Shared reports and logs are:
 ```text
 /config/logs/metafusion.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
+/config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/metafusion-support-*.txt
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
-Plex metadata reports identify fields and outcomes. They are bounded and safe
-for support when host paths in accompanying logs have also been reviewed.
+Destination-history reports identify old and current artwork paths after a
+Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
+reports identify fields and outcomes. Reports are bounded. Destination reports
+contain host paths and must be reviewed before sharing.
+
+Before normal writes, MetaFusion validates `/config`, Kometa output, and any
+configured Plex mapping destinations. `MIN_FREE_SPACE_MB` is also checked at
+each artwork destination before a download. A missing/unmounted destination or
+low-space volume fails safely instead of writing into an unintended container
+directory. `VALIDATE_MEDIA_MOUNTS=False` disables only the startup mapping-root
+check; per-artwork destination checks remain active.
 
 ## Container health and shutdown
 

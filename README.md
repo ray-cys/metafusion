@@ -12,6 +12,7 @@ scanner or metadata agent, and it never modifies video or audio files.
 - Skips unchanged items between periodic reconciliation scans.
 - Rechecks movie, series, and season artwork on separate schedules.
 - Preserves manual artwork through ownership and checksum safeguards.
+- Validates provider identities and mapped storage before destructive or write operations.
 - Handles multiple movie editions when Plex edition names are unique.
 - Runs once or as a long-running Docker scheduler on AMD64 and ARM64.
 
@@ -257,6 +258,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/cache/meta_db.sqlite3
 /config/cache/tmdb_cache.sqlite3
 /config/reports/artwork-gaps-*.txt
+/config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
 ```
 

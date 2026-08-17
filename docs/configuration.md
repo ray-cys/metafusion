@@ -44,6 +44,9 @@ effective configuration without contacting Plex or TMDb.
 | `ARTWORK_ALLOW_ANY_LANGUAGE` | `True` | Make one unfiltered image request when preferred artwork languages produce no usable result. |
 | `TMDB_TITLE_SEARCH_FALLBACK` | `False` | Use conservative exact normalized title/year search when Plex has no usable external ID. |
 | `TMDB_EPISODE_GROUP_FALLBACK` | `True` | Use an alternate TMDb episode group only when one mapping uniquely covers the Plex inventory. |
+| `TMDB_SPLIT_SERIES_SHOW_POLICY` | `preserve` | Default top-level show policy for split-series mappings: `preserve` or `primary`. |
+| `TMDB_SPLIT_SERIES_MAPPINGS` | `{}` | JSON provider-to-season mappings for verified series that Plex and TMDb group differently. |
+| `TMDB_EPISODE_OVERRIDES` | `{}` | JSON deterministic Plex-episode to TMDb-episode corrections for verified numbering exceptions. |
 | `KOMETA_PATH` | `/kometa` | Kometa-mode container output root. |
 
 Tokens and keys are redacted from MetaFusion logs. They remain visible to
@@ -108,6 +111,8 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 | `SHUTDOWN_TIMEOUT` | `15` | Internal graceful-shutdown deadline in seconds. |
 | `STOP_GRACE_PERIOD` | `20s` | Docker Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size in MiB. |
+| `VALIDATE_MEDIA_MOUNTS` | `True` | Validate configured Plex-mode mapping destinations before artwork processing. |
+| `MIN_FREE_SPACE_MB` | `256` | Minimum free space required on runtime and artwork destinations before writes. |
 | `PUID` | `10001` | Runtime user ID; use `99` on standard Unraid. |
 | `PGID` | `10001` | Runtime group ID; use `100` on standard Unraid. |
 
@@ -120,6 +125,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | --- | --- | --- |
 | `INCREMENTAL` | `True` | Skip successfully processed unchanged items. |
 | `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between complete reconciliation scans. |
+| `METADATA_PENDING_RECHECK_HOURS` | `24` | Recheck interval for Plex episodes whose TMDb metadata is not published yet. |
 | `IMAGE_UPGRADE_DAYS` | `30` | Default minimum age before unchanged artwork is reconsidered; `0` disables timed rechecks. |
 | `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background interval. |
 | `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background interval. |
@@ -130,6 +136,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables the byte cap. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
+| `DESTINATION_HISTORY_REPORT_RETENTION` | `10` | Artwork destination-change reports retained under `/config/reports`. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
@@ -138,6 +145,28 @@ Artwork age comes from saved MetaFusion upgrade timestamps, not filesystem
 mtime. Decimal day values are accepted (`0.5` is 12 hours). A due interval
 makes an item eligible for evaluation; `ASSET_UPDATE_POLICY` and quality rules
 still determine whether an existing file can be replaced.
+
+The two mapping environment variables must contain JSON objects. Equivalent
+YAML can be placed under `tmdb` in `config.yml`:
+
+```yaml
+tmdb:
+  split_series_show_policy: preserve
+  split_series_mappings:
+    "tvdb:345246":
+      show_policy: preserve
+      seasons:
+        1: {tmdb_id: 72844, season_number: 1}
+        2: {tmdb_id: 109958, season_number: 1}
+  episode_overrides:
+    "tvdb:12345":
+      "S01E01": "S01E02"
+```
+
+Mapping keys may use `tmdb:`, `tvdb:`, or `imdb:`. Episode overrides change
+only which TMDb episode supplies metadata; generated output remains under the
+original Plex season and episode number. Add overrides only after confirming a
+stable provider mismatch.
 
 ## Artwork selection
 

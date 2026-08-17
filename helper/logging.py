@@ -456,6 +456,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_no_tmdb_season_data": "[{media_type}] Missing TMDb data: {full_title} of Season {season_number}. Skipping...",
         "builder_episode_group_fallback": "[{media_type}] Resolved alternate episode ordering for {full_title} with TMDb group {group_id}.",
         "builder_split_series_mapping": "[{media_type}] Applied cross-provider season mapping for {full_title}: Plex season(s) {seasons}.",
+        "builder_split_series_show_preserved": "[{media_type}] Preserving top-level metadata and artwork for split series {full_title}; mapped season and episode updates remain enabled.",
+        "builder_episode_overrides": "[{media_type}] Applied {count} configured episode-number override(s) for {full_title}.",
         "builder_episode_metadata_pending": "[{media_type}] TMDb metadata is not available yet for {count} Plex episode(s) in {full_title} ({episodes}); existing metadata is preserved.",
         "builder_episode_order_unresolved": "[{media_type}] Could not safely map {count} Plex episode(s) for {full_title} ({episodes}); existing metadata is preserved.",
         "builder_metadata_diagnostics": "[{media_type}] Metadata diagnostics for {full_title}: {diagnostics}",
