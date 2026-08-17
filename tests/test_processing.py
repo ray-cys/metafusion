@@ -393,3 +393,58 @@ def test_incremental_success_marker_waits_for_metadata_commit(monkeypatch, tmp_p
         )
 
     assert marker_calls == []
+
+
+def test_successful_metadata_run_persists_pending_episode_marker(
+    monkeypatch, tmp_path
+):
+    class ShowSection(FakeSection):
+        title = "TV Shows"
+        type = "show"
+
+    class Show:
+        type = "show"
+        title = "Example"
+        year = 2020
+        ratingKey = "show-1"
+        updatedAt = "updated"
+
+    async def fake_metadata(_item, **_kwargs):
+        return {
+            "title": "Example",
+            "year": 2020,
+            "library_name": "TV Shows",
+            "library_type": "show",
+            "ratingKey": "show-1",
+            "updatedAt": "updated",
+            "show_path": "Example (2020)",
+            "seasons_episodes": {1: [1, 2]},
+        }
+
+    async def fake_process_item(**_kwargs):
+        return {
+            "_incremental_success": True,
+            "metadata_pending_count": 1,
+        }
+
+    marker_calls = []
+
+    async def record_marker(*args, **kwargs):
+        marker_calls.append((args, kwargs))
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+    monkeypatch.setattr(processing, "meta_cache_async", record_marker)
+
+    flags = feature_flags()
+    flags["metadata_basic"] = True
+    asyncio.run(
+        processing.process_library(
+            ShowSection([Show()]),
+            config(tmp_path),
+            feature_flags=flags,
+            incremental_fingerprint="fingerprint",
+        )
+    )
+
+    assert marker_calls[-1][1]["metadata_pending_count"] == 1

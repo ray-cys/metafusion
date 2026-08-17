@@ -3,6 +3,7 @@ import sqlite3
 from helper.diagnostics import (
     _tmdb_cache_status,
     write_artwork_gap_report,
+    write_destination_history_report,
     write_support_report,
 )
 
@@ -92,3 +93,36 @@ def test_artwork_gap_reports_are_deduplicated_and_retained(tmp_path):
     assert len(list((tmp_path / "reports").glob("artwork-gaps-*.txt"))) == 2
     assert not first.exists()
     assert second.exists()
+
+
+def test_destination_history_report_marks_events_without_deleting_paths(tmp_path):
+    old_path = tmp_path / "old" / "poster.jpg"
+    new_path = tmp_path / "new" / "poster.jpg"
+    old_path.parent.mkdir()
+    new_path.parent.mkdir()
+    old_path.write_text("old", encoding="utf-8")
+    new_path.write_text("new", encoding="utf-8")
+    cache = {
+        "movie:1": {
+            "title": "Renamed Movie",
+            "year": 2020,
+            "destination_history": [
+                {
+                    "asset_type": "poster",
+                    "season_number": None,
+                    "previous_destination": str(old_path),
+                    "new_destination": str(new_path),
+                    "detected_at": "2026-01-01T00:00:00+00:00",
+                    "reported_at": None,
+                }
+            ],
+        }
+    }
+
+    report = write_destination_history_report(cache, base_dir=tmp_path)
+
+    assert str(old_path) in report.read_text(encoding="utf-8")
+    assert cache["movie:1"]["destination_history"][0]["reported_at"]
+    assert old_path.exists()
+    assert new_path.exists()
+    assert write_destination_history_report(cache, base_dir=tmp_path) is None

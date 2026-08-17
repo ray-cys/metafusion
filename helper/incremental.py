@@ -59,6 +59,15 @@ def config_fingerprint(config):
             "episode_group_fallback": config.get("tmdb", {}).get(
                 "episode_group_fallback"
             ),
+            "split_series_show_policy": config.get("tmdb", {}).get(
+                "split_series_show_policy"
+            ),
+            "split_series_mappings": config.get("tmdb", {}).get(
+                "split_series_mappings", {}
+            ),
+            "episode_overrides": config.get("tmdb", {}).get(
+                "episode_overrides", {}
+            ),
         },
         "poster_set": config.get("poster_set", {}),
         "season_set": config.get("season_set", {}),
@@ -249,6 +258,32 @@ def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=No
         return set()
 
     reasons = set()
+    try:
+        pending_count = int(cached.get("metadata_pending_count") or 0)
+    except (TypeError, ValueError):
+        pending_count = 0
+    metadata_enabled = feature_flags is None or any(
+        flags.get(name, False)
+        for name in ("metadata_basic", "metadata_enhanced", "plex_metadata")
+    )
+    if pending_count > 0 and metadata_enabled:
+        recheck_hours = max(
+            0.1,
+            float(
+                config.get("incremental", {}).get(
+                    "metadata_pending_recheck_hours", 24.0
+                )
+            ),
+        )
+        check_time = utc_now() if now is None else now
+        if check_time.tzinfo is None:
+            check_time = check_time.replace(tzinfo=timezone.utc)
+        if _timestamp_is_due(
+            cached.get("metadata_pending_at"),
+            timedelta(hours=recheck_hours),
+            check_time,
+        ):
+            reasons.add("metadata")
     if flags.get("plex_metadata", False) and timestamp_due(
         cached.get("plex_metadata_last_checked"),
         config.get("plex_metadata", {}).get("recheck_days", 30),

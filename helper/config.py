@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import shutil
 from datetime import datetime
@@ -9,6 +10,7 @@ import yaml
 
 from helper.logging import log_config_event
 from helper.plex_paths import PlexPathError, parse_path_mappings
+from helper.provider_mappings import validate_provider_mapping_config
 
 
 class ConfigError(RuntimeError):
@@ -61,6 +63,20 @@ def safe_path_mappings(val, default, key=None):
         log_config_event("invalid_env_var", key=key, value=val, default=default)
     return copy.deepcopy(default)
 
+
+def safe_json_mapping(val, default, key=None):
+    if isinstance(val, dict):
+        return copy.deepcopy(val)
+    try:
+        parsed = json.loads(str(val))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    if key:
+        log_config_event("invalid_env_var", key=key, value=val, default=default)
+    return copy.deepcopy(default)
+
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_FILE = BASE_CONFIG_DIR / "config.yml"
 TEMPLATE_FILE = Path(__file__).parent.parent / "config_template.yml"
@@ -93,6 +109,9 @@ DEFAULT_CONFIG = {
         "artwork_allow_any_language": True,
         "title_search_fallback": False,
         "episode_group_fallback": True,
+        "split_series_show_policy": "preserve",
+        "split_series_mappings": {},
+        "episode_overrides": {},
     },
     "metadata": {
         "run_basic": True,
@@ -130,10 +149,13 @@ DEFAULT_CONFIG = {
         "plex_retry_delay": 1.0,
         "shutdown_timeout": 15.0,
         "max_image_mb": 25,
+        "validate_media_mounts": True,
+        "min_free_space_mb": 256,
     },
     "incremental": {
         "enabled": True,
         "full_scan_interval_hours": 168.0,
+        "metadata_pending_recheck_hours": 24.0,
     },
     "image_upgrades": {
         "default_days": 30.0,
@@ -151,6 +173,7 @@ DEFAULT_CONFIG = {
     "output": {
         "validate_schema": True,
         "backup_count": 3,
+        "destination_history_report_retention": 10,
     },
     "safety": {
         "allow_ambiguous_editions": False,
@@ -206,6 +229,9 @@ ENV_BINDINGS = (
     ("ARTWORK_ALLOW_ANY_LANGUAGE", ("tmdb", "artwork_allow_any_language"), safe_bool),
     ("TMDB_TITLE_SEARCH_FALLBACK", ("tmdb", "title_search_fallback"), safe_bool),
     ("TMDB_EPISODE_GROUP_FALLBACK", ("tmdb", "episode_group_fallback"), safe_bool),
+    ("TMDB_SPLIT_SERIES_SHOW_POLICY", ("tmdb", "split_series_show_policy"), None),
+    ("TMDB_SPLIT_SERIES_MAPPINGS", ("tmdb", "split_series_mappings"), safe_json_mapping),
+    ("TMDB_EPISODE_OVERRIDES", ("tmdb", "episode_overrides"), safe_json_mapping),
     ("RUN_BASIC", ("metadata", "run_basic"), safe_bool),
     ("RUN_ENHANCED", ("metadata", "run_enhanced"), safe_bool),
     ("KOMETA_TAG_POLICY", ("kometa", "tag_policy"), None),
@@ -231,8 +257,11 @@ ENV_BINDINGS = (
     ("PLEX_RETRY_DELAY", ("runtime", "plex_retry_delay"), safe_float),
     ("SHUTDOWN_TIMEOUT", ("runtime", "shutdown_timeout"), safe_float),
     ("MAX_IMAGE_MB", ("runtime", "max_image_mb"), safe_int),
+    ("VALIDATE_MEDIA_MOUNTS", ("runtime", "validate_media_mounts"), safe_bool),
+    ("MIN_FREE_SPACE_MB", ("runtime", "min_free_space_mb"), safe_int),
     ("INCREMENTAL", ("incremental", "enabled"), safe_bool),
     ("FULL_SCAN_INTERVAL_HOURS", ("incremental", "full_scan_interval_hours"), safe_float),
+    ("METADATA_PENDING_RECHECK_HOURS", ("incremental", "metadata_pending_recheck_hours"), safe_float),
     ("IMAGE_UPGRADE_DAYS", ("image_upgrades", "default_days"), safe_float),
     ("MOVIE_IMAGE_UPGRADE_DAYS", ("image_upgrades", "movie_days"), safe_float),
     ("SERIES_IMAGE_UPGRADE_DAYS", ("image_upgrades", "series_days"), safe_float),
@@ -243,6 +272,7 @@ ENV_BINDINGS = (
     ("TMDB_CACHE_MAX_MB", ("tmdb_cache", "max_mb"), safe_float),
     ("VALIDATE_OUTPUT", ("output", "validate_schema"), safe_bool),
     ("OUTPUT_BACKUP_COUNT", ("output", "backup_count"), safe_int),
+    ("DESTINATION_HISTORY_REPORT_RETENTION", ("output", "destination_history_report_retention"), safe_int),
     ("ALLOW_AMBIGUOUS_EDITIONS", ("safety", "allow_ambiguous_editions"), safe_bool),
     ("POSTER_MAX_WIDTH", ("poster_set", "max_width"), safe_int),
     ("POSTER_MAX_HEIGHT", ("poster_set", "max_height"), safe_int),
@@ -359,7 +389,11 @@ def get_image_upgrade_days(config, media_type):
         return 30.0
 
 def warn_unknown_keys(user_cfg, default_cfg, parent_key=""):
-    if parent_key == "library_overrides":
+    if parent_key in {
+        "library_overrides",
+        "tmdb.split_series_mappings",
+        "tmdb.episode_overrides",
+    }:
         return
     for key in user_cfg:
         if key not in default_cfg:
@@ -418,6 +452,10 @@ def _valid_env_conversion(converter, raw_value):
             }
         elif converter in (safe_list, safe_path_mappings):
             return isinstance(raw_value, (str, list))
+        elif converter is safe_json_mapping:
+            if isinstance(raw_value, dict):
+                return True
+            return isinstance(json.loads(str(raw_value)), dict)
         return True
     except (TypeError, ValueError):
         return False
@@ -478,6 +516,8 @@ def validate_config(config):
     runtime = config.get("runtime", {})
     plex_metadata = config.get("plex_metadata", {})
     kometa = config.get("kometa", {})
+
+    errors.extend(validate_provider_mapping_config(tmdb))
 
     mode = str(settings.get("mode", "")).lower()
     if mode not in {"kometa", "plex"}:
@@ -559,10 +599,17 @@ def validate_config(config):
         ("runtime.plex_retry_delay", runtime.get("plex_retry_delay"), 0, 60),
         ("runtime.shutdown_timeout", runtime.get("shutdown_timeout"), 1, 300),
         ("runtime.max_image_mb", runtime.get("max_image_mb"), 1, 250),
+        ("runtime.min_free_space_mb", runtime.get("min_free_space_mb"), 0, 1048576),
         (
             "incremental.full_scan_interval_hours",
             config.get("incremental", {}).get("full_scan_interval_hours"),
             1,
+            8760,
+        ),
+        (
+            "incremental.metadata_pending_recheck_hours",
+            config.get("incremental", {}).get("metadata_pending_recheck_hours"),
+            0.1,
             8760,
         ),
         (
@@ -575,6 +622,12 @@ def validate_config(config):
         ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 1, 100000),
         ("tmdb_cache.max_mb", config.get("tmdb_cache", {}).get("max_mb"), 0, 102400),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),
+        (
+            "output.destination_history_report_retention",
+            config.get("output", {}).get("destination_history_report_retention"),
+            1,
+            1000,
+        ),
         ("plex_metadata.recheck_days", plex_metadata.get("recheck_days"), 0, 3650),
         (
             "plex_metadata.max_writes_per_run",

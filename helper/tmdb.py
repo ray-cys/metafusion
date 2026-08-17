@@ -380,28 +380,67 @@ def tmdb_identity_consistent(
     return True, "matched"
 
 
-# Plex/TheTVDB occasionally models an anthology as seasons of one show while
-# TMDb models each installment as a separate series.  These stable provider-ID
-# mappings let the original Plex season number select the correct TMDb series.
-_CURATED_TVDB_SEASON_SOURCES = {
-    # The Haunting: Hill House and Bly Manor.
-    "345246": {
-        1: {"tmdb_id": "72844", "season_number": 1},
-        2: {"tmdb_id": "109958", "season_number": 1},
-    },
-    # Monster: Dahmer, Menendez, and Ed Gein.
-    "389492": {
-        1: {"tmdb_id": "113988", "season_number": 1},
-        2: {"tmdb_id": "225634", "season_number": 1},
-        3: {"tmdb_id": "286801", "season_number": 1},
-    },
-}
+def tmdb_external_id_consensus(
+    media_type,
+    details,
+    *,
+    imdb_id=None,
+    tvdb_id=None,
+    allow_tvdb_mismatch=False,
+):
+    """Compare independent Plex provider IDs with the selected TMDb record.
 
+    Returns ``(accepted, trusted, reason)``. A matching independent ID makes
+    aliases trustworthy; a conflicting ID rejects the record unless an
+    explicit split-series mapping permits the expected TVDB disagreement.
+    """
+    external_ids = details.get("external_ids") or {}
+    comparisons = []
 
-def split_series_season_sources(tvdb_id):
-    """Return a defensive copy of a curated cross-provider season mapping."""
-    mapping = _CURATED_TVDB_SEASON_SOURCES.get(str(tvdb_id or ""), {})
-    return {season: dict(source) for season, source in mapping.items()}
+    if imdb_id and external_ids.get("imdb_id"):
+        comparisons.append(
+            (
+                "IMDb",
+                str(imdb_id).strip().casefold(),
+                str(external_ids.get("imdb_id")).strip().casefold(),
+                False,
+            )
+        )
+    if (
+        str(media_type or "").lower() in {"tv", "show", "shows"}
+        and tvdb_id
+        and external_ids.get("tvdb_id")
+    ):
+        comparisons.append(
+            (
+                "TVDB",
+                str(tvdb_id).strip(),
+                str(external_ids.get("tvdb_id")).strip(),
+                bool(allow_tvdb_mismatch),
+            )
+        )
+
+    conflicts = [
+        f"{provider} {expected} vs {actual}"
+        for provider, expected, actual, permitted in comparisons
+        if expected != actual and not permitted
+    ]
+    if conflicts:
+        return False, False, "external ID conflict (" + "; ".join(conflicts) + ")"
+
+    matches = [
+        provider
+        for provider, expected, actual, _permitted in comparisons
+        if expected == actual
+    ]
+    if matches:
+        return True, True, "matched " + ", ".join(matches)
+    if allow_tvdb_mismatch and any(
+        provider == "TVDB" and expected != actual
+        for provider, expected, actual, _permitted in comparisons
+    ):
+        return True, True, "accepted configured split-series TVDB mapping"
+    return True, False, "no independent external ID was available for consensus"
 
 
 async def tmdb_unfiltered_images(

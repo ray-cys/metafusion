@@ -7,12 +7,16 @@ from helper.config import get_image_upgrade_days
 from helper.identity import cache_key_for_meta, match_for_meta, metadata_key_for_meta
 from helper.io import atomic_replace_file, sha256_file
 from helper.plex import get_plex_country
+from helper.provider_mappings import (
+    resolve_episode_overrides,
+    resolve_split_series_mapping,
+)
 from helper.tmdb import (
     artwork_language_codes,
     resolve_episode_group_mapping,
     resolve_tmdb_id,
-    split_series_season_sources,
     tmdb_api_request,
+    tmdb_external_id_consensus,
     tmdb_identity_consistent,
     tmdb_unfiltered_images,
 )
@@ -629,7 +633,21 @@ async def tmdb_details_with_recovery(
 
     details = await fetch(tmdb_id)
     if details:
-        return str(tmdb_id), details, None
+        split_mapping = resolve_split_series_mapping(
+            config,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+        )
+        consensus_ok, _trusted, _reason = tmdb_external_id_consensus(
+            normalized_type,
+            details,
+            imdb_id=imdb_id,
+            tvdb_id=tvdb_id,
+            allow_tvdb_mismatch=bool(split_mapping),
+        )
+        if consensus_ok:
+            return str(tmdb_id), details, None
 
     replacement_id = await resolve_tmdb_id(
         config,
@@ -642,10 +660,25 @@ async def tmdb_details_with_recovery(
         excluded_ids={tmdb_id},
     )
     if not replacement_id:
-        return str(tmdb_id), None, None
+        return str(tmdb_id), details, None
     replacement_details = await fetch(replacement_id)
     if not replacement_details:
-        return str(tmdb_id), None, None
+        return str(tmdb_id), details, None
+    replacement_mapping = resolve_split_series_mapping(
+        config,
+        tmdb_id=replacement_id,
+        tvdb_id=tvdb_id,
+        imdb_id=imdb_id,
+    )
+    replacement_ok, _trusted, _reason = tmdb_external_id_consensus(
+        normalized_type,
+        replacement_details,
+        imdb_id=imdb_id,
+        tvdb_id=tvdb_id,
+        allow_tvdb_mismatch=bool(replacement_mapping),
+    )
+    if not replacement_ok:
+        return str(tmdb_id), details, None
     return str(replacement_id), replacement_details, str(tmdb_id)
 
 async def build_movie(
@@ -714,7 +747,6 @@ async def _build_movie(
     movie_path = meta.get("movie_path") if meta else None
     tmdb_id = meta.get("tmdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
-    identity_from_external_id = bool(tmdb_id or imdb_id)
     tmdb_id = await resolve_tmdb_id(
         config,
         "movie",
@@ -810,10 +842,16 @@ async def _build_movie(
             old_id=recovered_from_tmdb_id,
             new_id=tmdb_id,
         )
-    identity_ok, identity_reason = tmdb_identity_consistent(
-        "movie", title, year, details,
-        trusted_external_id=identity_from_external_id,
+    consensus_ok, consensus_trusted, consensus_reason = tmdb_external_id_consensus(
+        "movie", details, imdb_id=imdb_id
     )
+    if not consensus_ok:
+        identity_ok, identity_reason = False, consensus_reason
+    else:
+        identity_ok, identity_reason = tmdb_identity_consistent(
+            "movie", title, year, details,
+            trusted_external_id=consensus_trusted,
+        )
     if not identity_ok:
         log_builder_event(
             "builder_tmdb_identity_mismatch",
@@ -1511,7 +1549,6 @@ async def _build_tv(
     tmdb_id = meta.get("tmdb_id") if meta else None
     tvdb_id = meta.get("tvdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
-    identity_from_external_id = bool(tmdb_id or tvdb_id or imdb_id)
     tmdb_id = await resolve_tmdb_id(
         config,
         "tv",
@@ -1594,10 +1631,26 @@ async def _build_tv(
             old_id=recovered_from_tmdb_id,
             new_id=tmdb_id,
         )
-    identity_ok, identity_reason = tmdb_identity_consistent(
-        "tv", title, year, details,
-        trusted_external_id=identity_from_external_id,
+    series_mapping = resolve_split_series_mapping(
+        config,
+        tmdb_id=tmdb_id,
+        tvdb_id=tvdb_id,
+        imdb_id=imdb_id,
     )
+    consensus_ok, consensus_trusted, consensus_reason = tmdb_external_id_consensus(
+        "tv",
+        details,
+        imdb_id=imdb_id,
+        tvdb_id=tvdb_id,
+        allow_tvdb_mismatch=bool(series_mapping),
+    )
+    if not consensus_ok:
+        identity_ok, identity_reason = False, consensus_reason
+    else:
+        identity_ok, identity_reason = tmdb_identity_consistent(
+            "tv", title, year, details,
+            trusted_external_id=consensus_trusted or bool(series_mapping),
+        )
     if not identity_ok:
         log_builder_event(
             "builder_tmdb_identity_mismatch",
@@ -1702,7 +1755,16 @@ async def _build_tv(
     country_codes = get_meta_field(details, "origin_country", [])
     countries = [get_plex_country(code) for code in country_codes]
 
-    season_sources = split_series_season_sources(tvdb_id)
+    season_sources = (series_mapping or {}).get("seasons", {})
+    preserve_split_show = bool(
+        series_mapping and series_mapping.get("show_policy", "preserve") == "preserve"
+    )
+    episode_overrides = resolve_episode_overrides(
+        config,
+        tmdb_id=tmdb_id,
+        tvdb_id=tvdb_id,
+        imdb_id=imdb_id,
+    )
     season_info_by_number = {
         int(info["season_number"]): info
         for info in get_meta_field(details, "seasons", [])
@@ -1713,7 +1775,12 @@ async def _build_tv(
         for number in (seasons_episodes or {})
         if int(number) in season_sources
     }
-    for season_number in mapped_inventory_seasons:
+    override_inventory_seasons = {
+        int(number)
+        for number in (seasons_episodes or {})
+        if any(source_season == int(number) for source_season, _episode in episode_overrides)
+    }
+    for season_number in mapped_inventory_seasons | override_inventory_seasons:
         season_info_by_number.setdefault(
             season_number, {"season_number": season_number}
         )
@@ -1727,6 +1794,19 @@ async def _build_tv(
             full_title=full_title,
             seasons=", ".join(str(number) for number in sorted(mapped_inventory_seasons)),
         )
+    if episode_overrides:
+        log_builder_event(
+            "builder_episode_overrides",
+            media_type="TV Show",
+            full_title=full_title,
+            count=len(episode_overrides),
+        )
+    if preserve_split_show:
+        log_builder_event(
+            "builder_split_series_show_preserved",
+            media_type="TV Show",
+            full_title=full_title,
+        )
     season_details_by_number = {}
 
     def season_source(season_number):
@@ -1736,10 +1816,16 @@ async def _build_tv(
             int(source.get("season_number", season_number)),
         )
 
-    async def get_season_details(season_number):
-        if season_number in season_details_by_number:
-            return season_details_by_number[season_number]
-        source_tmdb_id, source_season_number = season_source(season_number)
+    async def get_season_details(season_number, target_season_number=None):
+        source_tmdb_id, default_source_season = season_source(season_number)
+        source_season_number = (
+            default_source_season
+            if target_season_number is None
+            else int(target_season_number)
+        )
+        cache_key = (int(season_number), str(source_tmdb_id), source_season_number)
+        if cache_key in season_details_by_number:
+            return season_details_by_number[cache_key]
         season_details = await tmdb_api_request(
             config,
             f"tv/{source_tmdb_id}/season/{source_season_number}",
@@ -1750,7 +1836,7 @@ async def _build_tv(
             session=session,
         )
         if season_details:
-            season_details_by_number[season_number] = season_details
+            season_details_by_number[cache_key] = season_details
         return season_details
 
     seasons_data = {}
@@ -1758,6 +1844,7 @@ async def _build_tv(
     grand_percent = 100
     is_complete = True
     metadata_fetch_failed = False
+    metadata_pending_count = 0
     if run_metadata:
         inventory = {
             int(season): {int(episode) for episode in episodes}
@@ -1771,7 +1858,7 @@ async def _build_tv(
             "sort_title", "original_title", "originally_available", "content_rating",
             "studio", "tagline", "summary", genre_key, "seasons",
         ]
-        show_fields_to_write = list(show_basic_fields)
+        show_fields_to_write = [] if preserve_split_show else list(show_basic_fields)
         episode_fields_to_write = list(EPISODE_BASIC_FIELDS)
         if feature_flags.get("metadata_enhanced", True):
             episode_fields_to_write.extend((director_key, writer_key))
@@ -1856,12 +1943,36 @@ async def _build_tv(
                 )
                 return season_number, None, None, True
 
+            episode_sources = {}
+            for plex_episode in inventory[season_number]:
+                default_target_season = season_source(season_number)[1]
+                target_season, target_episode = episode_overrides.get(
+                    (int(season_number), int(plex_episode)),
+                    (default_target_season, int(plex_episode)),
+                )
+                episode_sources.setdefault(int(target_season), []).append(
+                    (int(plex_episode), int(target_episode))
+                )
+            source_details = {season_source(season_number)[1]: season_details}
+            for target_season in episode_sources:
+                if target_season not in source_details:
+                    source_details[target_season] = await get_season_details(
+                        season_number, target_season
+                    )
+
             episodes = {}
-            for episode in get_meta_field(season_details, "episodes", []):
-                episode_number = int(episode.get("episode_number"))
-                if episode_number not in inventory[season_number]:
-                    continue
-                episodes[episode_number] = episode_metadata(episode)
+            for target_season, pairs in episode_sources.items():
+                target_details = source_details.get(target_season) or {}
+                indexed = {
+                    int(episode.get("episode_number")): episode
+                    for episode in get_meta_field(target_details, "episodes", [])
+                    if episode.get("episode_number") is not None
+                }
+                for plex_episode, target_episode in pairs:
+                    if target_episode in indexed:
+                        episodes[plex_episode] = episode_metadata(
+                            indexed[target_episode]
+                        )
             season_metadata = {
                 "title": get_meta_field(season_details, "name", "") or "",
                 "summary": get_meta_field(season_details, "overview", "") or "",
@@ -1898,7 +2009,7 @@ async def _build_tv(
         pending_pairs = set()
         unresolved_pairs = set()
         if missing_pairs:
-            group_mapping = await resolve_episode_group_mapping(
+            group_mapping = None if episode_overrides else await resolve_episode_group_mapping(
                 config,
                 tmdb_id,
                 inventory,
@@ -1936,7 +2047,15 @@ async def _build_tv(
                 )
             else:
                 for season_number, episode_number in missing_pairs:
-                    season_details = season_details_by_number.get(season_number)
+                    default_target_season = season_source(season_number)[1]
+                    target_season, target_episode = episode_overrides.get(
+                        (int(season_number), int(episode_number)),
+                        (default_target_season, int(episode_number)),
+                    )
+                    source_tmdb_id = season_source(season_number)[0]
+                    season_details = season_details_by_number.get(
+                        (int(season_number), str(source_tmdb_id), int(target_season))
+                    )
                     available = {
                         int(episode.get("episode_number"))
                         for episode in get_meta_field(
@@ -1945,7 +2064,7 @@ async def _build_tv(
                         if episode.get("episode_number") is not None
                     }
                     if season_details and (
-                        not available or episode_number > max(available)
+                        not available or target_episode > max(available)
                     ):
                         pending_pairs.add((season_number, episode_number))
                     else:
@@ -1963,6 +2082,7 @@ async def _build_tv(
                         full_title=full_title, count=len(unresolved_pairs),
                         episodes=_episode_pair_labels(unresolved_pairs),
                     )
+        metadata_pending_count = len(pending_pairs)
         if failed_seasons:
             metadata_fetch_failed = True
 
@@ -2078,6 +2198,10 @@ async def _build_tv(
         if not feature_flags or not feature_flags.get("poster", True):
             result["poster"]["size"] = poster_size
             poster_action = "not_due"
+            return
+        if preserve_split_show:
+            result["poster"]["size"] = poster_size
+            poster_action = "skipped"
             return
         preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(details, "posters", [], path=["images"])
@@ -2263,6 +2387,10 @@ async def _build_tv(
         if not feature_flags or not feature_flags.get("background", True):
             result["background"]["size"] = background_size
             background_action = "not_due"
+            return
+        if preserve_split_show:
+            result["background"]["size"] = background_size
+            background_action = "skipped"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
         best = get_best_background(config, images)
@@ -2673,8 +2801,13 @@ async def _build_tv(
         "background_action": background_action,
         "seasons": seasons_data,
         "season_poster_actions": season_poster_actions,
+        "metadata_pending_count": metadata_pending_count,
         "plex_candidate": (
-            tv_plex_candidate(new_metadata, plex_seasons, countries=countries)
+            tv_plex_candidate(
+                new_metadata,
+                plex_seasons,
+                countries=[] if preserve_split_show else countries,
+            )
             if run_metadata else None
         ),
         **result

@@ -185,6 +185,81 @@ def test_cache_records_independent_artwork_check_timestamps(tmp_path):
     assert "last_updated" not in entry
 
 
+def test_cache_tracks_pending_metadata_and_artwork_destination_changes(tmp_path):
+    configure_cache(tmp_path)
+
+    async def update_paths():
+        await cache_module.meta_cache_async(
+            "tv:1",
+            1,
+            "Old Title",
+            2020,
+            "tv",
+            update_timestamp=False,
+            poster_path=str(tmp_path / "old" / "poster.jpg"),
+            poster_checksum="old-checksum",
+        )
+        await cache_module.meta_cache_async(
+            "tv:1",
+            1,
+            "Old Title",
+            2020,
+            "tv",
+            update_timestamp=False,
+            season_number=1,
+            season_path=str(tmp_path / "old" / "Season01.jpg"),
+            season_checksum="old-season-checksum",
+        )
+        await cache_module.meta_cache_async(
+            "tv:1",
+            1,
+            "New Title",
+            2020,
+            "tv",
+            update_timestamp=False,
+            poster_path=str(tmp_path / "new" / "poster.jpg"),
+            poster_checksum="new-checksum",
+            metadata_pending_count=2,
+        )
+        await cache_module.meta_cache_async(
+            "tv:1",
+            1,
+            "New Title",
+            2020,
+            "tv",
+            update_timestamp=False,
+            season_number=1,
+            season_path=str(tmp_path / "new" / "Season01.jpg"),
+            season_checksum="new-season-checksum",
+        )
+
+    asyncio.run(update_paths())
+    entry = cache_module.load_cache()["tv:1"]
+
+    assert entry["metadata_pending_count"] == 2
+    assert entry["metadata_pending_at"]
+    assert {event["asset_type"] for event in entry["destination_history"]} == {
+        "poster",
+        "season",
+    }
+    assert all(event["reported_at"] is None for event in entry["destination_history"])
+
+    asyncio.run(
+        cache_module.meta_cache_async(
+            "tv:1",
+            1,
+            "New Title",
+            2020,
+            "tv",
+            update_timestamp=False,
+            metadata_pending_count=0,
+        )
+    )
+    entry = cache_module.load_cache()["tv:1"]
+    assert entry["metadata_pending_count"] == 0
+    assert entry["metadata_pending_at"] == ""
+
+
 def test_cache_updates_are_batched_until_flush(tmp_path):
     configure_cache(tmp_path)
     database = tmp_path / "meta_db.sqlite3"

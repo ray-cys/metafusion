@@ -2,17 +2,51 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from helper.build_info import build_info
 from helper.io import atomic_write_json
+from helper.plex_paths import parse_path_mappings
 from helper.state_db import StateDatabaseError, record_job_run
 
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def ensure_storage_available(
+    config,
+    path,
+    *,
+    create=False,
+    description="output path",
+):
+    """Validate a destination without changing ownership or permissions."""
+    target = Path(path)
+    try:
+        if create:
+            target.mkdir(parents=True, exist_ok=True)
+        if not target.is_dir():
+            raise RuntimeError(f"Required {description} is unavailable: {target}")
+        if not os.access(target, os.W_OK):
+            raise RuntimeError(f"Required {description} is not writable: {target}")
+        free_bytes = shutil.disk_usage(target).free
+    except OSError as error:
+        raise RuntimeError(f"Unable to inspect {description}: {target}") from error
+
+    minimum_mb = max(
+        0, int(config.get("runtime", {}).get("min_free_space_mb", 256))
+    )
+    if free_bytes < minimum_mb * 1024 * 1024:
+        free_mb = free_bytes // (1024 * 1024)
+        raise RuntimeError(
+            f"Required {description} has only {free_mb} MiB free at {target}; "
+            f"MIN_FREE_SPACE_MB requires {minimum_mb} MiB"
+        )
+    return target
 
 
 def validate_runtime_paths(config, config_dir):
@@ -42,6 +76,30 @@ def validate_runtime_paths(config, config_dir):
                 f"Required path is not writable: {path}. "
                 "Check the bind-mount owner and PUID/PGID settings."
             ) from error
+        ensure_storage_available(config, path, description="runtime path")
+
+    runtime = config.get("runtime", {})
+    assets = config.get("assets", {})
+    if (
+        config.get("settings", {}).get("mode", "kometa").lower() == "plex"
+        and runtime.get("validate_media_mounts", True)
+        and any(
+            assets.get(name, False)
+            for name in ("run_poster", "run_season", "run_background")
+        )
+    ):
+        destinations = {
+            destination
+            for _source, destination in parse_path_mappings(
+                config.get("plex", {}).get("path_mappings", [])
+            )
+        }
+        for destination in sorted(destinations):
+            ensure_storage_available(
+                config,
+                destination,
+                description="Plex media mapping destination",
+            )
 
 
 class JobAlreadyRunningError(RuntimeError):

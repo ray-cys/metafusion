@@ -160,6 +160,8 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
             "PLEX_TIMEOUT": "8",
             "SHUTDOWN_TIMEOUT": "12",
             "MAX_IMAGE_MB": "12",
+            "VALIDATE_MEDIA_MOUNTS": "false",
+            "MIN_FREE_SPACE_MB": "64",
             "ALLOW_AMBIGUOUS_EDITIONS": "true",
         },
     )
@@ -173,8 +175,47 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "plex_retry_delay": 1.0,
         "shutdown_timeout": 12.0,
         "max_image_mb": 12,
+        "validate_media_mounts": False,
+        "min_free_space_mb": 64,
     }
     assert config["safety"]["allow_ambiguous_editions"] is True
+
+
+def test_provider_mapping_json_environment_is_parsed_and_validated(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "TMDB_SPLIT_SERIES_MAPPINGS": (
+                '{"tvdb:42":{"show_policy":"primary","seasons":'
+                '{"2":{"tmdb_id":99,"season_number":1}}}}'
+            ),
+            "TMDB_EPISODE_OVERRIDES": (
+                '{"tvdb:42":{"S02E01":"S01E03"}}'
+            ),
+            "METADATA_PENDING_RECHECK_HOURS": "6",
+            "DESTINATION_HISTORY_REPORT_RETENTION": "4",
+        },
+    )
+
+    assert config["tmdb"]["split_series_mappings"]["tvdb:42"][
+        "seasons"
+    ]["2"]["tmdb_id"] == 99
+    assert config["tmdb"]["episode_overrides"]["tvdb:42"]["S02E01"] == "S01E03"
+    assert config["incremental"]["metadata_pending_recheck_hours"] == 6.0
+    assert config["output"]["destination_history_report_retention"] == 4
+
+
+def test_invalid_provider_mapping_environment_fails_validation(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"TMDB_EPISODE_OVERRIDES": "not-json"},
+    )
+
+    assert any(
+        "TMDB_EPISODE_OVERRIDES" in error for error in validate_config(config)
+    )
 
 
 def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
