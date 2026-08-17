@@ -209,6 +209,13 @@ Routine unchanged checks are available at `DEBUG` to avoid flooding normal
 logs. Plex locked-field, conflict, and write-limit totals are warnings; the
 corresponding `plex-metadata-*.txt` report retains field-level audit details.
 
+Direct Plex metadata progress is automatic and not configurable. Small
+libraries report every 5 items or 10%, medium libraries every 25 items or 5%,
+and large libraries every 100 items or 5%, whichever interval is larger. A
+30-second minimum gap prevents log flooding, a 60-second heartbeat covers slow
+shows, and start/final progress is always logged. TV progress counts top-level
+shows while their seasons and episodes remain part of each show operation.
+
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` is also checked at
 each artwork destination before a download. A missing/unmounted destination or

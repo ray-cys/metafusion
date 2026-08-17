@@ -9,7 +9,11 @@ from helper.cache import (
 )
 from helper.config import mode_check
 from helper.incremental import plan_items
-from helper.logging import log_processing_event, log_library_summary
+from helper.logging import (
+    PlexMetadataProgress,
+    log_processing_event,
+    log_library_summary,
+)
 from helper.plex import get_plex_metadata, plex_operation
 from helper.identity import cache_key_for_meta, item_identity
 from helper.io import sha256_file
@@ -657,8 +661,45 @@ async def process_library(
         for planned in planned_items:
             queue.put_nowait(planned)
         item_errors = []
+        processed_items = 0
+        plex_progress = None
+        progress_task = None
+        if (
+            total_items
+            and mode_check(config, "plex")
+            and feature_flags.get("plex_metadata", False)
+        ):
+            plex_progress = PlexMetadataProgress(library_name, total_items)
+            plex_progress.start()
+
+        def update_plex_progress(*, force=False):
+            if plex_progress is None:
+                return False
+            return plex_progress.update(
+                processed_items,
+                changed=meta_upgraded,
+                api_batches=plex_metadata_writes,
+                unchanged=meta_skipped,
+                failed=meta_failed + len(item_errors),
+                force=force,
+            )
+
+        async def progress_heartbeat():
+            check_seconds = max(
+                1.0,
+                min(
+                    plex_progress.minimum_seconds,
+                    plex_progress.heartbeat_seconds,
+                ),
+            )
+            while processed_items < total_items:
+                await asyncio.sleep(check_seconds)
+                if processed_items >= total_items:
+                    return
+                update_plex_progress()
 
         async def worker():
+            nonlocal processed_items
             while True:
                 planned = await queue.get()
                 try:
@@ -668,18 +709,27 @@ async def process_library(
                 except Exception as error:
                     item_errors.append((_item_failure_label(planned.item), error))
                 finally:
+                    processed_items += 1
+                    update_plex_progress(force=processed_items >= total_items)
                     queue.task_done()
 
         workers = [
             asyncio.create_task(worker())
             for _ in range(min(max_concurrency, total_items))
         ]
+        if plex_progress is not None:
+            progress_task = asyncio.create_task(progress_heartbeat())
         try:
             await queue.join()
         finally:
+            if progress_task is not None:
+                progress_task.cancel()
             for worker_task in workers:
                 worker_task.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
+            pending_tasks = [*workers]
+            if progress_task is not None:
+                pending_tasks.append(progress_task)
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
         if (
             full_scan

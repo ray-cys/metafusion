@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -75,6 +76,44 @@ def test_process_library_bounds_item_concurrency(monkeypatch, tmp_path):
     assert result == []
     assert maximum == 3
     assert not (tmp_path / "metadata").exists()
+
+
+def test_plex_metadata_progress_logs_start_and_completion(
+    monkeypatch, tmp_path, caplog
+):
+    async def fake_metadata(item, **_kwargs):
+        return metadata_for(item)
+
+    async def fake_process_item(**_kwargs):
+        return {
+            "metadata_action": "skipped",
+            "plex_metadata_writes": 0,
+            "is_complete": True,
+        }
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+    flags = feature_flags()
+    flags.update(
+        {
+            "metadata_basic": True,
+            "metadata_enhanced": True,
+            "plex_metadata": True,
+        }
+    )
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(
+            processing.process_library(
+                FakeSection([1, 2, 3]),
+                config(tmp_path),
+                feature_flags=flags,
+            )
+        )
+
+    assert "[Plex Metadata] Movies: 0/3 checked (0.0%)" in caplog.text
+    assert "[Plex Metadata] Movies: 3/3 checked (100.0%)" in caplog.text
+    assert "items changed: 0, API batches: 0, unchanged: 3, failed: 0" in caplog.text
 
 
 def test_process_library_propagates_item_failures(monkeypatch, tmp_path):
