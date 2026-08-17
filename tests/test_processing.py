@@ -78,8 +78,18 @@ def test_process_library_bounds_item_concurrency(monkeypatch, tmp_path):
 
 
 def test_process_library_propagates_item_failures(monkeypatch, tmp_path):
-    async def fake_metadata(item, **_kwargs):
-        return metadata_for(item)
+    class FailedItem:
+        title = "Broken Movie"
+        year = 2020
+        ratingKey = "99"
+        type = "movie"
+
+    async def fake_metadata(_item, **_kwargs):
+        return {
+            **metadata_for(99),
+            "title": "Broken Movie",
+            "ratingKey": "99",
+        }
 
     async def fake_process_item(**_kwargs):
         raise RuntimeError("builder failed")
@@ -87,14 +97,18 @@ def test_process_library_propagates_item_failures(monkeypatch, tmp_path):
     monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
     monkeypatch.setattr(processing, "process_item", fake_process_item)
 
-    with pytest.raises(processing.LibraryProcessingError, match="items failed"):
+    with pytest.raises(processing.LibraryProcessingError, match="items failed") as caught:
         asyncio.run(
             processing.process_library(
-                FakeSection([1]),
+                FakeSection([FailedItem()]),
                 config(tmp_path),
                 feature_flags=feature_flags(),
             )
         )
+
+    assert "builder failed" in str(caught.value)
+    assert "Broken Movie (2020) [rating key 99]" in str(caught.value)
+    assert "successful item output was preserved" in str(caught.value)
 
 
 def test_process_library_preserves_successful_yaml_when_another_item_crashes(
@@ -131,6 +145,74 @@ def test_process_library_preserves_successful_yaml_when_another_item_crashes(
     assert document["metadata"] == {
         "Movie 1 (2020)": {"summary": "generated"}
     }
+
+
+def test_process_library_rewrites_order_only_match_normalization(
+    monkeypatch, tmp_path
+):
+    async def fake_metadata(item, **_kwargs):
+        return metadata_for(item)
+
+    async def fake_process_item(**_kwargs):
+        return {}
+
+    output = tmp_path / "metadata" / "movie_metadata.yml"
+    output.parent.mkdir(parents=True)
+    output.write_text(
+        processing.yaml.safe_dump(
+            {
+                "metadata": {
+                    "Movie 1 (2020)": {
+                        "summary": "Existing",
+                        "match": {
+                            "title": "Movie 1",
+                            "year": 2020,
+                            "mapping_id": 1,
+                        },
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+
+    asyncio.run(
+        processing.process_library(
+            FakeSection([1]),
+            config(tmp_path, mode="kometa"),
+            feature_flags=feature_flags(),
+        )
+    )
+
+    written = processing.yaml.safe_load(output.read_text(encoding="utf-8"))
+    assert next(iter(written["metadata"]["Movie 1 (2020)"])) == "match"
+
+
+def test_cached_tmdb_recovery_is_scoped_to_same_plex_source_id():
+    meta = {
+        "library_type": "movie",
+        "ratingKey": "1",
+        "title": "Movie 1",
+        "year": 2020,
+        "tmdb_id": "100",
+    }
+    cache = {
+        "movie:plex:1": {
+            "tmdb_id": "101",
+            "tmdb_recovery_source_id": "100",
+        }
+    }
+
+    assert processing.apply_cached_tmdb_recovery(meta, cache) is True
+    assert meta["plex_tmdb_id"] == "100"
+    assert meta["tmdb_id"] == "101"
+
+    corrected_by_plex = {**meta, "tmdb_id": "102"}
+    assert processing.apply_cached_tmdb_recovery(corrected_by_plex, cache) is False
+    assert corrected_by_plex["tmdb_id"] == "102"
 
 
 def test_ambiguous_blank_editions_fail_safely(monkeypatch, tmp_path):

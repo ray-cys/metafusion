@@ -190,6 +190,10 @@ async def tmdb_api_request(
                     else:
                         body = redact_secrets(await response.text(), *sensitive_values)
                         log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
+                        if response.status == 404:
+                            # A missing resource is permanent for this identifier;
+                            # retrying only delays recovery through other IDs.
+                            return None
         except ResponseTooLargeError as e:
             log_tmdb_event(
                 "tmdb_response_too_large",
@@ -223,9 +227,11 @@ async def resolve_tmdb_id(
     title=None,
     year=None,
     session=None,
+    excluded_ids=None,
 ):
     """Resolve a missing TMDb ID from IDs exposed by Plex legacy agents."""
-    if tmdb_id:
+    excluded_ids = {str(value) for value in (excluded_ids or set()) if value is not None}
+    if tmdb_id and str(tmdb_id) not in excluded_ids:
         return str(tmdb_id)
     normalized_type = str(media_type or "").lower()
     candidates = []
@@ -242,8 +248,10 @@ async def resolve_tmdb_id(
             session=session,
         )
         matches = result.get(result_key, []) if isinstance(result, dict) else []
-        if matches and matches[0].get("id") is not None:
-            return str(matches[0]["id"])
+        for match in matches:
+            candidate_id = match.get("id")
+            if candidate_id is not None and str(candidate_id) not in excluded_ids:
+                return str(candidate_id)
 
     if not config.get("tmdb", {}).get("title_search_fallback", False) or not title:
         return None
@@ -275,7 +283,10 @@ async def resolve_tmdb_id(
             continue
         if wanted_year and candidate_year and wanted_year != candidate_year:
             continue
-        if candidate.get("id") is not None:
+        if (
+            candidate.get("id") is not None
+            and str(candidate["id"]) not in excluded_ids
+        ):
             candidates.append(str(candidate["id"]))
     return candidates[0] if len(set(candidates)) == 1 else None
 

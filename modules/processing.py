@@ -15,6 +15,7 @@ from helper.identity import cache_key_for_meta, item_identity, legacy_cache_key
 from helper.io import sha256_file
 from modules.builder import build_movie, build_tv
 from modules.kometa import (
+    normalize_metadata_order,
     remove_deprecated_metadata_fields,
     validate_metadata_document,
     write_kometa_metadata,
@@ -33,6 +34,62 @@ class LibraryProcessingError(RuntimeError):
 
 class AmbiguousEditionError(LibraryProcessingError):
     pass
+
+
+MAX_ITEM_FAILURE_DETAILS = 10
+
+
+def apply_cached_tmdb_recovery(meta, cache):
+    """Reuse a verified replacement while Plex still reports the stale ID."""
+    if not isinstance(meta, dict) or not meta.get("tmdb_id"):
+        return False
+    entry = cache.get(cache_key_for_meta(meta), {})
+    if not isinstance(entry, dict):
+        return False
+    source_id = entry.get("tmdb_recovery_source_id")
+    replacement_id = entry.get("tmdb_id")
+    plex_id = meta.get("tmdb_id")
+    if (
+        source_id is None
+        or replacement_id is None
+        or str(source_id) != str(plex_id)
+        or str(replacement_id) == str(plex_id)
+    ):
+        return False
+    meta["plex_tmdb_id"] = str(plex_id)
+    meta["tmdb_id"] = str(replacement_id)
+    return True
+
+
+def _item_failure_label(item):
+    title = getattr(item, "title", None) or "Unknown"
+    year = getattr(item, "year", None)
+    label = f"{title} ({year})" if year is not None else str(title)
+    rating_key = getattr(item, "ratingKey", None)
+    if rating_key is not None:
+        label += f" [rating key {rating_key}]"
+    return label
+
+
+def _root_error_message(error):
+    cause = error
+    seen = set()
+    while getattr(cause, "__cause__", None) is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        cause = cause.__cause__
+    return str(cause) or cause.__class__.__name__
+
+
+def format_item_failures(item_errors):
+    ordered_errors = sorted(item_errors, key=lambda item: item[0].casefold())
+    details = [
+        f"{label}: {_root_error_message(error)}"
+        for label, error in ordered_errors[:MAX_ITEM_FAILURE_DETAILS]
+    ]
+    remaining = len(item_errors) - len(details)
+    if remaining:
+        details.append(f"... and {remaining} more item(s)")
+    return "; ".join(details)
 
 
 def find_ambiguous_editions(metadata):
@@ -224,6 +281,7 @@ async def process_library(
         ignored_fields = {"runtime", "guest"}
     existing_yaml_data = {}
     original_yaml_data = {}
+    normalized_metadata_order = 0
 
     if library_item_counts is not None:
         library_item_counts[library_name] = 0
@@ -323,6 +381,9 @@ async def process_library(
             raise LibraryProcessingError(
                 "Plex metadata inventory was incomplete: " + "; ".join(metadata_errors)
             )
+        cache = load_cache()
+        for meta in preloaded_metadata:
+            apply_cached_tmdb_recovery(meta, cache)
         if feature_flags.get("cleanup", False):
             inventory_errors = cleanup_inventory_errors(
                 preloaded_metadata, feature_flags
@@ -447,6 +508,7 @@ async def process_library(
                     ) from e
             original_yaml_data = copy.deepcopy(existing_yaml_data)
             remove_deprecated_metadata_fields(existing_yaml_data, library_type)
+            normalized_metadata_order = normalize_metadata_order(existing_yaml_data)
             consolidated_metadata = existing_yaml_data if existing_yaml_data else {"metadata": {}}
 
         existing_assets = set()    
@@ -580,7 +642,7 @@ async def process_library(
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    item_errors.append(error)
+                    item_errors.append((_item_failure_label(planned.item), error))
                 finally:
                     queue.task_done()
 
@@ -617,7 +679,10 @@ async def process_library(
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size
 
-        output_changed = consolidated_metadata != original_yaml_data
+        output_changed = (
+            consolidated_metadata != original_yaml_data
+            or normalized_metadata_order > 0
+        )
         if (
             mode_check(config, "kometa")
             and not feature_flags["dry_run"]
@@ -665,8 +730,9 @@ async def process_library(
         if item_errors:
             raise LibraryProcessingError(
                 f"{len(item_errors)} of {total_items} items failed in {library_name}; "
+                f"failed items: {format_item_failures(item_errors)}; "
                 "successful item output was preserved"
-            ) from item_errors[0]
+            ) from item_errors[0][1]
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]
         percent_complete = round((completed / total_items) * 100, 2) if total_items else 100.0

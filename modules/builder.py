@@ -160,6 +160,51 @@ def tv_plex_candidate(metadata, seasons, countries=None):
         "seasons": seasons,
     }
 
+
+async def tmdb_details_with_recovery(
+    config,
+    media_type,
+    tmdb_id,
+    *,
+    imdb_id=None,
+    tvdb_id=None,
+    title=None,
+    year=None,
+    params=None,
+    session=None,
+):
+    """Fetch details and safely replace a stale Plex-supplied TMDb ID."""
+    normalized_type = "tv" if str(media_type).lower() in {"tv", "show"} else "movie"
+
+    async def fetch(candidate_id):
+        return await tmdb_api_request(
+            config,
+            f"{normalized_type}/{candidate_id}",
+            params=params,
+            session=session,
+        )
+
+    details = await fetch(tmdb_id)
+    if details:
+        return str(tmdb_id), details, None
+
+    replacement_id = await resolve_tmdb_id(
+        config,
+        normalized_type,
+        imdb_id=imdb_id,
+        tvdb_id=tvdb_id,
+        title=title,
+        year=year,
+        session=session,
+        excluded_ids={tmdb_id},
+    )
+    if not replacement_id:
+        return str(tmdb_id), None, None
+    replacement_details = await fetch(replacement_id)
+    if not replacement_details:
+        return str(tmdb_id), None, None
+    return str(replacement_id), replacement_details, str(tmdb_id)
+
 async def build_movie(
     config, consolidated_metadata, feature_flags=None, existing_yaml_data=None, session=None, ignored_fields=None,
     existing_assets=None, meta=None, 
@@ -241,17 +286,20 @@ async def build_movie(
             **result,
         }
 
-    details_key = f"movie/{tmdb_id}"
-    details = await tmdb_api_request(
+    tmdb_id, details, recovered_from_tmdb_id = await tmdb_details_with_recovery(
         config,
-        details_key,
+        "movie",
+        tmdb_id,
+        imdb_id=imdb_id,
+        title=title,
+        year=year,
         params={
             "append_to_response": "credits,release_dates,external_ids,images",
             "language": config.get("tmdb", {}).get("language", "en-US"),
             "region": config.get("tmdb", {}).get("region", "US"),
             "include_image_language": artwork_language_codes(config),
         },
-        session=session
+        session=session,
     )
     if not details:
         log_builder_event("builder_invalid_tmdb_id", media_type="Movie", full_title=full_title)
@@ -265,6 +313,23 @@ async def build_movie(
             "background_action": "failed" if run_background else background_action,
             **result,
         }
+    if recovered_from_tmdb_id:
+        recovery_source_id = (
+            meta.get("plex_tmdb_id") or recovered_from_tmdb_id
+            if meta is not None
+            else recovered_from_tmdb_id
+        )
+        if meta is not None:
+            meta["plex_tmdb_id"] = str(recovery_source_id)
+            meta["tmdb_id"] = tmdb_id
+        mapping_id = int(tmdb_id)
+        log_builder_event(
+            "builder_tmdb_id_recovered",
+            media_type="Movie",
+            full_title=full_title,
+            old_id=recovered_from_tmdb_id,
+            new_id=tmdb_id,
+        )
     identity_ok, identity_reason = tmdb_identity_consistent(
         "movie", title, year, details
     )
@@ -290,6 +355,17 @@ async def build_movie(
             media_type="Movie",
             full_title=full_title,
             reason=identity_reason,
+        )
+    if recovered_from_tmdb_id and not feature_flags.get("dry_run", False):
+        await meta_cache_async(
+            cache_key,
+            tmdb_id,
+            title,
+            year,
+            "movie",
+            update_timestamp=False,
+            legacy_cache_key=old_cache_key,
+            tmdb_recovery_source_id=recovery_source_id,
         )
 
     release_dates = get_meta_field(details, "results", [], path=["release_dates"])
@@ -836,65 +912,24 @@ async def build_tv(
             "season_poster_actions": season_poster_actions,
             **result,
         }
-    if not feature_flags.get("dry_run", False):
-        await meta_cache_async(
-            cache_key,
-            tmdb_id,
-            title,
-            year,
-            "tv",
-            update_timestamp=False,
-            legacy_cache_key=old_cache_key,
-        )
-    mapping_id = None
-
-    if tvdb_id:
-        mapping_id = int(tvdb_id)
-    elif imdb_id:
-        mapping_id = imdb_id
-    elif tmdb_id:
-        external_ids = await tmdb_api_request(
-            config,
-            f"tv/{tmdb_id}/external_ids",
-            session=session,
-        )
-        if external_ids:
-            tvdb_id_from_tmdb = external_ids.get("tvdb_id", "")
-            imdb_id_from_tmdb = external_ids.get("imdb_id", "")
-            if tvdb_id_from_tmdb:
-                mapping_id = tvdb_id_from_tmdb
-            elif imdb_id_from_tmdb:
-                mapping_id = imdb_id_from_tmdb
-
-    if run_metadata and not mapping_id:
-        log_builder_event("builder_missing_tvdb_id_and_imdb_id", media_type="TV Show", full_title=full_title)
-        metadata_action = "failed"
-        return {
-            "percent": 0,
-            "incomplete_percent": 100,
-            "is_complete": False,
-            "metadata_action": metadata_action,
-            "poster_action": poster_action,
-            "background_action": background_action,
-            "seasons": {},
-            "season_poster_actions": season_poster_actions,
-            **result,
-        }
-
-    details_key = f"tv/{tmdb_id}"
-    details = await tmdb_api_request(
+    tmdb_id, details, recovered_from_tmdb_id = await tmdb_details_with_recovery(
         config,
-        details_key,
+        "tv",
+        tmdb_id,
+        imdb_id=imdb_id,
+        tvdb_id=tvdb_id,
+        title=title,
+        year=year,
         params={
             "append_to_response": "credits,keywords,content_ratings,external_ids,images",
             "language": config.get("tmdb", {}).get("language", "en-US"),
             "region": config.get("tmdb", {}).get("region", "US"),
             "include_image_language": artwork_language_codes(config),
         },
-        session=session
+        session=session,
     )
     if not details:
-        log_builder_event("builder_no_tmdb_id", media_type="TV Show", full_title=full_title)
+        log_builder_event("builder_invalid_tmdb_id", media_type="TV Show", full_title=full_title)
         metadata_action = "failed"
         return {
             "percent": 0,
@@ -907,6 +942,23 @@ async def build_tv(
             "season_poster_actions": season_poster_actions,
             **result,
         }
+    recovery_source_id = None
+    if recovered_from_tmdb_id:
+        recovery_source_id = (
+            meta.get("plex_tmdb_id") or recovered_from_tmdb_id
+            if meta is not None
+            else recovered_from_tmdb_id
+        )
+        if meta is not None:
+            meta["plex_tmdb_id"] = str(recovery_source_id)
+            meta["tmdb_id"] = tmdb_id
+        log_builder_event(
+            "builder_tmdb_id_recovered",
+            media_type="TV Show",
+            full_title=full_title,
+            old_id=recovered_from_tmdb_id,
+            new_id=tmdb_id,
+        )
     identity_ok, identity_reason = tmdb_identity_consistent(
         "tv", title, year, details
     )
@@ -935,6 +987,55 @@ async def build_tv(
             full_title=full_title,
             reason=identity_reason,
         )
+
+    if not feature_flags.get("dry_run", False):
+        cache_fields = {}
+        if recovery_source_id is not None:
+            cache_fields["tmdb_recovery_source_id"] = recovery_source_id
+        await meta_cache_async(
+            cache_key,
+            tmdb_id,
+            title,
+            year,
+            "tv",
+            update_timestamp=False,
+            legacy_cache_key=old_cache_key,
+            **cache_fields,
+        )
+
+    mapping_id = None
+    if tvdb_id:
+        mapping_id = int(tvdb_id)
+    elif imdb_id:
+        mapping_id = imdb_id
+    else:
+        external_ids = details.get("external_ids") or await tmdb_api_request(
+            config,
+            f"tv/{tmdb_id}/external_ids",
+            session=session,
+        )
+        if external_ids:
+            tvdb_id_from_tmdb = external_ids.get("tvdb_id", "")
+            imdb_id_from_tmdb = external_ids.get("imdb_id", "")
+            if tvdb_id_from_tmdb:
+                mapping_id = tvdb_id_from_tmdb
+            elif imdb_id_from_tmdb:
+                mapping_id = imdb_id_from_tmdb
+
+    if run_metadata and not mapping_id:
+        log_builder_event("builder_missing_tvdb_id_and_imdb_id", media_type="TV Show", full_title=full_title)
+        metadata_action = "failed"
+        return {
+            "percent": 0,
+            "incomplete_percent": 100,
+            "is_complete": False,
+            "metadata_action": metadata_action,
+            "poster_action": poster_action,
+            "background_action": background_action,
+            "seasons": {},
+            "season_poster_actions": season_poster_actions,
+            **result,
+        }
 
     content_ratings = get_meta_field(details, "results", [], path=["content_ratings"])
     content_rating = regional_tv_certification(
@@ -1183,7 +1284,7 @@ async def build_tv(
                         episode_filled += 1
 
         generated_entry = {
-            "match": {"title": title, "year": year, "mapping_id": mapping_id},
+            "match": match_for_meta(meta, mapping_id),
             **new_metadata,
             "seasons": seasons_data,
         }
