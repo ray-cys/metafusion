@@ -417,7 +417,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_library_items": "info",
         "processing_failed_metadata": "error",
         "processing_failed_parse_yaml": "error",
-        "processing_metadata_saved": "debug",
+        "processing_metadata_saved": "info",
         "processing_cache_saved": "debug",
         "processing_failed_write_metadata": "error",
         "processing_metadata_dry_run": "info",
@@ -461,9 +461,10 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_episode_metadata_pending": "[{media_type}] TMDb metadata is not available yet for {count} Plex episode(s) in {full_title} ({episodes}); existing metadata is preserved.",
         "builder_episode_order_unresolved": "[{media_type}] Could not safely map {count} Plex episode(s) for {full_title} ({episodes}); existing metadata is preserved.",
         "builder_metadata_diagnostics": "[{media_type}] Metadata diagnostics for {full_title}: {diagnostics}",
-        "builder_no_metadata_changes": "[{media_type}] No metadata changes detected: {full_title}. Metadata completeness: {percent}% present, {incomplete_percent}% missing. Skipping updates...",
-        "build_metadata_changed": "[{media_type}] Metadata updated: {full_title} ({percent}%), TMDb ID: {tmdb_id}, {changes}",
-        "builder_no_existing_metadata": "[{media_type}] No existing metadata: {full_title}. Creating new entries using TMDb ID {tmdb_id}...",
+        "builder_no_metadata_changes": "[Kometa Metadata] No changes for {media_type}: {full_title}. Completeness: {percent}% present, {incomplete_percent}% missing.",
+        "build_metadata_changed": "[Kometa Metadata] Updated {media_type} entry prepared: {full_title} ({percent}% complete), TMDb ID: {tmdb_id}, {changes}",
+        "builder_no_existing_metadata": "[Kometa Metadata] New {media_type} entry prepared: {full_title}, TMDb ID: {tmdb_id}.",
+        "builder_plex_candidate_ready": "[Plex Metadata] Prepared TMDb candidate for {full_title}. Completeness: {percent}% present, {incomplete_percent}% missing.",
         "builder_dry_run_metadata": "[Dry Run] Would build metadata for {media_type}: {full_title}",
         "builder_metadata_cached": "[{media_type}] {full_title} cached as {cache_key}...",
         "builder_dry_run_asset": "[Dry Run] Would build {asset_type} asset for {media_type}: {full_title}",
@@ -511,9 +512,10 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_episode_group_fallback": "info",
         "builder_episode_order_unresolved": "warning",
         "builder_metadata_diagnostics": "debug",
-        "builder_no_metadata_changes": "info",
+        "builder_no_metadata_changes": "debug",
         "builder_no_existing_metadata": "info",
         "build_metadata_changed": "info",
+        "builder_plex_candidate_ready": "debug",
         "builder_dry_run_metadata": "info",
         "builder_metadata_cached": "debug",
         "builder_dry_run_asset": "info",
@@ -525,12 +527,12 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_asset_destination_collision": "error",
         "builder_no_asset_path": "error",
         "builder_no_suitable_asset": "info",
-        "builder_downloading_asset": "debug",
+        "builder_downloading_asset": "info",
         "builder_asset_download_failed": "error",
         "builder_asset_upgraded": "info",
         "builder_force_upgrade_stale": "info",
-        "builder_already_up_to_date": "info",
-        "builder_no_upgrade_needed": "info",
+        "builder_already_up_to_date": "debug",
+        "builder_no_upgrade_needed": "debug",
         "builder_stale_candidate_downgrade": "warning",
         "builder_no_image_for_compare": "warning",
         "builder_error_image_compare": "error",
@@ -538,11 +540,12 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_no_asset_path_season": "warning",
         "builder_no_season_details": "info",
         "builder_no_suitable_asset_season": "info",
+        "builder_downloading_asset_season": "info",
         "builder_asset_download_failed_season": "error",
         "builder_asset_upgraded_season": "info",
         "builder_force_upgrade_stale_season": "info",
-        "builder_already_up_to_date_season": "info",
-        "builder_no_upgrade_needed_season": "info",
+        "builder_already_up_to_date_season": "debug",
+        "builder_no_upgrade_needed_season": "debug",
         "builder_stale_candidate_downgrade_season": "warning",
         "builder_no_image_for_compare_season": "warning",
         "builder_error_image_compare_season": "error",
@@ -725,6 +728,31 @@ def log_cleanup_event(event, logger=None, **kwargs):
         else:
             logger.debug(msg)
 
+def metadata_action_summary(library_summary, feature_flags):
+    """Return a mode-specific summary of metadata mutations."""
+    feature_flags = feature_flags or {}
+    library_summary = library_summary or {}
+    if feature_flags.get("plex_metadata", False):
+        return (
+            "Plex Metadata - Items changed: "
+            f"{library_summary.get('meta_upgraded', 0)}, "
+            f"API batches: {library_summary.get('plex_metadata_writes', 0)}, "
+            f"Unchanged: {library_summary.get('meta_skipped', 0)}, "
+            f"Failed: {library_summary.get('meta_failed', 0)}"
+        )
+    if feature_flags.get("metadata_basic", False) or feature_flags.get(
+        "metadata_enhanced", False
+    ):
+        return (
+            "Kometa Metadata - Created: "
+            f"{library_summary.get('meta_downloaded', 0)}, "
+            f"Updated: {library_summary.get('meta_upgraded', 0)}, "
+            f"Unchanged: {library_summary.get('meta_skipped', 0)}, "
+            f"Failed: {library_summary.get('meta_failed', 0)}"
+        )
+    return None
+
+
 def log_library_summary(
     library_name, completed, incomplete, total_items, percent_complete, percent_incomplete, poster_size=0, 
     background_size=0, season_poster_size=0, feature_flags=None, library_filesize=None, run_metadata=None,
@@ -761,11 +789,9 @@ def log_library_summary(
         ).ljust(box_width - 1) + "|"
         ]
     
-    if library_summary:
-        lines.extend(box_line(
-            f"Metadata - Downloaded: {library_summary.get('meta_downloaded', 0)}, "
-            f"Updated: {library_summary.get('meta_upgraded', 0)}, "
-            f"Skipped: {library_summary.get('meta_skipped', 0)}", box_width))
+    metadata_summary = metadata_action_summary(library_summary, feature_flags)
+    if metadata_summary:
+        lines.extend(box_line(metadata_summary, box_width))
     if run_metadata:
         meta_line = (
             f"Metadata - Complete: {completed}/{total_items} ({percent_complete}%), "
@@ -892,10 +918,9 @@ def log_final_summary(
                     box_width,
                 )
             )
-        lines.extend(box_line(
-            f"Metadata - Downloaded: {libsum.get('meta_downloaded', 0)}, "
-            f"Updated: {libsum.get('meta_upgraded', 0)}, "
-            f"Skipped: {libsum.get('meta_skipped', 0)}", box_width))
+        metadata_summary = metadata_action_summary(libsum, feature_flags)
+        if metadata_summary:
+            lines.extend(box_line(metadata_summary, box_width))
         percent_incomplete = summary.get('percent_incomplete', 100 - summary['percent_complete'])
         lines.extend(box_line(
             f"Metadata - Complete: {summary['complete']}/{summary['total_items']} ({summary['percent_complete']}%), "

@@ -203,6 +203,12 @@ Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
 reports identify fields and outcomes. Reports are bounded. Destination reports
 contain host paths and must be reviewed before sharing.
 
+At the default `LOG_LEVEL=INFO`, MetaFusion logs confirmed mutations such as
+Kometa YAML writes, Plex API update batches, and artwork downloads or upgrades.
+Routine unchanged checks are available at `DEBUG` to avoid flooding normal
+logs. Plex locked-field, conflict, and write-limit totals are warnings; the
+corresponding `plex-metadata-*.txt` report retains field-level audit details.
+
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` is also checked at
 each artwork destination before a download. A missing/unmounted destination or

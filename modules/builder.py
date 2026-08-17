@@ -3,7 +3,7 @@ import asyncio
 from helper.asset_registry import AssetDestinationRegistry, normalize_destination
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
-from helper.config import get_image_upgrade_days
+from helper.config import get_image_upgrade_days, mode_check
 from helper.identity import cache_key_for_meta, match_for_meta, metadata_key_for_meta
 from helper.io import atomic_replace_file, sha256_file
 from helper.plex import get_plex_country
@@ -1000,23 +1000,32 @@ async def _build_movie(
             consolidated_metadata["metadata"][full_title] = merged_entry
             metadata_changed = True
             if existing_metadata:
-                log_builder_event(
-                    "build_metadata_changed", media_type="Movie", full_title=full_title,
-                    percent=percent, tmdb_id=tmdb_id, changes=changes
-                )
+                if mode_check(config, "kometa"):
+                    log_builder_event(
+                        "build_metadata_changed", media_type="Movie", full_title=full_title,
+                        percent=percent, tmdb_id=tmdb_id, changes=changes
+                    )
                 metadata_action = "upgraded"
             else:
-                log_builder_event(
-                    "builder_no_existing_metadata", media_type="Movie",
-                    full_title=full_title, tmdb_id=tmdb_id
-                )
+                if mode_check(config, "kometa"):
+                    log_builder_event(
+                        "builder_no_existing_metadata", media_type="Movie",
+                        full_title=full_title, tmdb_id=tmdb_id
+                    )
                 metadata_action = "downloaded"
         else:
-            log_builder_event(
-                "builder_no_metadata_changes", media_type="Movie", full_title=full_title,
-                percent=percent, incomplete_percent=100 - percent
-            )
+            if mode_check(config, "kometa"):
+                log_builder_event(
+                    "builder_no_metadata_changes", media_type="Movie", full_title=full_title,
+                    percent=percent, incomplete_percent=100 - percent
+                )
             metadata_action = "skipped"
+        if mode_check(config, "plex"):
+            log_builder_event(
+                "builder_plex_candidate_ready", media_type="Movie",
+                full_title=full_title, percent=percent,
+                incomplete_percent=100 - percent,
+            )
         log_builder_event(
             "builder_metadata_diagnostics",
             media_type="Movie",
@@ -2127,21 +2136,30 @@ async def _build_tv(
             metadata_changed = True
             if existing_metadata:
                 metadata_action = "upgraded"
-                log_builder_event(
-                    "build_metadata_changed", media_type="TV Show",
-                    full_title=full_title, percent=grand_percent,
-                    tmdb_id=tmdb_id, changes=changes,
-                )
+                if mode_check(config, "kometa"):
+                    log_builder_event(
+                        "build_metadata_changed", media_type="TV Show",
+                        full_title=full_title, percent=grand_percent,
+                        tmdb_id=tmdb_id, changes=changes,
+                    )
             else:
-                log_builder_event(
-                    "builder_no_existing_metadata", media_type="TV Show",
-                    full_title=full_title, tmdb_id=tmdb_id,
-                )
+                if mode_check(config, "kometa"):
+                    log_builder_event(
+                        "builder_no_existing_metadata", media_type="TV Show",
+                        full_title=full_title, tmdb_id=tmdb_id,
+                    )
                 metadata_action = "downloaded"
         else:
             metadata_action = "skipped"
+            if mode_check(config, "kometa"):
+                log_builder_event(
+                    "builder_no_metadata_changes", media_type="TV Show",
+                    full_title=full_title, percent=grand_percent,
+                    incomplete_percent=100 - grand_percent,
+                )
+        if mode_check(config, "plex"):
             log_builder_event(
-                "builder_no_metadata_changes", media_type="TV Show",
+                "builder_plex_candidate_ready", media_type="TV Show",
                 full_title=full_title, percent=grand_percent,
                 incomplete_percent=100 - grand_percent,
             )

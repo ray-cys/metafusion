@@ -294,7 +294,8 @@ async def process_library(
     poster_size = background_size = season_poster_size = total_asset_size = 0
     completed = incomplete = 0
     season_count = episode_count = 0
-    meta_downloaded = meta_upgraded = meta_skipped = 0
+    meta_downloaded = meta_upgraded = meta_skipped = meta_failed = 0
+    plex_metadata_writes = 0
     poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_missing = poster_failed = 0
     background_downloaded = background_upgraded = background_adopted = background_skipped = background_missing = background_failed = 0
     season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_missing = season_poster_failed = 0
@@ -521,7 +522,8 @@ async def process_library(
         async def process_and_collect(planned):
             nonlocal poster_size, background_size, season_poster_size, total_asset_size
             nonlocal completed, incomplete, season_count, episode_count
-            nonlocal meta_downloaded, meta_upgraded, meta_skipped
+            nonlocal meta_downloaded, meta_upgraded, meta_skipped, meta_failed
+            nonlocal plex_metadata_writes
             nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_missing, poster_failed
             nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_missing, background_failed
             nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_missing, season_poster_failed
@@ -568,6 +570,9 @@ async def process_library(
                     meta_upgraded += 1
                 elif action == "skipped":
                     meta_skipped += 1
+                elif action == "failed":
+                    meta_failed += 1
+                plex_metadata_writes += stats.get("plex_metadata_writes", 0)
 
                 action = stats.get("poster_action")
                 if action == "downloaded":
@@ -751,7 +756,9 @@ async def process_library(
         percent_incomplete = round((incomplete / total_items) * 100, 2) if total_items else 0.0
 
         library_summary = {
-            "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded, "meta_skipped": meta_skipped,
+            "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded,
+            "meta_skipped": meta_skipped, "meta_failed": meta_failed + len(item_errors),
+            "plex_metadata_writes": plex_metadata_writes,
             "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped,
             "poster_failed": poster_failed, "poster_missing": poster_missing,
             "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped,
