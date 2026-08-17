@@ -632,7 +632,8 @@ The same ownership rule applies to normal artwork refreshes when
 is preserved. `fill_missing` preserves every existing file, while `overwrite`
 allows replacement. Stale artwork is never replaced by a candidate with lower
 dimensions or a lower TMDb vote score, and path collisions between different
-Plex items are rejected rather than writing both items to one destination.
+Plex items are rejected unless they resolve to the same TMDb title and exact
+TMDb image.
 
 The final report separates title, season, episode, and artwork counts. A dry
 run reports the same proposed counts without changing cache, YAML, or assets.
@@ -646,6 +647,12 @@ editions or duplicate edition names cannot be matched safely by Kometa, so
 MetaFusion stops and identifies the affected movies. Setting
 `ALLOW_AMBIGUOUS_EDITIONS=True` restores permissive behavior but can update the
 wrong copy and is not recommended.
+
+Editions stored in the same physical movie folder intentionally share that
+folder's `poster.jpg` and `fanart.jpg` when their TMDb identity and selected
+image are identical. MetaFusion serializes the write and records ownership for
+each Plex edition; their Kometa metadata entries remain separate. Store editions
+in separate movie folders if they require different local artwork.
 
 ## Versioned Docker releases and rollback
 
