@@ -797,6 +797,105 @@ def test_tv_partial_tmdb_failure_preserves_existing_season_and_manual_fields(
     assert entry["seasons"][1]["episodes"][1]["summary"] == "Keep failed episode"
 
 
+def test_tv_builder_maps_provider_split_anthology_seasons(tmp_path):
+    meta = tv_meta()
+    meta.update(
+        {
+            "title": "The Haunting",
+            "year": 2018,
+            "tmdb_id": "72844",
+            "tvdb_id": "345246",
+            "seasons_episodes": {1: [1], 2: [1]},
+        }
+    )
+    details = tv_details()
+    details.update(
+        {
+            "name": "The Haunting of Hill House",
+            "original_name": "The Haunting of Hill House",
+            "first_air_date": "2018-10-12",
+            "seasons": [{"season_number": 1}],
+        }
+    )
+    tmdb_response_cache["tv/72844"] = details
+    tmdb_response_cache["tv/72844/season/1"] = season_details(1)
+    bly_manor = season_details(1)
+    bly_manor["name"] = "The Haunting of Bly Manor"
+    bly_manor["episodes"][0]["name"] = "The Great Good Place"
+    tmdb_response_cache["tv/109958/season/1"] = bly_manor
+
+    consolidated = {"metadata": {}}
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            consolidated,
+            feature_flags=feature_flags(
+                poster=False, season=False, background=False
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    seasons = consolidated["metadata"]["The Haunting (2018)"]["seasons"]
+    assert result["metadata_action"] == "downloaded"
+    assert seasons[1]["episodes"][1]["title"] == "Episode 1"
+    assert seasons[2]["title"] == "The Haunting of Bly Manor"
+    assert seasons[2]["episodes"][1]["title"] == "The Great Good Place"
+
+
+def test_tv_builder_treats_future_tmdb_episode_as_pending(tmp_path):
+    meta = tv_meta()
+    meta["seasons_episodes"] = {1: [1, 2]}
+    details = tv_details()
+    details["seasons"] = [{"season_number": 1}]
+    tmdb_response_cache["tv/200"] = details
+    pending = season_details(1)
+    pending["episodes"] = [pending["episodes"][0]]
+    tmdb_response_cache["tv/200/season/1"] = pending
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                poster=False, season=False, background=False
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["metadata_action"] == "downloaded"
+    assert result["is_complete"] is True
+
+
+def test_tv_builder_treats_announced_empty_season_as_pending(tmp_path):
+    meta = tv_meta()
+    meta["seasons_episodes"] = {2: [1]}
+    details = tv_details()
+    details["seasons"] = [{"season_number": 2}]
+    tmdb_response_cache["tv/200"] = details
+    announced = season_details(2)
+    announced["episodes"] = []
+    tmdb_response_cache["tv/200/season/2"] = announced
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                poster=False, season=False, background=False
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["metadata_action"] == "downloaded"
+    assert result["is_complete"] is True
+
+
 def test_movie_builder_dry_run_and_missing_identifiers_do_not_write_cache(
     monkeypatch, tmp_path
 ):

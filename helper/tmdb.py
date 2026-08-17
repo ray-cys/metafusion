@@ -322,7 +322,9 @@ def _year_value(value):
     return int(match.group(1)) if match else None
 
 
-def tmdb_identity_consistent(media_type, title, year, details):
+def tmdb_identity_consistent(
+    media_type, title, year, details, *, trusted_external_id=False
+):
     """Reject strong TMDb identity conflicts while tolerating translated titles."""
     normalized_type = str(media_type or "").lower()
     date_value = (
@@ -349,21 +351,57 @@ def tmdb_identity_consistent(media_type, title, year, details):
         expected_title and expected_title in available_titles
     )
 
-    if title_year and (base_title_matches or exact_title_matches) and actual_year:
+    if title_year and actual_year:
         if abs(title_year - actual_year) > 1:
             return False, f"title year mismatch ({title_year} vs {actual_year})"
-        if expected_year and abs(expected_year - actual_year) > 1:
+        if (
+            expected_year
+            and abs(expected_year - actual_year) > 1
+            and (base_title_matches or exact_title_matches or trusted_external_id)
+        ):
             return (
                 True,
-                f"matched title year {title_year}; ignored conflicting Plex year "
-                f"{expected_year}",
+                (
+                    "trusted external ID matched "
+                    if trusted_external_id
+                    and not (base_title_matches or exact_title_matches)
+                    else "matched "
+                )
+                + f"title year {title_year}; ignored conflicting Plex year "
+                + f"{expected_year}",
             )
 
     if expected_year and actual_year and abs(expected_year - actual_year) > 1:
         return False, f"year mismatch ({expected_year} vs {actual_year})"
     if expected_title and not (exact_title_matches or base_title_matches):
+        if trusted_external_id:
+            return True, "trusted external ID; title is a Plex/TMDb alias"
         return True, "title differs from localized/original TMDb names"
     return True, "matched"
+
+
+# Plex/TheTVDB occasionally models an anthology as seasons of one show while
+# TMDb models each installment as a separate series.  These stable provider-ID
+# mappings let the original Plex season number select the correct TMDb series.
+_CURATED_TVDB_SEASON_SOURCES = {
+    # The Haunting: Hill House and Bly Manor.
+    "345246": {
+        1: {"tmdb_id": "72844", "season_number": 1},
+        2: {"tmdb_id": "109958", "season_number": 1},
+    },
+    # Monster: Dahmer, Menendez, and Ed Gein.
+    "389492": {
+        1: {"tmdb_id": "113988", "season_number": 1},
+        2: {"tmdb_id": "225634", "season_number": 1},
+        3: {"tmdb_id": "286801", "season_number": 1},
+    },
+}
+
+
+def split_series_season_sources(tvdb_id):
+    """Return a defensive copy of a curated cross-provider season mapping."""
+    mapping = _CURATED_TVDB_SEASON_SOURCES.get(str(tvdb_id or ""), {})
+    return {season: dict(source) for season, source in mapping.items()}
 
 
 async def tmdb_unfiltered_images(

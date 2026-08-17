@@ -126,6 +126,41 @@ def test_tmdb_identity_accepts_matching_title_year_over_conflicting_plex_year():
     assert reason == "matched title year 2022; ignored conflicting Plex year 2024"
 
 
+def test_tmdb_identity_accepts_trusted_anthology_alias_and_title_year():
+    accepted, reason = tmdb_module.tmdb_identity_consistent(
+        "tv",
+        "Monster (2022)",
+        2024,
+        {
+            "name": "DAHMER - Monster: The Jeffrey Dahmer Story",
+            "original_name": "Dahmer – Monster: The Jeffrey Dahmer Story",
+            "first_air_date": "2022-09-21",
+        },
+        trusted_external_id=True,
+    )
+
+    assert accepted is True
+    assert reason == (
+        "trusted external ID matched title year 2022; "
+        "ignored conflicting Plex year 2024"
+    )
+
+
+def test_tmdb_identity_keeps_untrusted_anthology_alias_rejected():
+    accepted, reason = tmdb_module.tmdb_identity_consistent(
+        "tv",
+        "Monster (2022)",
+        2024,
+        {
+            "name": "DAHMER - Monster: The Jeffrey Dahmer Story",
+            "first_air_date": "2022-09-21",
+        },
+    )
+
+    assert accepted is False
+    assert reason == "year mismatch (2024 vs 2022)"
+
+
 @pytest.mark.parametrize(
     ("title", "details", "reason"),
     [
