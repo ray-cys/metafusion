@@ -36,12 +36,23 @@ docker compose logs -f metafusion
 
 ### `config.yml` configuration
 
+The container maintains a current, value-free reference at
+`/config/config_template.yml`. To switch to YAML configuration, create a
+separate `config.yml` from that reference:
+
 ```bash
 mkdir -p config kometa
-cp config_template.yml config/config.yml
-# Edit config/config.yml. A .env file is not required.
 docker compose up -d
+cp config/config_template.yml config/config.yml
+# Edit config/config.yml. A .env file is not required.
+docker compose restart metafusion
 ```
+
+`config_template.yml` is managed by the container and refreshed when the image
+contains a newer template, so do not store settings in it. MetaFusion never
+copies environment values or secrets into either YAML file and does not create
+`config.yml` when environment configuration is present. Existing `config.yml`
+files are never overwritten by template maintenance.
 
 Configuration priority is:
 
@@ -89,11 +100,14 @@ The template requires only the connection, library, and output-mode values:
 - `PLEX_LIBRARIES`
 - `TMDB_API_KEY`
 
-The `/config` mapping is also required for persistent application state.
+The `/config` mapping is also required for persistent application state and the
+managed `/config/config_template.yml` reference. Duplicate that file as
+`config.yml` only when YAML configuration is wanted; environment-only setups
+can leave `config.yml` absent.
 `/kometa` is needed only in Kometa mode. In Plex mode, add writable media path
-mappings whose container paths exactly match those reported by Plex; this is
-required for artwork to be written beside media. Keep the image entrypoint and
-Docker user settings unchanged so `PUID=99` and `PGID=100` can take effect.
+mappings for every artwork destination. If Plex reports different paths, set
+`PLEX_PATH_MAPPINGS` to translate them. Keep the image entrypoint and Docker
+user settings unchanged so `PUID=99` and `PGID=100` can take effect.
 
 ## Running MetaFusion
 
@@ -110,6 +124,9 @@ docker compose run --rm metafusion python metafusion.py --doctor
 
 # Show scheduler status and recent jobs
 docker compose exec metafusion python metafusion.py --status
+
+# Create a value-free diagnostic file for a GitHub issue
+docker compose run --rm metafusion python metafusion.py --support-report
 ```
 
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
@@ -131,6 +148,153 @@ Targeted runs disable cleanup. `--library` and `--rating-key` may be repeated or
 comma-separated. Add `--full-scan` to ignore incremental state, or
 `--explain-selection` to report why an item is due without processing it.
 
+## Kometa and Plex operation modes
+
+`RUN_MODE` selects who applies metadata and where artwork is stored. It does
+not change the TMDb source or the selected Plex libraries.
+
+| Behavior | Kometa mode | Plex mode |
+| --- | --- | --- |
+| Metadata output | Kometa-compatible YAML under `/kometa/metadata` | No Kometa YAML; optional direct edits through the Plex API |
+| Metadata consumer | Kometa reads the YAML and later updates Plex | Plex receives the edit immediately |
+| Artwork output | Organized under `/kometa/assets` for Kometa | Written beside the media using Plex local-asset names |
+| Field ownership | Kometa configuration and schedules control application | MetaFusion records only its own direct writes in `meta_db.sqlite3` |
+| Best fit | Existing Kometa users, reviewable YAML, broad metadata control | Users who do not run Kometa and want local artwork or cautious gap-filling |
+
+In **Kometa mode**, MetaFusion never edits Plex metadata through the Plex API.
+`RUN_BASIC` creates core title, summary, release, certification, studio,
+country, and genre values. `RUN_ENHANCED` adds supported cast and crew values.
+The generated YAML is useful only after Kometa is configured to consume it and
+runs its own update. This separation makes changes easy to inspect, back up,
+and manage centrally with other Kometa files.
+
+In **Plex mode**, MetaFusion always skips Kometa YAML creation. Artwork is
+written to the media folders for Plex's local-asset scanner. Direct metadata
+enrichment is a separate, disabled-by-default feature controlled by
+`PLEX_METADATA_UPDATES`. When enabled, `RUN_BASIC` covers safe scalar fields
+and tags; `RUN_ENHANCED` adds supported movie crew and episode director/writer
+tags. Direct mode intentionally does not manage cast/roles, ratings, labels,
+collections, matching IDs, playback data, extras, or recommendations. Those
+remain the responsibility of Plex's online provider or the user.
+
+Direct API field edits are visible immediately after Plex accepts them. New
+local artwork files are discovered according to the library's Plex scan and
+local-assets settings; MetaFusion does not force a metadata refresh merely to
+make an image appear, because that refresh can also replace unlocked metadata.
+
+Supported direct Plex fields are deliberately narrow:
+
+| Plex item | Basic fields and tags | Enhanced additions |
+| --- | --- | --- |
+| Movie | Original title, release date, content rating, studio, tagline, summary, countries, genres | Directors, writers, producers |
+| Show | Original title, first-air date, content rating, network/studio, tagline, summary, countries, genres | None |
+| Season | Missing title and summary | None |
+| Episode | Missing title, summary, and air date | Directors and writers |
+
+Plex's online provider remains important for matching, IDs, cast and character
+roles, audience/critic ratings, collections, extras, recommendations, and
+provider-specific artwork choices. MetaFusion does not attempt to duplicate
+those services. Kometa metadata is broader because the YAML is reviewable and
+Kometa owns the later application step; direct Plex metadata is intentionally
+smaller because every API change affects the live Plex database immediately.
+
+### Direct Plex metadata safety
+
+Direct metadata updates rely on Plex's HTTP API through the community
+Python-PlexAPI client. This is more aggressive than generating Kometa YAML:
+Plex API behavior can vary with Plex Media Server releases, library agents,
+field locks, token ownership, and existing manual edits.
+
+Use an owner/admin Plex token, back up the Plex database, and begin with:
+
+```text
+RUN_MODE=plex
+PLEX_METADATA_UPDATES=True
+PLEX_METADATA_POLICY=fill_missing
+PLEX_METADATA_MAX_WRITES_PER_RUN=25
+DRY_RUN=True
+```
+
+Review `/config/reports/plex-metadata-*.txt`, then disable dry-run and increase
+the write limit gradually. A dry-run never edits Plex, YAML, artwork, cache, or
+SQLite; the text audit report is its only persistent output.
+
+The policies are:
+
+- `fill_missing`: fills empty scalar fields and appends missing supported tags.
+  It never replaces existing values, removes tags, or crosses an existing
+  Plex field lock.
+- `managed`: starts with the same safe behavior, then updates or removes only
+  values recorded as MetaFusion-owned. A manual change causes a conflict and
+  MetaFusion leaves that field alone.
+- `overwrite`: makes selected supported fields match TMDb, including removal
+  of other values. It requires `PLEX_METADATA_ALLOW_OVERWRITE=True` and should
+  be limited with `PLEX_METADATA_FIELDS` and a low write cap.
+
+MetaFusion does not trigger a Plex metadata refresh after direct edits; a
+refresh can immediately let the online provider replace unlocked values.
+Unchanged values cause no API write and no new lock. Existing locked fields are
+skipped by `fill_missing` and `managed` unless the ownership ledger shows that
+MetaFusion created the lock. `PLEX_METADATA_LOCK_MERGED_TAGS=True` locks the
+whole merged tag field, including tags supplied by Plex or the user, so leave
+it off unless this effect is intentional. Turning direct updates off does not
+unlock fields or revert earlier writes.
+
+Use targeted maintenance when needed:
+
+```bash
+# Preview restoring only values still equal to MetaFusion's last write
+docker compose run --rm -e DRY_RUN=True metafusion python metafusion.py \
+  --plex-metadata-restore --library Movies --rating-key 12345
+
+# Restore prior values and lock states
+docker compose run --rm metafusion python metafusion.py \
+  --plex-metadata-restore --library Movies --rating-key 12345
+
+# Keep values, but remove only locks recorded as MetaFusion-created
+docker compose run --rm metafusion python metafusion.py \
+  --plex-metadata-unlock --library Movies --rating-key 12345
+```
+
+Both commands require `RUN_MODE=plex` and at least one `--rating-key`; they
+refuse a library-wide operation. If a current value differs from MetaFusion's
+ownership ledger, it is treated as a manual change and retained.
+
+Plex metadata reports contain field names and outcomes, not summaries, tokens,
+or API keys. Reports distinguish fills, additions, unchanged values, locks,
+manual conflicts, failures, and write-limit skips. This provides a compact
+GitHub issue attachment without exposing the metadata itself.
+Use `--support-report` to add environment-binding names, database health,
+platform details, and configuration-validation status without their values.
+
+Plex installations vary widely, so user testing should focus on one or two
+representative items before increasing the write cap. If behavior differs from
+the policies above, open the repository's **Plex metadata issue** form and
+attach the latest metadata report, support report, Plex server version, and
+redacted relevant logs. Never attach `config.yml`, Docker inspection output,
+tokens, API keys, or unredacted host paths.
+
+### Plex media path mapping
+
+Plex returns paths from the Plex server's filesystem. If those paths differ
+inside the MetaFusion container, use semicolon-separated longest-prefix
+translations:
+
+```text
+PLEX_PATH_MAPPINGS=/mnt/user/media=>/media;/mnt/disks/archive=>/archive
+```
+
+This setting does not create Docker mounts. Add matching writable bind mounts
+for `/media`, `/archive`, or each chosen destination. With no mappings,
+MetaFusion uses Plex's path unchanged. A translated media directory must
+already exist and be writable; MetaFusion will not create a missing media
+directory that may indicate a bad mount. Movie parts must resolve to one movie
+folder, every season must resolve to one real season folder, and all seasons
+must share one show folder; ambiguous layouts are skipped rather than written
+to a guessed path. Specials use Plex's documented
+`season-specials-poster.jpg` name in their actual `Season 00` or `Specials`
+folder.
+
 ## Environment variables
 
 The tables below list every supported user-configurable Docker variable.
@@ -143,6 +307,7 @@ The tables below list every supported user-configurable Docker variable.
 | `PLEX_TOKEN` | required | Plex authentication token. |
 | `PLEX_TOKEN_FILE` | unset | File containing the Plex token; direct token wins. |
 | `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
+| `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations; bind mounts are still required. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | File containing the TMDb key; direct key wins. |
 | `TMDB_LANGUAGE` | `en-US` | TMDb metadata language and primary artwork language. |
@@ -164,10 +329,19 @@ your deployment supports protected secret mounts.
 | `RUN_ON_START` | `False` | Run one job when scheduler mode starts, then continue normally. |
 | `RUN_TIMES` | `06:00,18:30` | Comma-separated daily run times. |
 | `TZ` | `UTC` | Container timezone used by the scheduler. |
-| `DRY_RUN` | `False` | Calculate and log without writing generated data or deleting files. |
+| `DRY_RUN` | `False` | Calculate without edits/deletions; direct Plex metadata dry-runs still write a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `RUN_BASIC` | `True` | Generate core metadata. Required by enhanced metadata, but not artwork-only runs. |
 | `RUN_ENHANCED` | `True` | Generate extended cast/crew metadata. |
+| `PLEX_METADATA_UPDATES` | `False` | Opt in to direct Plex API metadata enrichment in Plex mode. |
+| `PLEX_METADATA_POLICY` | `fill_missing` | `fill_missing`, `managed`, or acknowledged `overwrite`. |
+| `PLEX_METADATA_LOCK_WRITES` | `False` | Lock scalar fields written through Plex; use cautiously. |
+| `PLEX_METADATA_LOCK_MERGED_TAGS` | `False` | Lock whole merged tag fields after additions. |
+| `PLEX_METADATA_ALLOW_OVERWRITE` | `False` | Required acknowledgement for overwrite policy. |
+| `PLEX_METADATA_RECHECK_DAYS` | `30` | Recheck interval for unchanged Plex metadata; `0` disables timed rechecks. |
+| `PLEX_METADATA_MAX_WRITES_PER_RUN` | `100` | Maximum Plex item/season/episode API writes in one job. |
+| `PLEX_METADATA_REPORT_RETENTION` | `10` | Audit reports retained under `/config/reports`. |
+| `PLEX_METADATA_FIELDS` | all safe fields | Optional comma-separated direct-write allowlist. |
 | `RUN_POSTER` | `True` | Manage movie and show posters. |
 | `RUN_SEASON` | `True` | Manage season posters, including Specials. |
 | `RUN_BACKGROUND` | `False` | Manage movie and show backgrounds. |
@@ -288,8 +462,9 @@ library_overrides:
       season_days: 7
 ```
 
-Only `image_upgrades` is accepted inside a library override. Library names
-must exactly match Plex. `--doctor` validates the override structure.
+`image_upgrades` and `plex_metadata` are accepted inside a library override.
+Library names must exactly match Plex. `--doctor` validates the override
+structure.
 
 ## TMDb response cache
 
@@ -318,12 +493,10 @@ loading and rewriting one large JSON cache. Full-scan timing is tracked per
 Plex server and library, so one library cannot incorrectly represent the scan
 state of every configured library.
 
-On the first writable run, valid `meta_cache.json` and
-`incremental_state.json` data is imported transactionally when the new tables
-are empty. The original JSON and `.bak` files are left untouched and can be
-removed manually after the SQLite state has completed a successful soak test.
-Dry runs can read existing SQLite or legacy JSON state but never create or
-update the database.
+This pre-release branch uses SQLite as its only application-state backend.
+Obsolete `meta_cache.json`, `incremental_state.json`, and their `.bak` files
+are ignored and may be removed manually. There is no JSON migration path. Dry
+runs can read existing SQLite state but never create or update the database.
 
 The disposable TMDb response cache remains in its separate SQLite file. This
 keeps cache expiry, pruning, or corruption recovery from affecting durable
@@ -422,6 +595,8 @@ assets/tv/...
 ```
 
 Plex mode places artwork beside media and does not create Kometa metadata YAML.
+When direct metadata updates are enabled, it also writes a redacted text audit
+under `/config/reports` and records field ownership in `meta_db.sqlite3`.
 
 Persistent diagnostics and state are stored under `/config`:
 
@@ -429,6 +604,7 @@ Persistent diagnostics and state are stored under `/config`:
 logs/metafusion.log
 cache/meta_db.sqlite3
 cache/tmdb_cache.sqlite3
+reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 ```
 
 The live heartbeat is intentionally stored at
@@ -454,7 +630,8 @@ Common problems:
 | Symptom | Check |
 | --- | --- |
 | `/config` or `/kometa` permission error | Confirm the host path is writable by `PUID:PGID` (`99:100` on Unraid). |
-| Plex mode does not write artwork | Map media paths with the same container paths that Plex reports. |
+| Plex mode does not write artwork | Add writable media bind mounts and configure `PLEX_PATH_MAPPINGS` when Plex and container paths differ. |
+| Direct Plex metadata is unchanged | Confirm `PLEX_METADATA_UPDATES=True`, inspect field locks, the policy, field allowlist, write cap, and the latest report. |
 | Kometa output is missing | Confirm `RUN_MODE=kometa`, `KOMETA_PATH`, and the writable `/kometa` mapping. |
 | Scheduled runs do not start | Check `RUN_SCHEDULE`, `RUN_TIMES`, and `TZ`. |
 | Container is slow to stop | Keep `SHUTDOWN_TIMEOUT` lower than `STOP_GRACE_PERIOD` and do not bypass the image entrypoint. |
@@ -463,4 +640,6 @@ Common problems:
 
 - [Kometa metadata files](https://kometa.wiki/en/latest/files/metadata/)
 - [Finding a Plex token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+- [Plex local TV artwork names](https://support.plex.tv/articles/200220717-local-media-assets-tv-shows/)
+- [Python-PlexAPI edit and lock methods](https://python-plexapi.readthedocs.io/en/latest/modules/mixins.html)
 - [TMDb API documentation](https://developer.themoviedb.org/docs)

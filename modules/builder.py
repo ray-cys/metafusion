@@ -54,6 +54,48 @@ def cached_source_matches(cache_key, source_path, asset_path, asset_type, season
         return season.get("season_source_path") == source_path
     return cached.get(f"{asset_type}_source_path") == source_path
 
+
+def movie_plex_candidate(metadata):
+    return {
+        "root": {
+            "fields": {
+                "originalTitle": metadata.get("original_title"),
+                "originallyAvailableAt": metadata.get("originally_available"),
+                "contentRating": metadata.get("content_rating"),
+                "studio": metadata.get("studio"),
+                "tagline": metadata.get("tagline"),
+                "summary": metadata.get("summary"),
+            },
+            "tags": {
+                "country": metadata.get("country.sync", []),
+                "genre": metadata.get("genre.sync", []),
+                "director": metadata.get("director.sync", []),
+                "writer": metadata.get("writer.sync", []),
+                "producer": metadata.get("producer.sync", []),
+            },
+        }
+    }
+
+
+def tv_plex_candidate(metadata, seasons):
+    return {
+        "root": {
+            "fields": {
+                "originalTitle": metadata.get("original_title"),
+                "originallyAvailableAt": metadata.get("originally_available"),
+                "contentRating": metadata.get("content_rating"),
+                "studio": metadata.get("studio"),
+                "tagline": metadata.get("tagline"),
+                "summary": metadata.get("summary"),
+            },
+            "tags": {
+                "country": metadata.get("country.sync", []),
+                "genre": metadata.get("genre.sync", []),
+            },
+        },
+        "seasons": seasons,
+    }
+
 async def build_movie(
     config, consolidated_metadata, feature_flags=None, existing_yaml_data=None, session=None, ignored_fields=None,
     existing_assets=None, meta=None, 
@@ -220,6 +262,7 @@ async def build_movie(
             new_metadata[k] = producers if producers else []
         else:
             new_metadata[k] = "" 
+    plex_candidate = movie_plex_candidate(new_metadata)
 
     expected_fields = fields_to_write
     if ignored_fields is None:
@@ -544,6 +587,7 @@ async def build_movie(
         "metadata_action": metadata_action,
         "poster_action": poster_action,
         "background_action": background_action,
+        "plex_candidate": plex_candidate if run_metadata else None,
         **result
     }
 
@@ -707,6 +751,7 @@ async def build_tv(
         return season_details
 
     seasons_data = {}
+    plex_seasons = {}
     grand_percent = 100
     is_complete = True
     if run_metadata:
@@ -741,14 +786,14 @@ async def build_tv(
                 or not seasons_episodes
                 or season_number not in seasons_episodes
             ):
-                return season_number, None
+                return season_number, None, None
             season_details = await get_season_details(season_number)
             if not season_details:
                 log_builder_event(
                     "builder_no_tmdb_season_data", media_type="TV Shows",
                     season_number=season_number, full_title=full_title
                 )
-                return season_number, None
+                return season_number, None, None
 
             show_crew = get_meta_field(
                 get_meta_field(details, "credits", {}), "crew", []
@@ -781,17 +826,42 @@ async def build_tv(
                     ],
                     enhanced=feature_flags.get("metadata_enhanced", True),
                 )
-            return season_number, {
+            season_metadata = {
                 "originally_available": get_meta_field(
                     season_details, "air_date", ""
                 ) or "",
                 "episodes": episodes,
             }
+            plex_season = {
+                "fields": {
+                    "title": get_meta_field(season_details, "name", "") or "",
+                    "summary": get_meta_field(season_details, "overview", "") or "",
+                },
+                "episodes": {
+                    episode_number: {
+                        "fields": {
+                            "title": episode.get("title"),
+                            "summary": episode.get("summary"),
+                            "originallyAvailableAt": episode.get(
+                                "originally_available"
+                            ),
+                        },
+                        "tags": {
+                            "director": episode.get("director", []),
+                            "writer": episode.get("writer", []),
+                        },
+                    }
+                    for episode_number, episode in episodes.items()
+                },
+            }
+            return season_number, season_metadata, plex_season
 
         results = await asyncio.gather(*(process_season(info) for info in season_infos))
-        for season_number, season_data in results:
+        for season_number, season_data, plex_season in results:
             if season_data:
                 seasons_data[season_number] = season_data
+            if plex_season:
+                plex_seasons[season_number] = plex_season
 
         episode_filled = 0
         episode_total = 0
@@ -1269,5 +1339,8 @@ async def build_tv(
         "background_action": background_action,
         "seasons": seasons_data,
         "season_poster_actions": season_poster_actions,
+        "plex_candidate": (
+            tv_plex_candidate(new_metadata, plex_seasons) if run_metadata else None
+        ),
         **result
     }

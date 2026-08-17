@@ -4,12 +4,7 @@ from contextvars import ContextVar
 from datetime import datetime
 
 from helper.logging import log_cache_event
-from helper.state_db import (
-    LEGACY_INCREMENTAL_STATE,
-    LEGACY_META_CACHE,
-    STATE_DATABASE,
-    MediaStateStore,
-)
+from helper.state_db import STATE_DATABASE, MediaStateStore
 
 
 _cache_store = None
@@ -22,8 +17,6 @@ _cache_scope = ContextVar("metafusion_cache_scope", default={})
 def begin_cache_session(
     writable=True,
     database_path=None,
-    legacy_meta_cache=None,
-    legacy_incremental_state=None,
 ):
     global _cache_store, _cache_lock, _cache_lock_loop, _cache_writable
     if _cache_store is not None:
@@ -32,26 +25,9 @@ def begin_cache_session(
     _cache_store = MediaStateStore(
         path=database_path or STATE_DATABASE,
         writable=_cache_writable,
-        legacy_meta_cache=legacy_meta_cache or LEGACY_META_CACHE,
-        legacy_incremental_state=(
-            legacy_incremental_state or LEGACY_INCREMENTAL_STATE
-        ),
     )
     _cache_lock = None
     _cache_lock_loop = None
-    if _cache_store.imported_media_entries:
-        log_cache_event(
-            "cache_migrated",
-            count=_cache_store.imported_media_entries,
-            cache_file=_cache_store.legacy_meta_cache,
-            database=_cache_store.path,
-        )
-    if _cache_store.imported_incremental_state:
-        log_cache_event(
-            "incremental_state_migrated",
-            cache_file=_cache_store.legacy_incremental_state,
-            database=_cache_store.path,
-        )
     log_cache_event(
         "cache_loaded", count=len(_cache_store), cache_file=_cache_store.path
     )
@@ -122,6 +98,7 @@ async def meta_cache_async(
     poster_checked=False,
     background_checked=False,
     season_checked=False,
+    plex_metadata_checked=False,
     legacy_cache_key=None,
     **kwargs,
 ):
@@ -156,6 +133,8 @@ async def meta_cache_async(
             entry["background_last_checked"] = now_iso
         if season_checked:
             entry["season_last_checked"] = now_iso
+        if plex_metadata_checked:
+            entry["plex_metadata_last_checked"] = now_iso
         season_number = kwargs.pop("season_number", None)
         if season_number is not None:
             seasons = entry.setdefault("seasons", {})

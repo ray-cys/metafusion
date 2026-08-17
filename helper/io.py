@@ -144,6 +144,31 @@ def atomic_write_json(path, data, backup=False):
             os.unlink(temp_path)
 
 
+def atomic_write_text(path, text):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(str(text))
+            if not str(text).endswith("\n"):
+                temp_file.write("\n")
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        atomic_replace_file(temp_path, path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
 def atomic_write_bytes(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

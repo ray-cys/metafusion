@@ -5,14 +5,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from helper.config import get_image_upgrade_days
-from helper.io import read_json_with_backup
 from helper.state_db import (
-    LEGACY_INCREMENTAL_STATE,
     STATE_DATABASE,
+    load_global_full_scan,
     load_scan_states,
     mark_scan_complete as persist_scan_complete,
     mark_scan_started as persist_scan_started,
-    set_legacy_full_scan,
+    mark_global_full_scan,
 )
 
 
@@ -43,6 +42,8 @@ def config_fingerprint(config):
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
         "assets": config.get("assets", {}),
+        "plex_metadata": config.get("plex_metadata", {}),
+        "plex_path_mappings": config.get("plex", {}).get("path_mappings", []),
         "image_upgrades": config.get("image_upgrades", {}),
         "tmdb": {
             "language": config.get("tmdb", {}).get("language"),
@@ -59,14 +60,9 @@ def config_fingerprint(config):
 
 def load_state(path=None, scopes=None):
     database = Path(path or STATE_DATABASE)
-    states, legacy = load_scan_states(scopes or [], path=database)
-    if legacy is None and database == Path(STATE_DATABASE):
-        document = read_json_with_backup(LEGACY_INCREMENTAL_STATE, default={})
-        if isinstance(document, dict):
-            legacy = document.get("last_full_scan")
-    document = {"libraries": states}
-    if legacy:
-        document["last_full_scan"] = legacy
+    document = {"libraries": load_scan_states(scopes or [], path=database)}
+    if not scopes:
+        document["last_full_scan"] = load_global_full_scan(path=database)
     return document
 
 
@@ -103,9 +99,8 @@ def should_run_full_scan(
 
     scopes = list(scopes or [])
     document = load_state(path=path, scopes=scopes)
-    legacy = document.get("last_full_scan")
     if not scopes:
-        return _timestamp_is_due(legacy, interval, now)
+        return True
 
     states = document.get("libraries", {})
     for scope in scopes:
@@ -115,9 +110,7 @@ def should_run_full_scan(
         )
         library_state = states.get(key)
         if library_state is None:
-            if _timestamp_is_due(legacy, interval, now):
-                return True
-            continue
+            return True
         expected_fingerprint = scope.get("config_fingerprint")
         stored_fingerprint = library_state.get("config_fingerprint")
         if (
@@ -127,7 +120,7 @@ def should_run_full_scan(
         ):
             return True
         if _timestamp_is_due(
-            library_state.get("last_full_scan_completed") or legacy, interval, now
+            library_state.get("last_full_scan_completed"), interval, now
         ):
             return True
     return False
@@ -142,7 +135,7 @@ def mark_full_scan_complete(dry_run=False, path=None, now=None, scopes=None):
         return persist_scan_complete(
             scopes, full_scan=True, path=path or STATE_DATABASE, now=value
         )
-    return set_legacy_full_scan(value, path=path or STATE_DATABASE)
+    return mark_global_full_scan(value, path=path or STATE_DATABASE)
 
 
 def mark_library_scan_started(scopes, full_scan, dry_run=False, path=None, now=None):
@@ -213,6 +206,12 @@ def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=No
         return set()
 
     reasons = set()
+    if flags.get("plex_metadata", False) and timestamp_due(
+        cached.get("plex_metadata_last_checked"),
+        config.get("plex_metadata", {}).get("recheck_days", 30),
+        now=now,
+    ):
+        reasons.add("metadata")
     if flags.get("poster", False) and timestamp_due(
         cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
         days,
@@ -258,7 +257,11 @@ def enabled_work_reasons(media_type, feature_flags=None):
         normalized_type = "movie"
 
     reasons = set()
-    if flags.get("metadata_basic", True) or flags.get("metadata_enhanced", False):
+    if (
+        flags.get("metadata_basic", True)
+        or flags.get("metadata_enhanced", False)
+        or flags.get("plex_metadata", False)
+    ):
         reasons.add("metadata")
     if flags.get("poster", False):
         reasons.add("poster")

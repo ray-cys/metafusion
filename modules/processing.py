@@ -14,6 +14,8 @@ from helper.plex import get_plex_metadata, plex_operation
 from helper.identity import cache_key_for_meta, item_identity, legacy_cache_key
 from modules.builder import build_movie, build_tv
 from modules.kometa import validate_metadata_document, write_kometa_metadata
+from helper.plex_metadata import apply_plex_metadata
+from helper.state_db import prune_plex_metadata_library
 
 
 class ItemProcessingError(RuntimeError):
@@ -94,7 +96,7 @@ async def process_item(
         log_processing_event("processing_no_item")
         return None
 
-    meta = await get_plex_metadata(plex_item)
+    meta = await get_plex_metadata(plex_item, _plex_config=config.get("plex", {}))
     title = meta.get("title", "Unknown")
     year = meta.get("year", "Unknown")
     full_title = f"{title} ({year})"
@@ -159,6 +161,46 @@ async def process_item(
         )
     if not isinstance(stats, dict):
         raise ItemProcessingError(f"Builder returned no result for {full_title}")
+    plex_result = await apply_plex_metadata(
+        plex_item,
+        stats.pop("plex_candidate", None),
+        config,
+        meta,
+    )
+    stats["plex_metadata_writes"] = plex_result.get("writes", 0)
+    if feature_flags.get("plex_metadata", False):
+        stats["metadata_action"] = (
+            "failed"
+            if plex_result.get("failures")
+            else ("upgraded" if plex_result.get("writes") else "skipped")
+        )
+    if plex_result.get("writes") and hasattr(plex_item, "reload"):
+        await plex_operation(
+            lambda: plex_item.reload(),
+            config.get("runtime", {}),
+            description=f"Reload Plex metadata identity for {full_title}",
+        )
+        updated_at = getattr(plex_item, "updatedAt", None)
+        meta["updatedAt"] = (
+            updated_at.isoformat()
+            if hasattr(updated_at, "isoformat")
+            else (str(updated_at) if updated_at is not None else None)
+        )
+    if feature_flags.get("plex_metadata", False) and not feature_flags.get(
+        "dry_run", False
+    ):
+        normalized_type = "tv" if library_type == "show" else library_type
+        await meta_cache_async(
+            cache_key_for_meta(meta),
+            meta.get("tmdb_id"),
+            title,
+            year,
+            normalized_type,
+            update_timestamp=False,
+            plex_metadata_checked=True,
+        )
+    if plex_result.get("failures"):
+        failed_actions.append("failed")
     stats["_incremental_success"] = not failed_actions
     return stats
 
@@ -248,6 +290,7 @@ async def process_library(
                     _episode_cache=episode_cache,
                     _movie_cache=movie_cache,
                     _runtime_config=config.get("runtime", {}),
+                    _plex_config=config.get("plex", {}),
                 )
                 preloaded_metadata.append(meta)
             except Exception as e:
@@ -533,6 +576,24 @@ async def process_library(
             raise LibraryProcessingError(
                 f"{len(item_errors)} of {total_items} items failed in {library_name}"
             ) from item_errors[0]
+
+        if (
+            full_scan
+            and mode_check(config, "plex")
+            and feature_flags.get("plex_metadata", False)
+            and not feature_flags.get("dry_run", False)
+        ):
+            prune_plex_metadata_library(
+                getattr(server, "machineIdentifier", None) or "unknown",
+                getattr(library_section, "uuid", None)
+                or getattr(library_section, "key", None)
+                or library_name,
+                {
+                    str(getattr(item, "ratingKey", ""))
+                    for item in all_items
+                    if getattr(item, "ratingKey", None) is not None
+                },
+            )
 
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size

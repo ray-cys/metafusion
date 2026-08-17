@@ -1,4 +1,4 @@
-import asyncio, hashlib, uuid, re, datetime
+import asyncio, hashlib, uuid, re, datetime, os
 from io import BytesIO
 from pathlib import Path
 from helper.config import mode_check
@@ -458,18 +458,41 @@ def get_asset_path(config, meta, asset_type="poster", season_number=None):
     movie_path = meta.get("movie_path")
 
     if mode == "plex":
+        def writable_directory(value):
+            if not value:
+                return None
+            directory = Path(value)
+            if not directory.is_dir() or not os.access(directory, os.W_OK):
+                return None
+            return directory
+
         if asset_type == "poster":
             if library_type == "movie":
-                return Path(meta["movie_dir"]) / "poster.jpg"
+                directory = writable_directory(meta.get("movie_dir"))
+                return directory / "poster.jpg" if directory else None
             elif library_type in ("show", "tv"):
-                return Path(meta["show_dir"]) / "poster.jpg"
+                directory = writable_directory(meta.get("show_dir"))
+                return directory / "poster.jpg" if directory else None
         elif asset_type == "background":
             if library_type == "movie":
-                return Path(meta["movie_dir"]) / "fanart.jpg"
+                directory = writable_directory(meta.get("movie_dir"))
+                return directory / "fanart.jpg" if directory else None
             elif library_type in ("show", "tv"):
-                return Path(meta["show_dir"]) / "fanart.jpg"
+                directory = writable_directory(meta.get("show_dir"))
+                return directory / "fanart.jpg" if directory else None
         elif asset_type == "season" and season_number is not None:
-            return Path(meta["show_dir"]) / f"Season {season_number:02}" / f"Season{season_number:02}.jpg"
+            season_dir = (meta.get("season_dirs") or {}).get(season_number)
+            if season_dir is None:
+                season_dir = (meta.get("season_dirs") or {}).get(str(season_number))
+            if not season_dir:
+                return None
+            filename = (
+                "season-specials-poster.jpg"
+                if int(season_number) == 0
+                else f"Season{int(season_number):02}.jpg"
+            )
+            directory = writable_directory(season_dir)
+            return directory / filename if directory else None
     else:
         kometa_root = config.get("settings", {}).get("path", ".")
         assets_path = Path(kometa_root) / "assets" / library_type
@@ -501,7 +524,8 @@ def asset_temp_path(config, meta, extension="jpg"):
             assets_path = Path(meta["show_dir"])
         else:
             assets_path = Path(".")
-    assets_path.mkdir(parents=True, exist_ok=True)
+    if mode_check(config, "kometa"):
+        assets_path.mkdir(parents=True, exist_ok=True)
     temp_filename = f"temp_{uuid.uuid4().hex}.{extension}"
     return assets_path / temp_filename
 

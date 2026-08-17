@@ -9,12 +9,10 @@ from helper.incremental import (
     item_updated_at,
     load_state,
     mark_full_scan_complete,
-    mark_library_scan_complete,
     plan_items,
     select_items,
     should_run_full_scan,
 )
-from helper.state_db import MediaStateStore
 
 
 def incremental_config():
@@ -130,19 +128,13 @@ def test_per_library_scan_state_and_fingerprint_control_full_scans(tmp_path):
     ) is True
 
 
-def test_legacy_full_scan_timestamp_remains_valid_until_due(tmp_path):
+def test_legacy_full_scan_json_is_ignored(tmp_path):
     database = tmp_path / "meta_db.sqlite3"
     legacy = tmp_path / "incremental_state.json"
     now = datetime(2026, 1, 2, tzinfo=timezone.utc)
     legacy.write_text(
         json.dumps({"last_full_scan": now.isoformat()}), encoding="utf-8"
     )
-    store = MediaStateStore(
-        path=database,
-        legacy_meta_cache=tmp_path / "meta_cache.json",
-        legacy_incremental_state=legacy,
-    )
-    store.close()
     scopes = [
         {
             "server_id": "server",
@@ -152,19 +144,12 @@ def test_legacy_full_scan_timestamp_remains_valid_until_due(tmp_path):
         }
     ]
 
-    mark_library_scan_complete(
-        scopes,
-        full_scan=False,
-        path=database,
-        now=now + timedelta(hours=1),
-    )
-
     assert should_run_full_scan(
         incremental_config(),
         scopes=scopes,
         path=database,
         now=now + timedelta(hours=23),
-    ) is False
+    ) is True
 
 
 def test_per_type_artwork_intervals_select_only_due_unchanged_items():

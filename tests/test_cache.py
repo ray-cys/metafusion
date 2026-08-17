@@ -23,8 +23,6 @@ def configure_cache(tmp_path, writable=True):
     return cache_module.begin_cache_session(
         writable=writable,
         database_path=tmp_path / "meta_db.sqlite3",
-        legacy_meta_cache=tmp_path / "meta_cache.json",
-        legacy_incremental_state=tmp_path / "incremental_state.json",
     )
 
 
@@ -73,8 +71,6 @@ def test_read_only_missing_state_does_not_create_directory(tmp_path):
     store = cache_module.begin_cache_session(
         writable=False,
         database_path=cache_dir / "meta_db.sqlite3",
-        legacy_meta_cache=cache_dir / "meta_cache.json",
-        legacy_incremental_state=cache_dir / "incremental_state.json",
     )
 
     assert dict(store) == {}
@@ -227,7 +223,7 @@ def test_unchanged_entry_does_not_create_pending_write(tmp_path):
     assert cache_module.flush_cache() is False
 
 
-def test_legacy_json_is_imported_once_and_left_untouched(tmp_path):
+def test_legacy_json_is_ignored_and_left_untouched(tmp_path):
     legacy = tmp_path / "meta_cache.json"
     legacy.write_text(
         json.dumps({"movie:one": {"title": "One", "media_type": "movie"}}),
@@ -237,12 +233,7 @@ def test_legacy_json_is_imported_once_and_left_untouched(tmp_path):
 
     store = configure_cache(tmp_path)
 
-    assert store.imported_media_entries == 1
-    assert store["movie:one"]["title"] == "One"
-    assert legacy.read_bytes() == original
-
-    store = configure_cache(tmp_path)
-    assert store.imported_media_entries == 0
+    assert dict(store) == {}
     assert legacy.read_bytes() == original
 
 

@@ -31,6 +31,7 @@ from helper.incremental import (
     mark_library_scan_started,
     should_run_full_scan,
 )
+from helper.diagnostics import write_support_report
 from helper.logging import (
     check_sys_requirements,
     get_meta_banner,
@@ -44,7 +45,13 @@ from helper.plex import (
     _plex_cache,
     connect_plex_library,
     connect_plex_server,
+    get_plex_metadata,
     plex_operation,
+)
+from helper.plex_metadata import (
+    begin_plex_metadata_run,
+    finish_plex_metadata_run,
+    restore_plex_metadata,
 )
 from helper.runtime import RuntimeStatus, validate_runtime_paths
 from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
@@ -100,6 +107,11 @@ def parse_cli_args(argv=None):
         help="Validate configuration and report value sources without running",
     )
     parser.add_argument(
+        "--support-report",
+        action="store_true",
+        help="Write a redacted diagnostic report under /config/reports and exit",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         help="Process only this Plex library; repeat or use comma-separated names",
@@ -118,6 +130,16 @@ def parse_cli_args(argv=None):
         "--full-scan",
         action="store_true",
         help="Bypass incremental skipping and reconcile the selected libraries",
+    )
+    parser.add_argument(
+        "--plex-metadata-restore",
+        action="store_true",
+        help="Restore MetaFusion-owned Plex fields selected by --rating-key",
+    )
+    parser.add_argument(
+        "--plex-metadata-unlock",
+        action="store_true",
+        help="Remove only MetaFusion-created Plex locks selected by --rating-key",
     )
     return parser.parse_args(argv)
 
@@ -166,7 +188,16 @@ def override_config_with_cli(config, args):
         config["cleanup"]["run_process"] = False
     if libraries or rating_keys:
         config["cleanup"]["run_process"] = False
-    config["_execution"] = {
+    maintenance_action = None
+    if args.plex_metadata_restore:
+        maintenance_action = "restore"
+    elif args.plex_metadata_unlock:
+        maintenance_action = "unlock"
+    if maintenance_action:
+        config["metafusion_run"] = True
+        config["plex_metadata"]["enabled"] = True
+        config["cleanup"]["run_process"] = False
+    execution = {
         "rating_keys": rating_keys,
         "targeted": bool(libraries or rating_keys),
         "full_scan": bool(args.full_scan),
@@ -174,10 +205,15 @@ def override_config_with_cli(config, args):
         "asset_only": bool(args.asset_only),
         "explain_selection": bool(args.explain_selection),
     }
+    if maintenance_action:
+        execution["plex_metadata_maintenance"] = maintenance_action
+    config["_execution"] = execution
 
 
-async def preflight_connectors(config, session):
+async def preflight_connectors(config, session, require_tmdb=True):
     plex_task = asyncio.create_task(asyncio.to_thread(connect_plex_server, config))
+    if not require_tmdb:
+        return await plex_task
     tmdb_task = asyncio.create_task(
         tmdb_api_request(
             config,
@@ -277,7 +313,12 @@ async def metafusion_main(config, logger):
         )
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            plex = await preflight_connectors(config, session)
+            execution = config.get("_execution", {})
+            maintenance_action = execution.get("plex_metadata_maintenance")
+            if maintenance_action:
+                plex = await preflight_connectors(config, session, require_tmdb=False)
+            else:
+                plex = await preflight_connectors(config, session)
             sections, selected_libraries, all_libraries = connect_plex_library(
                 config,
                 plex=plex,
@@ -286,7 +327,6 @@ async def metafusion_main(config, logger):
             library_filesize = {}
             successful_sections = []
             failures = []
-            execution = config.get("_execution", {})
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
             scan_scopes = build_scan_scopes(plex, sections, config)
@@ -376,6 +416,56 @@ async def metafusion_main(config, logger):
                         raise
                     except Exception as error:
                         failures.append(f"{section.title}: {error}")
+
+                if maintenance_action:
+                    if not mode_check(config, "plex"):
+                        raise RuntimeError(
+                            "Plex metadata restore/unlock requires RUN_MODE=plex"
+                        )
+                    target_keys = {
+                        str(value) for value in execution.get("rating_keys", [])
+                    }
+                    if not target_keys:
+                        raise RuntimeError(
+                            "Plex metadata restore/unlock requires --rating-key"
+                        )
+                    found_keys = set()
+                    maintenance_failures = list(failures)
+                    for section in sections:
+                        library_config = config_for_library(config, section.title)
+                        for item in section_items.get(section.title, []):
+                            rating_key = str(getattr(item, "ratingKey", ""))
+                            if rating_key not in target_keys:
+                                continue
+                            found_keys.add(rating_key)
+                            meta = await get_plex_metadata(
+                                item,
+                                _runtime_config=runtime_config,
+                                _plex_config=library_config.get("plex", {}),
+                            )
+                            result = await restore_plex_metadata(
+                                item,
+                                library_config,
+                                meta,
+                                unlock_only=maintenance_action == "unlock",
+                            )
+                            if result.get("failures"):
+                                maintenance_failures.append(
+                                    f"{section.title}/{rating_key}"
+                                )
+                    missing_keys = target_keys - found_keys
+                    if missing_keys:
+                        maintenance_failures.append(
+                            "rating keys not found: " + ", ".join(sorted(missing_keys))
+                        )
+                    if maintenance_failures:
+                        raise RuntimeError("; ".join(maintenance_failures))
+                    logger.info(
+                        "[Plex Metadata] %s completed for %d item(s)",
+                        maintenance_action,
+                        len(found_keys),
+                    )
+                    return
 
                 for section in sections:
                     if section.title not in section_items:
@@ -493,6 +583,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
         writable=not config.get("settings", {}).get("dry_run", False)
     )
     begin_tmdb_cache(config)
+    begin_plex_metadata_run(config)
     if runtime_status:
         runtime_status.run_started()
 
@@ -522,6 +613,14 @@ def run_metafusion_job(config, logger, runtime_status=None):
         _active_loop = None
         _active_task = None
         try:
+            try:
+                report_path = finish_plex_metadata_run(config)
+                if report_path:
+                    logger.info("[Plex Metadata] Report saved to %s", report_path)
+            except Exception as caught:
+                success = False
+                error = f"Failed to write Plex metadata report: {caught}"
+                log_main_event("main_unhandled_exception", error=error, logger=logger)
             flush_cache()
             flush_tmdb_cache()
         except Exception as caught:
@@ -542,6 +641,18 @@ def main(argv=None):
     args = parse_cli_args(argv)
     if args.metadata_only and args.asset_only:
         print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
+        return 2
+    if args.plex_metadata_restore and args.plex_metadata_unlock:
+        print(
+            "Configuration error: choose only one Plex metadata maintenance action",
+            file=sys.stderr,
+        )
+        return 2
+    if (args.plex_metadata_restore or args.plex_metadata_unlock) and not args.rating_key:
+        print(
+            "Configuration error: Plex metadata restore/unlock requires --rating-key",
+            file=sys.stderr,
+        )
         return 2
     if args.status:
         status_path = Path(
@@ -589,6 +700,14 @@ def main(argv=None):
             sources[path] = "CLI"
 
     validation_errors = validate_config(config)
+    if args.support_report:
+        try:
+            report = write_support_report(config, validation_errors)
+        except OSError as error:
+            print(f"Unable to write support report: {error}", file=sys.stderr)
+            return 1
+        print(f"Support report saved to {report}")
+        return 0
     if args.doctor:
         print("MetaFusion configuration sources:")
         for line in config_source_report(config, sources):

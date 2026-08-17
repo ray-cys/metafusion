@@ -111,6 +111,9 @@ jobs:
             test -f /tmp/metafusion-status.json
           test ! -e "${config_dir}/metafusion-status.json"
           test ! -e "${config_dir}/config.yml"
+          cmp "${config_dir}/config_template.yml" config_template.yml
+          test "$(stat -c '%a' "${config_dir}/config_template.yml")" = "664"
+          test "$(stat -c '%u:%g' "${config_dir}/config_template.yml")" = "99:100"
           docker exec --user 99:100 "${container_id}" python healthcheck.py
           docker stop --timeout 10 "${container_id}"
           docker rm "${container_id}"

@@ -1,0 +1,74 @@
+name: Plex metadata issue
+description: Report a Phase 11 Plex API metadata or path-discovery problem.
+title: "[Plex metadata]: "
+labels: ["plex-metadata"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tokens, API keys, public URLs, and personal media paths. Attach the latest `/config/reports/plex-metadata-*.txt`; it is designed to contain no metadata values or secrets.
+  - type: input
+    id: version
+    attributes:
+      label: MetaFusion image or commit
+      placeholder: develop, sha-..., or a commit hash
+    validations:
+      required: true
+  - type: input
+    id: plex_version
+    attributes:
+      label: Plex Media Server version
+    validations:
+      required: true
+  - type: dropdown
+    id: policy
+    attributes:
+      label: Plex metadata policy
+      options:
+        - fill_missing
+        - managed
+        - overwrite
+    validations:
+      required: true
+  - type: dropdown
+    id: dry_run
+    attributes:
+      label: Was this a dry-run?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+  - type: textarea
+    id: layout
+    attributes:
+      label: Library and path layout
+      description: Describe movie/show library type, bind-mount targets, and redacted path mappings.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Redacted report and logs
+      description: Attach or paste only redacted report/log excerpts. Never include Plex tokens or TMDb keys.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed secrets and personal paths.
+          required: true
+        - label: I tested fill_missing and/or dry-run before overwrite.
+          required: true

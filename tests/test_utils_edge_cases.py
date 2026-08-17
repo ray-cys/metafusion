@@ -355,10 +355,12 @@ def test_download_preserves_http_status_and_save_failure(monkeypatch, tmp_path):
 
 
 def test_asset_paths_cover_show_specials_and_unknown_types(tmp_path):
+    (tmp_path / "show" / "Specials").mkdir(parents=True)
     show = {
         "library_type": "tv",
         "show_dir": str(tmp_path / "show"),
         "show_path": "Example Show (2021)",
+        "season_dirs": {0: str(tmp_path / "show" / "Specials")},
     }
     plex = {"settings": {"mode": "plex"}}
     assert utils.get_asset_path(plex, show, "poster") == tmp_path / "show" / "poster.jpg"
@@ -366,7 +368,7 @@ def test_asset_paths_cover_show_specials_and_unknown_types(tmp_path):
         tmp_path / "show" / "fanart.jpg"
     )
     assert utils.get_asset_path(plex, show, "season", season_number=0) == (
-        tmp_path / "show" / "Season 00" / "Season00.jpg"
+        tmp_path / "show" / "Specials" / "season-specials-poster.jpg"
     )
 
     kometa = {"settings": {"mode": "kometa", "path": str(tmp_path / "kometa")}}

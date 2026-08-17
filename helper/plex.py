@@ -6,6 +6,7 @@ from pathlib import Path
 from plexapi.server import PlexServer
 
 from helper.logging import log_plex_event, redact_secrets
+from helper.plex_paths import translate_plex_path
 
 PLEX_COUNTRY_OVERRIDES = {
     "US": "United States of America",
@@ -404,6 +405,7 @@ async def get_plex_metadata(
     _episode_cache=None,
     _movie_cache=None,
     _runtime_config=None,
+    _plex_config=None,
 ):
     global _plex_cache
     title = getattr(item, "title", None)
@@ -418,6 +420,8 @@ async def get_plex_metadata(
         _episode_cache = {}
     if _movie_cache is None:
         _movie_cache = {}
+    _plex_config = _plex_config or {}
+    path_mappings = _plex_config.get("path_mappings", [])
 
     try:
         item_key = getattr(item, 'ratingKey', id(item))
@@ -471,11 +475,24 @@ async def get_plex_metadata(
                 ) if hasattr(item, 'iterParts') else []
                 _movie_cache[item_key] = parts
             if parts:
-                file_path = parts[0].file
-                movie_path = Path(file_path).parent.name
-                movie_dir = str(Path(file_path).parent)
+                part_dirs = {
+                    translate_plex_path(part.file, path_mappings).parent
+                    for part in parts
+                    if getattr(part, "file", None)
+                }
+                if len(part_dirs) == 1:
+                    movie_directory = next(iter(part_dirs))
+                    movie_path = movie_directory.name
+                    movie_dir = str(movie_directory)
+                else:
+                    raise ValueError(
+                        "Movie parts resolve to multiple directories; refusing an "
+                        "ambiguous artwork destination"
+                    )
                 if not edition_title:
-                    edition_match = re.search(r"\{edition-([^}]+)\}", str(file_path), re.IGNORECASE)
+                    edition_match = re.search(
+                        r"\{edition-([^}]+)\}", str(parts[0].file), re.IGNORECASE
+                    )
                     if edition_match:
                         edition_title = edition_match.group(1).strip()
         except Exception as e:
@@ -483,6 +500,8 @@ async def get_plex_metadata(
 
     show_path = None
     show_dir = None
+    season_dirs = {}
+    season_path_errors = {}
     episodes = []
     if library_type in ("show", "tv") or hasattr(item, "episodes"):
         try:
@@ -495,19 +514,40 @@ async def get_plex_metadata(
                     description=f"Read episodes for {title} ({year})",
                 ) if hasattr(item, 'episodes') else []
                 _episode_cache[item_key] = episodes
-            found = False
+            discovered_season_dirs = {}
             for episode in episodes:
+                season_number = getattr(
+                    episode,
+                    "seasonNumber",
+                    getattr(episode, "parentIndex", None),
+                )
                 for media in getattr(episode, 'media', []):
                     for part in getattr(media, 'parts', []):
-                        file_path = Path(part.file)
-                        show_path = file_path.parent.parent.name
-                        show_dir = str(file_path.parent.parent)
-                        found = True
-                        break
-                    if found:
-                        break
-                if found:
-                    break
+                        if not getattr(part, "file", None):
+                            continue
+                        file_path = translate_plex_path(part.file, path_mappings)
+                        discovered_season_dirs.setdefault(season_number, set()).add(
+                            file_path.parent
+                        )
+            for season_number, directories in discovered_season_dirs.items():
+                if len(directories) == 1:
+                    season_dirs[season_number] = str(next(iter(directories)))
+                else:
+                    season_path_errors[season_number] = (
+                        "episodes resolve to multiple directories"
+                    )
+            show_directories = {
+                Path(directory).parent for directory in season_dirs.values()
+            }
+            if len(show_directories) == 1:
+                show_directory = next(iter(show_directories))
+                show_path = show_directory.name
+                show_dir = str(show_directory)
+            elif show_directories:
+                raise ValueError(
+                    "Seasons resolve to multiple show directories; refusing an "
+                    "ambiguous artwork destination"
+                )
         except Exception as e:
             log_plex_event("plex_failed_extract_show_path", title=title, year=year, error=e)
     
@@ -556,7 +596,19 @@ async def get_plex_metadata(
         "movie_dir": movie_dir, 
         "show_path": show_path,
         "show_dir": show_dir,
+        "season_dirs": season_dirs,
+        "season_path_errors": season_path_errors,
         "seasons_episodes": seasons_episodes,
+        "server_id": getattr(
+            getattr(getattr(item, "librarySection", None), "_server", None),
+            "machineIdentifier",
+            None,
+        ),
+        "library_uuid": (
+            getattr(getattr(item, "librarySection", None), "uuid", None)
+            or getattr(getattr(item, "librarySection", None), "key", None)
+            or library_name
+        ),
     }
     critical_fields = ["title", "year", "tmdb_id"]
     if library_type in ("movie",):

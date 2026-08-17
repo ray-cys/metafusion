@@ -19,6 +19,10 @@ settings:
 plex:
   url: "http://10.0.0.1:32400"
   token: "YOUR_PLEX_TOKEN"
+  # Optional Plex-server path to MetaFusion-container path translations.
+  # Docker bind mounts are still required for every destination.
+  path_mappings: []
+  # - "/volume1/media=>/media"
 
 # Plex libraries to process
 plex_libraries:
@@ -39,6 +43,19 @@ tmdb:
 metadata:
   run_basic: true
   run_enhanced: true
+
+# Direct Plex API metadata enrichment is Plex-mode only and opt-in. Begin with
+# fill_missing, DRY_RUN=true, and a small write limit. See README.md before use.
+plex_metadata:
+  enabled: false
+  policy: "fill_missing"  # fill_missing, managed, or overwrite
+  lock_writes: false
+  lock_merged_tags: false
+  allow_overwrite: false  # required acknowledgement for overwrite
+  recheck_days: 30
+  max_writes_per_run: 100
+  report_retention: 10
+  fields: []  # Empty means every supported safe field.
 
 assets:
   run_poster: true
@@ -75,11 +92,15 @@ image_upgrades:
   series_days: null
   season_days: null
 
-# Optional per-library artwork cadence. Global values remain the defaults.
+# Optional per-library artwork cadence and Plex metadata policy.
 library_overrides: {}
 #  Movies 4K:
 #    image_upgrades:
 #      movie_days: 60
+#  Anime:
+#    plex_metadata:
+#      policy: fill_missing
+#      max_writes_per_run: 25
 
 # Persist successful TMDb JSON responses to reduce repeated API traffic.
 tmdb_cache:

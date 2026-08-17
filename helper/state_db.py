@@ -8,13 +8,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from helper.config import CACHE_DIR
-from helper.io import read_json_with_backup
-
-
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-LEGACY_META_CACHE = CACHE_DIR / "meta_cache.json"
-LEGACY_INCREMENTAL_STATE = CACHE_DIR / "incremental_state.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FILE_MODE = 0o664
 
 
@@ -52,7 +47,7 @@ def _connect(path=None, writable=True):
                 os.chmod(path, FILE_MODE)
         else:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
+            if version not in (1, SCHEMA_VERSION):
                 raise StateDatabaseError(
                     f"unsupported MetaFusion state schema version {version}"
                 )
@@ -76,7 +71,7 @@ def _connect(path=None, writable=True):
 
 def _initialize_schema(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, SCHEMA_VERSION):
+    if version not in (0, 1, SCHEMA_VERSION):
         raise StateDatabaseError(
             f"unsupported MetaFusion state schema version {version}"
         )
@@ -147,6 +142,30 @@ def _initialize_schema(connection):
             status TEXT NOT NULL,
             error TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS plex_metadata_ownership (
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT,
+            rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            child_key TEXT NOT NULL DEFAULT '',
+            field_name TEXT NOT NULL,
+            field_kind TEXT NOT NULL,
+            original_value TEXT NOT NULL,
+            applied_value TEXT NOT NULL,
+            owned_values TEXT NOT NULL,
+            original_locked INTEGER NOT NULL DEFAULT 0,
+            metafusion_locked INTEGER NOT NULL DEFAULT 0,
+            last_checked TEXT NOT NULL,
+            last_updated TEXT NOT NULL,
+            PRIMARY KEY (
+                server_id, library_uuid, rating_key, child_key, field_name
+            )
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS plex_metadata_ownership_library
+            ON plex_metadata_ownership(server_id, library_uuid, media_type);
         """
     )
     connection.execute(
@@ -191,22 +210,6 @@ def _set_state_value(connection, key, value):
     )
 
 
-def _import_legacy_incremental_state(connection, legacy_path):
-    marker = "legacy_incremental_state_checked"
-    if _state_value(connection, marker) is not None:
-        return False
-    document = read_json_with_backup(legacy_path, default={})
-    imported = False
-    if isinstance(document, dict) and document.get("last_full_scan"):
-        _set_state_value(
-            connection, "legacy_last_full_scan", document["last_full_scan"]
-        )
-        imported = True
-    _set_state_value(connection, marker, utc_now())
-    connection.commit()
-    return imported
-
-
 class MediaStateStore(MutableMapping):
     """Dictionary-compatible, transactionally batched media state."""
 
@@ -214,51 +217,13 @@ class MediaStateStore(MutableMapping):
         self,
         path=None,
         writable=True,
-        legacy_meta_cache=None,
-        legacy_incremental_state=None,
     ):
         self.path = Path(path or STATE_DATABASE)
         self.writable = bool(writable)
-        self.legacy_meta_cache = Path(legacy_meta_cache or LEGACY_META_CACHE)
-        self.legacy_incremental_state = Path(
-            legacy_incremental_state or LEGACY_INCREMENTAL_STATE
-        )
         self._connection = _connect(self.path, writable=self.writable)
         self._pending = {}
         self._deleted = set()
         self._memory = {}
-        self.imported_media_entries = 0
-        self.imported_incremental_state = False
-
-        if self._connection is None:
-            legacy = read_json_with_backup(self.legacy_meta_cache, default={})
-            if isinstance(legacy, dict):
-                self._memory = copy.deepcopy(legacy)
-        elif self.writable:
-            self.imported_incremental_state = _import_legacy_incremental_state(
-                self._connection, self.legacy_incremental_state
-            )
-            self.imported_media_entries = self._import_legacy_media_cache()
-
-    def _import_legacy_media_cache(self):
-        marker = "legacy_meta_cache_checked"
-        if _state_value(self._connection, marker) is not None:
-            return 0
-        existing = self._connection.execute(
-            "SELECT COUNT(*) FROM media_state"
-        ).fetchone()[0]
-        document = read_json_with_backup(self.legacy_meta_cache, default={})
-        imported = 0
-        if not existing and isinstance(document, dict):
-            for key, entry in document.items():
-                if isinstance(key, str) and isinstance(entry, dict):
-                    self._pending[key] = copy.deepcopy(entry)
-            imported = len(self._pending)
-            if imported:
-                self.flush()
-        _set_state_value(self._connection, marker, utc_now())
-        self._connection.commit()
-        return imported
 
     def _database_entry(self, key):
         if self._connection is None:
@@ -471,7 +436,7 @@ class MediaStateStore(MutableMapping):
 def load_scan_states(scopes, path=None):
     connection = _connect(path, writable=False)
     if connection is None:
-        return {}, None
+        return {}
     try:
         states = {}
         for scope in scopes or []:
@@ -484,8 +449,17 @@ def load_scan_states(scopes, path=None):
             ).fetchone()
             if row is not None:
                 states[(server_id, library_uuid)] = dict(row)
-        legacy = _state_value(connection, "legacy_last_full_scan")
-        return states, legacy
+        return states
+    finally:
+        connection.close()
+
+
+def load_global_full_scan(path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return None
+    try:
+        return _state_value(connection, "global_last_full_scan")
     finally:
         connection.close()
 
@@ -571,12 +545,165 @@ def mark_scan_complete(scopes, full_scan, path=None, now=None):
         connection.close()
 
 
-def set_legacy_full_scan(value, path=None):
+def mark_global_full_scan(value, path=None):
     connection = _connect(path, writable=True)
     try:
         with connection:
-            _set_state_value(connection, "legacy_last_full_scan", value)
+            _set_state_value(connection, "global_last_full_scan", value)
         return True
+    finally:
+        connection.close()
+
+
+def load_plex_metadata_ownership(
+    server_id, library_uuid, rating_key, path=None
+):
+    """Load only the Plex fields previously written by MetaFusion."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return {}
+    try:
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'plex_metadata_ownership'"
+        ).fetchone()
+        if table_exists is None:
+            return {}
+        rows = connection.execute(
+            "SELECT * FROM plex_metadata_ownership "
+            "WHERE server_id = ? AND library_uuid = ? AND rating_key = ?",
+            (str(server_id), str(library_uuid), str(rating_key)),
+        ).fetchall()
+        records = {}
+        for row in rows:
+            record = dict(row)
+            for name in ("original_value", "applied_value", "owned_values"):
+                record[name] = _json_load(
+                    record[name], f"Plex ownership {rating_key}/{record['field_name']}"
+                )
+            records[(record["child_key"], record["field_name"])] = record
+        return records
+    finally:
+        connection.close()
+
+
+def save_plex_metadata_ownership(records, deleted=None, path=None):
+    """Persist an item's Plex ownership ledger in one durable transaction."""
+    records = list(records or [])
+    deleted = list(deleted or [])
+    if not records and not deleted:
+        return False
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            for key in deleted:
+                connection.execute(
+                    "DELETE FROM plex_metadata_ownership WHERE "
+                    "server_id = ? AND library_uuid = ? AND rating_key = ? "
+                    "AND child_key = ? AND field_name = ?",
+                    tuple(str(value) for value in key),
+                )
+            for record in records:
+                connection.execute(
+                    """
+                    INSERT INTO plex_metadata_ownership(
+                        server_id, library_uuid, library_name, rating_key,
+                        media_type, child_key, field_name, field_kind,
+                        original_value, applied_value, owned_values,
+                        original_locked, metafusion_locked, last_checked,
+                        last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(
+                        server_id, library_uuid, rating_key, child_key, field_name
+                    ) DO UPDATE SET
+                        library_name = excluded.library_name,
+                        media_type = excluded.media_type,
+                        field_kind = excluded.field_kind,
+                        original_value = excluded.original_value,
+                        applied_value = excluded.applied_value,
+                        owned_values = excluded.owned_values,
+                        original_locked = excluded.original_locked,
+                        metafusion_locked = excluded.metafusion_locked,
+                        last_checked = excluded.last_checked,
+                        last_updated = excluded.last_updated
+                    """,
+                    (
+                        str(record["server_id"]),
+                        str(record["library_uuid"]),
+                        record.get("library_name"),
+                        str(record["rating_key"]),
+                        str(record["media_type"]),
+                        str(record.get("child_key") or ""),
+                        str(record["field_name"]),
+                        str(record["field_kind"]),
+                        _json_dump(record.get("original_value") or {}),
+                        _json_dump(record.get("applied_value") or {}),
+                        _json_dump(record.get("owned_values") or {}),
+                        int(bool(record.get("original_locked"))),
+                        int(bool(record.get("metafusion_locked"))),
+                        str(record.get("last_checked") or utc_now()),
+                        str(record.get("last_updated") or utc_now()),
+                    ),
+                )
+        return True
+    finally:
+        connection.close()
+
+
+def prune_plex_metadata_children(
+    server_id, library_uuid, rating_key, valid_child_keys, path=None
+):
+    """Drop ownership for seasons or episodes no longer present in Plex."""
+    connection = _connect(path, writable=True)
+    valid = {str(value) for value in valid_child_keys}
+    try:
+        rows = connection.execute(
+            "SELECT DISTINCT child_key FROM plex_metadata_ownership "
+            "WHERE server_id = ? AND library_uuid = ? AND rating_key = ?",
+            (str(server_id), str(library_uuid), str(rating_key)),
+        ).fetchall()
+        stale = [row[0] for row in rows if row[0] not in valid]
+        if not stale:
+            return 0
+        with connection:
+            connection.executemany(
+                "DELETE FROM plex_metadata_ownership WHERE server_id = ? "
+                "AND library_uuid = ? AND rating_key = ? AND child_key = ?",
+                (
+                    (str(server_id), str(library_uuid), str(rating_key), child_key)
+                    for child_key in stale
+                ),
+            )
+        return len(stale)
+    finally:
+        connection.close()
+
+
+def prune_plex_metadata_library(
+    server_id, library_uuid, valid_rating_keys, path=None
+):
+    """Drop ownership for Plex items absent from a complete library scan."""
+    connection = _connect(path, writable=True)
+    valid = {str(value) for value in valid_rating_keys}
+    try:
+        rows = connection.execute(
+            "SELECT DISTINCT rating_key FROM plex_metadata_ownership "
+            "WHERE server_id = ? AND library_uuid = ?",
+            (str(server_id), str(library_uuid)),
+        ).fetchall()
+        stale = [row[0] for row in rows if row[0] not in valid]
+        if not stale:
+            return 0
+        with connection:
+            connection.executemany(
+                "DELETE FROM plex_metadata_ownership WHERE server_id = ? "
+                "AND library_uuid = ? AND rating_key = ?",
+                (
+                    (str(server_id), str(library_uuid), rating_key)
+                    for rating_key in stale
+                ),
+            )
+        return len(stale)
     finally:
         connection.close()
 

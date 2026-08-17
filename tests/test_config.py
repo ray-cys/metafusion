@@ -89,6 +89,7 @@ def test_blank_environment_values_fall_back_to_yaml(tmp_path):
     assert config["plex"] == {
         "url": "http://yaml-plex:32400",
         "token": "yaml-token",
+        "path_mappings": [],
     }
     assert config["tmdb"]["api_key"] == "yaml-key"
     assert config["settings"]["mode"] == "plex"
