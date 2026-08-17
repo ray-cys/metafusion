@@ -62,7 +62,11 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Build image for vulnerability scan
-        run: docker build --tag metafusion-ci:${GITHUB_SHA} .
+        run: >-
+          docker build
+          --build-arg METAFUSION_VERSION=${GITHUB_REF_NAME}
+          --build-arg METAFUSION_COMMIT=${GITHUB_SHA}
+          --tag metafusion-ci:${GITHUB_SHA} .
 
       - name: Smoke test Unraid UID/GID remapping
         run: |
@@ -202,6 +206,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            METAFUSION_VERSION=${{ github.ref_name }}
+            METAFUSION_COMMIT=${{ github.sha }}
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker

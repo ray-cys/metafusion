@@ -350,8 +350,10 @@ Plex metadata reports contain field names and outcomes, not summaries, tokens,
 or API keys. Reports distinguish fills, additions, unchanged values, locks,
 manual conflicts, failures, and write-limit skips. This provides a compact
 GitHub issue attachment without exposing the metadata itself.
-Use `--support-report` to add environment-binding names, database health,
-platform details, and configuration-validation status without their values.
+Use `--support-report` to add the running image version and commit, environment-
+binding names, state-database health, TMDb cache health/entry/compressed-size
+statistics, platform details, and configuration-validation status without
+their values.
 
 Plex installations vary widely, so user testing should focus on one or two
 representative items before increasing the write cap. If behavior differs from
@@ -585,8 +587,9 @@ of `0` preserves the existing entry capacity without a byte cap.
 
 ## Durable application state
 
-MetaFusion stores media state, per-season artwork state, per-library scan
-history, and recent completed jobs in `/config/cache/meta_db.sqlite3`.
+MetaFusion stores media state, indexed artwork ownership, per-season artwork
+state, per-library scan history, and recent completed jobs in
+`/config/cache/meta_db.sqlite3`.
 Changed media and season rows are committed together after a job instead of
 loading and rewriting one large JSON cache. Full-scan timing is tracked per
 Plex server and library, so one library cannot incorrectly represent the scan
@@ -730,13 +733,17 @@ cache/meta_db.sqlite3
 cache/tmdb_cache.sqlite3
 .metafusion-run.lock                 # prevents overlapping real jobs
 reports/plex-metadata-YYYYMMDD-HHMMSS.txt  # direct Plex metadata runs only
+reports/artwork-gaps-YYYYMMDD-HHMMSS.txt   # missing/rejected artwork and identities
 ```
 
 The live heartbeat is intentionally stored at
 `/tmp/metafusion-status.json`, avoiding a persistent appdata write every 30
-seconds. Completed job history is retained in `meta_db.sqlite3`. View the
-combined current status and recent history with `python metafusion.py
---status` inside the container.
+seconds. Completed job history and the latest per-library processed,
+successful, failed, and unchanged counts are retained in `meta_db.sqlite3`.
+View the combined current status, Docker version/commit, library counts, and
+recent history with `python metafusion.py --status` inside the container.
+Artwork-gap reports are retained as a bounded set and are suitable for GitHub
+issues; they contain titles and failure categories, never connector secrets.
 
 Inspect logs and container health with:
 

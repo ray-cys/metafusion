@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 FILE_MODE = 0o664
 _database_setup_lock = threading.Lock()
 _initialized_databases = set()
@@ -57,7 +58,7 @@ def _connect(path=None, writable=True):
                 _initialized_databases.add(database_identity)
             elif not writable:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (1, SCHEMA_VERSION):
+                if version not in (1, 2, SCHEMA_VERSION):
                     raise StateDatabaseError(
                         f"unsupported MetaFusion state schema version {version}"
                     )
@@ -83,7 +84,7 @@ def _connect(path=None, writable=True):
 
 def _initialize_schema(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, 1, SCHEMA_VERSION):
+    if version not in (0, 1, 2, SCHEMA_VERSION):
         raise StateDatabaseError(
             f"unsupported MetaFusion state schema version {version}"
         )
@@ -152,8 +153,31 @@ def _initialize_schema(connection):
             started_at TEXT,
             finished_at TEXT NOT NULL,
             status TEXT NOT NULL,
-            error TEXT
+            error TEXT,
+            summary TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS asset_ownership (
+            cache_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            tmdb_id TEXT,
+            asset_type TEXT NOT NULL,
+            season_number TEXT NOT NULL DEFAULT '',
+            source_path TEXT,
+            destination TEXT NOT NULL,
+            checksum TEXT,
+            PRIMARY KEY (cache_key, asset_type, season_number),
+            FOREIGN KEY (cache_key) REFERENCES media_state(cache_key)
+                ON DELETE CASCADE
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS asset_ownership_destination
+            ON asset_ownership(destination);
+        CREATE INDEX IF NOT EXISTS asset_ownership_canonical
+            ON asset_ownership(
+                media_type, tmdb_id, asset_type, season_number, source_path,
+                destination
+            );
 
         CREATE TABLE IF NOT EXISTS plex_metadata_ownership (
             server_id TEXT NOT NULL,
@@ -180,6 +204,13 @@ def _initialize_schema(connection):
             ON plex_metadata_ownership(server_id, library_uuid, media_type);
         """
     )
+    job_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(job_runs)")
+    }
+    if "summary" not in job_columns:
+        connection.execute("ALTER TABLE job_runs ADD COLUMN summary TEXT")
+    if version < 3:
+        _backfill_asset_ownership(connection)
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
         (SCHEMA_VERSION, utc_now()),
@@ -200,6 +231,78 @@ def _json_load(value, description):
     if not isinstance(decoded, dict):
         raise StateDatabaseError(f"Invalid object stored for {description}")
     return decoded
+
+
+def _asset_rows(cache_key, entry, seasons=None):
+    media_type = str(entry.get("media_type") or "unknown").lower()
+    if media_type == "show":
+        media_type = "tv"
+    tmdb_id = entry.get("tmdb_id")
+    tmdb_id = None if tmdb_id is None else str(tmdb_id)
+    rows = []
+    for asset_type in ("poster", "background"):
+        destination = entry.get(f"{asset_type}_path")
+        if not destination:
+            continue
+        rows.append(
+            (
+                str(cache_key),
+                media_type,
+                tmdb_id,
+                asset_type,
+                "",
+                entry.get(f"{asset_type}_source_path"),
+                normalize_destination(destination),
+                entry.get(f"{asset_type}_checksum"),
+            )
+        )
+    for season_number, season in (seasons or {}).items():
+        if not isinstance(season, dict) or not season.get("season_path"):
+            continue
+        rows.append(
+            (
+                str(cache_key),
+                media_type,
+                tmdb_id,
+                "season",
+                str(season_number),
+                season.get("season_source_path"),
+                normalize_destination(season["season_path"]),
+                season.get("season_checksum"),
+            )
+        )
+    return rows
+
+
+def _backfill_asset_ownership(connection):
+    connection.execute("DELETE FROM asset_ownership")
+    seasons = {}
+    for row in connection.execute(
+        "SELECT cache_key, season_number, payload FROM season_state"
+    ):
+        try:
+            payload = json.loads(row[2])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            seasons.setdefault(row[0], {})[str(row[1])] = payload
+    rows = []
+    for row in connection.execute(
+        "SELECT cache_key, payload FROM media_state"
+    ):
+        try:
+            payload = json.loads(row[1])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            rows.extend(_asset_rows(row[0], payload, seasons.get(row[0])))
+    if rows:
+        connection.executemany(
+            "INSERT OR REPLACE INTO asset_ownership("
+            "cache_key, media_type, tmdb_id, asset_type, season_number, "
+            "source_path, destination, checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
 
 
 def _state_value(connection, key):
@@ -403,35 +506,41 @@ class MediaStateStore(MutableMapping):
             entries.pop(key, None)
         return entries
 
-    def asset_destination_owners(self, scopes):
-        """Return only persisted artwork paths for selected library scopes."""
-        owners = []
+    def asset_destination_records(self, scopes=None):
+        """Return indexed artwork ownership, optionally limited to scopes."""
+        records = []
         if self._connection is not None:
+            table_exists = self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'asset_ownership'"
+            ).fetchone()
+            if table_exists is None:
+                return records
+            if not scopes:
+                return [
+                    dict(row)
+                    for row in self._connection.execute(
+                        "SELECT cache_key, media_type, tmdb_id, asset_type, "
+                        "season_number, source_path, destination, checksum "
+                        "FROM asset_ownership"
+                    )
+                ]
             for scope in scopes or []:
                 server_id = str(scope.get("server_id") or "unknown")
                 library_uuid = str(
                     scope.get("library_uuid") or scope.get("library_name")
                 )
                 for row in self._connection.execute(
-                    "SELECT cache_key, json_extract(payload, '$.poster_path'), "
-                    "json_extract(payload, '$.background_path') "
-                    "FROM media_state WHERE server_id = ? AND library_uuid = ?",
-                    (server_id, library_uuid),
-                ):
-                    for path in row[1:]:
-                        if path:
-                            owners.append((row[0], path))
-                for row in self._connection.execute(
-                    "SELECT seasons.cache_key, "
-                    "json_extract(seasons.payload, '$.season_path') "
-                    "FROM season_state AS seasons "
-                    "JOIN media_state AS media ON media.cache_key = seasons.cache_key "
+                    "SELECT assets.cache_key, assets.media_type, assets.tmdb_id, "
+                    "assets.asset_type, assets.season_number, assets.source_path, "
+                    "assets.destination, assets.checksum "
+                    "FROM asset_ownership AS assets "
+                    "JOIN media_state AS media ON media.cache_key = assets.cache_key "
                     "WHERE media.server_id = ? AND media.library_uuid = ?",
                     (server_id, library_uuid),
                 ):
-                    if row[1]:
-                        owners.append((row[0], row[1]))
-        return owners
+                    records.append(dict(row))
+        return records
 
     def flush(self):
         if (
@@ -502,6 +611,18 @@ class MediaStateStore(MutableMapping):
                                 for number, season_entry in seasons.items()
                                 if isinstance(season_entry, dict)
                             ),
+                        )
+                    self._connection.execute(
+                        "DELETE FROM asset_ownership WHERE cache_key = ?", (key,)
+                    )
+                    asset_rows = _asset_rows(key, entry, seasons)
+                    if asset_rows:
+                        self._connection.executemany(
+                            "INSERT INTO asset_ownership("
+                            "cache_key, media_type, tmdb_id, asset_type, "
+                            "season_number, source_path, destination, checksum) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            asset_rows,
                         )
             self._pending.clear()
             self._deleted.clear()
@@ -848,6 +969,7 @@ def record_job_run(
     finished_at,
     status,
     error=None,
+    summary=None,
     history_limit=10,
     path=None,
 ):
@@ -855,9 +977,17 @@ def record_job_run(
     try:
         with connection:
             connection.execute(
-                "INSERT INTO job_runs(mode, started_at, finished_at, status, error) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (mode, started_at, finished_at, status, error),
+                "INSERT INTO job_runs("
+                "mode, started_at, finished_at, status, error, summary"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    mode,
+                    started_at,
+                    finished_at,
+                    status,
+                    error,
+                    None if summary is None else _json_dump(summary),
+                ),
             )
             connection.execute(
                 "DELETE FROM job_runs WHERE id NOT IN "
@@ -874,11 +1004,25 @@ def recent_job_runs(limit=10, path=None):
     if connection is None:
         return []
     try:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(job_runs)")
+        }
+        summary_column = "summary" if "summary" in columns else "NULL AS summary"
         rows = connection.execute(
-            "SELECT mode, started_at, finished_at, status, error "
+            "SELECT mode, started_at, finished_at, status, error, "
+            f"{summary_column} "
             "FROM job_runs ORDER BY id DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        results = []
+        for row in reversed(rows):
+            result = dict(row)
+            raw_summary = result.pop("summary", None)
+            if raw_summary:
+                result["library_results"] = _json_load(
+                    raw_summary, "job run library summary"
+                )
+            results.append(result)
+        return results
     finally:
         connection.close()

@@ -429,7 +429,7 @@ def test_version_one_state_database_upgrades_in_place(tmp_path):
     store.close()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {
             row[0]
             for row in connection.execute(
@@ -437,3 +437,4 @@ def test_version_one_state_database_upgrades_in_place(tmp_path):
             )
         }
     assert "plex_metadata_ownership" in tables
+    assert "asset_ownership" in tables

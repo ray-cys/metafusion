@@ -18,7 +18,17 @@ def test_runtime_status_is_healthy_after_success(tmp_path):
     )
     status.start("scheduler")
     status.run_started()
-    status.run_finished(True)
+    status.run_finished(
+        True,
+        library_results={
+            "Movies": {
+                "status": "success",
+                "items_processed": 10,
+                "items_succeeded": 10,
+                "items_failed": 0,
+            }
+        },
+    )
     try:
         healthy, message = check_status(status_path)
     finally:
@@ -28,7 +38,11 @@ def test_runtime_status_is_healthy_after_success(tmp_path):
     assert message == "idle"
     saved = json.loads(status_path.read_text(encoding="utf-8"))
     assert "history" not in saved
-    assert recent_job_runs(path=database)[-1]["status"] == "success"
+    assert saved["version"]
+    assert saved["commit"]
+    recent = recent_job_runs(path=database)[-1]
+    assert recent["status"] == "success"
+    assert recent["library_results"]["Movies"]["items_succeeded"] == 10
 
 
 def test_runtime_status_bounds_recent_job_history(tmp_path):

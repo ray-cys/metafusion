@@ -99,15 +99,11 @@ async def meta_cache_async(
     background_checked=False,
     season_checked=False,
     plex_metadata_checked=False,
-    legacy_cache_key=None,
     **kwargs,
 ):
     async with get_cache_lock():
         cache = load_cache()
-        if cache_key not in cache and legacy_cache_key and legacy_cache_key in cache:
-            entry = copy.deepcopy(cache.pop(legacy_cache_key))
-        else:
-            entry = copy.deepcopy(cache.get(cache_key, {}))
+        entry = copy.deepcopy(cache.get(cache_key, {}))
         identity_fields = {
             "tmdb_id": tmdb_id,
             "title": title,

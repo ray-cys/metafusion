@@ -77,8 +77,6 @@ def test_builder_rejects_destination_claimed_by_another_item(tmp_path):
 def test_builder_shares_only_an_identical_canonical_tmdb_asset(tmp_path):
     destination = tmp_path / "poster.jpg"
     config = {"assets": {"update_policy": "managed"}}
-    canonical_claim = "movie:tmdb:100:poster:/poster.jpg"
-
     assert builder.protected_asset_destination(
         config,
         "movie:plex:1",
@@ -86,7 +84,8 @@ def test_builder_shares_only_an_identical_canonical_tmdb_asset(tmp_path):
         "poster",
         media_type="Movie",
         full_title="Example (2020) [Theatrical]",
-        claim_key=canonical_claim,
+        tmdb_id="100",
+        source_path="/poster.jpg",
     )[0]
     assert builder.protected_asset_destination(
         config,
@@ -95,7 +94,8 @@ def test_builder_shares_only_an_identical_canonical_tmdb_asset(tmp_path):
         "poster",
         media_type="Movie",
         full_title="Example (2020) [Director's Cut]",
-        claim_key=canonical_claim,
+        tmdb_id="100",
+        source_path="/poster.jpg",
     )[0]
 
     with pytest.raises(builder.AssetDestinationCollisionError):
@@ -106,19 +106,30 @@ def test_builder_shares_only_an_identical_canonical_tmdb_asset(tmp_path):
             "poster",
             media_type="Movie",
             full_title="Different Mapping (2020)",
-            claim_key="movie:tmdb:999:poster:/different.jpg",
+            tmdb_id="999",
+            source_path="/different.jpg",
         )
 
 
 def test_secondary_shared_claim_never_rewrites_under_overwrite_policy(tmp_path):
     destination = tmp_path / "poster.jpg"
     destination.write_bytes(b"managed")
-    canonical_claim = "movie:tmdb:100:poster:/poster.jpg"
+    checksum = builder.sha256_file(destination)
     config = {
         "assets": {"update_policy": "overwrite"},
-        "_asset_destination_registry": {
-            str(destination.absolute()): canonical_claim
-        },
+        "_asset_destination_registry": builder.AssetDestinationRegistry(
+            [
+                {
+                    "cache_key": "movie:plex:1",
+                    "media_type": "movie",
+                    "tmdb_id": "100",
+                    "asset_type": "poster",
+                    "source_path": "/poster.jpg",
+                    "destination": str(destination),
+                    "checksum": checksum,
+                }
+            ]
+        ),
     }
 
     assert builder.protected_asset_destination(
@@ -128,7 +139,8 @@ def test_secondary_shared_claim_never_rewrites_under_overwrite_policy(tmp_path):
         "poster",
         media_type="Movie",
         full_title="Example (2020) [Director's Cut]",
-        claim_key=canonical_claim,
+        tmdb_id="100",
+        source_path="/poster.jpg",
         shared_managed=True,
     ) == (False, "shared")
 
@@ -765,6 +777,78 @@ def test_tv_builder_writes_specials_episodes_and_all_assets(monkeypatch, tmp_pat
     assert result["background_action"] == "downloaded"
     assert result["season_poster_actions"] == {0: "downloaded", 1: "downloaded"}
     assert len(existing_assets) == 4
+
+
+def test_episode_crew_uses_only_episode_credits_and_preserves_missing_values(
+    monkeypatch, tmp_path
+):
+    async def no_cache(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(builder, "meta_cache_async", no_cache)
+    tmdb_response_cache["tv/200"] = tv_details()
+    special = season_details(0)
+    special["credits"] = {
+        "crew": [
+            {"job": "Director", "name": "Season Director"},
+            {"job": "Writer", "name": "Season Writer"},
+        ]
+    }
+    special["episodes"][0]["crew"] = []
+    tmdb_response_cache["tv/200/season/0"] = special
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    existing = {
+        "metadata": {
+            "Example Show (2021)": {
+                "seasons": {
+                    0: {
+                        "episodes": {
+                            1: {
+                                "director": ["Existing Director"],
+                                "writer": ["Existing Writer"],
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    consolidated = {"metadata": {}}
+
+    asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            consolidated,
+            feature_flags=feature_flags(
+                poster=False, background=False, season=False
+            ),
+            existing_yaml_data=existing,
+            meta=tv_meta(),
+            session=object(),
+        )
+    )
+
+    episode = consolidated["metadata"]["Example Show (2021)"]["seasons"][0][
+        "episodes"
+    ][1]
+    assert episode["director"] == ["Existing Director"]
+    assert episode["writer"] == ["Existing Writer"]
+    assert "Season Director" not in repr(episode)
+    assert "Season Writer" not in repr(episode)
+
+
+def test_crew_names_excludes_assistants_and_deduplicates_in_order():
+    crew = [
+        {"job": "Director", "name": "Jane Doe"},
+        {"job": "Assistant Director", "name": "Assistant"},
+        {"job": "Co-Director", "name": "John Doe"},
+        {"job": "Director", "name": "jane doe"},
+    ]
+
+    assert builder._crew_names(crew, {"Director", "Co-Director"}) == [
+        "Jane Doe",
+        "John Doe",
+    ]
 
 
 def test_tv_builder_uses_production_company_when_network_is_missing(

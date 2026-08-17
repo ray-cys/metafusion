@@ -129,7 +129,7 @@ def test_cache_updates_preserve_identity_and_use_exact_season_number(tmp_path):
     assert "season_last_upgraded" in entry["seasons"]["2"]
 
 
-def test_cache_key_migration_preserves_existing_entry(tmp_path):
+def test_obsolete_title_year_cache_key_is_not_promoted(tmp_path):
     configure_cache(tmp_path)
     cache_module.save_cache(
         {
@@ -150,7 +150,6 @@ def test_cache_key_migration_preserves_existing_entry(tmp_path):
             "Example",
             2020,
             "movie",
-            legacy_cache_key="movie:Example:2020",
             update_timestamp=False,
         )
     )
@@ -158,8 +157,8 @@ def test_cache_key_migration_preserves_existing_entry(tmp_path):
     configure_cache(tmp_path)
     cache = cache_module.load_cache()
 
-    assert "movie:Example:2020" not in cache
-    assert cache["movie:plex:10"]["poster_average"] == 7.5
+    assert cache["movie:Example:2020"]["poster_average"] == 7.5
+    assert "poster_average" not in cache["movie:plex:10"]
 
 
 def test_cache_records_independent_artwork_check_timestamps(tmp_path):
@@ -243,12 +242,15 @@ def test_scoped_cache_read_returns_only_requested_library_rows(tmp_path):
 
     assert set(scoped) == {"tv:2"}
     assert scoped["tv:2"]["seasons"]["0"]["season_average"] == 2
-    owners = store.asset_destination_owners(
+    owners = store.asset_destination_records(
         [{"server_id": "server", "library_uuid": "tv"}]
     )
-    assert set(owners) == {
-        ("tv:2", str(tmp_path / "show" / "poster.jpg")),
-        ("tv:2", str(tmp_path / "show" / "Season00.jpg")),
+    assert {
+        (record["cache_key"], record["asset_type"], record["season_number"], record["destination"])
+        for record in owners
+    } == {
+        ("tv:2", "poster", "", str((tmp_path / "show" / "poster.jpg").resolve())),
+        ("tv:2", "season", "0", str((tmp_path / "show" / "Season00.jpg").resolve())),
     }
 
 

@@ -11,7 +11,7 @@ from helper.config import mode_check
 from helper.incremental import plan_items
 from helper.logging import log_processing_event, log_library_summary
 from helper.plex import get_plex_metadata, plex_operation
-from helper.identity import cache_key_for_meta, item_identity, legacy_cache_key
+from helper.identity import cache_key_for_meta, item_identity
 from helper.io import sha256_file
 from modules.builder import build_movie, build_tv
 from modules.kometa import (
@@ -724,18 +724,10 @@ async def process_library(
                 meta.get("year"),
                 media_type,
                 update_timestamp=False,
-                legacy_cache_key=legacy_cache_key(meta),
                 rating_key=meta.get("ratingKey"),
                 plex_updated_at=meta.get("updatedAt"),
                 config_fingerprint=incremental_fingerprint,
             )
-
-        if item_errors:
-            raise LibraryProcessingError(
-                f"{len(item_errors)} of {total_items} items failed in {library_name}; "
-                f"failed items: {format_item_failures(item_errors)}; "
-                "successful item output was preserved"
-            ) from item_errors[0][1]
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]
         percent_complete = round((completed / total_items) * 100, 2) if total_items else 100.0
@@ -750,6 +742,7 @@ async def process_library(
             "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_skipped": season_poster_skipped,
             "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
             "incremental_skipped": total_library_items - total_items,
+            "item_failures": len(item_errors),
         }
 
         log_library_summary(
@@ -773,8 +766,16 @@ async def process_library(
                 "library_type": library_type,
                 "season_count": season_count,
                 "episode_count": episode_count,
+                "status": "failed" if item_errors else "success",
             }
-        
+
+        if item_errors:
+            raise LibraryProcessingError(
+                f"{len(item_errors)} of {total_items} items failed in {library_name}; "
+                f"failed items: {format_item_failures(item_errors)}; "
+                "successful item output was preserved"
+            ) from item_errors[0][1]
+
         return all_stats
     except asyncio.CancelledError:
         raise

@@ -132,6 +132,19 @@ def test_readme_documents_exact_image_pinning_and_rollback():
     assert "sha-<full-commit>" in readme
 
 
+def test_docker_build_embeds_version_and_commit():
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ARG METAFUSION_VERSION" in dockerfile
+    assert "ARG METAFUSION_COMMIT" in dockerfile
+    assert "org.opencontainers.image.revision" in dockerfile
+    assert "METAFUSION_VERSION=${{ github.ref_name }}" in workflow
+    assert "METAFUSION_COMMIT=${{ github.sha }}" in workflow
+
+
 def test_unraid_template_exposes_every_container_environment_variable():
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     expected = set(compose["services"]["metafusion"]["environment"])

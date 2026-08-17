@@ -80,7 +80,7 @@ assets:
 
 cleanup:
   # Cleanup is intentionally opt-in. Test with dry_run before enabling it.
-  run_process: false
+  run_cleanup: false
 
 # Runtime limits protect large libraries from exhausting memory/connections.
 runtime:
