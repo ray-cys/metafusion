@@ -12,8 +12,13 @@ from helper.incremental import plan_items
 from helper.logging import log_processing_event, log_library_summary
 from helper.plex import get_plex_metadata, plex_operation
 from helper.identity import cache_key_for_meta, item_identity, legacy_cache_key
+from helper.io import sha256_file
 from modules.builder import build_movie, build_tv
-from modules.kometa import validate_metadata_document, write_kometa_metadata
+from modules.kometa import (
+    remove_deprecated_metadata_fields,
+    validate_metadata_document,
+    write_kometa_metadata,
+)
 from helper.plex_metadata import apply_plex_metadata
 from helper.state_db import prune_plex_metadata_library
 
@@ -411,6 +416,7 @@ async def process_library(
                 library_type = "unknown"
 
         output_path = None
+        output_snapshot = None
         consolidated_metadata = {"metadata": {}}
         if mode_check(config, "kometa"):
             kometa_root = config.get("settings", {}).get("path", ".")
@@ -418,6 +424,10 @@ async def process_library(
             if not feature_flags["dry_run"]:
                 metadata_dir.mkdir(parents=True, exist_ok=True)
             output_path = metadata_dir / f"{library_type}_metadata.yml"
+            output_snapshot = (
+                output_path.exists(),
+                sha256_file(output_path) if output_path.exists() else None,
+            )
             if output_path.exists():
                 try:
                     with open(output_path, "r", encoding="utf-8") as f:
@@ -430,6 +440,7 @@ async def process_library(
                         f"Unable to parse existing metadata file: {output_path}"
                     ) from e
             original_yaml_data = copy.deepcopy(existing_yaml_data)
+            remove_deprecated_metadata_fields(existing_yaml_data, library_type)
             consolidated_metadata = existing_yaml_data if existing_yaml_data else {"metadata": {}}
 
         existing_assets = set()    
@@ -612,6 +623,8 @@ async def process_library(
                     consolidated_metadata,
                     validate_schema=output_config.get("validate_schema", True),
                     backup_count=output_config.get("backup_count", 3),
+                    library_type=library_type,
+                    expected_snapshot=output_snapshot,
                 )
                 log_processing_event("processing_metadata_saved", output_path=output_path)
             except Exception as e:

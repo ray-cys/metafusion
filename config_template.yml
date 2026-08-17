@@ -38,11 +38,21 @@ tmdb:
   fallback:
     - zh
     - ja
+  # If preferred artwork languages have no result, query every TMDb language.
+  artwork_allow_any_language: true
+  # Conservative exact-title/year search when Plex exposes no external ID.
+  title_search_fallback: false
+  # Safely use a TMDb episode group only when it uniquely matches Plex numbering.
+  episode_group_fallback: true
 
 # Metadata and asset processing options
 metadata:
   run_basic: true
   run_enhanced: true
+
+kometa:
+  # append preserves provider/user tags; sync makes supported tags match TMDb.
+  tag_policy: "append"
 
 # Direct Plex API metadata enrichment is Plex-mode only and opt-in. Begin with
 # fill_missing, DRY_RUN=true, and a small write limit. See README.md before use.

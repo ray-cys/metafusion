@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from helper.io import sha256_file
 from modules import kometa
 from modules.kometa import (
     KometaSchemaError,
@@ -84,3 +85,39 @@ def test_invalid_document_never_replaces_existing_output(tmp_path):
         write_kometa_metadata(path, {"metadata": []})
 
     assert yaml.safe_load(path.read_text(encoding="utf-8")) == original
+
+
+def test_type_validation_rejects_deprecated_metafusion_fields():
+    invalid = document()
+    invalid["metadata"]["Example (2020)"]["cast.sync"] = ["Actor"]
+
+    with pytest.raises(KometaSchemaError, match="cast.sync"):
+        validate_metadata_document(invalid, library_type="movie")
+
+
+def test_structural_read_accepts_legacy_fields_before_phase12_sanitizes_them():
+    legacy = document()
+    legacy["metadata"]["Example (2020)"]["seasons"][0][
+        "originally_available"
+    ] = "2020-01-01"
+
+    assert validate_metadata_document(legacy) is True
+    with pytest.raises(KometaSchemaError, match="originally_available"):
+        validate_metadata_document(legacy, library_type="show")
+
+
+def test_output_refuses_to_overwrite_external_change(tmp_path):
+    path = tmp_path / "movie_metadata.yml"
+    path.write_text(yaml.safe_dump(document("One")), encoding="utf-8")
+    snapshot = (True, sha256_file(path))
+    path.write_text(yaml.safe_dump(document("External")), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="changed while MetaFusion"):
+        write_kometa_metadata(
+            path,
+            document("MetaFusion"),
+            library_type="movie",
+            expected_snapshot=snapshot,
+        )
+
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == document("External")

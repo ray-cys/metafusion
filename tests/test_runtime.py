@@ -3,10 +3,13 @@ import io
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from helper import tmdb as tmdb_module
 from helper import logging as logging_module
 from helper import plex as plex_module
 from helper.plex import get_plex_metadata
+from helper.runtime import JobAlreadyRunningError, JobRunLock
 from modules.utils import get_best_background
 
 
@@ -50,6 +53,62 @@ def test_tmdb_id_resolution_uses_external_ids_and_active_session(monkeypatch):
     assert calls == [
         ("find/123", {"external_source": "tvdb_id"}, active_session)
     ]
+
+
+def test_tmdb_title_search_fallback_accepts_only_one_exact_title_and_year(monkeypatch):
+    async def request(_config, endpoint, params=None, **_kwargs):
+        assert endpoint == "search/movie"
+        assert params["year"] == 2020
+        return {
+            "results": [
+                {"id": 1, "title": "Example!", "release_date": "2020-01-01"},
+                {"id": 2, "title": "Example", "release_date": "2019-01-01"},
+                {"id": 3, "title": "Different", "release_date": "2020-01-01"},
+            ]
+        }
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {"tmdb": {"title_search_fallback": True}},
+            "movie",
+            title="Example",
+            year=2020,
+            session=object(),
+        )
+    )
+
+    assert resolved == "1"
+
+
+def test_unfiltered_image_request_disables_metadata_locale(monkeypatch):
+    calls = []
+
+    async def request(_config, endpoint, **kwargs):
+        calls.append((endpoint, kwargs))
+        return {"posters": []}
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    asyncio.run(
+        tmdb_module.tmdb_unfiltered_images(
+            {}, "tv", "10", season_number=2, session=object()
+        )
+    )
+
+    assert calls[0][0] == "tv/10/season/2/images"
+    assert calls[0][1]["include_locale"] is False
+
+
+def test_job_run_lock_rejects_overlapping_writer(tmp_path):
+    first = JobRunLock(tmp_path / ".metafusion-run.lock").acquire()
+    try:
+        with pytest.raises(JobAlreadyRunningError):
+            JobRunLock(tmp_path / ".metafusion-run.lock").acquire()
+    finally:
+        first.release()
+
+    with JobRunLock(tmp_path / ".metafusion-run.lock"):
+        assert (tmp_path / ".metafusion-run.lock").read_text().strip()
 
 
 def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import time
 from pathlib import Path
@@ -295,6 +296,66 @@ ISO_COUNTRY_NAMES = {
 def get_plex_country(code):
     return PLEX_COUNTRY_OVERRIDES.get(code) or ISO_COUNTRY_NAMES.get(code) or code
 
+
+def _external_ids(item):
+    """Read modern and legacy Plex agent GUID formats."""
+    values = []
+    for guid in getattr(item, "guids", []) or []:
+        value = getattr(guid, "id", guid)
+        if value:
+            values.append(str(value))
+    legacy = getattr(item, "guid", None)
+    if legacy:
+        values.append(str(legacy))
+
+    result = {"tmdb": None, "imdb": None, "tvdb": None}
+    patterns = (
+        ("tmdb", r"(?:tmdb|themoviedb)(?:://|/)(\d+)"),
+        ("imdb", r"imdb(?:://|/)(tt\d+)"),
+        ("tvdb", r"(?:tvdb|thetvdb)(?:://|/)(\d+)"),
+    )
+    for value in values:
+        lowered = value.casefold()
+        for name, pattern in patterns:
+            match = re.search(pattern, lowered)
+            if match and not result[name]:
+                result[name] = match.group(1)
+    return result
+
+
+_SEASON_DIRECTORY = re.compile(
+    r"^(?:season[ ._-]*\d+|s\d+|specials?|season[ ._-]*specials?)$",
+    re.IGNORECASE,
+)
+
+
+def _discover_show_directory(season_directories, locations=None):
+    directories = {Path(value) for value in season_directories if value}
+    location_paths = {Path(value) for value in (locations or []) if value}
+    if len(location_paths) == 1:
+        location = next(iter(location_paths))
+        if not directories or all(
+            directory == location or location in directory.parents
+            for directory in directories
+        ):
+            return location
+    if not directories:
+        return None
+    if len(directories) == 1:
+        directory = next(iter(directories))
+        return directory.parent if _SEASON_DIRECTORY.match(directory.name) else directory
+    try:
+        common = Path(os.path.commonpath([str(path) for path in directories]))
+    except ValueError:
+        return None
+    if common in directories:
+        return common
+    if all(path.parent == common for path in directories):
+        return common
+    if all(common == path or common in path.parents for path in directories):
+        return common
+    return None
+
 def connect_plex_server(config):
     runtime = config.get("runtime", {})
     plex_timeout = max(
@@ -445,13 +506,10 @@ async def get_plex_metadata(
     ratingKey = getattr(item, "ratingKey", None)
 
     try:
-        for guid in getattr(item, "guids", []):
-            if guid.id.startswith("tmdb://"):
-                tmdb_id = guid.id.split("://")[1].split("?")[0]
-            elif guid.id.startswith("imdb://"):
-                imdb_id = guid.id.split("://")[1].split("?")[0]
-            elif guid.id.startswith("tvdb://"):
-                tvdb_id = guid.id.split("://")[1].split("?")[0]
+        ids = _external_ids(item)
+        tmdb_id = ids["tmdb"]
+        imdb_id = ids["imdb"]
+        tvdb_id = ids["tvdb"]
     except Exception as e:
         log_plex_event("plex_failed_extract_ids", title=title, year=year, error=e)
 
@@ -536,14 +594,18 @@ async def get_plex_metadata(
                     season_path_errors[season_number] = (
                         "episodes resolve to multiple directories"
                     )
-            show_directories = {
-                Path(directory).parent for directory in season_dirs.values()
-            }
-            if len(show_directories) == 1:
-                show_directory = next(iter(show_directories))
+            locations = [
+                str(translate_plex_path(location, path_mappings))
+                for location in (getattr(item, "locations", None) or [])
+                if location
+            ]
+            show_directory = _discover_show_directory(
+                season_dirs.values(), locations=locations
+            )
+            if show_directory is not None:
                 show_path = show_directory.name
                 show_dir = str(show_directory)
-            elif show_directories:
+            elif season_dirs or locations:
                 raise ValueError(
                     "Seasons resolve to multiple show directories; refusing an "
                     "ambiguous artwork destination"
@@ -599,6 +661,10 @@ async def get_plex_metadata(
         "season_dirs": season_dirs,
         "season_path_errors": season_path_errors,
         "seasons_episodes": seasons_episodes,
+        "episode_ordering": (
+            getattr(item, "episodeOrdering", None)
+            or getattr(item, "episodeOrder", None)
+        ),
         "server_id": getattr(
             getattr(getattr(item, "librarySection", None), "_server", None),
             "machineIdentifier",

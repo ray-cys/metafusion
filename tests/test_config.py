@@ -221,6 +221,26 @@ def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
     }
 
 
+def test_phase12_tmdb_and_kometa_policies_support_environment_overrides(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "ARTWORK_ALLOW_ANY_LANGUAGE": "false",
+            "TMDB_TITLE_SEARCH_FALLBACK": "true",
+            "TMDB_EPISODE_GROUP_FALLBACK": "false",
+            "KOMETA_TAG_POLICY": "sync",
+        },
+    )
+
+    assert config["tmdb"]["artwork_allow_any_language"] is False
+    assert config["tmdb"]["title_search_fallback"] is True
+    assert config["tmdb"]["episode_group_fallback"] is False
+    assert config["kometa"]["tag_policy"] == "sync"
+    config["kometa"]["tag_policy"] = "replace"
+    assert any("kometa.tag_policy" in error for error in validate_config(config))
+
+
 def test_run_cleanup_controls_cleanup_setting(tmp_path):
     current, sources = load_config_file(
         config_file=tmp_path / "config.yml",

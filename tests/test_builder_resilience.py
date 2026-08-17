@@ -1,4 +1,5 @@
 import asyncio
+import copy
 
 import pytest
 
@@ -254,10 +255,12 @@ def test_movie_builder_writes_enhanced_metadata_and_both_assets(monkeypatch, tmp
 
     entry = consolidated["metadata"]["Example Movie (2020)"]
     assert entry["content_rating"] == "PG-13"
-    assert entry["cast.sync"] == ["Actor"]
-    assert entry["director.sync"] == ["Director"]
-    assert entry["writer.sync"] == ["Writer"]
-    assert entry["producer.sync"] == ["Producer"]
+    assert "cast" not in entry
+    assert "cast.sync" not in entry
+    assert "runtime" not in entry
+    assert entry["director"] == ["Director"]
+    assert entry["writer"] == ["Writer"]
+    assert entry["producer"] == ["Producer"]
     assert result["metadata_action"] == "downloaded"
     assert result["poster_action"] == "downloaded"
     assert result["background_action"] == "downloaded"
@@ -376,6 +379,58 @@ def test_movie_builder_unchanged_metadata_preserves_cache_identity(
     assert calls[-1]["update_timestamp"] is False
 
 
+def test_tv_partial_tmdb_failure_preserves_existing_season_and_manual_fields(
+    monkeypatch, tmp_path
+):
+    install_successful_asset_mocks(monkeypatch)
+    tmdb_response_cache["tv/200"] = tv_details()
+    tmdb_response_cache["tv/200/season/0"] = season_details(0)
+
+    async def no_episode_group(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(builder, "resolve_episode_group_mapping", no_episode_group)
+    existing = {
+        "metadata": {
+            "Example Show (2021)": {
+                "match": {"mapping_id": 300},
+                "manual_field": "keep",
+                "country.sync": ["United States of America"],
+                "seasons": {
+                    0: {"episodes": {1: {"summary": "Old special"}}},
+                    1: {
+                        "title": "Keep failed season",
+                        "episodes": {1: {"summary": "Keep failed episode"}},
+                    },
+                    2: {"title": "No longer in Plex", "episodes": {}},
+                },
+            }
+        }
+    }
+    consolidated = copy.deepcopy(existing)
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            consolidated,
+            existing_yaml_data=existing,
+            feature_flags=feature_flags(
+                poster=False, season=False, background=False
+            ),
+            meta=tv_meta(),
+            session=object(),
+        )
+    )
+
+    entry = consolidated["metadata"]["Example Show (2021)"]
+    assert result["metadata_action"] == "failed"
+    assert entry["manual_field"] == "keep"
+    assert "country.sync" not in entry
+    assert set(entry["seasons"]) == {0, 1}
+    assert entry["seasons"][1]["title"] == "Keep failed season"
+    assert entry["seasons"][1]["episodes"][1]["summary"] == "Keep failed episode"
+
+
 def test_movie_builder_dry_run_and_missing_identifiers_do_not_write_cache(
     monkeypatch, tmp_path
 ):
@@ -484,6 +539,35 @@ def test_tv_builder_writes_specials_episodes_and_all_assets(monkeypatch, tmp_pat
     assert result["background_action"] == "downloaded"
     assert result["season_poster_actions"] == {0: "downloaded", 1: "downloaded"}
     assert len(existing_assets) == 4
+
+
+def test_tv_builder_uses_production_company_when_network_is_missing(
+    monkeypatch, tmp_path
+):
+    install_successful_asset_mocks(monkeypatch)
+    details = tv_details()
+    details["networks"] = []
+    details["production_companies"] = [{"name": "Fallback Studio"}]
+    tmdb_response_cache["tv/200"] = details
+    tmdb_response_cache["tv/200/season/0"] = season_details(0)
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    consolidated = {"metadata": {}}
+
+    asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            consolidated,
+            feature_flags=feature_flags(
+                poster=False, background=False, season=False
+            ),
+            meta=tv_meta(),
+            session=object(),
+        )
+    )
+
+    assert consolidated["metadata"]["Example Show (2021)"]["studio"] == (
+        "Fallback Studio"
+    )
 
 
 def test_tv_effective_metadata_only_flags_disable_every_asset(monkeypatch, tmp_path):
@@ -641,6 +725,20 @@ def test_metadata_certifications_follow_configured_region_with_us_fallback():
     assert builder.regional_movie_certification(movie_ratings, "AU") == "PG-13"
     assert builder.regional_tv_certification(tv_ratings, "SG") == "PG13"
     assert builder.regional_tv_certification(tv_ratings, "AU") == "TV-14"
+
+
+def test_movie_certification_prefers_theatrical_release_over_premiere():
+    release_dates = [
+        {
+            "iso_3166_1": "US",
+            "release_dates": [
+                {"type": 1, "certification": "R"},
+                {"type": 3, "certification": "PG-13"},
+            ],
+        }
+    ]
+
+    assert builder.regional_movie_certification(release_dates, "US") == "PG-13"
 
 
 def test_artwork_fallback_languages_do_not_replace_metadata_language():
