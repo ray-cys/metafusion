@@ -381,6 +381,7 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
             "TMDB_API_KEY": "test-key",
             "METAFUSION_RUN": "false",
             "RUN_SCHEDULE": "true",
+            "SCHEDULE_CATCH_UP": "false",
             "RUN_TIMES": "23:59",
             "SHUTDOWN_TIMEOUT": "2",
             "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
