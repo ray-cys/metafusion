@@ -154,6 +154,40 @@ class PlexMetadataReporter:
         )
         for expired in reports[self.retention :]:
             expired.unlink()
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "[Plex Metadata] Summary - API batches: %d/%d, fields filled: %d, "
+            "tags added: %d, values removed: %d, unchanged: %d, "
+            "existing values preserved: %d, source missing: %d, failed: %d.",
+            self.writes,
+            self.max_writes,
+            self.counts.get("filled", 0),
+            self.counts.get("tags_added", 0),
+            self.counts.get("removed", 0),
+            self.counts.get("unchanged", 0),
+            self.counts.get("existing_skipped", 0),
+            self.counts.get("source_missing", 0),
+            self.counts.get("failed", 0),
+        )
+        safety_counts = {
+            "locked fields": self.counts.get("locked_skipped", 0),
+            "conflicts preserved": self.counts.get("conflict", 0),
+            "write-limit skips": self.counts.get("write_limit", 0),
+        }
+        if any(safety_counts.values()):
+            logger.warning(
+                "[Plex Metadata] Safety decisions - %s. See %s for field details.",
+                ", ".join(
+                    f"{name}: {count}" for name, count in safety_counts.items()
+                ),
+                path,
+            )
+        if self.dry_run:
+            logger.info(
+                "[Plex Metadata] Dry run - would fill: %d, would remove: %d.",
+                self.counts.get("would_fill", 0),
+                self.counts.get("would_remove", 0),
+            )
         return path
 
 
@@ -642,15 +676,39 @@ async def apply_plex_metadata(item, candidate, config, meta):
     delay = max(0.0, float(runtime.get("plex_retry_delay", 1.0)))
     total_writes = 0
     result = {"writes": 0, "failures": 0}
+    title = meta.get("title") or getattr(item, "title", "Unknown")
     for attempt in range(1, retries + 1):
         result = await asyncio.to_thread(
             _apply_candidate, item, candidate, config, meta, reporter
         )
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
+            if total_writes:
+                logging.getLogger(__name__).info(
+                    "[Plex Metadata] Updated %s using %d API batch(es); "
+                    "field details are recorded in the run report.",
+                    title,
+                    total_writes,
+                )
+            elif config.get("settings", {}).get("dry_run", False):
+                logging.getLogger(__name__).debug(
+                    "[Plex Metadata] Dry-run evaluation completed for %s; "
+                    "planned field actions are recorded in the run report.",
+                    title,
+                )
+            else:
+                logging.getLogger(__name__).debug(
+                    "[Plex Metadata] No API metadata changes required for %s.",
+                    title,
+                )
             return {"writes": total_writes, "failures": 0}
         if attempt < retries and delay:
             await asyncio.sleep(delay * attempt)
+    logging.getLogger(__name__).error(
+        "[Plex Metadata] Failed to complete metadata updates for %s after %d attempt(s).",
+        title,
+        retries,
+    )
     return {"writes": total_writes, "failures": result.get("failures", 0)}
 
 
