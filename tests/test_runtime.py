@@ -81,6 +81,82 @@ def test_tmdb_title_search_fallback_accepts_only_one_exact_title_and_year(monkey
     assert resolved == "1"
 
 
+def test_tmdb_title_search_prefers_terminal_title_year_over_conflicting_plex_year(
+    monkeypatch,
+):
+    async def request(_config, endpoint, params=None, **_kwargs):
+        assert endpoint == "search/movie"
+        assert params["query"] == "Monster"
+        assert params["year"] == 2022
+        return {
+            "results": [
+                {"id": 10, "title": "Monster", "release_date": "2022-06-01"},
+                {"id": 11, "title": "Monster", "release_date": "2024-06-01"},
+            ]
+        }
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {"tmdb": {"title_search_fallback": True}},
+            "movie",
+            title="Monster (2022)",
+            year=2024,
+            session=object(),
+        )
+    )
+
+    assert resolved == "10"
+
+
+def test_tmdb_identity_accepts_matching_title_year_over_conflicting_plex_year():
+    accepted, reason = tmdb_module.tmdb_identity_consistent(
+        "movie",
+        "Monster (2022)",
+        2024,
+        {
+            "title": "Monster",
+            "original_title": "Monster",
+            "release_date": "2022-05-01",
+        },
+    )
+
+    assert accepted is True
+    assert reason == "matched title year 2022; ignored conflicting Plex year 2024"
+
+
+@pytest.mark.parametrize(
+    ("title", "details", "reason"),
+    [
+        (
+            "Different (2022)",
+            {"title": "Monster", "release_date": "2022-05-01"},
+            "year mismatch (2024 vs 2022)",
+        ),
+        (
+            "Monster (2025)",
+            {"title": "Monster", "release_date": "2022-05-01"},
+            "title year mismatch (2025 vs 2022)",
+        ),
+        (
+            "Monster",
+            {"title": "Monster", "release_date": "2022-05-01"},
+            "year mismatch (2024 vs 2022)",
+        ),
+    ],
+)
+def test_tmdb_identity_does_not_weaken_genuine_year_rejections(
+    title, details, reason
+):
+    accepted, actual_reason = tmdb_module.tmdb_identity_consistent(
+        "movie", title, 2024, details
+    )
+
+    assert accepted is False
+    assert actual_reason == reason
+
+
 def test_tmdb_id_resolution_excludes_a_rejected_external_match(monkeypatch):
     async def request(_config, endpoint, **_kwargs):
         assert endpoint == "find/tt123"

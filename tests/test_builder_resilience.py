@@ -482,6 +482,46 @@ def test_movie_builder_writes_enhanced_metadata_and_both_assets(monkeypatch, tmp
     assert len(background_cache["background_checksum"]) == 64
 
 
+def test_movie_builder_accepts_tmdb_year_from_terminal_plex_title(
+    monkeypatch, tmp_path
+):
+    cache_calls = install_successful_asset_mocks(monkeypatch)
+    details = movie_details()
+    details.update(
+        {
+            "title": "Monster",
+            "original_title": "Monster",
+            "release_date": "2022-05-01",
+        }
+    )
+    tmdb_response_cache["movie/100"] = details
+    meta = movie_meta()
+    meta.update(
+        {
+            "title": "Monster (2022)",
+            "year": 2024,
+            "movie_path": "Monster (2022)",
+        }
+    )
+    consolidated = {"metadata": {}}
+
+    result = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            consolidated,
+            feature_flags=feature_flags(
+                poster=False, background=False, season=False
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["metadata_action"] == "downloaded"
+    assert next(iter(consolidated["metadata"].values()))["match"]["mapping_id"] == 100
+    assert cache_calls
+
+
 def test_builders_apply_per_type_upgrade_intervals_and_record_checks(
     monkeypatch, tmp_path
 ):
