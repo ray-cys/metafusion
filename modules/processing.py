@@ -1,4 +1,4 @@
-import asyncio, copy, yaml
+import asyncio, copy, time, yaml
 from collections import Counter
 from pathlib import Path
 from helper.cache import (
@@ -14,6 +14,7 @@ from helper.logging import (
     log_processing_event,
     log_library_summary,
 )
+from helper.performance import tracker_for
 from helper.plex import get_plex_metadata, plex_operation
 from helper.identity import cache_key_for_meta, item_identity
 from helper.io import sha256_file
@@ -41,6 +42,19 @@ class AmbiguousEditionError(LibraryProcessingError):
 
 
 MAX_ITEM_FAILURE_DETAILS = 10
+
+
+def _output_snapshot(path):
+    exists = path.exists()
+    return exists, sha256_file(path) if exists else None
+
+
+def _read_existing_metadata(path, validate_schema):
+    with path.open("r", encoding="utf-8") as stream:
+        document = yaml.safe_load(stream) or {}
+    if validate_schema:
+        validate_metadata_document(document)
+    return document
 
 
 def apply_cached_tmdb_recovery(meta, cache):
@@ -273,7 +287,7 @@ async def process_item(
     stats["_incremental_success"] = not failed_actions
     return stats
 
-plex_metadata_dict = {} 
+plex_metadata_dict = {}
 async def process_library(
     library_section, config, feature_flags=None, library_item_counts=None, library_filesize=None, metadata_summaries=None,
     season_cache=None, episode_cache=None, movie_cache=None, session=None, ignored_fields=None,
@@ -362,7 +376,7 @@ async def process_library(
         for item in items:
             try:
                 meta = await get_plex_metadata(
-                    item, 
+                    item,
                     _season_cache=season_cache,
                     _episode_cache=episode_cache,
                     _movie_cache=movie_cache,
@@ -499,16 +513,14 @@ async def process_library(
             if not feature_flags["dry_run"]:
                 metadata_dir.mkdir(parents=True, exist_ok=True)
             output_path = metadata_dir / f"{library_type}_metadata.yml"
-            output_snapshot = (
-                output_path.exists(),
-                sha256_file(output_path) if output_path.exists() else None,
-            )
+            output_snapshot = await asyncio.to_thread(_output_snapshot, output_path)
             if output_path.exists():
                 try:
-                    with open(output_path, "r", encoding="utf-8") as f:
-                        existing_yaml_data = yaml.safe_load(f) or {}
-                    if config.get("output", {}).get("validate_schema", True):
-                        validate_metadata_document(existing_yaml_data)
+                    existing_yaml_data = await asyncio.to_thread(
+                        _read_existing_metadata,
+                        output_path,
+                        config.get("output", {}).get("validate_schema", True),
+                    )
                 except Exception as e:
                     log_processing_event("processing_failed_parse_yaml", output_path=output_path, error=str(e))
                     raise LibraryProcessingError(
@@ -519,7 +531,7 @@ async def process_library(
             normalized_metadata_order = normalize_metadata_order(existing_yaml_data)
             consolidated_metadata = existing_yaml_data if existing_yaml_data else {"metadata": {}}
 
-        existing_assets = set()    
+        existing_assets = set()
         all_stats = []
         pending_incremental = []
 
@@ -534,14 +546,24 @@ async def process_library(
 
             item = planned.item
             item_metadata = {"metadata": {}}
-            stats = await process_item(
-                plex_item=item, consolidated_metadata=item_metadata, config=config,
-                feature_flags=feature_flags, existing_yaml_data=existing_yaml_data,
-                library_name=library_name, existing_assets=existing_assets,
-                session=session, ignored_fields=ignored_fields,
-                incremental_fingerprint=incremental_fingerprint,
-                work_reasons=planned.reasons,
-            )
+            item_started = time.monotonic()
+            try:
+                stats = await process_item(
+                    plex_item=item, consolidated_metadata=item_metadata, config=config,
+                    feature_flags=feature_flags, existing_yaml_data=existing_yaml_data,
+                    library_name=library_name, existing_assets=existing_assets,
+                    session=session, ignored_fields=ignored_fields,
+                    incremental_fingerprint=incremental_fingerprint,
+                    work_reasons=planned.reasons,
+                )
+            finally:
+                performance = tracker_for(config)
+                if performance:
+                    performance.record_item(
+                        library_name,
+                        getattr(item, "ratingKey", None),
+                        time.monotonic() - item_started,
+                    )
             if stats and isinstance(stats, dict):
                 generated_entries = item_metadata.get("metadata", {})
                 if isinstance(generated_entries, dict):
@@ -829,7 +851,7 @@ async def process_library(
         )
 
         if metadata_summaries is not None:
-            metadata_summaries[library_name] = { 
+            metadata_summaries[library_name] = {
                 "complete": completed,
                 "incomplete": incomplete,
                 "total_items": total_items,

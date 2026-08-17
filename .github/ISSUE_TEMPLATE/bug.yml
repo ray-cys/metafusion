@@ -1,0 +1,50 @@
+name: General bug
+description: Report reproducible MetaFusion behavior that does not fit another form.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Never include Plex tokens, TMDb keys, public server URLs, config.yml, or unredacted host paths.
+  - type: input
+    id: version
+    attributes:
+      label: Image tag and commit
+      placeholder: develop and sha-...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Operation mode
+      options: [kometa, plex]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include the command or schedule path and the smallest safe configuration description.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result and redacted logs
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I ran `--preflight` and attached a `--support-report` where relevant.
+          required: true
+        - label: I removed secrets and personal paths.
+          required: true

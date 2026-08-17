@@ -1,8 +1,10 @@
 import asyncio, json, hashlib, re, unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from aiolimiter import AsyncLimiter
+from helper.concurrency import runtime_slot
 from helper.config import CACHE_DIR
 from helper.logging import log_tmdb_event, redact_secrets
+from helper.performance import tracker_for
 from helper.tmdb_cache import tmdb_response_cache
 
 _tmdb_limiter = None
@@ -112,6 +114,7 @@ async def tmdb_api_request(
     language=None, region=None, cache=True, raw=False, session=None,
     max_response_bytes=None, include_locale=True, **kwargs,
 ):
+    performance = tracker_for(config)
     if endpoint_or_url.startswith("http"):
         url = endpoint_or_url
         query = dict(params or {})
@@ -161,39 +164,55 @@ async def tmdb_api_request(
         tmdb_response_cache.get(cache_hash, _CACHE_MISS) if cache else _CACHE_MISS
     )
     if cached_response is not _CACHE_MISS:
+        if performance:
+            performance.increment("tmdb_cache_hits")
         log_tmdb_event("tmdb_cache_hit", url=logged_url, params=logged_query)
         return cached_response
+    if cache and performance:
+        performance.increment("tmdb_cache_misses")
 
     for attempt in range(1, retries + 1):
         rate_limit_waited = False
+        retry_after = 0
         try:
             log_tmdb_event("tmdb_request", url=logged_url, query=logged_query, attempt=attempt, retries=retries)
+            if performance:
+                performance.increment("tmdb_requests")
             async with get_tmdb_limiter():
-                async with session.get(url, params=query, **kwargs) as response:
-                    if response.status == 200:
-                        if raw:
-                            data = await _read_limited(response, max_response_bytes)
+                async with runtime_slot(config, "tmdb"):
+                    async with session.get(url, params=query, **kwargs) as response:
+                        if response.status == 200:
+                            if raw:
+                                data = await _read_limited(response, max_response_bytes)
+                            else:
+                                data = await response.json()
+                            if cache:
+                                tmdb_response_cache[cache_hash] = data
+                            log_tmdb_event("tmdb_success", url=logged_url, attempt=attempt)
+                            return data
+                        if response.status == 429:
+                            retry_after = min(
+                                60,
+                                max(0, int(response.headers.get("Retry-After", delay))),
+                            )
+                            log_tmdb_event("tmdb_rate_limited", retry_after=retry_after, query=logged_query)
+                            if performance:
+                                performance.increment("tmdb_rate_limits")
+                                performance.increment(
+                                    "tmdb_rate_limit_wait_seconds", retry_after
+                                )
+                            rate_limit_waited = True
                         else:
-                            data = await response.json()
-                        if cache:
-                            tmdb_response_cache[cache_hash] = data
-                        log_tmdb_event("tmdb_success", url=logged_url, attempt=attempt)
-                        return data
-                    elif response.status == 429:
-                        retry_after = min(
-                            60,
-                            max(0, int(response.headers.get("Retry-After", delay))),
-                        )
-                        log_tmdb_event("tmdb_rate_limited", retry_after=retry_after, query=logged_query)
-                        await asyncio.sleep(retry_after)
-                        rate_limit_waited = True
-                    else:
-                        body = redact_secrets(await response.text(), *sensitive_values)
-                        log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
-                        if response.status == 404:
-                            # A missing resource is permanent for this identifier;
-                            # retrying only delays recovery through other IDs.
-                            return None
+                            body = redact_secrets(await response.text(), *sensitive_values)
+                            log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
+                            if response.status == 404:
+                                # A missing resource is permanent for this identifier;
+                                # retrying only delays recovery through other IDs.
+                                return None
+            if rate_limit_waited and attempt < retries:
+                if performance:
+                    performance.increment("tmdb_retries")
+                await asyncio.sleep(retry_after)
         except ResponseTooLargeError as e:
             log_tmdb_event(
                 "tmdb_response_too_large",
@@ -212,6 +231,8 @@ async def tmdb_api_request(
             )
         if attempt < retries and not rate_limit_waited:
             sleep_time = delay * (backoff_factor ** (attempt - 1))
+            if performance:
+                performance.increment("tmdb_retries")
             log_tmdb_event("tmdb_retrying", sleep_time=sleep_time, next_attempt=attempt + 1, retries=retries)
             await asyncio.sleep(sleep_time)
     log_tmdb_event("tmdb_failed", retries=retries, url=logged_url, query=logged_query)

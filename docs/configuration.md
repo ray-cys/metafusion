@@ -102,7 +102,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAX_CONCURRENCY` | `8` | Maximum media items processed concurrently. |
+| `MAX_CONCURRENCY` | `8` | Global ceiling for media workers and nested TMDb/artwork work; Plex API calls are additionally capped at four. |
 | `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds; must not exceed `REQUEST_TIMEOUT`. |
 | `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |

@@ -12,7 +12,7 @@ _cache_store = None
 _cache_lock = None
 _cache_lock_loop = None
 _cache_writable = True
-_cache_scope = ContextVar("metafusion_cache_scope", default={})
+_cache_scope = ContextVar("metafusion_cache_scope", default=None)
 
 
 def begin_cache_session(
@@ -155,7 +155,7 @@ async def meta_cache_async(
             "title": title,
             "year": year,
             "media_type": media_type,
-            **_cache_scope.get(),
+            **(_cache_scope.get() or {}),
         }
         for field, value in identity_fields.items():
             if value is not None:

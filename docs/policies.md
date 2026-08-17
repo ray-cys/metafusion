@@ -119,6 +119,23 @@ Destination protection applies under every artwork policy, including
 
 Use different physical folders if editions require different local artwork.
 
+### Read-only asset audit
+
+Run `python metafusion.py --asset-audit` before changing artwork policy or
+after a large path/library migration. The command forces a full artwork-only
+selection while dry-run protection remains active. It reports:
+
+- missing local destinations that a real run would download;
+- managed, modified, unmanaged, adoptable, and shared ownership states;
+- existing dimensions and candidates with higher dimensions;
+- canonical destination collisions; and
+- missing artwork, TMDb failures, and rejected identities.
+
+The audit does not download candidates solely to compare exact bytes, so
+`would_verify_for_adoption` remains a prediction until a real managed run. It
+does not modify artwork, YAML, ownership, incremental state, or SQLite caches.
+The report under `/config/reports` is the only intentional persistent write.
+
 ## Direct Plex metadata policies
 
 These policies have no effect unless:

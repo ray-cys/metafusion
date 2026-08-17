@@ -102,6 +102,44 @@ def validate_runtime_paths(config, config_dir):
             )
 
 
+def validate_preflight_paths(config, config_dir):
+    """Inspect configured destinations without creating files or directories."""
+    required = [(Path(config_dir), "configuration directory")]
+    if config.get("settings", {}).get("mode", "kometa").lower() == "kometa":
+        required.append(
+            (
+                Path(config.get("settings", {}).get("path", "/kometa")),
+                "Kometa output",
+            )
+        )
+    for path, description in required:
+        ensure_storage_available(config, path, description=description)
+
+    runtime = config.get("runtime", {})
+    assets = config.get("assets", {})
+    if (
+        config.get("settings", {}).get("mode", "kometa").lower() == "plex"
+        and runtime.get("validate_media_mounts", True)
+        and any(
+            assets.get(name, False)
+            for name in ("run_poster", "run_season", "run_background")
+        )
+    ):
+        destinations = {
+            destination
+            for _source, destination in parse_path_mappings(
+                config.get("plex", {}).get("path_mappings", [])
+            )
+        }
+        for destination in sorted(destinations):
+            ensure_storage_available(
+                config,
+                destination,
+                description="Plex media mapping destination",
+            )
+    return True
+
+
 class JobAlreadyRunningError(RuntimeError):
     pass
 

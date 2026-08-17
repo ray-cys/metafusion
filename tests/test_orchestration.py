@@ -59,6 +59,7 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
         "full_scan": True,
         "metadata_only": True,
         "asset_only": False,
+        "asset_audit": False,
         "explain_selection": False,
     }
 

@@ -1,0 +1,50 @@
+name: Docker or Unraid issue
+description: Report startup, shutdown, mount, permission, health, or image problems.
+title: "[Docker/Unraid]: "
+labels: ["docker"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not paste Docker inspection output because it can expose tokens. Use the redacted support report.
+  - type: input
+    id: version
+    attributes:
+      label: Image tag and commit
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Unraid, Docker Compose, Docker CLI]
+    validations:
+      required: true
+  - type: input
+    id: identity
+    attributes:
+      label: Runtime PUID:PGID
+      placeholder: 99:100
+    validations:
+      required: true
+  - type: textarea
+    id: mounts
+    attributes:
+      label: Redacted mount layout and permissions
+      description: List only container destinations, access mode, and numeric owner/mode.
+    validations:
+      required: true
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom and redacted logs
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks completed
+      options:
+        - label: I did not override the Docker user or bypass the supplied entrypoint.
+          required: true
+        - label: I removed secrets and personal paths.
+          required: true
