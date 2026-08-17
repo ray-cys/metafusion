@@ -1,12 +1,19 @@
 FROM python:3.13-slim-bookworm@sha256:00faa2debb87529f9f0764e9491d8ba400a3678976616c3bd7cb193745ac20d1
 
+ARG METAFUSION_VERSION=development
+ARG METAFUSION_COMMIT=unknown
+
 LABEL org.opencontainers.image.source="https://github.com/ray-cys/metafusion" \
-      org.opencontainers.image.description="Metadata and asset generator for Plex and Kometa"
+      org.opencontainers.image.description="Metadata and asset generator for Plex and Kometa" \
+      org.opencontainers.image.version="${METAFUSION_VERSION}" \
+      org.opencontainers.image.revision="${METAFUSION_COMMIT}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    METAFUSION_VERSION="${METAFUSION_VERSION}" \
+    METAFUSION_COMMIT="${METAFUSION_COMMIT}"
 
 WORKDIR /app
 

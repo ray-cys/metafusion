@@ -2,7 +2,7 @@ import hashlib
 import re
 
 
-def legacy_cache_key(meta):
+def fallback_cache_key(meta):
     media_type = (meta.get("library_type") or "unknown").lower()
     if media_type == "show":
         media_type = "tv"
@@ -24,7 +24,7 @@ def item_identity(meta):
         normalized = re.sub(r"[^a-z0-9]+", "-", edition_title.lower()).strip("-")
         return f"edition:{normalized}"
 
-    return legacy_cache_key(meta)
+    return fallback_cache_key(meta)
 
 
 def cache_key_for_meta(meta):
@@ -32,7 +32,7 @@ def cache_key_for_meta(meta):
     if media_type == "show":
         media_type = "tv"
     identity = item_identity(meta)
-    if identity == legacy_cache_key(meta):
+    if identity == fallback_cache_key(meta):
         return identity
     return f"{media_type}:{identity}"
 

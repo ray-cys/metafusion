@@ -119,7 +119,7 @@ DEFAULT_CONFIG = {
         "update_policy": "managed",
     },
     "cleanup": {
-        "run_process": False,
+        "run_cleanup": False,
     },
     "runtime": {
         "max_concurrency": 8,
@@ -222,7 +222,7 @@ ENV_BINDINGS = (
     ("RUN_SEASON", ("assets", "run_season"), safe_bool),
     ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
     ("ASSET_UPDATE_POLICY", ("assets", "update_policy"), None),
-    ("RUN_CLEANUP", ("cleanup", "run_process"), safe_bool),
+    ("RUN_CLEANUP", ("cleanup", "run_cleanup"), safe_bool),
     ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
     ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
     ("CONNECT_TIMEOUT", ("runtime", "connect_timeout"), safe_float),
@@ -308,7 +308,7 @@ def get_disabled_features(config, logger):
         (("assets", "run_poster"), "Poster Assets Download"),
         (("assets", "run_season"), "Season Assets Download"),
         (("assets", "run_background"), "Background Assets Download"),
-        (("cleanup", "run_process"), "Cleanup Libraries"),
+        (("cleanup", "run_cleanup"), "Cleanup Libraries"),
     ]
     for key_tuple, feature in features:
         sub_config = config
@@ -335,7 +335,7 @@ def get_feature_flags(config):
         "poster": config.get("assets", {}).get("run_poster", True),
         "season": config.get("assets", {}).get("run_season", True),
         "background": config.get("assets", {}).get("run_background", False),
-        "cleanup": config.get("cleanup", {}).get("run_process", False),
+        "cleanup": config.get("cleanup", {}).get("run_cleanup", False),
     }
     return feature_flags
 
@@ -748,7 +748,7 @@ def validate_config(config):
     )
     any_processing = metadata_processing or any(
         assets.get(key, False) for key in ("run_poster", "run_season", "run_background")
-    ) or config.get("cleanup", {}).get("run_process", False)
+    ) or config.get("cleanup", {}).get("run_cleanup", False)
     if not any_processing:
         errors.append("No processing feature is enabled")
 

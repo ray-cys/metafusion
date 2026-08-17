@@ -254,15 +254,15 @@ def test_run_cleanup_controls_cleanup_setting(tmp_path):
         environ={"RUN_PROCESS": "true"},
     )
 
-    assert current["cleanup"]["run_process"] is True
-    assert sources[("cleanup", "run_process")] == "RUN_CLEANUP"
-    assert legacy["cleanup"]["run_process"] is False
+    assert current["cleanup"]["run_cleanup"] is True
+    assert sources[("cleanup", "run_cleanup")] == "RUN_CLEANUP"
+    assert legacy["cleanup"]["run_cleanup"] is False
 
 
 def test_template_keeps_destructive_cleanup_disabled():
     template = yaml.safe_load(TEMPLATE_FILE.read_text(encoding="utf-8"))
 
-    assert template["cleanup"]["run_process"] is False
+    assert template["cleanup"]["run_cleanup"] is False
 
 
 def test_library_artwork_overrides_inherit_global_configuration():

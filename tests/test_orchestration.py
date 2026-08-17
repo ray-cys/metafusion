@@ -39,7 +39,7 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
     config = {
         "plex_libraries": ["Old"],
         "assets": {"run_poster": True, "run_season": True, "run_background": True},
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "settings": {},
     }
@@ -52,7 +52,7 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
         "run_season": False,
         "run_background": False,
     }
-    assert config["cleanup"]["run_process"] is False
+    assert config["cleanup"]["run_cleanup"] is False
     assert config["_execution"] == {
         "rating_keys": ["123"],
         "targeted": True,
@@ -72,7 +72,7 @@ def test_asset_only_cli_disables_metadata_and_cleanup():
             "run_season": False,
             "run_background": True,
         },
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "settings": {"dry_run": False},
     }
@@ -80,7 +80,7 @@ def test_asset_only_cli_disables_metadata_and_cleanup():
     metafusion.override_config_with_cli(config, args)
 
     assert config["metadata"] == {"run_basic": False, "run_enhanced": False}
-    assert config["cleanup"]["run_process"] is False
+    assert config["cleanup"]["run_cleanup"] is False
     assert config["assets"] == {
         "run_poster": True,
         "run_season": False,
@@ -98,7 +98,7 @@ def test_explain_selection_cli_is_read_only():
             "run_season": False,
             "run_background": False,
         },
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "settings": {"dry_run": False},
     }
@@ -106,7 +106,7 @@ def test_explain_selection_cli_is_read_only():
     metafusion.override_config_with_cli(config, args)
 
     assert config["settings"]["dry_run"] is True
-    assert config["cleanup"]["run_process"] is False
+    assert config["cleanup"]["run_cleanup"] is False
     assert config["_execution"]["explain_selection"] is True
 
 
@@ -165,6 +165,42 @@ def test_failed_run_returns_false_and_flushes_cache(monkeypatch):
     assert flushed == [True]
 
 
+def test_two_consecutive_dry_run_jobs_reinitialize_cleanly(monkeypatch):
+    calls = []
+    flushed = []
+    reports = []
+
+    async def successful_run(config, _logger):
+        calls.append(id(config))
+
+    monkeypatch.setattr(metafusion, "metafusion_main", successful_run)
+    monkeypatch.setattr(metafusion, "begin_cache_session", lambda **_kwargs: None)
+    monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: None)
+    monkeypatch.setattr(metafusion, "begin_plex_metadata_run", lambda _config: None)
+    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: None)
+    monkeypatch.setattr(metafusion, "flush_cache", lambda: flushed.append("metadata"))
+    monkeypatch.setattr(metafusion, "flush_tmdb_cache", lambda: flushed.append("tmdb"))
+    monkeypatch.setattr(
+        metafusion,
+        "write_artwork_gap_report",
+        lambda *_args, **_kwargs: reports.append(True),
+    )
+    monkeypatch.setattr(metafusion.tmdb_response_cache, "reset_memory", lambda: None)
+
+    config = {
+        "settings": {"dry_run": True},
+        "plex": {"token": "plex-secret"},
+        "tmdb": {"api_key": "tmdb-secret"},
+    }
+    logger = logging.getLogger("consecutive-jobs-test")
+
+    assert metafusion.run_metafusion_job(config, logger) is True
+    assert metafusion.run_metafusion_job(config, logger) is True
+    assert len(calls) == 2
+    assert flushed == ["metadata", "tmdb", "metadata", "tmdb"]
+    assert reports == []
+
+
 def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
     movie = Section("Movies", "movie")
     cleanup_scopes = []
@@ -204,7 +240,7 @@ def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
     config = {
         "settings": {"mode": "kometa", "path": str(tmp_path)},
         "runtime": {},
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {},
         "assets": {},
         "plex": {},

@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from helper.build_info import build_info
 from helper.io import atomic_write_json
 from helper.state_db import StateDatabaseError, record_job_run
 
@@ -104,6 +105,7 @@ class RuntimeStatus:
         self._stop = threading.Event()
         self._thread = None
         self._data = self._load_existing()
+        self._build = build_info()
 
     def _load_existing(self):
         try:
@@ -120,7 +122,13 @@ class RuntimeStatus:
             atomic_write_json(self.path, self._data)
 
     def start(self, mode):
-        self._update(state="starting", mode=mode, last_error=None)
+        self._update(
+            state="starting",
+            mode=mode,
+            last_error=None,
+            version=self._build["version"],
+            commit=self._build["commit"],
+        )
         self._thread = threading.Thread(
             target=self._heartbeat_loop,
             name="metafusion-heartbeat",
@@ -143,7 +151,7 @@ class RuntimeStatus:
     def run_started(self):
         self._update(state="running", last_run_started=utc_now(), last_error=None)
 
-    def run_finished(self, success, error=None):
+    def run_finished(self, success, error=None, library_results=None):
         now = utc_now()
         values = {
             "state": "idle",
@@ -153,6 +161,8 @@ class RuntimeStatus:
         }
         if success:
             values["last_success"] = now
+        if library_results is not None:
+            values["library_results"] = library_results
         if self.state_database is not None:
             try:
                 record_job_run(
@@ -161,6 +171,7 @@ class RuntimeStatus:
                     finished_at=now,
                     status=values["last_run_status"],
                     error=values["last_error"],
+                    summary=library_results,
                     history_limit=self.history_limit,
                     path=self.state_database,
                 )

@@ -167,7 +167,7 @@ def test_mocked_plex_tmdb_pipeline_generates_valid_movie_show_and_specials(
         "tmdb": {"api_key": "key", "language": "en", "region": "US", "fallback": []},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "assets": {"run_poster": False, "run_season": False, "run_background": False},
-        "cleanup": {"run_process": False},
+        "cleanup": {"run_cleanup": False},
         "runtime": {"max_concurrency": 2},
         "incremental": {"enabled": False, "full_scan_interval_hours": 168},
         "output": {"validate_schema": True, "backup_count": 1},

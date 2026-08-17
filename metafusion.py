@@ -13,6 +13,8 @@ from pathlib import Path
 
 import aiohttp
 
+from helper.asset_registry import AssetDestinationRegistry
+from helper.build_info import build_info
 from helper.cache import begin_cache_session, flush_cache, load_cache
 from helper.config import (
     BASE_CONFIG_DIR,
@@ -31,7 +33,7 @@ from helper.incremental import (
     mark_library_scan_complete,
     mark_library_scan_started,
 )
-from helper.diagnostics import write_support_report
+from helper.diagnostics import write_artwork_gap_report, write_support_report
 from helper.logging import (
     check_sys_requirements,
     get_meta_banner,
@@ -68,7 +70,6 @@ from helper.tmdb import (
 )
 from modules.cleanup import CleanupResult, cleanup_title_orphans
 from modules.processing import process_library, plex_metadata_dict
-from modules.utils import claim_asset_destination
 
 
 shutdown_requested = threading.Event()
@@ -185,15 +186,15 @@ def override_config_with_cli(config, args):
         config["assets"].update(
             {"run_poster": False, "run_season": False, "run_background": False}
         )
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     if args.asset_only:
         config["metadata"].update({"run_basic": False, "run_enhanced": False})
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     if args.explain_selection:
         config["settings"]["dry_run"] = True
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     if libraries or rating_keys:
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     maintenance_action = None
     if args.plex_metadata_restore:
         maintenance_action = "restore"
@@ -202,7 +203,7 @@ def override_config_with_cli(config, args):
     if maintenance_action:
         config["metafusion_run"] = True
         config["plex_metadata"]["enabled"] = True
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     execution = {
         "rating_keys": rating_keys,
         "targeted": bool(libraries or rating_keys),
@@ -339,6 +340,12 @@ async def metafusion_main(config, logger):
     plex_metadata_dict.clear()
     try:
         get_meta_banner(logger)
+        current_build = build_info()
+        logger.info(
+            "[MetaFusion] Version %s (commit %s)",
+            current_build["version"],
+            current_build["commit"],
+        )
         check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
             "main_started", start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -370,6 +377,8 @@ async def metafusion_main(config, logger):
                 plex=plex,
             )
             metadata_summaries = {}
+            library_results = {}
+            config["_job_library_results"] = library_results
             library_filesize = {}
             successful_sections = []
             failures = []
@@ -462,6 +471,12 @@ async def metafusion_main(config, logger):
                         raise
                     except Exception as error:
                         failures.append(f"{section.title}: {error}")
+                        library_results[section.title] = {
+                            "status": "failed",
+                            "items_processed": 0,
+                            "items_succeeded": 0,
+                            "items_failed": None,
+                        }
 
                 if maintenance_action:
                     if not mode_check(config, "plex"):
@@ -513,15 +528,12 @@ async def metafusion_main(config, logger):
                     )
                     return
 
-                asset_destination_registry = {}
+                asset_destination_registry = AssetDestinationRegistry()
                 cache_store = load_cache()
-                if hasattr(cache_store, "asset_destination_owners"):
-                    for owner, destination in cache_store.asset_destination_owners(
-                        scan_scopes
-                    ):
-                        claim_asset_destination(
-                            asset_destination_registry, owner, destination
-                        )
+                if hasattr(cache_store, "asset_destination_records"):
+                    asset_destination_registry = AssetDestinationRegistry(
+                        cache_store.asset_destination_records()
+                    )
                 for section in sections:
                     if section.title not in section_items:
                         continue
@@ -529,6 +541,9 @@ async def metafusion_main(config, logger):
                         library_config = config_for_library(config, section.title)
                         library_config["_asset_destination_registry"] = (
                             asset_destination_registry
+                        )
+                        library_config["_artwork_gaps"] = config.setdefault(
+                            "_artwork_gaps", []
                         )
                         scope = next(
                             candidate
@@ -567,6 +582,19 @@ async def metafusion_main(config, logger):
                             explain_selection=explain_selection,
                         )
                         successful_sections.append(section)
+                        summary = metadata_summaries.get(section.title, {})
+                        library_summary = summary.get("library_summary", {})
+                        failed_items = int(library_summary.get("item_failures", 0))
+                        processed_items = int(summary.get("total_items", 0))
+                        library_results[section.title] = {
+                            "status": "success",
+                            "items_processed": processed_items,
+                            "items_succeeded": max(0, processed_items - failed_items),
+                            "items_failed": failed_items,
+                            "items_unchanged": int(
+                                library_summary.get("incremental_skipped", 0)
+                            ),
+                        }
                         if not targeted and not explain_selection:
                             mark_library_scan_complete(
                                 [scope],
@@ -577,6 +605,24 @@ async def metafusion_main(config, logger):
                         raise
                     except Exception as error:
                         failures.append(f"{section.title}: {error}")
+                        summary = metadata_summaries.get(section.title, {})
+                        library_summary = summary.get("library_summary", {})
+                        processed_items = int(summary.get("total_items", 0))
+                        failed_items = library_summary.get("item_failures")
+                        library_results[section.title] = {
+                            "status": "failed",
+                            "items_processed": processed_items,
+                            "items_succeeded": (
+                                max(0, processed_items - int(failed_items))
+                                if failed_items is not None else 0
+                            ),
+                            "items_failed": (
+                                int(failed_items) if failed_items is not None else None
+                            ),
+                            "items_unchanged": int(
+                                library_summary.get("incremental_skipped", 0)
+                            ),
+                        }
 
             cleanup_result = CleanupResult()
             if run_feature_flags.get("cleanup", False):
@@ -677,6 +723,8 @@ def run_metafusion_job(config, logger, runtime_status=None):
 
     success = False
     error = None
+    config["_job_library_results"] = {}
+    config["_artwork_gaps"] = []
 
     async def run_active_job():
         global _active_loop, _active_task
@@ -709,6 +757,17 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 success = False
                 error = f"Failed to write Plex metadata report: {caught}"
                 log_main_event("main_unhandled_exception", error=error, logger=logger)
+            if not config.get("settings", {}).get("dry_run", False):
+                try:
+                    gap_report = write_artwork_gap_report(config.get("_artwork_gaps"))
+                    if gap_report:
+                        logger.info(
+                            "[Diagnostics] Artwork gap report saved to %s", gap_report
+                        )
+                except OSError as caught:
+                    logger.warning(
+                        "[Diagnostics] Unable to write artwork gap report: %s", caught
+                    )
             flush_cache()
             flush_tmdb_cache()
         except Exception as caught:
@@ -719,7 +778,11 @@ def run_metafusion_job(config, logger, runtime_status=None):
             tmdb_response_cache.reset_memory()
         try:
             if runtime_status:
-                runtime_status.run_finished(success, error=error)
+                runtime_status.run_finished(
+                    success,
+                    error=error,
+                    library_results=config.get("_job_library_results", {}),
+                )
         finally:
             if job_lock is not None:
                 job_lock.release()
@@ -784,7 +847,7 @@ def main(argv=None):
         ("assets", "run_poster"): args.run_poster or args.metadata_only,
         ("assets", "run_season"): args.run_season or args.metadata_only,
         ("assets", "run_background"): args.run_background or args.metadata_only,
-        ("cleanup", "run_process"): args.metadata_only or args.asset_only or bool(args.rating_key),
+        ("cleanup", "run_cleanup"): args.metadata_only or args.asset_only or bool(args.rating_key),
         ("plex_libraries",): bool(args.library),
     }
     for path, used in cli_sources.items():
