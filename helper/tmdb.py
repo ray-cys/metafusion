@@ -256,9 +256,18 @@ async def resolve_tmdb_id(
     if not config.get("tmdb", {}).get("title_search_fallback", False) or not title:
         return None
     search_type = "movie" if normalized_type in {"movie", "movies"} else "tv"
-    params = {"query": str(title), "include_adult": "false"}
-    if year:
-        params["year" if search_type == "movie" else "first_air_date_year"] = year
+    plex_year = _year_value(year)
+    base_title, title_year = _title_year_hint(title)
+    title_year_resolves_conflict = bool(
+        title_year and plex_year and abs(title_year - plex_year) > 1
+    )
+    search_title = base_title if title_year_resolves_conflict else str(title)
+    search_year = title_year if title_year_resolves_conflict else plex_year
+    params = {"query": search_title, "include_adult": "false"}
+    if search_year:
+        params["year" if search_type == "movie" else "first_air_date_year"] = (
+            search_year
+        )
     result = await tmdb_api_request(
         config,
         f"search/{search_type}",
@@ -266,8 +275,8 @@ async def resolve_tmdb_id(
         session=session,
     )
     candidates = []
-    wanted_title = normalize_title(title)
-    wanted_year = _year_value(year)
+    wanted_title = normalize_title(search_title)
+    wanted_year = search_year
     for candidate in result.get("results", []) if isinstance(result, dict) else []:
         names = (
             (candidate.get("title"), candidate.get("original_title"))
@@ -296,6 +305,18 @@ def normalize_title(value):
     return re.sub(r"[^a-z0-9]+", "", normalized)
 
 
+def _title_year_hint(value):
+    """Return a title without a terminal disambiguation year and that year."""
+    title = str(value or "").strip()
+    match = re.search(r"\s+\(((?:18|19|20|21)\d{2})\)\s*$", title)
+    if not match:
+        return title, None
+    base_title = title[: match.start()].strip()
+    if not base_title:
+        return title, None
+    return base_title, int(match.group(1))
+
+
 def _year_value(value):
     match = re.match(r"^(\d{4})", str(value or ""))
     return int(match.group(1)) if match else None
@@ -311,15 +332,36 @@ def tmdb_identity_consistent(media_type, title, year, details):
     )
     expected_year = _year_value(year)
     actual_year = _year_value(date_value)
-    if expected_year and actual_year and abs(expected_year - actual_year) > 1:
-        return False, f"year mismatch ({expected_year} vs {actual_year})"
     names = (
         (details.get("title"), details.get("original_title"))
         if normalized_type in {"movie", "movies"}
         else (details.get("name"), details.get("original_name"))
     )
+    base_title, title_year = _title_year_hint(title)
+    available_titles = {normalize_title(name) for name in names if name}
     expected_title = normalize_title(title)
-    if expected_title and not any(normalize_title(name) == expected_title for name in names if name):
+    base_title_matches = bool(
+        title_year
+        and normalize_title(base_title)
+        and normalize_title(base_title) in available_titles
+    )
+    exact_title_matches = bool(
+        expected_title and expected_title in available_titles
+    )
+
+    if title_year and (base_title_matches or exact_title_matches) and actual_year:
+        if abs(title_year - actual_year) > 1:
+            return False, f"title year mismatch ({title_year} vs {actual_year})"
+        if expected_year and abs(expected_year - actual_year) > 1:
+            return (
+                True,
+                f"matched title year {title_year}; ignored conflicting Plex year "
+                f"{expected_year}",
+            )
+
+    if expected_year and actual_year and abs(expected_year - actual_year) > 1:
+        return False, f"year mismatch ({expected_year} vs {actual_year})"
+    if expected_title and not (exact_title_matches or base_title_matches):
         return True, "title differs from localized/original TMDb names"
     return True, "matched"
 
