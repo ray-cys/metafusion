@@ -12,7 +12,7 @@ from helper.state_db import recent_job_runs
 
 def test_runtime_status_is_healthy_after_success(tmp_path):
     status_path = tmp_path / "status.json"
-    database = tmp_path / "metafusion.sqlite3"
+    database = tmp_path / "meta_db.sqlite3"
     status = RuntimeStatus(
         status_path, heartbeat_seconds=3600, state_database=database
     )
@@ -33,7 +33,7 @@ def test_runtime_status_is_healthy_after_success(tmp_path):
 
 def test_runtime_status_bounds_recent_job_history(tmp_path):
     status_path = tmp_path / "status.json"
-    database = tmp_path / "metafusion.sqlite3"
+    database = tmp_path / "meta_db.sqlite3"
     status = RuntimeStatus(
         status_path,
         heartbeat_seconds=3600,

@@ -11,7 +11,7 @@ from helper.config import CACHE_DIR
 from helper.io import read_json_with_backup
 
 
-STATE_DATABASE = CACHE_DIR / "metafusion.sqlite3"
+STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
 LEGACY_META_CACHE = CACHE_DIR / "meta_cache.json"
 LEGACY_INCREMENTAL_STATE = CACHE_DIR / "incremental_state.json"
 SCHEMA_VERSION = 1

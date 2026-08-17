@@ -73,7 +73,7 @@ def test_configuration_changes_invalidate_incremental_entries():
 
 
 def test_full_scan_schedule_and_state_are_persistent(tmp_path):
-    state_path = tmp_path / "metafusion.sqlite3"
+    state_path = tmp_path / "meta_db.sqlite3"
     config = incremental_config()
     now = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
@@ -89,7 +89,7 @@ def test_full_scan_schedule_and_state_are_persistent(tmp_path):
 
 
 def test_dry_run_does_not_persist_incremental_state(tmp_path):
-    state_path = tmp_path / "metafusion.sqlite3"
+    state_path = tmp_path / "meta_db.sqlite3"
 
     assert mark_full_scan_complete(dry_run=True, path=state_path) is False
     assert not state_path.exists()
@@ -97,7 +97,7 @@ def test_dry_run_does_not_persist_incremental_state(tmp_path):
 
 
 def test_per_library_scan_state_and_fingerprint_control_full_scans(tmp_path):
-    state_path = tmp_path / "metafusion.sqlite3"
+    state_path = tmp_path / "meta_db.sqlite3"
     now = datetime(2026, 1, 2, tzinfo=timezone.utc)
     scopes = [
         {
@@ -131,7 +131,7 @@ def test_per_library_scan_state_and_fingerprint_control_full_scans(tmp_path):
 
 
 def test_legacy_full_scan_timestamp_remains_valid_until_due(tmp_path):
-    database = tmp_path / "metafusion.sqlite3"
+    database = tmp_path / "meta_db.sqlite3"
     legacy = tmp_path / "incremental_state.json"
     now = datetime(2026, 1, 2, tzinfo=timezone.utc)
     legacy.write_text(

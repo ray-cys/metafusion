@@ -22,7 +22,7 @@ def test_cache_lock_is_recreated_for_each_scheduled_event_loop():
 def configure_cache(tmp_path, writable=True):
     return cache_module.begin_cache_session(
         writable=writable,
-        database_path=tmp_path / "metafusion.sqlite3",
+        database_path=tmp_path / "meta_db.sqlite3",
         legacy_meta_cache=tmp_path / "meta_cache.json",
         legacy_incremental_state=tmp_path / "incremental_state.json",
     )
@@ -45,7 +45,7 @@ def test_cache_is_persisted_as_normalized_sqlite_rows(tmp_path):
     }
 
     cache_module.save_cache(original)
-    database = tmp_path / "metafusion.sqlite3"
+    database = tmp_path / "meta_db.sqlite3"
     media_payload = json.loads(database_rows(database, "media_state")[0][-1])
     season_payload = json.loads(database_rows(database, "season_state")[0][-1])
 
@@ -58,7 +58,7 @@ def test_cache_is_persisted_as_normalized_sqlite_rows(tmp_path):
 
 
 def test_corrupt_durable_state_fails_without_deleting_it(tmp_path):
-    database = tmp_path / "metafusion.sqlite3"
+    database = tmp_path / "meta_db.sqlite3"
     database.write_text("not sqlite", encoding="utf-8")
 
     with pytest.raises(StateDatabaseError, match="Unable to open"):
@@ -72,7 +72,7 @@ def test_read_only_missing_state_does_not_create_directory(tmp_path):
 
     store = cache_module.begin_cache_session(
         writable=False,
-        database_path=cache_dir / "metafusion.sqlite3",
+        database_path=cache_dir / "meta_db.sqlite3",
         legacy_meta_cache=cache_dir / "meta_cache.json",
         legacy_incremental_state=cache_dir / "incremental_state.json",
     )
@@ -192,7 +192,7 @@ def test_cache_records_independent_artwork_check_timestamps(tmp_path):
 
 def test_cache_updates_are_batched_until_flush(tmp_path):
     configure_cache(tmp_path)
-    database = tmp_path / "metafusion.sqlite3"
+    database = tmp_path / "meta_db.sqlite3"
 
     async def update_many():
         await asyncio.gather(
@@ -256,7 +256,7 @@ def test_read_only_session_never_persists_updates(tmp_path):
     )
 
     assert cache_module.flush_cache() is False
-    assert not (tmp_path / "metafusion.sqlite3").exists()
+    assert not (tmp_path / "meta_db.sqlite3").exists()
 
 
 def test_cache_scope_is_persisted_with_media_identity(tmp_path):
@@ -277,5 +277,5 @@ def test_cache_scope_is_persisted_with_media_identity(tmp_path):
         cache_module.reset_cache_scope(token)
     cache_module.flush_cache()
 
-    row = database_rows(tmp_path / "metafusion.sqlite3", "media_state")[0]
+    row = database_rows(tmp_path / "meta_db.sqlite3", "media_state")[0]
     assert row[1:5] == ("server-1", "library-1", "Movies", "10")

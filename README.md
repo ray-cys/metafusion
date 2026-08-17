@@ -294,7 +294,7 @@ must exactly match Plex. `--doctor` validates the override structure.
 ## TMDb response cache
 
 MetaFusion stores successful TMDb responses as compressed rows in
-`/config/cache/tmdb_response_cache.sqlite3`. It reads and updates individual
+`/config/cache/tmdb_cache.sqlite3`. It reads and updates individual
 responses instead of loading and rewriting one large JSON document. The cache
 is disposable: database corruption causes a clean cache rebuild and does not
 remove generated metadata or artwork.
@@ -312,7 +312,7 @@ of `0` preserves the existing entry capacity without a byte cap.
 ## Durable application state
 
 MetaFusion stores media state, per-season artwork state, per-library scan
-history, and recent completed jobs in `/config/cache/metafusion.sqlite3`.
+history, and recent completed jobs in `/config/cache/meta_db.sqlite3`.
 Changed media and season rows are committed together after a job instead of
 loading and rewriting one large JSON cache. Full-scan timing is tracked per
 Plex server and library, so one library cannot incorrectly represent the scan
@@ -423,13 +423,13 @@ Persistent diagnostics and state are stored under `/config`:
 
 ```text
 logs/metafusion.log
-cache/metafusion.sqlite3
-cache/tmdb_response_cache.sqlite3
+cache/meta_db.sqlite3
+cache/tmdb_cache.sqlite3
 ```
 
 The live heartbeat is intentionally stored at
 `/tmp/metafusion-status.json`, avoiding a persistent appdata write every 30
-seconds. Completed job history is retained in `metafusion.sqlite3`. View the
+seconds. Completed job history is retained in `meta_db.sqlite3`. View the
 combined current status and recent history with `python metafusion.py
 --status` inside the container.
 

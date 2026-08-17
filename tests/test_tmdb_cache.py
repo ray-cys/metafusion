@@ -189,7 +189,7 @@ def test_legacy_json_cache_is_left_for_manual_removal(tmp_path):
     legacy_backup = tmp_path / "tmdb_response_cache.json.bak"
     legacy.write_text("{}", encoding="utf-8")
     legacy_backup.write_text("{}", encoding="utf-8")
-    path = tmp_path / "tmdb_response_cache.sqlite3"
+    path = tmp_path / "tmdb_cache.sqlite3"
     cache = PersistentTTLCache()
     cache.configure(path)
 

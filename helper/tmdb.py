@@ -23,7 +23,7 @@ def get_tmdb_limiter():
 def begin_tmdb_cache(config):
     cache_config = config.get("tmdb_cache", {})
     tmdb_response_cache.configure(
-        CACHE_DIR / "tmdb_response_cache.sqlite3",
+        CACHE_DIR / "tmdb_cache.sqlite3",
         ttl_hours=cache_config.get("ttl_hours", 24),
         max_entries=cache_config.get("max_entries", 5000),
         max_mb=cache_config.get("max_mb", 0),
