@@ -465,6 +465,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_asset_selected": "[Dry Run] Selected TMDb {asset_type} for {media_type}: {full_title} ({source_path})",
         "builder_artwork_language_fallback": "[{media_type}] Selected unrestricted-language TMDb {asset_type} for {full_title}: {language}.",
         "builder_reusing_shared_asset": "[{media_type}] Reusing shared TMDb {asset_type} for {full_title} at {destination}.",
+        "builder_asset_ownership_adopted": "[{media_type}] Adopted existing {asset_type} ownership for {full_title} at {destination}; exact TMDb source {source_path} matched without rewriting the file.",
         "builder_preserving_existing_asset": "[{media_type}] Preserving existing {asset_type} for {full_title} at {destination}: {reason}.",
         "builder_asset_destination_collision": "[{media_type}] Refusing {asset_type} destination collision for {full_title} at {destination}; already claimed by {owner}.",
         "builder_no_asset_path": "[{media_type}] Asset path could not be determined: {full_title} {extra}. Skipping...",
@@ -514,6 +515,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_asset_selected": "info",
         "builder_artwork_language_fallback": "info",
         "builder_reusing_shared_asset": "info",
+        "builder_asset_ownership_adopted": "info",
         "builder_preserving_existing_asset": "warning",
         "builder_asset_destination_collision": "error",
         "builder_no_asset_path": "error",
@@ -770,6 +772,7 @@ def log_library_summary(
         lines.extend(box_line(
             f"Poster - Downloaded: {library_summary.get('poster_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('poster_upgraded', 0)}, "
+            f"Adopted: {library_summary.get('poster_adopted', 0)}, "
             f"Skipped: {library_summary.get('poster_skipped', 0)}, "
             f"Missing: {library_summary.get('poster_missing', 0)}, "
             f"Failed: {library_summary.get('poster_failed', 0)}", box_width))
@@ -777,6 +780,7 @@ def log_library_summary(
         lines.extend(box_line(
             f"Background - Downloaded: {library_summary.get('background_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('background_upgraded', 0)}, "
+            f"Adopted: {library_summary.get('background_adopted', 0)}, "
             f"Skipped: {library_summary.get('background_skipped', 0)}, "
             f"Missing: {library_summary.get('background_missing', 0)}, "
             f"Failed: {library_summary.get('background_failed', 0)}", box_width))
@@ -786,6 +790,7 @@ def log_library_summary(
         and (
             library_summary.get('season_poster_downloaded', 0) > 0 or
             library_summary.get('season_poster_upgraded', 0) > 0 or
+            library_summary.get('season_poster_adopted', 0) > 0 or
             library_summary.get('season_poster_skipped', 0) > 0 or
             library_summary.get('season_poster_missing', 0) > 0 or
             library_summary.get('season_poster_failed', 0) > 0
@@ -794,6 +799,7 @@ def log_library_summary(
         lines.extend(box_line(
             f"Season - Downloaded: {library_summary.get('season_poster_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('season_poster_upgraded', 0)}, "
+            f"Adopted: {library_summary.get('season_poster_adopted', 0)}, "
             f"Skipped: {library_summary.get('season_poster_skipped', 0)}, "
             f"Missing: {library_summary.get('season_poster_missing', 0)}, "
             f"Failed: {library_summary.get('season_poster_failed', 0)}", box_width))
@@ -894,6 +900,7 @@ def log_final_summary(
             lines.extend(box_line(
                 f"Poster - Downloaded: {libsum.get('poster_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('poster_upgraded', 0)}, "
+                f"Adopted: {libsum.get('poster_adopted', 0)}, "
                 f"Skipped: {libsum.get('poster_skipped', 0)}, "
                 f"Missing: {libsum.get('poster_missing', 0)}, "
                 f"Failed: {libsum.get('poster_failed', 0)}", box_width))
@@ -902,6 +909,7 @@ def log_final_summary(
             lines.extend(box_line(
                 f"Background - Downloaded: {libsum.get('background_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('background_upgraded', 0)}, "
+                f"Adopted: {libsum.get('background_adopted', 0)}, "
                 f"Skipped: {libsum.get('background_skipped', 0)}, "
                 f"Missing: {libsum.get('background_missing', 0)}, "
                 f"Failed: {libsum.get('background_failed', 0)}", box_width))
@@ -912,13 +920,16 @@ def log_final_summary(
             and (
                 libsum.get('season_poster_downloaded', 0) > 0 or
                 libsum.get('season_poster_upgraded', 0) > 0 or
+                libsum.get('season_poster_adopted', 0) > 0 or
                 libsum.get('season_poster_skipped', 0) > 0 or
-                libsum.get('season_poster_missing', 0) > 0
+                libsum.get('season_poster_missing', 0) > 0 or
+                libsum.get('season_poster_failed', 0) > 0
             )
         ):
             lines.extend(box_line(
                 f"Season - Downloaded: {libsum.get('season_poster_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('season_poster_upgraded', 0)}, "
+                f"Adopted: {libsum.get('season_poster_adopted', 0)}, "
                 f"Skipped: {libsum.get('season_poster_skipped', 0)}, "
                 f"Missing: {libsum.get('season_poster_missing', 0)}, "
                 f"Failed: {libsum.get('season_poster_failed', 0)}", box_width))

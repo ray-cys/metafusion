@@ -119,6 +119,12 @@ At the first scheduled job after an interval expires, MetaFusion evaluates a
 candidate. [Artwork policy](policies.md#artwork-update-policies) and quality
 rules determine whether the file may actually be replaced.
 
+Under `managed`, a run can also report `Adopted` artwork. This is a one-time
+ownership verification for an existing file that exactly matches the selected
+TMDb bytes; it does not rewrite the destination or alter filesystem ownership
+or permissions. The first verification run can therefore take longer and use
+more TMDb/network I/O than later runs.
+
 Per-library timing overrides are documented in
 [Configuration](configuration.md#per-library-overrides).
 

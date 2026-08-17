@@ -277,7 +277,7 @@ def asset_write_allowed(config, cache_key, asset_path, asset_type, season_number
 
     cached = load_cache().get(cache_key, {})
     if not isinstance(cached, dict):
-        return False, "unmanaged"
+        return False, "no_ownership_record"
     if asset_type == "season":
         asset_record = (cached.get("seasons") or {}).get(str(season_number), {})
         expected_checksum = asset_record.get("season_checksum")
@@ -285,10 +285,12 @@ def asset_write_allowed(config, cache_key, asset_path, asset_type, season_number
     else:
         expected_checksum = cached.get(f"{asset_type}_checksum")
         expected_path = cached.get(f"{asset_type}_path")
-    if not expected_checksum:
-        return False, "unmanaged"
     if expected_path and _normalized_asset_path(expected_path) != _normalized_asset_path(asset_path):
-        return False, "unmanaged"
+        return False, "recorded_path_mismatch"
+    if not expected_checksum:
+        return False, (
+            "missing_checksum" if expected_path else "no_ownership_record"
+        )
     try:
         current_checksum = sha256_file(asset_path)
     except OSError:

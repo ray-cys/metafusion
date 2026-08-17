@@ -226,7 +226,12 @@ def protected_asset_destination(
         asset_type,
         season_number=season_number,
     )
-    if not allowed:
+    adoptable_unmanaged = (
+        str(config.get("assets", {}).get("update_policy", "managed")).lower()
+        == "managed"
+        and reason in {"no_ownership_record", "missing_checksum"}
+    )
+    if not allowed and not adoptable_unmanaged:
         log_builder_event(
             "builder_preserving_existing_asset",
             media_type=media_type,
@@ -276,6 +281,256 @@ def _mark_asset_verified(
         season_number=season_number,
         checksum=checksum,
     )
+
+
+def managed_source_matches(
+    protection_status,
+    cache_key,
+    source_path,
+    asset_path,
+    asset_type,
+    season_number=None,
+):
+    """Skip a known source only after managed ownership was checksum-verified."""
+    return protection_status == "managed" and cached_source_matches(
+        cache_key,
+        source_path,
+        asset_path,
+        asset_type,
+        season_number=season_number,
+    )
+
+
+async def _record_asset_observation(
+    cache_key,
+    tmdb_id,
+    title,
+    year,
+    media_type,
+    asset_type,
+    candidate,
+    *,
+    asset_path=None,
+    checksum=None,
+    season_number=None,
+):
+    """Record an artwork check, adding ownership only after exact verification."""
+    source_path = candidate.get("file_path")
+    vote = candidate.get("vote_average", 0)
+    kwargs = {}
+    flags = {"update_timestamp": False}
+    if asset_type == "poster":
+        flags["poster_checked"] = True
+        kwargs["poster_average"] = vote
+        if asset_path is not None and checksum:
+            kwargs.update(
+                poster_source_path=source_path,
+                poster_path=str(asset_path.resolve()),
+                poster_checksum=checksum,
+            )
+    elif asset_type == "background":
+        flags["background_checked"] = True
+        kwargs["bg_average"] = vote
+        if asset_path is not None and checksum:
+            kwargs.update(
+                background_source_path=source_path,
+                background_path=str(asset_path.resolve()),
+                background_checksum=checksum,
+            )
+    elif asset_type == "season":
+        kwargs.update(
+            season_number=season_number,
+            season_average=vote,
+        )
+        if asset_path is not None and checksum:
+            kwargs.update(
+                season_source_path=source_path,
+                season_path=str(asset_path.resolve()),
+                season_checksum=checksum,
+            )
+    await meta_cache_async(
+        cache_key,
+        tmdb_id,
+        title,
+        year,
+        media_type,
+        **flags,
+        **kwargs,
+    )
+
+
+async def adopt_exact_tmdb_asset(
+    config,
+    meta,
+    cache_key,
+    asset_path,
+    candidate,
+    session,
+    *,
+    protection_status,
+    media_type,
+    log_media_type,
+    full_title,
+    tmdb_id,
+    title,
+    year,
+    asset_type,
+    season_number=None,
+):
+    """Adopt byte-identical TMDb artwork without rewriting the existing file."""
+    adoptable = (
+        str(config.get("assets", {}).get("update_policy", "managed")).lower()
+        == "managed"
+        and protection_status in {"no_ownership_record", "missing_checksum"}
+        and asset_path.exists()
+    )
+    if not adoptable:
+        if asset_type in {"poster", "background"}:
+            await _record_asset_observation(
+                cache_key,
+                tmdb_id,
+                title,
+                year,
+                media_type,
+                asset_type,
+                candidate,
+            )
+        return False
+
+    if asset_path.is_symlink():
+        log_builder_event(
+            "builder_preserving_existing_asset",
+            media_type=log_media_type,
+            asset_type=asset_type,
+            full_title=full_title,
+            destination=asset_path,
+            reason="symbolic link cannot be adopted",
+        )
+        if asset_type in {"poster", "background"}:
+            await _record_asset_observation(
+                cache_key,
+                tmdb_id,
+                title,
+                year,
+                media_type,
+                asset_type,
+                candidate,
+            )
+        return False
+
+    temp_path = asset_temp_path(config, meta)
+    try:
+        success, status, error = await download_poster(
+            config,
+            candidate.get("file_path"),
+            temp_path,
+            session=session,
+        )
+        if not success or not temp_path.exists():
+            log_builder_event(
+                "builder_preserving_existing_asset",
+                media_type=log_media_type,
+                asset_type=asset_type,
+                full_title=full_title,
+                destination=asset_path,
+                reason=(
+                    "ownership could not be verified against TMDb"
+                    f" (status={status}, error={error})"
+                ),
+            )
+            if asset_type in {"poster", "background"}:
+                await _record_asset_observation(
+                    cache_key,
+                    tmdb_id,
+                    title,
+                    year,
+                    media_type,
+                    asset_type,
+                    candidate,
+                )
+            return False
+
+        try:
+            existing_checksum, candidate_checksum = await asyncio.gather(
+                asyncio.to_thread(sha256_file, asset_path),
+                asyncio.to_thread(sha256_file, temp_path),
+            )
+        except OSError as error:
+            log_builder_event(
+                "builder_preserving_existing_asset",
+                media_type=log_media_type,
+                asset_type=asset_type,
+                full_title=full_title,
+                destination=asset_path,
+                reason=f"ownership checksum could not be verified ({error})",
+            )
+            if asset_type in {"poster", "background"}:
+                await _record_asset_observation(
+                    cache_key,
+                    tmdb_id,
+                    title,
+                    year,
+                    media_type,
+                    asset_type,
+                    candidate,
+                )
+            return False
+
+        if existing_checksum != candidate_checksum:
+            log_builder_event(
+                "builder_preserving_existing_asset",
+                media_type=log_media_type,
+                asset_type=asset_type,
+                full_title=full_title,
+                destination=asset_path,
+                reason="existing content differs from the selected TMDb source",
+            )
+            if asset_type in {"poster", "background"}:
+                await _record_asset_observation(
+                    cache_key,
+                    tmdb_id,
+                    title,
+                    year,
+                    media_type,
+                    asset_type,
+                    candidate,
+                )
+            return False
+
+        _mark_asset_verified(
+            config,
+            cache_key,
+            asset_path,
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            asset_type=asset_type,
+            source_path=candidate.get("file_path"),
+            season_number=season_number,
+            checksum=existing_checksum,
+        )
+        await _record_asset_observation(
+            cache_key,
+            tmdb_id,
+            title,
+            year,
+            media_type,
+            asset_type,
+            candidate,
+            asset_path=asset_path,
+            checksum=existing_checksum,
+            season_number=season_number,
+        )
+        log_builder_event(
+            "builder_asset_ownership_adopted",
+            media_type=log_media_type,
+            asset_type=asset_type,
+            full_title=full_title,
+            destination=asset_path,
+            source_path=candidate.get("file_path"),
+        )
+        return True
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _tag_value(metadata, field):
@@ -833,6 +1088,13 @@ async def _build_movie(
             shared_managed=bool(shared_checksum),
         )
         if not allowed:
+            adopted = await adopt_exact_tmdb_asset(
+                config, meta, cache_key, asset_path, best, session,
+                protection_status=protection_status,
+                media_type="movie", log_media_type="Movie",
+                full_title=full_title, tmdb_id=tmdb_id,
+                title=title, year=year, asset_type="poster",
+            )
             poster_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
@@ -845,10 +1107,11 @@ async def _build_movie(
                     destination=asset_path,
                 )
             result["poster"]["size"] = poster_size
-            poster_action = "skipped"
+            poster_action = "adopted" if adopted else "skipped"
             return
 
-        if cached_source_matches(
+        if managed_source_matches(
+            protection_status,
             cache_key, best.get("file_path"), asset_path, "poster"
         ):
             poster_size = asset_path.stat().st_size
@@ -1025,6 +1288,13 @@ async def _build_movie(
             shared_managed=bool(shared_checksum),
         )
         if not allowed:
+            adopted = await adopt_exact_tmdb_asset(
+                config, meta, cache_key, asset_path, best, session,
+                protection_status=protection_status,
+                media_type="movie", log_media_type="Movie",
+                full_title=full_title, tmdb_id=tmdb_id,
+                title=title, year=year, asset_type="background",
+            )
             background_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
@@ -1037,10 +1307,11 @@ async def _build_movie(
                     destination=asset_path,
                 )
             result["background"]["size"] = background_size
-            background_action = "skipped"
+            background_action = "adopted" if adopted else "skipped"
             return
 
-        if cached_source_matches(
+        if managed_source_matches(
+            protection_status,
             cache_key, best.get("file_path"), asset_path, "background"
         ):
             background_size = asset_path.stat().st_size
@@ -1785,21 +2056,29 @@ async def _build_tv(
             poster_action = "failed"
             return
 
-        allowed, _protection_status = protected_asset_destination(
+        allowed, protection_status = protected_asset_destination(
             config, cache_key, asset_path, "poster",
             media_type="TV Show", full_title=full_title,
             tmdb_id=tmdb_id,
             source_path=best.get("file_path"),
         )
         if not allowed:
+            adopted = await adopt_exact_tmdb_asset(
+                config, meta, cache_key, asset_path, best, session,
+                protection_status=protection_status,
+                media_type="tv", log_media_type="TV Show",
+                full_title=full_title, tmdb_id=tmdb_id,
+                title=title, year=year, asset_type="poster",
+            )
             poster_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
             result["poster"]["size"] = poster_size
-            poster_action = "skipped"
+            poster_action = "adopted" if adopted else "skipped"
             return
 
-        if cached_source_matches(
+        if managed_source_matches(
+            protection_status,
             cache_key, best.get("file_path"), asset_path, "poster"
         ):
             poster_size = asset_path.stat().st_size
@@ -1956,21 +2235,29 @@ async def _build_tv(
             background_action = "failed"
             return
 
-        allowed, _protection_status = protected_asset_destination(
+        allowed, protection_status = protected_asset_destination(
             config, cache_key, asset_path, "background",
             media_type="TV Show", full_title=full_title,
             tmdb_id=tmdb_id,
             source_path=best.get("file_path"),
         )
         if not allowed:
+            adopted = await adopt_exact_tmdb_asset(
+                config, meta, cache_key, asset_path, best, session,
+                protection_status=protection_status,
+                media_type="tv", log_media_type="TV Show",
+                full_title=full_title, tmdb_id=tmdb_id,
+                title=title, year=year, asset_type="background",
+            )
             background_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
             result["background"]["size"] = background_size
-            background_action = "skipped"
+            background_action = "adopted" if adopted else "skipped"
             return
 
-        if cached_source_matches(
+        if managed_source_matches(
+            protection_status,
             cache_key, best.get("file_path"), asset_path, "background"
         ):
             background_size = asset_path.stat().st_size
@@ -2142,21 +2429,32 @@ async def _build_tv(
             season_poster_actions[season_number] = "failed"
             return
 
-        allowed, _protection_status = protected_asset_destination(
+        allowed, protection_status = protected_asset_destination(
             config, cache_key, asset_path, "season",
             media_type="TV Show", full_title=full_title, season_number=season_number,
             tmdb_id=tmdb_id,
             source_path=best.get("file_path"),
         )
         if not allowed:
+            adopted = await adopt_exact_tmdb_asset(
+                config, meta, cache_key, asset_path, best, session,
+                protection_status=protection_status,
+                media_type="tv", log_media_type="TV Show",
+                full_title=full_title, tmdb_id=tmdb_id,
+                title=title, year=year, asset_type="season",
+                season_number=season_number,
+            )
             season_poster_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
             result["season_posters"][season_number] = season_poster_size
-            season_poster_actions[season_number] = "skipped"
+            season_poster_actions[season_number] = (
+                "adopted" if adopted else "skipped"
+            )
             return
 
-        if cached_source_matches(
+        if managed_source_matches(
+            protection_status,
             cache_key,
             best.get("file_path"),
             asset_path,

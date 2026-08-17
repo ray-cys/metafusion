@@ -136,10 +136,14 @@ difference is what may happen when a file already exists:
 
 `managed` is the recommended default. MetaFusion replaces an existing file
 only when its path and current SHA-256 checksum still match the ownership
-record saved when MetaFusion wrote it. `fill_missing` never replaces an
-existing file. `overwrite` bypasses ownership protection but still does not
-blindly rewrite artwork: identical sources are skipped and quality safeguards
-reject stale candidates with lower dimensions or lower TMDb vote scores.
+record saved when MetaFusion wrote it. If that record is absent or lacks a
+checksum, MetaFusion can adopt the file only when its bytes exactly match the
+currently selected TMDb image. Adoption records ownership without rewriting
+the file or changing its owner, permissions, or timestamps; different artwork
+remains protected. `fill_missing` never replaces an existing file. `overwrite`
+bypasses ownership protection but still does not blindly rewrite artwork:
+identical sources are skipped and quality safeguards reject stale candidates
+with lower dimensions or lower TMDb vote scores.
 
 No artwork policy bypasses destination-collision protection. Different Plex
 items cannot silently overwrite the same path unless they resolve to the same
@@ -185,6 +189,11 @@ whose exact path and checksum still prove MetaFusion ownership. Modified,
 unmanaged, symbolic-link, and unverifiable artwork is preserved. In Plex mode,
 cleanup removes stale MetaFusion state only; it never removes local artwork,
 Kometa output, or media files.
+
+Shared canonical artwork used by multiple Plex editions is evaluated once and
+is removable only when the current checksum matches a recorded owner. A legacy
+file that is already orphaned cannot be safely adopted and remains a manual
+cleanup decision.
 
 Always test cleanup with `DRY_RUN=True`. The full checklist is in
 [Policy behavior and safety rules](docs/policies.md#cleanup-and-deletion-safety).

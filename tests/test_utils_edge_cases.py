@@ -274,6 +274,48 @@ def test_managed_asset_policy_preserves_manual_changes(monkeypatch, tmp_path):
     ) == (True, "overwrite")
 
 
+def test_managed_asset_policy_explains_unverified_ownership(monkeypatch, tmp_path):
+    asset = tmp_path / "poster.jpg"
+    asset.write_bytes(b"existing")
+
+    monkeypatch.setattr(utils, "load_cache", lambda: {})
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "managed"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (False, "no_ownership_record")
+
+    monkeypatch.setattr(
+        utils,
+        "load_cache",
+        lambda: {"movie": {"poster_path": str(asset)}},
+    )
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "managed"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (False, "missing_checksum")
+
+    monkeypatch.setattr(
+        utils,
+        "load_cache",
+        lambda: {
+            "movie": {
+                "poster_path": str(tmp_path / "another-poster.jpg"),
+                "poster_checksum": utils.sha256_file(asset),
+            }
+        },
+    )
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "managed"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (False, "recorded_path_mismatch")
+
+
 def test_stale_artwork_does_not_downgrade_quality(monkeypatch, tmp_path):
     config = selection_config()
     asset = tmp_path / "poster.jpg"

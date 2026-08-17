@@ -137,19 +137,25 @@ async def cleanup_title_orphans(
         for asset_type in ("poster", "background"):
             path = raw_entry.get(f"{asset_type}_path")
             if path:
-                managed_assets[_path_key(path)] = {
-                    "checksum": raw_entry.get(f"{asset_type}_checksum"),
-                    "identity": identity,
-                    "season": None,
-                }
+                managed_assets.setdefault(_path_key(path), []).append(
+                    {
+                        "checksum": raw_entry.get(f"{asset_type}_checksum"),
+                        "identity": identity,
+                        "season": None,
+                    }
+                )
         for season_number, season_entry in (raw_entry.get("seasons") or {}).items():
             if not isinstance(season_entry, dict) or not season_entry.get("season_path"):
                 continue
-            managed_assets[_path_key(season_entry["season_path"])] = {
-                "checksum": season_entry.get("season_checksum"),
-                "identity": identity,
-                "season": str(season_number),
-            }
+            managed_assets.setdefault(
+                _path_key(season_entry["season_path"]), []
+            ).append(
+                {
+                    "checksum": season_entry.get("season_checksum"),
+                    "identity": identity,
+                    "season": str(season_number),
+                }
+            )
 
     removed_titles = set()
     removed_seasons = set()
@@ -491,7 +497,7 @@ async def cleanup_title_orphans(
 
         async def remove_asset(path, description, allow_valid_title=False):
             path_key = _path_key(path)
-            record = managed_assets.get(path_key)
+            records = managed_assets.get(path_key, [])
             try:
                 asset_library_type = normalize_library_type(
                     path.relative_to(asset_path).parts[0]
@@ -503,7 +509,7 @@ async def cleanup_title_orphans(
                     "cleanup_skipping_valid_asset", description=description, path=path
                 )
                 return
-            if record is None:
+            if not records:
                 log_cleanup_event(
                     "cleanup_skipping_valid_asset",
                     description=f"unmanaged {description}",
@@ -523,8 +529,12 @@ async def cleanup_title_orphans(
                     reason="the path is now a symbolic link",
                 )
                 return
-            expected_checksum = record.get("checksum")
-            if not expected_checksum:
+            expected_checksums = {
+                record.get("checksum")
+                for record in records
+                if record.get("checksum")
+            }
+            if not expected_checksums:
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
                     description=description,
@@ -542,7 +552,7 @@ async def cleanup_title_orphans(
                     reason=f"the checksum could not be verified: {error}",
                 )
                 return
-            if current_checksum != expected_checksum:
+            if current_checksum not in expected_checksums:
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
                     description=description,
@@ -573,11 +583,12 @@ async def cleanup_title_orphans(
                         f"Failed to remove managed asset: {path}"
                     ) from error
             removed_assets.add(path_key)
-            record_title(
-                record.get("identity"),
-                asset_type=description,
-                title_removed=not allow_valid_title,
-            )
+            for record in records:
+                record_title(
+                    record.get("identity"),
+                    asset_type=description,
+                    title_removed=not allow_valid_title,
+                )
 
         safe_asset_roots = [
             Path(asset_path) / library_type for library_type in safe_library_types

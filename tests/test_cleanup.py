@@ -115,3 +115,51 @@ def test_cleanup_only_removes_cache_for_safe_library_types(monkeypatch, tmp_path
 
     assert "movie:Old Movie:2000" not in cache
     assert "tv:Old Show:2001" in cache
+
+
+def test_cleanup_handles_shared_canonical_asset_owners(monkeypatch, tmp_path):
+    asset_root = tmp_path / "assets"
+    shared_poster = asset_root / "movie" / "Shared Movie (2000)" / "poster.jpg"
+    shared_poster.parent.mkdir(parents=True)
+    shared_poster.write_bytes(b"shared-managed-artwork")
+    checksum = cleanup_module.sha256_file(shared_poster)
+    cache = {
+        "movie:plex:1": {
+            "media_type": "movie",
+            "title": "Shared Movie",
+            "year": 2000,
+            "poster_path": str(shared_poster),
+            "poster_checksum": "not-the-current-checksum",
+        },
+        "movie:plex:2": {
+            "media_type": "movie",
+            "title": "Shared Movie",
+            "year": 2000,
+            "poster_path": str(shared_poster),
+            "poster_checksum": checksum,
+        },
+    }
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
+
+    result = asyncio.run(
+        cleanup_module.cleanup_title_orphans(
+            {"settings": {"mode": "kometa", "path": str(tmp_path)}},
+            {
+                "dry_run": False,
+                "metadata_basic": False,
+                "metadata_enhanced": False,
+                "poster": True,
+                "season": False,
+                "background": False,
+            },
+            asset_path=asset_root,
+            preloaded_plex_metadata={},
+            safe_library_types={"movie"},
+        )
+    )
+
+    assert not shared_poster.exists()
+    assert result.assets == 1
+    assert result.titles == 1
+    assert not cache

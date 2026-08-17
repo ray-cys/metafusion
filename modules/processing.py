@@ -295,9 +295,9 @@ async def process_library(
     completed = incomplete = 0
     season_count = episode_count = 0
     meta_downloaded = meta_upgraded = meta_skipped = 0
-    poster_downloaded = poster_upgraded = poster_skipped = poster_missing = poster_failed = 0
-    background_downloaded = background_upgraded = background_skipped = background_missing = background_failed = 0
-    season_poster_downloaded = season_poster_upgraded = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+    poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_missing = poster_failed = 0
+    background_downloaded = background_upgraded = background_adopted = background_skipped = background_missing = background_failed = 0
+    season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_missing = season_poster_failed = 0
 
     server = getattr(library_section, "_server", None)
     scope_token = set_cache_scope(
@@ -522,9 +522,9 @@ async def process_library(
             nonlocal poster_size, background_size, season_poster_size, total_asset_size
             nonlocal completed, incomplete, season_count, episode_count
             nonlocal meta_downloaded, meta_upgraded, meta_skipped
-            nonlocal poster_downloaded, poster_upgraded, poster_skipped, poster_missing, poster_failed
-            nonlocal background_downloaded, background_upgraded, background_skipped, background_missing, background_failed
-            nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_skipped, season_poster_missing, season_poster_failed
+            nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_missing, poster_failed
+            nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_missing, background_failed
+            nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_missing, season_poster_failed
 
             item = planned.item
             item_metadata = {"metadata": {}}
@@ -564,6 +564,8 @@ async def process_library(
                     poster_downloaded += 1
                 elif action == "upgraded":
                     poster_upgraded += 1
+                elif action == "adopted":
+                    poster_adopted += 1
                 elif action == "skipped":
                     poster_skipped += 1
                 elif action == "missing":
@@ -576,6 +578,8 @@ async def process_library(
                     background_downloaded += 1
                 elif action == "upgraded":
                     background_upgraded += 1
+                elif action == "adopted":
+                    background_adopted += 1
                 elif action == "skipped":
                     background_skipped += 1
                 elif action == "missing":
@@ -589,6 +593,8 @@ async def process_library(
                         season_poster_downloaded += 1
                     elif season_action == "upgraded":
                         season_poster_upgraded += 1
+                    elif season_action == "adopted":
+                        season_poster_adopted += 1
                     elif season_action == "skipped":
                         season_poster_skipped += 1
                     elif season_action == "missing":
@@ -735,11 +741,11 @@ async def process_library(
 
         library_summary = {
             "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded, "meta_skipped": meta_skipped,
-            "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_skipped": poster_skipped,
+            "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped,
             "poster_failed": poster_failed, "poster_missing": poster_missing,
-            "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_skipped": background_skipped,
+            "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped,
             "background_failed": background_failed, "background_missing": background_missing,
-            "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_skipped": season_poster_skipped,
+            "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_adopted": season_poster_adopted, "season_poster_skipped": season_poster_skipped,
             "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
             "incremental_skipped": total_library_items - total_items,
             "item_failures": len(item_errors),

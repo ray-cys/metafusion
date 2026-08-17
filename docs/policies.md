@@ -58,8 +58,22 @@ An existing file is eligible only when:
 4. The current file's SHA-256 checksum still matches that record.
 
 Changing even one byte makes the file user-modified. MetaFusion then preserves
-it rather than claiming ownership of the new content. A legacy or manually
-created file with no valid ownership record is also preserved.
+it rather than claiming ownership of the new content.
+
+When an existing file has no ownership record, or an older record has a path
+but no checksum, MetaFusion performs a safe ownership check. It downloads the
+currently selected TMDb image to a temporary file and compares SHA-256 values:
+
+- An exact byte match is adopted into durable ownership state.
+- The destination file is not replaced, opened for writing, renamed, chmodded,
+  or chowned, so its inode, timestamps, owner, and permissions stay unchanged.
+- A different image, symbolic link, download failure, or checksum failure is
+  preserved without an ownership claim.
+
+The first managed run after this correction can perform extra TMDb downloads
+for unverified files. Later scheduled runs use the recorded check/ownership
+state. Artwork that was already orphaned before a live Plex title could verify
+it cannot be auto-adopted and remains a manual cleanup decision.
 
 #### `overwrite`
 
@@ -263,6 +277,8 @@ incremental-only run, or targeted run.
 - Retains Season 0/Specials while they remain in Plex.
 - Removes artwork only when its path and checksum still match MetaFusion's
   ownership record.
+- Evaluates a shared canonical artwork destination once across all recorded
+  edition owners and accepts a checksum match from any canonical owner.
 - Preserves modified, unmanaged, symbolic-link, legacy-without-checksum, and
   unverifiable artwork.
 - Does not clean an artwork type whose generation feature is disabled.
