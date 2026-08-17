@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import sqlite3
+import threading
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,9 @@ from helper.config import CACHE_DIR
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
 SCHEMA_VERSION = 2
 FILE_MODE = 0o664
+_database_setup_lock = threading.Lock()
+_initialized_databases = set()
+_integrity_checked_databases = set()
 
 
 class StateDatabaseError(RuntimeError):
@@ -39,23 +43,31 @@ def _connect(path=None, writable=True):
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 10000")
         connection.execute("PRAGMA foreign_keys = ON")
+        database_identity = None
         if writable:
             connection.execute("PRAGMA journal_mode = DELETE")
             connection.execute("PRAGMA synchronous = FULL")
-            _initialize_schema(connection)
             if not existed:
                 os.chmod(path, FILE_MODE)
-        else:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (1, SCHEMA_VERSION):
-                raise StateDatabaseError(
-                    f"unsupported MetaFusion state schema version {version}"
-                )
-        integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
-        if integrity != "ok":
-            raise StateDatabaseError(
-                f"MetaFusion state integrity check failed: {integrity}"
-            )
+        stat = path.stat()
+        database_identity = (str(path.absolute()), stat.st_dev, stat.st_ino)
+        with _database_setup_lock:
+            if writable and database_identity not in _initialized_databases:
+                _initialize_schema(connection)
+                _initialized_databases.add(database_identity)
+            elif not writable:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if version not in (1, SCHEMA_VERSION):
+                    raise StateDatabaseError(
+                        f"unsupported MetaFusion state schema version {version}"
+                    )
+            if database_identity not in _integrity_checked_databases:
+                integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
+                if integrity != "ok":
+                    raise StateDatabaseError(
+                        f"MetaFusion state integrity check failed: {integrity}"
+                    )
+                _integrity_checked_databases.add(database_identity)
         return connection
     except StateDatabaseError:
         if connection is not None:
@@ -327,6 +339,100 @@ class MediaStateStore(MutableMapping):
     def values(self):
         return self._all_entries().values()
 
+    def entries_for_scope(self, server_id, library_uuid, rating_keys=None):
+        """Load only the media rows needed to plan one Plex library."""
+        server_id = str(server_id or "unknown")
+        library_uuid = str(library_uuid)
+        wanted = {
+            str(value) for value in (rating_keys or []) if str(value).strip()
+        }
+        entries = {}
+        if self._connection is not None:
+            if wanted:
+                ordered = sorted(wanted)
+                for offset in range(0, len(ordered), 500):
+                    chunk = ordered[offset : offset + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    query = (
+                        "SELECT cache_key, payload FROM media_state "
+                        "WHERE server_id = ? AND library_uuid = ? "
+                        f"AND rating_key IN ({placeholders})"
+                    )
+                    for row in self._connection.execute(
+                        query, (server_id, library_uuid, *chunk)
+                    ):
+                        entries[row[0]] = _json_load(
+                            row[1], f"media state {row[0]!r}"
+                        )
+            else:
+                for row in self._connection.execute(
+                    "SELECT cache_key, payload FROM media_state "
+                    "WHERE server_id = ? AND library_uuid = ?",
+                    (server_id, library_uuid),
+                ):
+                    entries[row[0]] = _json_load(
+                        row[1], f"media state {row[0]!r}"
+                    )
+            keys = sorted(entries)
+            for offset in range(0, len(keys), 500):
+                chunk = keys[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                for row in self._connection.execute(
+                    "SELECT cache_key, season_number, payload FROM season_state "
+                    f"WHERE cache_key IN ({placeholders})",
+                    chunk,
+                ):
+                    entries[row[0]].setdefault("seasons", {})[str(row[1])] = (
+                        _json_load(
+                            row[2], f"season state {row[0]!r}/{row[1]!r}"
+                        )
+                    )
+
+        for source in (self._memory, self._pending):
+            for key, value in source.items():
+                if (
+                    str(value.get("server_id") or "unknown") == server_id
+                    and str(value.get("library_uuid")) == library_uuid
+                    and (
+                        not wanted
+                        or str(value.get("rating_key")) in wanted
+                    )
+                ):
+                    entries[key] = copy.deepcopy(value)
+        for key in self._deleted:
+            entries.pop(key, None)
+        return entries
+
+    def asset_destination_owners(self, scopes):
+        """Return only persisted artwork paths for selected library scopes."""
+        owners = []
+        if self._connection is not None:
+            for scope in scopes or []:
+                server_id = str(scope.get("server_id") or "unknown")
+                library_uuid = str(
+                    scope.get("library_uuid") or scope.get("library_name")
+                )
+                for row in self._connection.execute(
+                    "SELECT cache_key, json_extract(payload, '$.poster_path'), "
+                    "json_extract(payload, '$.background_path') "
+                    "FROM media_state WHERE server_id = ? AND library_uuid = ?",
+                    (server_id, library_uuid),
+                ):
+                    for path in row[1:]:
+                        if path:
+                            owners.append((row[0], path))
+                for row in self._connection.execute(
+                    "SELECT seasons.cache_key, "
+                    "json_extract(seasons.payload, '$.season_path') "
+                    "FROM season_state AS seasons "
+                    "JOIN media_state AS media ON media.cache_key = seasons.cache_key "
+                    "WHERE media.server_id = ? AND media.library_uuid = ?",
+                    (server_id, library_uuid),
+                ):
+                    if row[1]:
+                        owners.append((row[0], row[1]))
+        return owners
+
     def flush(self):
         if (
             not self.writable
@@ -587,15 +693,43 @@ def load_plex_metadata_ownership(
         connection.close()
 
 
-def save_plex_metadata_ownership(records, deleted=None, path=None):
+def save_plex_metadata_ownership(
+    records,
+    deleted=None,
+    path=None,
+    prune_scope=None,
+    valid_child_keys=None,
+):
     """Persist an item's Plex ownership ledger in one durable transaction."""
     records = list(records or [])
     deleted = list(deleted or [])
-    if not records and not deleted:
+    if not records and not deleted and prune_scope is None:
         return False
     connection = _connect(path, writable=True)
     try:
         with connection:
+            if prune_scope is not None:
+                valid_children = {str(value) for value in (valid_child_keys or [])}
+                server_id, library_uuid, rating_key = (
+                    str(value) for value in prune_scope
+                )
+                existing_children = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT DISTINCT child_key FROM plex_metadata_ownership "
+                        "WHERE server_id = ? AND library_uuid = ? AND rating_key = ?",
+                        (server_id, library_uuid, rating_key),
+                    )
+                }
+                stale_children = existing_children - valid_children
+                connection.executemany(
+                    "DELETE FROM plex_metadata_ownership WHERE server_id = ? "
+                    "AND library_uuid = ? AND rating_key = ? AND child_key = ?",
+                    (
+                        (server_id, library_uuid, rating_key, child_key)
+                        for child_key in stale_children
+                    ),
+                )
             for key in deleted:
                 connection.execute(
                     "DELETE FROM plex_metadata_ownership WHERE "

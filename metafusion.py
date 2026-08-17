@@ -8,12 +8,12 @@ import signal
 import sys
 import threading
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
 
-from helper.cache import begin_cache_session, flush_cache
+from helper.cache import begin_cache_session, flush_cache, load_cache
 from helper.config import (
     BASE_CONFIG_DIR,
     ConfigError,
@@ -27,9 +27,9 @@ from helper.config import (
 )
 from helper.incremental import (
     config_fingerprint,
+    library_full_scan_decisions,
     mark_library_scan_complete,
     mark_library_scan_started,
-    should_run_full_scan,
 )
 from helper.diagnostics import write_support_report
 from helper.logging import (
@@ -68,6 +68,7 @@ from helper.tmdb import (
 )
 from modules.cleanup import CleanupResult, cleanup_title_orphans
 from modules.processing import process_library, plex_metadata_dict
+from modules.utils import claim_asset_destination
 
 
 shutdown_requested = threading.Event()
@@ -293,6 +294,46 @@ def complete_inventory_types(all_libraries, successful_sections):
     }
 
 
+def missed_schedule_due(run_times, recent_runs, max_hours=24, now=None):
+    """Return the latest missed slot that has not had a later successful job."""
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    candidates = []
+    for run_time in run_times or []:
+        try:
+            parsed = datetime.strptime(str(run_time), "%H:%M").time()
+        except (TypeError, ValueError):
+            continue
+        for days_ago in (0, 1):
+            day = (current - timedelta(days=days_ago)).date()
+            candidate = datetime.combine(day, parsed, tzinfo=current.tzinfo)
+            if candidate <= current:
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    latest_due = max(candidates)
+    if current - latest_due > timedelta(hours=max(0.1, float(max_hours))):
+        return None
+
+    successful = []
+    for run in recent_runs or []:
+        if run.get("status") != "success" or not run.get("finished_at"):
+            continue
+        try:
+            finished = datetime.fromisoformat(
+                str(run["finished_at"]).replace("Z", "+00:00")
+            )
+            if finished.tzinfo is None:
+                finished = finished.astimezone()
+            successful.append(finished.astimezone(current.tzinfo))
+        except (TypeError, ValueError):
+            continue
+    if successful and max(successful) >= latest_due:
+        return None
+    return latest_due
+
+
 async def metafusion_main(config, logger):
     _plex_cache.clear()
     plex_metadata_dict.clear()
@@ -335,13 +376,16 @@ async def metafusion_main(config, logger):
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
             scan_scopes = build_scan_scopes(plex, sections, config)
-            full_scan = bool(execution.get("full_scan")) or should_run_full_scan(
+            scan_decisions = library_full_scan_decisions(
                 config,
                 targeted=targeted,
                 scopes=scan_scopes,
             )
+            if execution.get("full_scan"):
+                scan_decisions = {key: True for key in scan_decisions}
             run_feature_flags = dict(feature_flags)
             cleanup_skip_reason = None
+            all_full_scan = False
 
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
@@ -355,41 +399,38 @@ async def metafusion_main(config, logger):
                 log_main_event("main_no_libraries")
                 failures.append("No configured Plex libraries were available")
             else:
-                if mode_check(config, "kometa") and not full_scan:
+                if mode_check(config, "kometa") and not all(scan_decisions.values()):
                     metadata_dir = Path(config.get("settings", {}).get("path", ".")) / "metadata"
-                    expected_outputs = {
-                        metadata_dir
-                        / (
-                            "movie_metadata.yml"
-                            if normalize_library_type(
-                                getattr(section, "type", None)
-                                or getattr(section, "TYPE", None)
-                            )
-                            == "movie"
-                            else "tv_metadata.yml"
+                    missing_types = {
+                        library_type
+                        for library_type, output in (
+                            ("movie", metadata_dir / "movie_metadata.yml"),
+                            ("tv", metadata_dir / "tv_metadata.yml"),
                         )
-                        for section in sections
+                        if not output.exists()
                     }
-                    if any(not output.exists() for output in expected_outputs):
-                        full_scan = True
+                    for section, scope in zip(sections, scan_scopes):
+                        library_type = normalize_library_type(
+                            getattr(section, "type", None)
+                            or getattr(section, "TYPE", None)
+                        )
+                        if library_type in missing_types:
+                            scan_decisions[
+                                (scope["server_id"], scope["library_uuid"])
+                            ] = True
+                all_full_scan = bool(scan_decisions) and all(scan_decisions.values())
                 if targeted and feature_flags.get("cleanup", False):
                     cleanup_skip_reason = (
                         "targeted run; full reconciliation requires every configured "
                         "library"
                     )
                     run_feature_flags["cleanup"] = False
-                elif not full_scan:
+                elif not all_full_scan:
                     if feature_flags.get("cleanup", False):
                         cleanup_skip_reason = (
                             "incremental run; full reconciliation required"
                         )
                     run_feature_flags["cleanup"] = False
-                if not targeted and not explain_selection:
-                    mark_library_scan_started(
-                        scan_scopes,
-                        full_scan=full_scan,
-                        dry_run=feature_flags.get("dry_run", False),
-                    )
                 section_items = {}
                 identity_counts = Counter()
                 edition_counts = Counter()
@@ -472,14 +513,40 @@ async def metafusion_main(config, logger):
                     )
                     return
 
+                asset_destination_registry = {}
+                cache_store = load_cache()
+                if hasattr(cache_store, "asset_destination_owners"):
+                    for owner, destination in cache_store.asset_destination_owners(
+                        scan_scopes
+                    ):
+                        claim_asset_destination(
+                            asset_destination_registry, owner, destination
+                        )
                 for section in sections:
                     if section.title not in section_items:
                         continue
                     try:
                         library_config = config_for_library(config, section.title)
+                        library_config["_asset_destination_registry"] = (
+                            asset_destination_registry
+                        )
+                        scope = next(
+                            candidate
+                            for candidate in scan_scopes
+                            if candidate["library_name"] == section.title
+                        )
+                        section_full_scan = scan_decisions.get(
+                            (scope["server_id"], scope["library_uuid"]), True
+                        )
                         library_flags = dict(get_feature_flags(library_config))
-                        if not full_scan:
+                        if not section_full_scan:
                             library_flags["cleanup"] = False
+                        if not targeted and not explain_selection:
+                            mark_library_scan_started(
+                                [scope],
+                                full_scan=section_full_scan,
+                                dry_run=feature_flags.get("dry_run", False),
+                            )
                         await process_library(
                             library_section=section,
                             config=library_config,
@@ -491,7 +558,7 @@ async def metafusion_main(config, logger):
                             movie_cache={},
                             session=session,
                             feature_flags=library_flags,
-                            full_scan=full_scan,
+                            full_scan=section_full_scan,
                             rating_keys=execution.get("rating_keys"),
                             incremental_fingerprint=config_fingerprint(library_config),
                             all_items=section_items[section.title],
@@ -500,6 +567,12 @@ async def metafusion_main(config, logger):
                             explain_selection=explain_selection,
                         )
                         successful_sections.append(section)
+                        if not targeted and not explain_selection:
+                            mark_library_scan_complete(
+                                [scope],
+                                full_scan=section_full_scan,
+                                dry_run=feature_flags.get("dry_run", False),
+                            )
                     except asyncio.CancelledError:
                         raise
                     except Exception as error:
@@ -542,12 +615,6 @@ async def metafusion_main(config, logger):
             )
             if failures:
                 raise RuntimeError("; ".join(failures))
-            if not targeted and not explain_selection:
-                mark_library_scan_complete(
-                    scan_scopes,
-                    full_scan=full_scan,
-                    dry_run=feature_flags.get("dry_run", False),
-                )
     finally:
         _plex_cache.clear()
         plex_metadata_dict.clear()
@@ -791,8 +858,32 @@ def main(argv=None):
                 if not run_metafusion_job(config, logger, runtime_status):
                     exit_code = 1
         elif schedule_enabled and run_times:
-            if settings.get("run_on_start", False) and not shutdown_requested.is_set():
+            run_on_start = settings.get("run_on_start", False)
+            if run_on_start and not shutdown_requested.is_set():
                 run_metafusion_job(config, logger, runtime_status)
+            elif (
+                settings.get("schedule_catch_up", True)
+                and not shutdown_requested.is_set()
+            ):
+                try:
+                    job_history = recent_job_runs(path=STATE_DATABASE)
+                except StateDatabaseError as state_error:
+                    logger.warning(
+                        "[Scheduler] Unable to read job history for catch-up: %s",
+                        state_error,
+                    )
+                    job_history = []
+                missed_slot = missed_schedule_due(
+                    run_times,
+                    job_history,
+                    max_hours=settings.get("schedule_catch_up_max_hours", 24),
+                )
+                if missed_slot is not None:
+                    logger.info(
+                        "[Scheduler] Running missed schedule from %s.",
+                        missed_slot.isoformat(),
+                    )
+                    run_metafusion_job(config, logger, runtime_status)
             scheduled_count = 0
             for run_time in run_times:
                 try:

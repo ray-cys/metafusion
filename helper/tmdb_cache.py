@@ -35,6 +35,7 @@ class PersistentTTLCache(MutableMapping):
         self._misses = 0
         self._evictions = 0
         self._recoveries = 0
+        self._last_error = None
 
     def configure(
         self,
@@ -58,11 +59,13 @@ class PersistentTTLCache(MutableMapping):
         try:
             self._open_database()
         except sqlite3.Error as error:
+            self._last_error = f"{type(error).__name__}: {error}"
             if self.writable and self._is_corruption_error(error):
                 self._recover_database()
             else:
                 self._close_database()
-        except OSError:
+        except OSError as error:
+            self._last_error = f"{type(error).__name__}: {error}"
             self._close_database()
 
         if self._connection is None:
@@ -175,6 +178,7 @@ class PersistentTTLCache(MutableMapping):
             self._recoveries += 1
 
     def _handle_database_error(self, error):
+        self._last_error = f"{type(error).__name__}: {error}"
         self._pending_touches.clear()
         self._dirty = False
         if self.writable and self._is_corruption_error(error):
@@ -218,6 +222,7 @@ class PersistentTTLCache(MutableMapping):
         self._misses = 0
         self._evictions = 0
         self._recoveries = 0
+        self._last_error = None
 
     @staticmethod
     def _encode(value):
@@ -539,6 +544,14 @@ class PersistentTTLCache(MutableMapping):
                 disk_bytes = self.path.stat().st_size
             except OSError:
                 pass
+        if not self.enabled:
+            health = "disabled"
+        elif self._connection is None:
+            health = "degraded" if self._last_error else "memory_only"
+        elif self._recoveries:
+            health = "recovered"
+        else:
+            health = "healthy"
         return {
             "entries": len(self),
             "hits": self._hits,
@@ -549,6 +562,8 @@ class PersistentTTLCache(MutableMapping):
             "disk_bytes": disk_bytes,
             "stored_mib": self._stored_bytes / (1024 * 1024),
             "disk_mib": disk_bytes / (1024 * 1024),
+            "health": health,
+            "last_error": self._last_error,
         }
 
     def flush(self):
@@ -581,7 +596,8 @@ class PersistentTTLCache(MutableMapping):
                 self._connection.execute("PRAGMA incremental_vacuum(128)")
             self._dirty = False
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as error:
+            self._last_error = f"{type(error).__name__}: {error}"
             try:
                 self._connection.rollback()
             except sqlite3.Error:

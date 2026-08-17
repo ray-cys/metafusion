@@ -71,6 +71,8 @@ DEFAULT_CONFIG = {
     "settings": {
         "schedule": True,
         "run_on_start": False,
+        "schedule_catch_up": True,
+        "schedule_catch_up_max_hours": 24.0,
         "run_times": ["06:00", "18:30"],
         "dry_run": False,
         "log_level": "INFO",
@@ -114,6 +116,7 @@ DEFAULT_CONFIG = {
         "run_poster": True,
         "run_season": True,
         "run_background": False,
+        "update_policy": "managed",
     },
     "cleanup": {
         "run_process": False,
@@ -185,6 +188,8 @@ ENV_BINDINGS = (
     ("METAFUSION_RUN", ("metafusion_run",), safe_bool),
     ("RUN_SCHEDULE", ("settings", "schedule"), safe_bool),
     ("RUN_ON_START", ("settings", "run_on_start"), safe_bool),
+    ("SCHEDULE_CATCH_UP", ("settings", "schedule_catch_up"), safe_bool),
+    ("SCHEDULE_CATCH_UP_MAX_HOURS", ("settings", "schedule_catch_up_max_hours"), safe_float),
     ("RUN_TIMES", ("settings", "run_times"), safe_list),
     ("DRY_RUN", ("settings", "dry_run"), safe_bool),
     ("LOG_LEVEL", ("settings", "log_level"), None),
@@ -216,6 +221,7 @@ ENV_BINDINGS = (
     ("RUN_POSTER", ("assets", "run_poster"), safe_bool),
     ("RUN_SEASON", ("assets", "run_season"), safe_bool),
     ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
+    ("ASSET_UPDATE_POLICY", ("assets", "update_policy"), None),
     ("RUN_CLEANUP", ("cleanup", "run_process"), safe_bool),
     ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
     ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
@@ -539,6 +545,12 @@ def validate_config(config):
                     errors.append(f"Invalid schedule time: {run_time!r}; expected HH:MM")
 
     numeric_rules = (
+        (
+            "settings.schedule_catch_up_max_hours",
+            settings.get("schedule_catch_up_max_hours"),
+            0.1,
+            168,
+        ),
         ("runtime.max_concurrency", runtime.get("max_concurrency"), 1, 64),
         ("runtime.request_timeout", runtime.get("request_timeout"), 1, 600),
         ("runtime.connect_timeout", runtime.get("connect_timeout"), 1, 120),
@@ -716,6 +728,11 @@ def validate_config(config):
 
     metadata = config.get("metadata", {})
     assets = config.get("assets", {})
+    asset_policy = str(assets.get("update_policy", "managed")).strip().lower()
+    if asset_policy not in {"fill_missing", "managed", "overwrite"}:
+        errors.append(
+            "assets.update_policy must be one of fill_missing, managed, overwrite"
+        )
     if metadata.get("run_enhanced", False) and not metadata.get("run_basic", False):
         errors.append("metadata.run_basic must be enabled for enhanced metadata")
     override_metadata_enabled = any(

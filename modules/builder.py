@@ -15,7 +15,8 @@ from helper.tmdb import (
 )
 from modules.utils import (
     get_meta_field, recursive_season_diff, get_best_poster, get_best_season, get_best_background,
-    smart_asset_upgrade, smart_season_asset_upgrade, asset_temp_path, download_poster, get_asset_path
+    smart_asset_upgrade, smart_season_asset_upgrade, asset_temp_path, download_poster, get_asset_path,
+    asset_write_allowed, claim_asset_destination,
 )
 from modules.kometa import (
     EPISODE_BASIC_FIELDS,
@@ -23,6 +24,10 @@ from modules.kometa import (
     kometa_tag_key,
     merge_generated_metadata,
 )
+
+
+class AssetDestinationCollisionError(RuntimeError):
+    pass
 
 
 def regional_movie_certification(release_dates, region="US"):
@@ -72,6 +77,42 @@ def cached_source_matches(cache_key, source_path, asset_path, asset_type, season
         season = (cached.get("seasons") or {}).get(str(season_number), {})
         return season.get("season_source_path") == source_path
     return cached.get(f"{asset_type}_source_path") == source_path
+
+
+def protected_asset_destination(
+    config, cache_key, asset_path, asset_type, *, media_type, full_title, season_number=None
+):
+    registry = config.setdefault("_asset_destination_registry", {})
+    claimed, owner = claim_asset_destination(registry, cache_key, asset_path)
+    if not claimed:
+        log_builder_event(
+            "builder_asset_destination_collision",
+            media_type=media_type,
+            asset_type=asset_type,
+            full_title=full_title,
+            destination=asset_path,
+            owner=owner,
+        )
+        raise AssetDestinationCollisionError(
+            f"Artwork destination {asset_path} is already claimed by {owner}"
+        )
+    allowed, reason = asset_write_allowed(
+        config,
+        cache_key,
+        asset_path,
+        asset_type,
+        season_number=season_number,
+    )
+    if not allowed:
+        log_builder_event(
+            "builder_preserving_existing_asset",
+            media_type=media_type,
+            asset_type=asset_type,
+            full_title=full_title,
+            destination=asset_path,
+            reason=reason,
+        )
+    return allowed, reason
 
 
 def _tag_value(metadata, field):
@@ -467,6 +508,18 @@ async def build_movie(
             poster_action = "failed"
             return
 
+        allowed, _protection_status = protected_asset_destination(
+            config, cache_key, asset_path, "poster",
+            media_type="Movie", full_title=full_title,
+        )
+        if not allowed:
+            poster_size = asset_path.stat().st_size if asset_path.exists() else 0
+            if asset_path.exists():
+                existing_assets.add(str(asset_path.resolve()))
+            result["poster"]["size"] = poster_size
+            poster_action = "skipped"
+            return
+
         if cached_source_matches(
             cache_key, best.get("file_path"), asset_path, "poster"
         ):
@@ -599,6 +652,18 @@ async def build_movie(
             log_builder_event("builder_no_asset_path", media_type="Movie", full_title=full_title, asset_type="background", extra="")
             result["background"]["size"] = background_size
             background_action = "failed"
+            return
+
+        allowed, _protection_status = protected_asset_destination(
+            config, cache_key, asset_path, "background",
+            media_type="Movie", full_title=full_title,
+        )
+        if not allowed:
+            background_size = asset_path.stat().st_size if asset_path.exists() else 0
+            if asset_path.exists():
+                existing_assets.add(str(asset_path.resolve()))
+            result["background"]["size"] = background_size
+            background_action = "skipped"
             return
 
         if cached_source_matches(
@@ -1271,6 +1336,18 @@ async def build_tv(
             poster_action = "failed"
             return
 
+        allowed, _protection_status = protected_asset_destination(
+            config, cache_key, asset_path, "poster",
+            media_type="TV Show", full_title=full_title,
+        )
+        if not allowed:
+            poster_size = asset_path.stat().st_size if asset_path.exists() else 0
+            if asset_path.exists():
+                existing_assets.add(str(asset_path.resolve()))
+            result["poster"]["size"] = poster_size
+            poster_action = "skipped"
+            return
+
         if cached_source_matches(
             cache_key, best.get("file_path"), asset_path, "poster"
         ):
@@ -1404,6 +1481,18 @@ async def build_tv(
             log_builder_event("builder_no_asset_path", media_type="TV Show", full_title=full_title, asset_type="background", extra="")
             result["background"]["size"] = background_size
             background_action = "failed"
+            return
+
+        allowed, _protection_status = protected_asset_destination(
+            config, cache_key, asset_path, "background",
+            media_type="TV Show", full_title=full_title,
+        )
+        if not allowed:
+            background_size = asset_path.stat().st_size if asset_path.exists() else 0
+            if asset_path.exists():
+                existing_assets.add(str(asset_path.resolve()))
+            result["background"]["size"] = background_size
+            background_action = "skipped"
             return
 
         if cached_source_matches(
@@ -1547,6 +1636,18 @@ async def build_tv(
         if asset_path is None:
             log_builder_event("builder_no_asset_path_season", media_type="TV Show", full_title=full_title, season_number=season_number)
             season_poster_actions[season_number] = "failed"
+            return
+
+        allowed, _protection_status = protected_asset_destination(
+            config, cache_key, asset_path, "season",
+            media_type="TV Show", full_title=full_title, season_number=season_number,
+        )
+        if not allowed:
+            season_poster_size = asset_path.stat().st_size if asset_path.exists() else 0
+            if asset_path.exists():
+                existing_assets.add(str(asset_path.resolve()))
+            result["season_posters"][season_number] = season_poster_size
+            season_poster_actions[season_number] = "skipped"
             return
 
         if cached_source_matches(

@@ -265,6 +265,12 @@ async def process_library(
             rating_keys=rating_keys,
             config=config,
             feature_flags=feature_flags,
+            server_id=getattr(server, "machineIdentifier", None) or "unknown",
+            library_uuid=(
+                getattr(library_section, "uuid", None)
+                or getattr(library_section, "key", None)
+                or library_name
+            ),
         )
         items = [planned.item for planned in planned_items]
         total_library_items = len(all_items)
@@ -456,8 +462,9 @@ async def process_library(
             nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_skipped, season_poster_missing, season_poster_failed
 
             item = planned.item
+            item_metadata = {"metadata": {}}
             stats = await process_item(
-                plex_item=item, consolidated_metadata=consolidated_metadata, config=config,
+                plex_item=item, consolidated_metadata=item_metadata, config=config,
                 feature_flags=feature_flags, existing_yaml_data=existing_yaml_data,
                 library_name=library_name, existing_assets=existing_assets,
                 session=session, ignored_fields=ignored_fields,
@@ -465,6 +472,11 @@ async def process_library(
                 work_reasons=planned.reasons,
             )
             if stats and isinstance(stats, dict):
+                generated_entries = item_metadata.get("metadata", {})
+                if isinstance(generated_entries, dict):
+                    consolidated_metadata.setdefault("metadata", {}).update(
+                        generated_entries
+                    )
                 all_stats.append(stats)
                 if (
                     stats.pop("_incremental_success", False)
@@ -583,13 +595,9 @@ async def process_library(
                 worker_task.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
-        if item_errors:
-            raise LibraryProcessingError(
-                f"{len(item_errors)} of {total_items} items failed in {library_name}"
-            ) from item_errors[0]
-
         if (
             full_scan
+            and not item_errors
             and mode_check(config, "plex")
             and feature_flags.get("plex_metadata", False)
             and not feature_flags.get("dry_run", False)
@@ -653,6 +661,12 @@ async def process_library(
                 plex_updated_at=meta.get("updatedAt"),
                 config_fingerprint=incremental_fingerprint,
             )
+
+        if item_errors:
+            raise LibraryProcessingError(
+                f"{len(item_errors)} of {total_items} items failed in {library_name}; "
+                "successful item output was preserved"
+            ) from item_errors[0]
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]
         percent_complete = round((completed / total_items) * 100, 2) if total_items else 100.0

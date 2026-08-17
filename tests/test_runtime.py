@@ -9,7 +9,7 @@ from helper import tmdb as tmdb_module
 from helper import logging as logging_module
 from helper import plex as plex_module
 from helper.plex import get_plex_metadata
-from helper.runtime import JobAlreadyRunningError, JobRunLock
+from helper.runtime import JobAlreadyRunningError, JobRunLock, RuntimeStatus
 from modules.utils import get_best_background
 
 
@@ -109,6 +109,32 @@ def test_job_run_lock_rejects_overlapping_writer(tmp_path):
 
     with JobRunLock(tmp_path / ".metafusion-run.lock"):
         assert (tmp_path / ".metafusion-run.lock").read_text().strip()
+
+
+def test_heartbeat_retries_after_transient_write_failure(tmp_path, caplog):
+    status = RuntimeStatus(tmp_path / "status.json", heartbeat_seconds=0)
+
+    class StopAfterRetry:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self, _seconds):
+            self.calls += 1
+            return self.calls > 1
+
+    attempts = []
+
+    def fail_once(**_values):
+        attempts.append(True)
+        raise OSError("temporary")
+
+    status._stop = StopAfterRetry()
+    status._update = fail_once
+    with caplog.at_level(logging.WARNING):
+        status._heartbeat_loop()
+
+    assert attempts == [True]
+    assert "retrying" in caplog.text
 
 
 def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():

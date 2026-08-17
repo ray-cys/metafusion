@@ -361,6 +361,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_retrying": "[TMDb] Retrying in {sleep_time}s... (Attempt {next_attempt}/{retries})",
         "tmdb_failed": "[TMDb] Failed after {retries} attempts for {url} with params {query}",
         "tmdb_cache_stats": "[TMDb] SQLite cache entries: {entries}, compressed: {stored_mib:.1f} MiB, disk: {disk_mib:.1f} MiB, hits: {hits}, misses: {misses}, evictions: {evictions}, recoveries: {recoveries}",
+        "tmdb_cache_degraded": "[TMDb] Persistent cache is degraded; continuing with memory cache: {error}",
     }
     levels = {
         "tmdb_no_api_key": "error",
@@ -374,6 +375,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_retrying": "info",
         "tmdb_failed": "error",
         "tmdb_cache_stats": "debug",
+        "tmdb_cache_degraded": "warning",
     }
     msg = messages.get(event, "[TMDb] Unknown event")
     try:
@@ -461,6 +463,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_asset": "[Dry Run] Would build {asset_type} asset for {media_type}: {full_title}",
         "builder_dry_run_asset_selected": "[Dry Run] Selected TMDb {asset_type} for {media_type}: {full_title} ({source_path})",
         "builder_artwork_language_fallback": "[{media_type}] Selected unrestricted-language TMDb {asset_type} for {full_title}: {language}.",
+        "builder_preserving_existing_asset": "[{media_type}] Preserving existing {asset_type} for {full_title} at {destination}: {reason}.",
+        "builder_asset_destination_collision": "[{media_type}] Refusing {asset_type} destination collision for {full_title} at {destination}; already claimed by {owner}.",
         "builder_no_asset_path": "[{media_type}] Asset path could not be determined: {full_title} {extra}. Skipping...",
         "builder_no_suitable_asset": "[{media_type}] No suitable TMDb {asset_type} found: {full_title} {extra}. Skipping...",
         "builder_downloading_asset": "[{media_type}] Downloading TMDb {asset_type}: {full_title} ({filesize})...",
@@ -469,6 +473,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale": "[{media_type}] Force upgrade due to stale image: {full_title} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
         "builder_already_up_to_date": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
         "builder_no_upgrade_needed": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
+        "builder_stale_candidate_downgrade": "[{media_type}] Preserving higher-quality {asset_type} for {full_title}; the stale replacement candidate is lower quality.",
         "builder_no_image_for_compare": "[{media_type}] No image comparison: {full_title} {extra}. Skipping...",
         "builder_error_image_compare": "[{media_type}] Failed to compare temp image checksum: {full_title} {extra}, {error}",
         "builder_dry_run_asset_season": "[Dry Run] Would build {asset_type} asset for {media_type} Season {season_number}: {full_title}",
@@ -481,6 +486,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale_season": "[{media_type}] Force upgrade due to stale image: {full_title} Season {season_number} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
         "builder_already_up_to_date_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
         "builder_no_upgrade_needed_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
+        "builder_stale_candidate_downgrade_season": "[{media_type}] Preserving higher-quality season {asset_type} for {full_title} Season {season_number}; the stale replacement candidate is lower quality.",
         "builder_no_image_for_compare_season": "[{media_type}] No image comparison: {full_title} Season {season_number}. Skipping...",
         "builder_error_image_compare_season": "[{media_type}] Failed to compare temp image checksum: {full_title} Season {season_number}: {error}",
     }
@@ -504,6 +510,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_asset": "info",
         "builder_dry_run_asset_selected": "info",
         "builder_artwork_language_fallback": "info",
+        "builder_preserving_existing_asset": "warning",
+        "builder_asset_destination_collision": "error",
         "builder_no_asset_path": "error",
         "builder_no_suitable_asset": "info",
         "builder_downloading_asset": "debug",
@@ -512,6 +520,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale": "info",
         "builder_already_up_to_date": "info",
         "builder_no_upgrade_needed": "info",
+        "builder_stale_candidate_downgrade": "warning",
         "builder_no_image_for_compare": "warning",
         "builder_error_image_compare": "error",
         "builder_dry_run_asset_season": "info",
@@ -523,6 +532,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale_season": "info",
         "builder_already_up_to_date_season": "info",
         "builder_no_upgrade_needed_season": "info",
+        "builder_stale_candidate_downgrade_season": "warning",
         "builder_no_image_for_compare_season": "warning",
         "builder_error_image_compare_season": "error",
     }
@@ -587,11 +597,13 @@ def log_asset_status(
         "FORCE_UPGRADE_STALE": "builder_force_upgrade_stale",
         "ALREADY_UP_TO_DATE": "builder_already_up_to_date",
         "NO_UPGRADE_NEEDED": "builder_no_upgrade_needed",
+        "STALE_CANDIDATE_DOWNGRADE": "builder_stale_candidate_downgrade",
         "NO_IMAGE_FOR_COMPARE": "builder_no_image_for_compare",
         "ERROR_IMAGE_COMPARE": "builder_error_image_compare",
         "FORCE_UPGRADE_STALE_SEASON": "builder_force_upgrade_stale_season",
         "ALREADY_UP_TO_DATE_SEASON": "builder_already_up_to_date_season",
         "NO_UPGRADE_NEEDED_SEASON": "builder_no_upgrade_needed_season",
+        "STALE_CANDIDATE_DOWNGRADE_SEASON": "builder_stale_candidate_downgrade_season",
         "NO_IMAGE_FOR_COMPARE_SEASON": "builder_no_image_for_compare_season",
         "ERROR_IMAGE_COMPARE_SEASON": "builder_error_image_compare_season",
     }

@@ -28,7 +28,7 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
     """Write a value-free diagnostic report suitable for a GitHub issue."""
     environ = os.environ if environ is None else environ
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"support-report-{timestamp}.txt"
     settings = config.get("settings", {})
     plex_metadata = config.get("plex_metadata", {})

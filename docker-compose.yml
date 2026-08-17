@@ -3,10 +3,7 @@ services:
     image: "${METAFUSION_IMAGE:-ghcr.io/ray-cys/metafusion:main}"
     container_name: metafusion
     init: true
-    user: "${PUID:-10001}:${PGID:-10001}"
     read_only: true
-    cap_drop:
-      - ALL
     security_opt:
       - no-new-privileges:true
     tmpfs:
@@ -35,6 +32,8 @@ services:
       DRY_RUN: ${DRY_RUN-}
       RUN_SCHEDULE: ${RUN_SCHEDULE-}
       RUN_ON_START: ${RUN_ON_START-}
+      SCHEDULE_CATCH_UP: ${SCHEDULE_CATCH_UP-}
+      SCHEDULE_CATCH_UP_MAX_HOURS: ${SCHEDULE_CATCH_UP_MAX_HOURS-}
       RUN_TIMES: ${RUN_TIMES-}
       LOG_LEVEL: ${LOG_LEVEL-}
       RUN_BASIC: ${RUN_BASIC-}
@@ -52,6 +51,7 @@ services:
       RUN_POSTER: ${RUN_POSTER-}
       RUN_SEASON: ${RUN_SEASON-}
       RUN_BACKGROUND: ${RUN_BACKGROUND-}
+      ASSET_UPDATE_POLICY: ${ASSET_UPDATE_POLICY-}
       RUN_CLEANUP: ${RUN_CLEANUP-}
       MAX_CONCURRENCY: ${MAX_CONCURRENCY-}
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT-}

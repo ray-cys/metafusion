@@ -235,6 +235,78 @@ def test_asset_upgrade_stale_background_and_corrupt_existing(monkeypatch, tmp_pa
     )[0:2] == (False, "ERROR_IMAGE_COMPARE")
 
 
+def test_managed_asset_policy_preserves_manual_changes(monkeypatch, tmp_path):
+    asset = tmp_path / "poster.jpg"
+    asset.write_bytes(b"managed")
+    checksum = utils.sha256_file(asset)
+    cache = {
+        "movie": {
+            "poster_path": str(asset),
+            "poster_checksum": checksum,
+        }
+    }
+    monkeypatch.setattr(utils, "load_cache", lambda: cache)
+
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "managed"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (True, "managed")
+    asset.write_bytes(b"manual replacement")
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "managed"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (False, "modified")
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "fill_missing"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (False, "fill_missing")
+    assert utils.asset_write_allowed(
+        {"assets": {"update_policy": "overwrite"}},
+        "movie",
+        asset,
+        "poster",
+    ) == (True, "overwrite")
+
+
+def test_stale_artwork_does_not_downgrade_quality(monkeypatch, tmp_path):
+    config = selection_config()
+    asset = tmp_path / "poster.jpg"
+    candidate = tmp_path / "candidate.jpg"
+    asset.write_bytes(encoded_image("red", (64, 64)))
+    candidate.write_bytes(encoded_image("blue", (16, 16)))
+    monkeypatch.setattr(
+        utils, "load_cache", lambda: {"movie": {"poster_average": 8}}
+    )
+    monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: True)
+
+    assert utils.smart_asset_upgrade(
+        config,
+        asset,
+        {"width": 16, "height": 16, "vote_average": 4},
+        new_image_path=candidate,
+        cache_key="movie",
+    )[0:2] == (False, "STALE_CANDIDATE_DOWNGRADE")
+
+
+def test_asset_destination_claims_reject_different_cache_keys(tmp_path):
+    registry = {}
+    destination = tmp_path / "poster.jpg"
+
+    assert utils.claim_asset_destination(registry, "movie:1", destination)[0]
+    assert utils.claim_asset_destination(registry, "movie:1", destination)[0]
+    claimed, owner = utils.claim_asset_destination(
+        registry, "movie:2", destination
+    )
+    assert claimed is False
+    assert owner == "movie:1"
+
+
 def test_season_asset_upgrade_decision_matrix(monkeypatch, tmp_path):
     config = selection_config()
     asset = tmp_path / "Season00.jpg"
