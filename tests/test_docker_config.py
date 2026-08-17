@@ -43,8 +43,13 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert service["healthcheck"]["start_period"] == "20s"
 
 
-def test_readme_documents_every_supported_environment_variable():
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_configuration_reference_documents_every_supported_environment_variable():
+    documentation = "\n".join(
+        (
+            (REPO_ROOT / "README.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8"),
+        )
+    )
     documented = {env_name for env_name, _path, _converter in ENV_BINDINGS}
     documented.update(
         file_env for file_env, _path, _direct_env in SECRET_FILE_BINDINGS
@@ -65,7 +70,7 @@ def test_readme_documents_every_supported_environment_variable():
         }
     )
 
-    missing = sorted(name for name in documented if f"`{name}`" not in readme)
+    missing = sorted(name for name in documented if f"`{name}`" not in documentation)
     assert missing == []
 
 
@@ -123,13 +128,22 @@ def test_ci_publishes_versioned_and_immutable_signed_images():
     assert "cosign sign --yes" in workflow
 
 
-def test_readme_documents_exact_image_pinning_and_rollback():
+def test_deployment_docs_document_exact_image_pinning_and_rollback():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    deployment_docs = "\n".join(
+        (
+            readme,
+            (REPO_ROOT / "docs" / "docker-compose.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "unraid.md").read_text(encoding="utf-8"),
+        )
+    )
 
-    assert "## Versioned Docker releases and rollback" in readme
-    assert "ghcr.io/ray-cys/metafusion:1.2.3" in readme
-    assert "METAFUSION_IMAGE" in readme
-    assert "sha-<full-commit>" in readme
+    assert "## Docker image tags and rollback" in readme
+    assert "docs/docker-compose.md#update-or-roll-back" in readme
+    assert "docs/unraid.md#update-or-roll-back" in readme
+    assert "ghcr.io/ray-cys/metafusion:1.2.3" in deployment_docs
+    assert "METAFUSION_IMAGE" in deployment_docs
+    assert "sha-<full-commit>" in deployment_docs
 
 
 def test_docker_build_embeds_version_and_commit():

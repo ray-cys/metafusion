@@ -1,0 +1,209 @@
+# Configuration reference
+
+MetaFusion supports environment variables, secret files, and
+`/config/config.yml`. The supplied Docker Compose and Unraid templates expose
+the same application settings.
+
+## Configuration priority
+
+Values are merged in this order, with later sources taking priority:
+
+1. Built-in defaults.
+2. `/config/config.yml`.
+3. `PLEX_TOKEN_FILE` and `TMDB_API_KEY_FILE`.
+4. Non-empty environment variables.
+
+Blank environment bindings are ignored, allowing `config.yml` or defaults to
+supply the value. A non-empty `PLEX_TOKEN` or `TMDB_API_KEY` takes priority over
+its secret file.
+
+The container maintains `/config/config_template.yml` as a value-free
+reference. It never copies environment values or secrets into that file and
+never creates `config.yml` automatically. Copy the template to `config.yml`
+when YAML configuration is wanted, then edit only the copy. Image updates may
+refresh the template but never replace an existing `config.yml`.
+
+Run `python metafusion.py --doctor` inside the container to validate the
+effective configuration without contacting Plex or TMDb.
+
+## Connections, libraries, and mode
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RUN_MODE` | `kometa` | `kometa` writes Kometa YAML/assets; `plex` never writes Kometa YAML. |
+| `PLEX_URL` | placeholder | Complete Plex server URL, including port. |
+| `PLEX_TOKEN` | required | Plex authentication token. |
+| `PLEX_TOKEN_FILE` | unset | Mounted file containing the Plex token; a non-empty direct token wins. |
+| `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
+| `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations for Plex-mode artwork. Docker mappings are still required. |
+| `TMDB_API_KEY` | required | TMDb API key. |
+| `TMDB_API_KEY_FILE` | unset | Mounted file containing the TMDb key; a non-empty direct key wins. |
+| `TMDB_LANGUAGE` | `en-US` | Metadata language and primary artwork language. |
+| `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered artwork-only fallbacks; metadata text continues to use `TMDB_LANGUAGE`. |
+| `TMDB_REGION` | `US` | Metadata release/certification region, with US fallback behavior. |
+| `ARTWORK_ALLOW_ANY_LANGUAGE` | `True` | Make one unfiltered image request when preferred artwork languages produce no usable result. |
+| `TMDB_TITLE_SEARCH_FALLBACK` | `False` | Use conservative exact normalized title/year search when Plex has no usable external ID. |
+| `TMDB_EPISODE_GROUP_FALLBACK` | `True` | Use an alternate TMDb episode group only when one mapping uniquely covers the Plex inventory. |
+| `KOMETA_PATH` | `/kometa` | Kometa-mode container output root. |
+
+Tokens and keys are redacted from MetaFusion logs. They remain visible to
+Docker or Unraid administrators when supplied as environment variables.
+
+## Scheduling and processing
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `METAFUSION_RUN` | `False` | Run once rather than staying in scheduler mode. Keep false on the long-running service. |
+| `RUN_SCHEDULE` | `True` | Keep the container running and execute at `RUN_TIMES`. |
+| `RUN_ON_START` | `False` | Run one job when the scheduler starts, then continue normally. |
+| `SCHEDULE_CATCH_UP` | `True` | Run the latest recently missed scheduled slot after restart. |
+| `SCHEDULE_CATCH_UP_MAX_HOURS` | `24` | Maximum age of a missed slot eligible for startup catch-up. |
+| `RUN_TIMES` | `06:00,18:30` | Comma-separated daily `HH:MM` times. |
+| `TZ` | `UTC` | Timezone used by the scheduler. |
+| `DRY_RUN` | `False` | Calculate without normal writes/deletions. A direct Plex metadata dry-run still writes a redacted audit report. |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
+| `RUN_BASIC` | `True` | Generate core Kometa fields or enable core direct Plex fields after Plex API opt-in. |
+| `RUN_ENHANCED` | `True` | Add supported director/writer/producer fields. Requires `RUN_BASIC=True`; cast remains with Plex's provider. |
+| `RUN_POSTER` | `True` | Generate movie and show posters. |
+| `RUN_SEASON` | `True` | Generate season posters, including Specials. |
+| `RUN_BACKGROUND` | `False` | Generate movie and show backgrounds. |
+| `RUN_CLEANUP` | `False` | Enable guarded full-scan cleanup. Always test with dry-run. |
+
+## Policy controls
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ASSET_UPDATE_POLICY` | `managed` | `fill_missing`, `managed`, or `overwrite` behavior for existing artwork files. |
+| `KOMETA_TAG_POLICY` | `append` | `append` preserves existing tags; `sync` makes supported generated tag fields match TMDb. |
+| `PLEX_METADATA_UPDATES` | `False` | Plex mode only. Opt in to supported direct metadata edits through the Plex API. |
+| `PLEX_METADATA_POLICY` | `fill_missing` | `fill_missing`, `managed`, or acknowledged `overwrite` behavior for direct Plex fields. |
+| `PLEX_METADATA_LOCK_WRITES` | `False` | Lock scalar Plex fields written by MetaFusion. |
+| `PLEX_METADATA_LOCK_MERGED_TAGS` | `False` | Lock the complete merged tag field after additions, including tags from other sources. |
+| `PLEX_METADATA_ALLOW_OVERWRITE` | `False` | Required acknowledgement for direct Plex metadata `overwrite`. Not required for artwork overwrite. |
+| `PLEX_METADATA_RECHECK_DAYS` | `30` | Recheck unchanged direct Plex metadata after this many days; `0` disables timed rechecks. |
+| `PLEX_METADATA_MAX_WRITES_PER_RUN` | `100` | Maximum Plex items or child objects written in one job. |
+| `PLEX_METADATA_REPORT_RETENTION` | `10` | Audit reports retained under `/config/reports`. |
+| `PLEX_METADATA_FIELDS` | all supported safe fields | Optional comma-separated allowlist. |
+
+Supported values for `PLEX_METADATA_FIELDS` are:
+
+```text
+title,originalTitle,originallyAvailableAt,contentRating,studio,tagline,summary,
+country,genre,director,writer,producer
+```
+
+Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
+[Policies](policies.md) before enabling direct Plex writes or cleanup.
+
+## Runtime and Plex reliability
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MAX_CONCURRENCY` | `8` | Maximum media items processed concurrently. |
+| `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
+| `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds; must not exceed `REQUEST_TIMEOUT`. |
+| `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |
+| `PLEX_RETRIES` | `3` | Plex startup connection attempts. |
+| `PLEX_RETRY_DELAY` | `1` | Base delay between Plex connection retries in seconds. |
+| `SHUTDOWN_TIMEOUT` | `15` | Internal graceful-shutdown deadline in seconds. |
+| `STOP_GRACE_PERIOD` | `20s` | Docker Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
+| `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size in MiB. |
+| `PUID` | `10001` | Runtime user ID; use `99` on standard Unraid. |
+| `PGID` | `10001` | Runtime group ID; use `100` on standard Unraid. |
+
+Do not use Compose `user:` or Docker `--user`; those options bypass
+`PUID`/`PGID` startup handling.
+
+## Incremental processing, cache, output, and health
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INCREMENTAL` | `True` | Skip successfully processed unchanged items. |
+| `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between complete reconciliation scans. |
+| `IMAGE_UPGRADE_DAYS` | `30` | Default minimum age before unchanged artwork is reconsidered; `0` disables timed rechecks. |
+| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background interval. |
+| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background interval. |
+| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster interval. |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
+| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
+| `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
+| `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables the byte cap. |
+| `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
+| `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
+| `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
+| `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
+| `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
+
+Artwork age comes from saved MetaFusion upgrade timestamps, not filesystem
+mtime. Decimal day values are accepted (`0.5` is 12 hours). A due interval
+makes an item eligible for evaluation; `ASSET_UPDATE_POLICY` and quality rules
+still determine whether an existing file can be replaced.
+
+## Artwork selection
+
+The `MAX` settings are preferred high-resolution thresholds, not hard download
+caps. `MIN` values describe the preferred acceptable dimensions. Vote settings
+guide candidate selection and upgrades.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTER_MAX_WIDTH` | `2000` | Preferred poster width threshold. |
+| `POSTER_MAX_HEIGHT` | `3000` | Preferred poster height threshold. |
+| `POSTER_MIN_WIDTH` | `1000` | Minimum preferred poster width. |
+| `POSTER_MIN_HEIGHT` | `1500` | Minimum preferred poster height. |
+| `POSTER_PREFER_VOTE` | `5.0` | Preferred TMDb poster vote score. |
+| `POSTER_VOTE_RELAXED` | `3.5` | Relaxed fallback poster vote score. |
+| `POSTER_VOTE_THRESHOLD` | `5.0` | Poster upgrade vote threshold. |
+| `SEASON_MAX_WIDTH` | `2000` | Preferred season-poster width threshold. |
+| `SEASON_MAX_HEIGHT` | `3000` | Preferred season-poster height threshold. |
+| `SEASON_MIN_WIDTH` | `1000` | Minimum preferred season-poster width. |
+| `SEASON_MIN_HEIGHT` | `1500` | Minimum preferred season-poster height. |
+| `SEASON_PREFER_VOTE` | `5.0` | Preferred TMDb season-poster vote score. |
+| `SEASON_VOTE_RELAXED` | `0.5` | Relaxed fallback season-poster vote score. |
+| `SEASON_VOTE_THRESHOLD` | `3.0` | Season-poster upgrade vote threshold. |
+| `BG_MAX_WIDTH` | `3840` | Preferred background width threshold. |
+| `BG_MAX_HEIGHT` | `2160` | Preferred background height threshold. |
+| `BG_MIN_WIDTH` | `1920` | Minimum preferred background width. |
+| `BG_MIN_HEIGHT` | `1080` | Minimum preferred background height. |
+| `BG_PREFER_VOTE` | `5.0` | Preferred TMDb background vote score. |
+| `BG_VOTE_RELAXED` | `3.5` | Relaxed fallback background vote score. |
+| `BG_VOTE_THRESHOLD` | `5.0` | Background upgrade vote threshold. |
+
+## Container and Compose paths
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `METAFUSION_IMAGE` | `ghcr.io/ray-cys/metafusion:main` | Compose image tag or digest. Pin an exact version for production. |
+| `CONFIG_PATH` | `./config` | Compose host path mounted at `/config`. |
+| `KOMETA_HOST_PATH` | `./kometa` | Compose host path mounted at `/kometa`. |
+| `CONFIG_DIR` | `/config` | Container configuration/state directory; normally fixed. |
+| `STATUS_FILE` | `/tmp/metafusion-status.json` | Ephemeral scheduler heartbeat; normally fixed. |
+
+The Unraid template defaults its image to `latest` and its config host path to
+`/mnt/user/appdata/metafusion`. These are platform defaults rather than
+application configuration.
+
+## Per-library overrides
+
+Environment artwork intervals are global defaults. `config.yml` can override
+artwork cadence and direct Plex metadata settings for exact Plex library
+names:
+
+```yaml
+library_overrides:
+  Movies 4K:
+    image_upgrades:
+      movie_days: 60
+  Anime:
+    image_upgrades:
+      series_days: 7
+      season_days: 7
+    plex_metadata:
+      policy: fill_missing
+      max_writes_per_run: 25
+```
+
+Only `image_upgrades` and `plex_metadata` are accepted inside a library
+override. `ASSET_UPDATE_POLICY` remains global. Blank per-type artwork values
+inherit `IMAGE_UPGRADE_DAYS`. `--doctor` rejects unknown override keys,
+invalid policies, and library overwrite settings without acknowledgement.
