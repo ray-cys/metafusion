@@ -1,14 +1,15 @@
 # MetaFusion
 
-MetaFusion reads selected Plex libraries, enriches their metadata with TMDb,
-and manages posters, backgrounds, and season artwork. It can create
-Kometa-compatible metadata files or place artwork beside Plex media.
+MetaFusion reads the existing items in selected Plex libraries and obtains
+metadata and artwork from TMDb. It is not a Plex scanner or metadata agent.
+Instead, it prepares output for either Kometa or Plex according to `RUN_MODE`.
 
 ## What it does
 
-- Generates movie, show, season, Specials/Season 0, and episode metadata.
-- Downloads and upgrades movie/show posters, backgrounds, and season posters.
-- Supports Kometa metadata output and Plex-side artwork output.
+- Reads movies, shows, seasons, Specials/Season 0, and episodes from Plex.
+- Retrieves additional metadata and artwork from TMDb.
+- Generates Kometa YAML and assets, or writes Plex-compatible local artwork.
+- Can optionally fill selected missing Plex metadata fields through the Plex API.
 - Skips unchanged Plex items between periodic reconciliation scans.
 - Supports separate movie, series, and season artwork refresh intervals.
 - Preserves manually managed assets during guarded, opt-in cleanup.
@@ -22,7 +23,55 @@ Kometa-compatible metadata files or place artwork beside Plex media.
 - Docker Compose v2 or an Unraid Docker installation.
 - A writable Kometa path when `RUN_MODE=kometa`.
 
+## Choose how MetaFusion operates
+
+Choose one workflow before configuring the container:
+
+| Your goal | Settings | MetaFusion output | Who changes Plex metadata? |
+| --- | --- | --- | --- |
+| Use MetaFusion with Kometa | `RUN_MODE=kometa` | YAML under `/kometa/metadata` and artwork under `/kometa/assets` | Kometa, when Kometa next reads the generated files |
+| Use Plex without direct metadata edits | `RUN_MODE=plex` and `PLEX_METADATA_UPDATES=False` | Local artwork beside the media files; no YAML | Plex's existing metadata provider; MetaFusion makes no metadata edits |
+| Use Plex with TMDb metadata gap-filling | `RUN_MODE=plex` and `PLEX_METADATA_UPDATES=True` | Local artwork plus optional direct Plex API edits; no YAML | MetaFusion fills or manages only the configured supported fields |
+
+The important distinction is:
+
+- `RUN_MODE=kometa` never edits Plex metadata directly. MetaFusion writes files,
+  and a separate Kometa run applies them to Plex.
+- `RUN_MODE=plex` never creates Kometa YAML. It writes local artwork beside the
+  media. Direct metadata editing is a separate opt-in controlled by
+  `PLEX_METADATA_UPDATES` and is disabled by default.
+- Artwork controls (`RUN_POSTER`, `RUN_SEASON`, and `RUN_BACKGROUND`) are
+  independent of direct Plex metadata editing.
+
+If you already run Kometa, choose Kometa mode. If you do not use Kometa,
+choose Plex mode and begin with direct metadata updates disabled.
+
 ## Quick start
+
+Set `RUN_MODE` for the workflow selected above. Plex mode also needs writable
+media mappings when any artwork option is enabled. Kometa mode needs the
+`/kometa` mapping but does not need media-directory mappings.
+
+Start with one of these combinations:
+
+```text
+# Existing Kometa installation: generate files for Kometa to consume
+RUN_MODE=kometa
+PLEX_METADATA_UPDATES=False
+
+# No Kometa: write local artwork but leave Plex metadata unchanged
+RUN_MODE=plex
+PLEX_METADATA_UPDATES=False
+
+# No Kometa: write local artwork and cautiously fill missing Plex metadata
+RUN_MODE=plex
+PLEX_METADATA_UPDATES=True
+PLEX_METADATA_POLICY=fill_missing
+DRY_RUN=True
+```
+
+The third example is initially a preview. Review its report before setting
+`DRY_RUN=False`.
 
 ### Environment-variable configuration
 
@@ -104,6 +153,7 @@ The `/config` mapping is also required for persistent application state and the
 managed `/config/config_template.yml` reference. Duplicate that file as
 `config.yml` only when YAML configuration is wanted; environment-only setups
 can leave `config.yml` absent.
+
 `/kometa` is needed only in Kometa mode. In Plex mode, add writable media path
 mappings for every artwork destination. If Plex reports different paths, set
 `PLEX_PATH_MAPPINGS` to translate them. Keep the image entrypoint and Docker
@@ -148,41 +198,67 @@ Targeted runs disable cleanup. `--library` and `--rating-key` may be repeated or
 comma-separated. Add `--full-scan` to ignore incremental state, or
 `--explain-selection` to report why an item is due without processing it.
 
-## Kometa and Plex operation modes
+## What happens during a run
 
-`RUN_MODE` selects who applies metadata and where artwork is stored. It does
-not change the TMDb source or the selected Plex libraries.
+Every job starts the same way:
 
-| Behavior | Kometa mode | Plex mode |
+1. MetaFusion connects to Plex and inventories only the names in
+   `PLEX_LIBRARIES`.
+2. It uses the Plex matches to retrieve metadata and artwork from TMDb.
+3. It skips unchanged items when incremental processing says they are not due.
+4. It writes different output according to `RUN_MODE`.
+5. It stores cache and processing state under `/config`.
+
+MetaFusion never replaces Plex's scanner, never modifies video/audio media
+files, and never deletes movies or episodes.
+
+### `RUN_MODE=kometa`: hand files to Kometa
+
+```text
+Plex inventory + TMDb -> MetaFusion -> /kometa YAML and assets -> Kometa -> Plex
+```
+
+MetaFusion's job ends after writing Kometa-compatible files:
+
+- `RUN_BASIC=True` writes the core metadata to
+  `/kometa/metadata/movie_metadata.yml` and `tv_metadata.yml`.
+- `RUN_ENHANCED=True` adds the supported cast and crew metadata to those files.
+- `RUN_POSTER`, `RUN_SEASON`, and `RUN_BACKGROUND` control artwork under
+  `/kometa/assets`.
+
+MetaFusion does not edit Plex metadata or place artwork beside media in this
+mode. Kometa must be configured to read the generated YAML/assets and must run
+afterward before Plex changes. `PLEX_METADATA_UPDATES=True` is rejected in
+Kometa mode because direct Plex edits and Kometa output are separate workflows.
+
+### `RUN_MODE=plex`: work directly with a Plex library
+
+```text
+Plex inventory + TMDb -> MetaFusion -> local artwork and/or Plex API -> Plex
+```
+
+Plex mode never creates or updates Kometa YAML. It provides two independent
+functions:
+
+| Function | How to enable it | Result |
 | --- | --- | --- |
-| Metadata output | Kometa-compatible YAML under `/kometa/metadata` | No Kometa YAML; optional direct edits through the Plex API |
-| Metadata consumer | Kometa reads the YAML and later updates Plex | Plex receives the edit immediately |
-| Artwork output | Organized under `/kometa/assets` for Kometa | Written beside the media using Plex local-asset names |
-| Field ownership | Kometa configuration and schedules control application | MetaFusion records only its own direct writes in `meta_db.sqlite3` |
-| Best fit | Existing Kometa users, reviewable YAML, broad metadata control | Users who do not run Kometa and want local artwork or cautious gap-filling |
+| Local artwork | Enable `RUN_POSTER`, `RUN_SEASON`, or `RUN_BACKGROUND` | MetaFusion writes Plex-compatible filenames beside the media. Writable media mounts and correct path mappings are required. |
+| Direct metadata enrichment | Set `PLEX_METADATA_UPDATES=True` | MetaFusion compares supported Plex fields with TMDb and applies the selected safety policy through the Plex API. No media mount is needed for metadata-only use. |
 
-In **Kometa mode**, MetaFusion never edits Plex metadata through the Plex API.
-`RUN_BASIC` creates core title, summary, release, certification, studio,
-country, and genre values. `RUN_ENHANCED` adds supported cast and crew values.
-The generated YAML is useful only after Kometa is configured to consume it and
-runs its own update. This separation makes changes easy to inspect, back up,
-and manage centrally with other Kometa files.
+With `PLEX_METADATA_UPDATES=False`, Plex mode is artwork-only and MetaFusion
+does not change any Plex metadata field. `RUN_BASIC` and `RUN_ENHANCED` affect
+direct Plex metadata only after that opt-in is enabled. Artwork settings remain
+independent of those metadata settings.
 
-In **Plex mode**, MetaFusion always skips Kometa YAML creation. Artwork is
-written to the media folders for Plex's local-asset scanner. Direct metadata
-enrichment is a separate, disabled-by-default feature controlled by
-`PLEX_METADATA_UPDATES`. When enabled, `RUN_BASIC` covers safe scalar fields
-and tags; `RUN_ENHANCED` adds supported movie crew and episode director/writer
-tags. Direct mode intentionally does not manage cast/roles, ratings, labels,
-collections, matching IDs, playback data, extras, or recommendations. Those
-remain the responsibility of Plex's online provider or the user.
+Plex receives successful API metadata edits immediately. Local artwork appears
+when Plex next discovers it according to the library's scan and local-assets
+settings. MetaFusion does not force a metadata refresh, because a refresh can
+also replace unlocked metadata supplied by another provider.
 
-Direct API field edits are visible immediately after Plex accepts them. New
-local artwork files are discovered according to the library's Plex scan and
-local-assets settings; MetaFusion does not force a metadata refresh merely to
-make an image appear, because that refresh can also replace unlocked metadata.
+### Direct Plex metadata scope
 
-Supported direct Plex fields are deliberately narrow:
+Direct Plex metadata is intentionally narrower than Kometa metadata because it
+changes the live Plex database. Supported fields are:
 
 | Plex item | Basic fields and tags | Enhanced additions |
 | --- | --- | --- |
@@ -191,12 +267,11 @@ Supported direct Plex fields are deliberately narrow:
 | Season | Missing title and summary | None |
 | Episode | Missing title, summary, and air date | Directors and writers |
 
-Plex's online provider remains important for matching, IDs, cast and character
-roles, audience/critic ratings, collections, extras, recommendations, and
-provider-specific artwork choices. MetaFusion does not attempt to duplicate
-those services. Kometa metadata is broader because the YAML is reviewable and
-Kometa owns the later application step; direct Plex metadata is intentionally
-smaller because every API change affects the live Plex database immediately.
+`RUN_BASIC` controls the basic columns above. `RUN_ENHANCED` adds only the
+listed crew fields and requires `RUN_BASIC=True`. MetaFusion intentionally
+leaves matching IDs, cast and character roles, audience/critic ratings, labels,
+collections, playback data, extras, recommendations, and provider-specific
+artwork choices to Plex's online provider or the user.
 
 ### Direct Plex metadata safety
 
@@ -307,14 +382,14 @@ The tables below list every supported user-configurable Docker variable.
 | `PLEX_TOKEN` | required | Plex authentication token. |
 | `PLEX_TOKEN_FILE` | unset | File containing the Plex token; direct token wins. |
 | `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
-| `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations; bind mounts are still required. |
+| `PLEX_PATH_MAPPINGS` | unset | Plex-artwork mode only. Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations; bind mounts are still required. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | File containing the TMDb key; direct key wins. |
 | `TMDB_LANGUAGE` | `en-US` | TMDb metadata language and primary artwork language. |
 | `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered artwork-only language fallbacks; these never change metadata text. |
 | `TMDB_REGION` | `US` | Metadata release/certification region, with US as the fallback. |
-| `RUN_MODE` | `kometa` | `kometa` or `plex`. Plex mode does not create Kometa YAML. |
-| `KOMETA_PATH` | `/kometa` | Container path for Kometa metadata and assets. |
+| `RUN_MODE` | `kometa` | Select the output workflow: `kometa` writes YAML/assets for Kometa; `plex` never writes Kometa YAML. |
+| `KOMETA_PATH` | `/kometa` | Kometa mode only. Container path for generated YAML and assets. |
 
 Tokens and API keys are redacted from MetaFusion logs. Environment values
 remain visible to Docker/Unraid administrators. Use the `*_FILE` options when
@@ -331,9 +406,9 @@ your deployment supports protected secret mounts.
 | `TZ` | `UTC` | Container timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate without edits/deletions; direct Plex metadata dry-runs still write a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-| `RUN_BASIC` | `True` | Generate core metadata. Required by enhanced metadata, but not artwork-only runs. |
-| `RUN_ENHANCED` | `True` | Generate extended cast/crew metadata. |
-| `PLEX_METADATA_UPDATES` | `False` | Opt in to direct Plex API metadata enrichment in Plex mode. |
+| `RUN_BASIC` | `True` | Kometa mode: write core YAML fields. Plex mode: enable core API fields only when `PLEX_METADATA_UPDATES=True`. |
+| `RUN_ENHANCED` | `True` | Add supported cast/crew YAML in Kometa mode or limited crew API fields in opted-in Plex mode. Requires `RUN_BASIC=True`. |
+| `PLEX_METADATA_UPDATES` | `False` | Plex mode only. Opt in to direct Plex API metadata enrichment; when false, MetaFusion leaves Plex metadata unchanged. |
 | `PLEX_METADATA_POLICY` | `fill_missing` | `fill_missing`, `managed`, or acknowledged `overwrite`. |
 | `PLEX_METADATA_LOCK_WRITES` | `False` | Lock scalar fields written through Plex; use cautiously. |
 | `PLEX_METADATA_LOCK_MERGED_TAGS` | `False` | Lock whole merged tag fields after additions. |
@@ -342,10 +417,10 @@ your deployment supports protected secret mounts.
 | `PLEX_METADATA_MAX_WRITES_PER_RUN` | `100` | Maximum Plex item/season/episode API writes in one job. |
 | `PLEX_METADATA_REPORT_RETENTION` | `10` | Audit reports retained under `/config/reports`. |
 | `PLEX_METADATA_FIELDS` | all safe fields | Optional comma-separated direct-write allowlist. |
-| `RUN_POSTER` | `True` | Manage movie and show posters. |
-| `RUN_SEASON` | `True` | Manage season posters, including Specials. |
-| `RUN_BACKGROUND` | `False` | Manage movie and show backgrounds. |
-| `RUN_CLEANUP` | `False` | Enable guarded orphan cleanup. Test with dry-run first. |
+| `RUN_POSTER` | `True` | Write movie/show posters to Kometa assets or beside Plex media, according to `RUN_MODE`. |
+| `RUN_SEASON` | `True` | Write season posters, including Specials, to the output selected by `RUN_MODE`. |
+| `RUN_BACKGROUND` | `False` | Write movie/show backgrounds to the output selected by `RUN_MODE`. |
+| `RUN_CLEANUP` | `False` | Enable guarded mode-specific cleanup. Test with dry-run first; media files are never deleted. |
 
 ### Runtime and Plex reliability
 
@@ -377,8 +452,8 @@ your deployment supports protected secret mounts.
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
 | `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
 | `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables it. |
-| `VALIDATE_OUTPUT` | `True` | Validate Kometa YAML before replacing known-good output. |
-| `OUTPUT_BACKUP_COUNT` | `3` | Metadata backups retained per output file. |
+| `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
+| `OUTPUT_BACKUP_COUNT` | `3` | Kometa mode only. Metadata backups retained per YAML file. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Allow unsafe duplicate edition matching. |
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum health heartbeat age in seconds. |
@@ -582,9 +657,11 @@ applying the template, and restarting the container. Keep `PUID=99`,
 For pre-release testing, use `ghcr.io/ray-cys/metafusion:develop`. Return to
 `latest` or a tested version tag after the changes are promoted to `main`.
 
-## Output, health, and troubleshooting
+## Output locations, health, and troubleshooting
 
-Kometa mode writes below `KOMETA_PATH`:
+### Kometa mode output
+
+With `RUN_MODE=kometa`, MetaFusion writes below `KOMETA_PATH`:
 
 ```text
 metadata/movie_metadata.yml
@@ -594,17 +671,26 @@ assets/movie/...
 assets/tv/...
 ```
 
-Plex mode places artwork beside media and does not create Kometa metadata YAML.
-When direct metadata updates are enabled, it also writes a redacted text audit
-under `/config/reports` and records field ownership in `meta_db.sqlite3`.
+It does not write into the Plex media directories or directly edit Plex.
 
-Persistent diagnostics and state are stored under `/config`:
+### Plex mode output
+
+With `RUN_MODE=plex`, MetaFusion never creates the Kometa paths above. Enabled
+artwork is written beside the corresponding media using Plex-compatible local
+asset names. When direct metadata updates are enabled, changes are sent through
+the Plex API, a redacted audit is written under `/config/reports`, and field
+ownership is recorded in `meta_db.sqlite3`.
+
+### Shared state and diagnostics
+
+Both modes store persistent diagnostics and state under `/config`:
 
 ```text
+config_template.yml
 logs/metafusion.log
 cache/meta_db.sqlite3
 cache/tmdb_cache.sqlite3
-reports/plex-metadata-YYYYMMDD-HHMMSS.txt
+reports/plex-metadata-YYYYMMDD-HHMMSS.txt  # direct Plex metadata runs only
 ```
 
 The live heartbeat is intentionally stored at
