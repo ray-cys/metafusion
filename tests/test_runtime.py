@@ -81,6 +81,25 @@ def test_tmdb_title_search_fallback_accepts_only_one_exact_title_and_year(monkey
     assert resolved == "1"
 
 
+def test_tmdb_id_resolution_excludes_a_rejected_external_match(monkeypatch):
+    async def request(_config, endpoint, **_kwargs):
+        assert endpoint == "find/tt123"
+        return {"movie_results": [{"id": 100}, {"id": 101}]}
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {},
+            "movie",
+            imdb_id="tt123",
+            excluded_ids={"100"},
+            session=object(),
+        )
+    )
+
+    assert resolved == "101"
+
+
 def test_unfiltered_image_request_disables_metadata_locale(monkeypatch):
     calls = []
 
@@ -510,6 +529,57 @@ def test_tmdb_rate_limit_retries_and_recovers(monkeypatch):
 
     assert result == {"ok": True}
     assert sleeps == [1]
+
+
+def test_tmdb_not_found_is_not_retried(monkeypatch):
+    calls = []
+    sleeps = []
+
+    class Response:
+        status = 404
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"status_code":34}'
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            calls.append(True)
+            return Response()
+
+    class Limiter:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tmdb_module, "get_tmdb_limiter", lambda: Limiter())
+    monkeypatch.setattr(
+        tmdb_module.asyncio,
+        "sleep",
+        lambda seconds: _record_sleep(sleeps, seconds),
+    )
+
+    result = asyncio.run(
+        tmdb_module.tmdb_api_request(
+            {"tmdb": {"api_key": "key"}},
+            "movie/1306363",
+            retries=3,
+            session=Session(),
+            cache=False,
+        )
+    )
+
+    assert result is None
+    assert len(calls) == 1
+    assert sleeps == []
 
 
 async def _record_sleep(calls, seconds):

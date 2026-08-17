@@ -83,6 +83,39 @@ def _allowed_generated_key(item_type, key):
     return base in KOMETA_TAG_FIELDS[item_type]
 
 
+def _match_first(entry):
+    """Return a metadata entry with Kometa's selector before edit fields."""
+    if not isinstance(entry, dict) or "match" not in entry:
+        return entry
+    return {
+        "match": entry["match"],
+        **{key: value for key, value in entry.items() if key != "match"},
+    }
+
+
+def normalize_metadata_order(document):
+    """Move each top-level Kometa match block before its metadata edits.
+
+    YAML mappings do not require an order, but emitting Kometa's documented
+    layout makes generated files predictable and easier to audit. The return
+    value lets callers detect order-only changes because dict equality ignores
+    insertion order.
+    """
+    metadata = document.get("metadata") if isinstance(document, dict) else None
+    if not isinstance(metadata, dict):
+        return 0
+    changed = 0
+    for item_name, entry in list(metadata.items()):
+        if (
+            isinstance(entry, dict)
+            and "match" in entry
+            and next(iter(entry), None) != "match"
+        ):
+            metadata[item_name] = _match_first(entry)
+            changed += 1
+    return changed
+
+
 def validate_generated_metadata(entry, item_type):
     """Reject unsupported fields produced by MetaFusion before they reach YAML."""
     if item_type not in KOMETA_GENERATED_FIELDS:
@@ -157,6 +190,7 @@ def merge_generated_metadata(
     merged = _merge_fields(existing, generated, item_type, diagnostics)
     if "match" in generated:
         merged["match"] = deepcopy(generated["match"])
+    merged = _match_first(merged)
 
     if item_type != "show":
         return merged, diagnostics
@@ -406,6 +440,8 @@ def write_kometa_metadata(
     expected_snapshot=None,
 ):
     path = Path(path)
+    document = deepcopy(document)
+    normalize_metadata_order(document)
     if validate_schema:
         validate_metadata_document(document, library_type=library_type)
 

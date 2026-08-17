@@ -62,6 +62,23 @@ def test_validated_output_keeps_rotating_known_good_backups(tmp_path):
     assert all(validate_metadata_document(yaml.safe_load(item.read_text())) for item in backups)
 
 
+def test_writer_places_match_before_metadata_edits(tmp_path):
+    path = tmp_path / "movie_metadata.yml"
+    value = document()
+    entry = value["metadata"]["Example (2020)"]
+    value["metadata"]["Example (2020)"] = {
+        "summary": entry["summary"],
+        "seasons": entry["seasons"],
+        "match": entry["match"],
+    }
+
+    write_kometa_metadata(path, value)
+
+    written = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert next(iter(written["metadata"]["Example (2020)"])) == "match"
+    assert next(iter(value["metadata"]["Example (2020)"])) == "summary"
+
+
 def test_failed_post_write_validation_restores_previous_output(monkeypatch, tmp_path):
     path = tmp_path / "movie_metadata.yml"
     original = document("Known good")

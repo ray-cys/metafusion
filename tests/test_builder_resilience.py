@@ -530,6 +530,39 @@ def test_movie_builder_handles_invalid_tmdb_and_asset_download_failure(
     assert result["background_action"] == "failed"
 
 
+def test_movie_builder_recovers_stale_tmdb_id_from_imdb(monkeypatch, tmp_path):
+    cache_calls = install_successful_asset_mocks(monkeypatch)
+    tmdb_response_cache["movie/101"] = movie_details()
+
+    async def resolve(_config, _media_type, tmdb_id=None, **_kwargs):
+        return str(tmdb_id) if tmdb_id is not None else "101"
+
+    monkeypatch.setattr(builder, "resolve_tmdb_id", resolve)
+    meta = movie_meta()
+    consolidated = {"metadata": {}}
+
+    result = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            consolidated,
+            feature_flags=feature_flags(poster=False, background=False),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["metadata_action"] == "downloaded"
+    assert meta["tmdb_id"] == "101"
+    assert meta["plex_tmdb_id"] == "100"
+    assert consolidated["metadata"]["Example Movie (2020)"]["match"][
+        "mapping_id"
+    ] == 101
+    assert any(
+        kwargs.get("tmdb_recovery_source_id") == "100"
+        for _, kwargs in cache_calls
+    )
+
+
 def test_tv_builder_writes_specials_episodes_and_all_assets(monkeypatch, tmp_path):
     install_successful_asset_mocks(monkeypatch)
     tmdb_response_cache["tv/200"] = tv_details()
