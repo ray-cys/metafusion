@@ -1,4 +1,4 @@
-import os, sys, platform, psutil, logging, textwrap, requests, datetime
+import os, sys, platform, psutil, logging, textwrap, requests, datetime, time
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -751,6 +751,104 @@ def metadata_action_summary(library_summary, feature_flags):
             f"Failed: {library_summary.get('meta_failed', 0)}"
         )
     return None
+
+
+def plex_progress_item_interval(total_items):
+    """Return the built-in top-level item interval for Plex progress logs."""
+    total_items = max(0, int(total_items))
+    if total_items <= 100:
+        return max(5, (total_items + 9) // 10)
+    if total_items <= 1000:
+        return max(25, (total_items + 19) // 20)
+    return max(100, (total_items + 19) // 20)
+
+
+class PlexMetadataProgress:
+    """Rate-limited INFO progress for direct Plex metadata processing."""
+
+    def __init__(
+        self,
+        library_name,
+        total_items,
+        *,
+        logger=None,
+        clock=None,
+        minimum_seconds=30,
+        heartbeat_seconds=60,
+    ):
+        self.library_name = str(library_name)
+        self.total_items = max(0, int(total_items))
+        self.logger = logger or logging.getLogger()
+        self.clock = clock or time.monotonic
+        self.minimum_seconds = max(0, float(minimum_seconds))
+        self.heartbeat_seconds = max(
+            self.minimum_seconds, float(heartbeat_seconds)
+        )
+        self.item_interval = plex_progress_item_interval(self.total_items)
+        self.last_logged_at = None
+        self.last_logged_completed = 0
+
+    def _emit(self, completed, changed, api_batches, unchanged, failed, now):
+        percent = (
+            round((completed / self.total_items) * 100, 1)
+            if self.total_items
+            else 100.0
+        )
+        self.logger.info(
+            "[Plex Metadata] %s: %d/%d checked (%.1f%%); "
+            "items changed: %d, API batches: %d, unchanged: %d, failed: %d.",
+            self.library_name,
+            completed,
+            self.total_items,
+            percent,
+            changed,
+            api_batches,
+            unchanged,
+            failed,
+        )
+        self.last_logged_at = now
+        self.last_logged_completed = completed
+
+    def start(self):
+        if not self.total_items or self.last_logged_at is not None:
+            return False
+        self._emit(0, 0, 0, 0, 0, self.clock())
+        return True
+
+    def update(
+        self,
+        completed,
+        *,
+        changed,
+        api_batches,
+        unchanged,
+        failed,
+        force=False,
+    ):
+        if not self.total_items:
+            return False
+        if self.last_logged_at is None:
+            self.start()
+        completed = min(self.total_items, max(0, int(completed)))
+        now = self.clock()
+        elapsed = now - self.last_logged_at
+        item_due = (
+            completed - self.last_logged_completed >= self.item_interval
+        )
+        time_due = elapsed >= self.heartbeat_seconds
+        if not force and not (
+            time_due or (item_due and elapsed >= self.minimum_seconds)
+        ):
+            return False
+        self._emit(
+            completed,
+            int(changed),
+            int(api_batches),
+            int(unchanged),
+            int(failed),
+            now,
+        )
+        return True
 
 
 def log_library_summary(
