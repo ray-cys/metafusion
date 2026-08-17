@@ -1,20 +1,39 @@
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from healthcheck import check_status
 from helper import runtime as runtime_module
-from helper.runtime import RuntimeStatus, validate_runtime_paths
+from helper.runtime import (
+    RuntimeStatus,
+    ensure_storage_available,
+    validate_runtime_paths,
+)
+from helper.state_db import recent_job_runs
 
 
 def test_runtime_status_is_healthy_after_success(tmp_path):
     status_path = tmp_path / "status.json"
-    status = RuntimeStatus(status_path, heartbeat_seconds=3600)
+    database = tmp_path / "meta_db.sqlite3"
+    status = RuntimeStatus(
+        status_path, heartbeat_seconds=3600, state_database=database
+    )
     status.start("scheduler")
     status.run_started()
-    status.run_finished(True)
+    status.run_finished(
+        True,
+        library_results={
+            "Movies": {
+                "status": "success",
+                "items_processed": 10,
+                "items_succeeded": 10,
+                "items_failed": 0,
+            }
+        },
+    )
     try:
         healthy, message = check_status(status_path)
     finally:
@@ -23,12 +42,23 @@ def test_runtime_status_is_healthy_after_success(tmp_path):
     assert healthy is True
     assert message == "idle"
     saved = json.loads(status_path.read_text(encoding="utf-8"))
-    assert saved["history"][-1]["status"] == "success"
+    assert "history" not in saved
+    assert saved["version"]
+    assert saved["commit"]
+    recent = recent_job_runs(path=database)[-1]
+    assert recent["status"] == "success"
+    assert recent["library_results"]["Movies"]["items_succeeded"] == 10
 
 
 def test_runtime_status_bounds_recent_job_history(tmp_path):
     status_path = tmp_path / "status.json"
-    status = RuntimeStatus(status_path, heartbeat_seconds=3600, history_limit=2)
+    database = tmp_path / "meta_db.sqlite3"
+    status = RuntimeStatus(
+        status_path,
+        heartbeat_seconds=3600,
+        history_limit=2,
+        state_database=database,
+    )
     status.start("scheduler")
     try:
         for success in (True, False, True):
@@ -37,8 +67,10 @@ def test_runtime_status_bounds_recent_job_history(tmp_path):
     finally:
         status.stop()
 
-    saved = json.loads(status_path.read_text(encoding="utf-8"))
-    assert [entry["status"] for entry in saved["history"]] == ["failed", "success"]
+    assert [entry["status"] for entry in recent_job_runs(path=database)] == [
+        "failed",
+        "success",
+    ]
 
 
 def test_healthcheck_separates_liveness_from_failed_jobs(tmp_path):
@@ -103,3 +135,41 @@ def test_runtime_refuses_accidental_root_execution(monkeypatch, tmp_path):
         )
 
     assert not (tmp_path / "config").exists()
+
+
+def test_plex_mount_preflight_rejects_missing_mapping_destination(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(runtime_module.os, "geteuid", lambda: 99)
+    with pytest.raises(RuntimeError, match="mapping destination is unavailable"):
+        validate_runtime_paths(
+            {
+                "settings": {"dry_run": False, "mode": "plex"},
+                "assets": {"run_poster": True},
+                "plex": {
+                    "path_mappings": [
+                        f"/plex/movies=>{tmp_path / 'missing-media'}"
+                    ]
+                },
+                "runtime": {
+                    "validate_media_mounts": True,
+                    "min_free_space_mb": 0,
+                },
+            },
+            tmp_path / "config",
+        )
+
+
+def test_storage_preflight_rejects_low_free_space(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runtime_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=1024, used=1023, free=1),
+    )
+
+    with pytest.raises(RuntimeError, match="MIN_FREE_SPACE_MB requires 10 MiB"):
+        ensure_storage_available(
+            {"runtime": {"min_free_space_mb": 10}},
+            tmp_path,
+            description="test destination",
+        )

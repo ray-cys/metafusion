@@ -37,7 +37,7 @@ def check_status(path, max_heartbeat_age=120, fail_on_job_error=False):
 
 
 if __name__ == "__main__":
-    status_path = os.environ.get("STATUS_FILE", "/config/metafusion-status.json")
+    status_path = os.environ.get("STATUS_FILE", "/tmp/metafusion-status.json")
     max_age = int(os.environ.get("HEALTH_MAX_HEARTBEAT_AGE", "120"))
     fail_on_job_error = os.environ.get("HEALTH_FAIL_ON_JOB_ERROR", "false").lower() in {
         "1",

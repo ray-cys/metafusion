@@ -1,9 +1,10 @@
-import asyncio, hashlib, uuid, re, datetime
+import asyncio, hashlib, uuid, re, datetime, os
 from io import BytesIO
 from pathlib import Path
 from helper.config import mode_check
 from helper.cache import load_cache
-from helper.io import atomic_write_bytes
+from helper.io import atomic_write_bytes, sha256_file
+from helper.runtime import ensure_storage_available
 from helper.tmdb import tmdb_api_request
 
 def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
@@ -258,7 +259,58 @@ def stale_image(last_upgraded, days=30):
         return now - last_dt >= interval
     except (TypeError, ValueError):
         return True
-    
+
+
+def _normalized_asset_path(path):
+    return str(Path(path).absolute()) if path else None
+
+
+def asset_write_allowed(config, cache_key, asset_path, asset_type, season_number=None):
+    """Return whether an existing artwork file is still owned by MetaFusion."""
+    if not asset_path.exists():
+        return True, "missing"
+
+    policy = str(config.get("assets", {}).get("update_policy", "managed")).strip().lower()
+    if policy == "overwrite":
+        return True, "overwrite"
+    if policy == "fill_missing":
+        return False, "fill_missing"
+
+    cached = load_cache().get(cache_key, {})
+    if not isinstance(cached, dict):
+        return False, "no_ownership_record"
+    if asset_type == "season":
+        asset_record = (cached.get("seasons") or {}).get(str(season_number), {})
+        expected_checksum = asset_record.get("season_checksum")
+        expected_path = asset_record.get("season_path")
+    else:
+        expected_checksum = cached.get(f"{asset_type}_checksum")
+        expected_path = cached.get(f"{asset_type}_path")
+    if expected_path and _normalized_asset_path(expected_path) != _normalized_asset_path(asset_path):
+        return False, "recorded_path_mismatch"
+    if not expected_checksum:
+        return False, (
+            "missing_checksum" if expected_path else "no_ownership_record"
+        )
+    try:
+        current_checksum = sha256_file(asset_path)
+    except OSError:
+        return False, "unverifiable"
+    if current_checksum != expected_checksum:
+        return False, "modified"
+    return True, "managed"
+
+
+def claim_asset_destination(registry, cache_key, asset_path):
+    """Reserve a destination synchronously so concurrent builders cannot collide."""
+    normalized = _normalized_asset_path(asset_path)
+    existing_owner = registry.get(normalized)
+    if existing_owner not in (None, cache_key):
+        return False, existing_owner
+    registry[normalized] = cache_key
+    return True, cache_key
+
+
 def smart_asset_upgrade(
     config, asset_path, new_image_data, new_image_path=None, cache_key=None,
     asset_type="poster", stale_days=30
@@ -318,8 +370,23 @@ def smart_asset_upgrade(
     else:
         return False, "NO_IMAGE_FOR_COMPARE", context
 
+    try:
+        with Image.open(asset_path) as img:
+            existing_width, existing_height = img.size
+        context["existing_width"] = existing_width
+        context["existing_height"] = existing_height
+    except Exception as e:
+        context["error"] = str(e)
+        return False, "ERROR_IMAGE_COMPARE", context
+
     if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE", context
+        if (
+            new_width >= existing_width
+            and new_height >= existing_height
+            and new_votes >= cached_votes
+        ):
+            return True, "FORCE_UPGRADE_STALE", context
+        return False, "STALE_CANDIDATE_DOWNGRADE", context
 
     if cached_votes < vote_threshold and new_votes >= vote_threshold:
         return True, "UPGRADE_THRESHOLD", context
@@ -330,16 +397,8 @@ def smart_asset_upgrade(
     if cached_votes >= vote_threshold and new_votes >= vote_threshold and new_votes > cached_votes:
         return True, "UPGRADE_STRICT", context
 
-    try:
-        with Image.open(asset_path) as img:
-            existing_width, existing_height = img.size
-        context["existing_width"] = existing_width
-        context["existing_height"] = existing_height
-        if new_width > existing_width or new_height > existing_height:
-            return True, "UPGRADE_DIMENSIONS", context
-    except Exception as e:
-        context["error"] = str(e)
-        return False, "ERROR_IMAGE_COMPARE", context
+    if new_width > existing_width or new_height > existing_height:
+        return True, "UPGRADE_DIMENSIONS", context
 
     return False, "NO_UPGRADE_NEEDED", context
 
@@ -399,9 +458,6 @@ def smart_season_asset_upgrade(
     else:
         return False, "NO_IMAGE_FOR_COMPARE_SEASON", context
 
-    if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE_SEASON", context
-
     try:
         with Image.open(asset_path) as img:
             existing_width, existing_height = img.size
@@ -410,6 +466,15 @@ def smart_season_asset_upgrade(
     except Exception as e:
         context["error"] = str(e)
         return False, "ERROR_IMAGE_COMPARE_SEASON", context
+
+    if stale_image(last_upgraded, stale_days):
+        if (
+            new_width >= existing_width
+            and new_height >= existing_height
+            and new_votes >= cached_votes
+        ):
+            return True, "FORCE_UPGRADE_STALE_SEASON", context
+        return False, "STALE_CANDIDATE_DOWNGRADE_SEASON", context
 
     if cached_votes == 0:
         if new_votes > 0 and (new_width > existing_width or new_height > existing_height or new_votes > cached_votes):
@@ -458,18 +523,41 @@ def get_asset_path(config, meta, asset_type="poster", season_number=None):
     movie_path = meta.get("movie_path")
 
     if mode == "plex":
+        def writable_directory(value):
+            if not value:
+                return None
+            directory = Path(value)
+            if not directory.is_dir() or not os.access(directory, os.W_OK):
+                return None
+            return directory
+
         if asset_type == "poster":
             if library_type == "movie":
-                return Path(meta["movie_dir"]) / "poster.jpg"
+                directory = writable_directory(meta.get("movie_dir"))
+                return directory / "poster.jpg" if directory else None
             elif library_type in ("show", "tv"):
-                return Path(meta["show_dir"]) / "poster.jpg"
+                directory = writable_directory(meta.get("show_dir"))
+                return directory / "poster.jpg" if directory else None
         elif asset_type == "background":
             if library_type == "movie":
-                return Path(meta["movie_dir"]) / "fanart.jpg"
+                directory = writable_directory(meta.get("movie_dir"))
+                return directory / "fanart.jpg" if directory else None
             elif library_type in ("show", "tv"):
-                return Path(meta["show_dir"]) / "fanart.jpg"
+                directory = writable_directory(meta.get("show_dir"))
+                return directory / "fanart.jpg" if directory else None
         elif asset_type == "season" and season_number is not None:
-            return Path(meta["show_dir"]) / f"Season {season_number:02}" / f"Season{season_number:02}.jpg"
+            season_dir = (meta.get("season_dirs") or {}).get(season_number)
+            if season_dir is None:
+                season_dir = (meta.get("season_dirs") or {}).get(str(season_number))
+            if not season_dir:
+                return None
+            filename = (
+                "season-specials-poster.jpg"
+                if int(season_number) == 0
+                else f"Season{int(season_number):02}.jpg"
+            )
+            directory = writable_directory(season_dir)
+            return directory / filename if directory else None
     else:
         kometa_root = config.get("settings", {}).get("path", ".")
         assets_path = Path(kometa_root) / "assets" / library_type
@@ -501,7 +589,14 @@ def asset_temp_path(config, meta, extension="jpg"):
             assets_path = Path(meta["show_dir"])
         else:
             assets_path = Path(".")
-    assets_path.mkdir(parents=True, exist_ok=True)
+    if mode_check(config, "kometa"):
+        assets_path.mkdir(parents=True, exist_ok=True)
+    ensure_storage_available(
+        config,
+        assets_path,
+        create=mode_check(config, "kometa"),
+        description="artwork destination",
+    )
     temp_filename = f"temp_{uuid.uuid4().hex}.{extension}"
     return assets_path / temp_filename
 

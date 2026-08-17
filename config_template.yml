@@ -7,6 +7,9 @@ metafusion_run: false
 settings:
   schedule: true
   run_on_start: false
+  # Run the latest missed slot after a restart, if it is still recent enough.
+  schedule_catch_up: true
+  schedule_catch_up_max_hours: 24
   run_times:
     - "06:00"
     - "18:30"
@@ -19,6 +22,10 @@ settings:
 plex:
   url: "http://10.0.0.1:32400"
   token: "YOUR_PLEX_TOKEN"
+  # Optional Plex-server path to MetaFusion-container path translations.
+  # Docker bind mounts are still required for every destination.
+  path_mappings: []
+  # - "/volume1/media=>/media"
 
 # Plex libraries to process
 plex_libraries:
@@ -34,20 +41,61 @@ tmdb:
   fallback:
     - zh
     - ja
+  # If preferred artwork languages have no result, query every TMDb language.
+  artwork_allow_any_language: true
+  # Conservative exact-title/year search when Plex exposes no external ID.
+  title_search_fallback: false
+  # Safely use a TMDb episode group only when it uniquely matches Plex numbering.
+  episode_group_fallback: true
+  # For Plex series represented by multiple TMDb shows, preserve top-level show
+  # metadata/artwork by default while updating mapped seasons and episodes.
+  split_series_show_policy: "preserve"  # preserve or primary
+  split_series_mappings: {}
+  # Example:
+  #   "tvdb:345246":
+  #     show_policy: preserve
+  #     seasons:
+  #       1: {tmdb_id: 72844, season_number: 1}
+  #       2: {tmdb_id: 109958, season_number: 1}
+  # Deterministic Plex episode -> TMDb episode corrections for known exceptions.
+  episode_overrides: {}
+  # Example:
+  #   "tvdb:12345":
+  #     "S01E01": "S01E02"
 
 # Metadata and asset processing options
 metadata:
   run_basic: true
   run_enhanced: true
 
+kometa:
+  # append preserves provider/user tags; sync makes supported tags match TMDb.
+  tag_policy: "append"
+
+# Direct Plex API metadata enrichment is Plex-mode only and opt-in. Begin with
+# fill_missing, DRY_RUN=true, and a small write limit. See README.md before use.
+plex_metadata:
+  enabled: false
+  policy: "fill_missing"  # fill_missing, managed, or overwrite
+  lock_writes: false
+  lock_merged_tags: false
+  allow_overwrite: false  # required acknowledgement for overwrite
+  recheck_days: 30
+  max_writes_per_run: 100
+  report_retention: 10
+  fields: []  # Empty means every supported safe field.
+
 assets:
   run_poster: true
   run_season: true
   run_background: false
+  # managed updates only files whose checksum still matches MetaFusion's record.
+  # fill_missing never replaces artwork; overwrite permits replacing any file.
+  update_policy: "managed"
 
 cleanup:
   # Cleanup is intentionally opt-in. Test with dry_run before enabling it.
-  run_process: false
+  run_cleanup: false
 
 # Runtime limits protect large libraries from exhausting memory/connections.
 runtime:
@@ -59,11 +107,15 @@ runtime:
   plex_retry_delay: 1
   shutdown_timeout: 15
   max_image_mb: 25
+  validate_media_mounts: true
+  min_free_space_mb: 256
 
 # Skip unchanged Plex items between periodic reconciliation scans.
 incremental:
   enabled: true
   full_scan_interval_hours: 168
+  # Revisit future Plex episodes whose TMDb metadata was not published yet.
+  metadata_pending_recheck_hours: 24
 
 # Unchanged items become eligible for an artwork refresh when these intervals
 # expire. Per-type null values inherit default_days. Set an interval to 0 to
@@ -75,22 +127,28 @@ image_upgrades:
   series_days: null
   season_days: null
 
-# Optional per-library artwork cadence. Global values remain the defaults.
+# Optional per-library artwork cadence and Plex metadata policy.
 library_overrides: {}
 #  Movies 4K:
 #    image_upgrades:
 #      movie_days: 60
+#  Anime:
+#    plex_metadata:
+#      policy: fill_missing
+#      max_writes_per_run: 25
 
 # Persist successful TMDb JSON responses to reduce repeated API traffic.
 tmdb_cache:
   enabled: true
   ttl_hours: 24
   max_entries: 5000
+  max_mb: 0  # Optional compressed-payload limit; 0 disables the byte cap.
 
 # Validate Kometa document structure and retain known-good output backups.
 output:
   validate_schema: true
   backup_count: 3
+  destination_history_report_retention: 10
 
 safety:
   # Kometa cannot reliably match duplicate title/year movies unless every copy

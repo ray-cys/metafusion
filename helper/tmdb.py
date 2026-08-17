@@ -1,4 +1,4 @@
-import asyncio, json, hashlib
+import asyncio, json, hashlib, re, unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from aiolimiter import AsyncLimiter
 from helper.config import CACHE_DIR
@@ -7,6 +7,7 @@ from helper.tmdb_cache import tmdb_response_cache
 
 _tmdb_limiter = None
 _tmdb_limiter_loop = None
+_CACHE_MISS = object()
 
 
 def get_tmdb_limiter():
@@ -22,9 +23,10 @@ def get_tmdb_limiter():
 def begin_tmdb_cache(config):
     cache_config = config.get("tmdb_cache", {})
     tmdb_response_cache.configure(
-        CACHE_DIR / "tmdb_response_cache.json",
+        CACHE_DIR / "tmdb_cache.sqlite3",
         ttl_hours=cache_config.get("ttl_hours", 24),
         max_entries=cache_config.get("max_entries", 5000),
+        max_mb=cache_config.get("max_mb", 0),
         enabled=cache_config.get("enabled", True),
         writable=not config.get("settings", {}).get("dry_run", False),
     )
@@ -32,7 +34,13 @@ def begin_tmdb_cache(config):
 
 def flush_tmdb_cache():
     result = tmdb_response_cache.flush()
-    log_tmdb_event("tmdb_cache_stats", **tmdb_response_cache.stats())
+    stats = tmdb_response_cache.stats()
+    log_tmdb_event("tmdb_cache_stats", **stats)
+    if stats.get("health") == "degraded":
+        log_tmdb_event(
+            "tmdb_cache_degraded",
+            error=stats.get("last_error") or "persistent cache unavailable",
+        )
     return result
 
 
@@ -102,7 +110,7 @@ def _redact_url(url):
 async def tmdb_api_request(
     config, endpoint_or_url, params=None, retries=3, delay=2, backoff_factor=2, api_key=None,
     language=None, region=None, cache=True, raw=False, session=None,
-    max_response_bytes=None, **kwargs,
+    max_response_bytes=None, include_locale=True, **kwargs,
 ):
     if endpoint_or_url.startswith("http"):
         url = endpoint_or_url
@@ -120,16 +128,16 @@ async def tmdb_api_request(
                         "region": tmdb_config.get("region"),
                     },
                 )
-        if language is None:
+        if language is None and include_locale:
             language = config.get("tmdb", {}).get("language", "en-US")
-        if region is None:
+        if region is None and include_locale:
             region = config.get("tmdb", {}).get("region", "US")
         url = f"https://api.themoviedb.org/3/{endpoint_or_url}"
         query = {"api_key": api_key}
         params = dict(params or {})
-        if "language" not in params:
+        if include_locale and "language" not in params:
             params["language"] = language
-        if "region" not in params:
+        if include_locale and "region" not in params:
             params["region"] = region
         query.update(params)
         cache_key = f"{url}:{json.dumps(query, sort_keys=True)}"
@@ -149,9 +157,12 @@ async def tmdb_api_request(
         return {}
 
     cache_hash = hashlib.sha256(cache_key.encode()).hexdigest()
-    if cache and cache_hash in tmdb_response_cache:
+    cached_response = (
+        tmdb_response_cache.get(cache_hash, _CACHE_MISS) if cache else _CACHE_MISS
+    )
+    if cached_response is not _CACHE_MISS:
         log_tmdb_event("tmdb_cache_hit", url=logged_url, params=logged_query)
-        return tmdb_response_cache[cache_hash]
+        return cached_response
 
     for attempt in range(1, retries + 1):
         rate_limit_waited = False
@@ -179,6 +190,10 @@ async def tmdb_api_request(
                     else:
                         body = redact_secrets(await response.text(), *sensitive_values)
                         log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
+                        if response.status == 404:
+                            # A missing resource is permanent for this identifier;
+                            # retrying only delays recovery through other IDs.
+                            return None
         except ResponseTooLargeError as e:
             log_tmdb_event(
                 "tmdb_response_too_large",
@@ -209,10 +224,14 @@ async def resolve_tmdb_id(
     tmdb_id=None,
     imdb_id=None,
     tvdb_id=None,
+    title=None,
+    year=None,
     session=None,
+    excluded_ids=None,
 ):
     """Resolve a missing TMDb ID from IDs exposed by Plex legacy agents."""
-    if tmdb_id:
+    excluded_ids = {str(value) for value in (excluded_ids or set()) if value is not None}
+    if tmdb_id and str(tmdb_id) not in excluded_ids:
         return str(tmdb_id)
     normalized_type = str(media_type or "").lower()
     candidates = []
@@ -229,6 +248,302 @@ async def resolve_tmdb_id(
             session=session,
         )
         matches = result.get(result_key, []) if isinstance(result, dict) else []
-        if matches and matches[0].get("id") is not None:
-            return str(matches[0]["id"])
-    return None
+        for match in matches:
+            candidate_id = match.get("id")
+            if candidate_id is not None and str(candidate_id) not in excluded_ids:
+                return str(candidate_id)
+
+    if not config.get("tmdb", {}).get("title_search_fallback", False) or not title:
+        return None
+    search_type = "movie" if normalized_type in {"movie", "movies"} else "tv"
+    plex_year = _year_value(year)
+    base_title, title_year = _title_year_hint(title)
+    title_year_resolves_conflict = bool(
+        title_year and plex_year and abs(title_year - plex_year) > 1
+    )
+    search_title = base_title if title_year_resolves_conflict else str(title)
+    search_year = title_year if title_year_resolves_conflict else plex_year
+    params = {"query": search_title, "include_adult": "false"}
+    if search_year:
+        params["year" if search_type == "movie" else "first_air_date_year"] = (
+            search_year
+        )
+    result = await tmdb_api_request(
+        config,
+        f"search/{search_type}",
+        params=params,
+        session=session,
+    )
+    candidates = []
+    wanted_title = normalize_title(search_title)
+    wanted_year = search_year
+    for candidate in result.get("results", []) if isinstance(result, dict) else []:
+        names = (
+            (candidate.get("title"), candidate.get("original_title"))
+            if search_type == "movie"
+            else (candidate.get("name"), candidate.get("original_name"))
+        )
+        candidate_year = _year_value(
+            candidate.get("release_date")
+            if search_type == "movie"
+            else candidate.get("first_air_date")
+        )
+        if wanted_title not in {normalize_title(name) for name in names if name}:
+            continue
+        if wanted_year and candidate_year and wanted_year != candidate_year:
+            continue
+        if (
+            candidate.get("id") is not None
+            and str(candidate["id"]) not in excluded_ids
+        ):
+            candidates.append(str(candidate["id"]))
+    return candidates[0] if len(set(candidates)) == 1 else None
+
+
+def normalize_title(value):
+    normalized = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    return re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def _title_year_hint(value):
+    """Return a title without a terminal disambiguation year and that year."""
+    title = str(value or "").strip()
+    match = re.search(r"\s+\(((?:18|19|20|21)\d{2})\)\s*$", title)
+    if not match:
+        return title, None
+    base_title = title[: match.start()].strip()
+    if not base_title:
+        return title, None
+    return base_title, int(match.group(1))
+
+
+def _year_value(value):
+    match = re.match(r"^(\d{4})", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def tmdb_identity_consistent(
+    media_type, title, year, details, *, trusted_external_id=False
+):
+    """Reject strong TMDb identity conflicts while tolerating translated titles."""
+    normalized_type = str(media_type or "").lower()
+    date_value = (
+        details.get("release_date")
+        if normalized_type in {"movie", "movies"}
+        else details.get("first_air_date")
+    )
+    expected_year = _year_value(year)
+    actual_year = _year_value(date_value)
+    names = (
+        (details.get("title"), details.get("original_title"))
+        if normalized_type in {"movie", "movies"}
+        else (details.get("name"), details.get("original_name"))
+    )
+    base_title, title_year = _title_year_hint(title)
+    available_titles = {normalize_title(name) for name in names if name}
+    expected_title = normalize_title(title)
+    base_title_matches = bool(
+        title_year
+        and normalize_title(base_title)
+        and normalize_title(base_title) in available_titles
+    )
+    exact_title_matches = bool(
+        expected_title and expected_title in available_titles
+    )
+
+    if title_year and actual_year:
+        if abs(title_year - actual_year) > 1:
+            return False, f"title year mismatch ({title_year} vs {actual_year})"
+        if (
+            expected_year
+            and abs(expected_year - actual_year) > 1
+            and (base_title_matches or exact_title_matches or trusted_external_id)
+        ):
+            return (
+                True,
+                (
+                    "trusted external ID matched "
+                    if trusted_external_id
+                    and not (base_title_matches or exact_title_matches)
+                    else "matched "
+                )
+                + f"title year {title_year}; ignored conflicting Plex year "
+                + f"{expected_year}",
+            )
+
+    if expected_year and actual_year and abs(expected_year - actual_year) > 1:
+        return False, f"year mismatch ({expected_year} vs {actual_year})"
+    if expected_title and not (exact_title_matches or base_title_matches):
+        if trusted_external_id:
+            return True, "trusted external ID; title is a Plex/TMDb alias"
+        return True, "title differs from localized/original TMDb names"
+    return True, "matched"
+
+
+def tmdb_external_id_consensus(
+    media_type,
+    details,
+    *,
+    imdb_id=None,
+    tvdb_id=None,
+    allow_tvdb_mismatch=False,
+):
+    """Compare independent Plex provider IDs with the selected TMDb record.
+
+    Returns ``(accepted, trusted, reason)``. A matching independent ID makes
+    aliases trustworthy; a conflicting ID rejects the record unless an
+    explicit split-series mapping permits the expected TVDB disagreement.
+    """
+    external_ids = details.get("external_ids") or {}
+    comparisons = []
+
+    if imdb_id and external_ids.get("imdb_id"):
+        comparisons.append(
+            (
+                "IMDb",
+                str(imdb_id).strip().casefold(),
+                str(external_ids.get("imdb_id")).strip().casefold(),
+                False,
+            )
+        )
+    if (
+        str(media_type or "").lower() in {"tv", "show", "shows"}
+        and tvdb_id
+        and external_ids.get("tvdb_id")
+    ):
+        comparisons.append(
+            (
+                "TVDB",
+                str(tvdb_id).strip(),
+                str(external_ids.get("tvdb_id")).strip(),
+                bool(allow_tvdb_mismatch),
+            )
+        )
+
+    conflicts = [
+        f"{provider} {expected} vs {actual}"
+        for provider, expected, actual, permitted in comparisons
+        if expected != actual and not permitted
+    ]
+    if conflicts:
+        return False, False, "external ID conflict (" + "; ".join(conflicts) + ")"
+
+    matches = [
+        provider
+        for provider, expected, actual, _permitted in comparisons
+        if expected == actual
+    ]
+    if matches:
+        return True, True, "matched " + ", ".join(matches)
+    if allow_tvdb_mismatch and any(
+        provider == "TVDB" and expected != actual
+        for provider, expected, actual, _permitted in comparisons
+    ):
+        return True, True, "accepted configured split-series TVDB mapping"
+    return True, False, "no independent external ID was available for consensus"
+
+
+async def tmdb_unfiltered_images(
+    config, media_type, tmdb_id, session=None, season_number=None
+):
+    normalized_type = "tv" if str(media_type).lower() in {"tv", "show"} else "movie"
+    endpoint = f"{normalized_type}/{tmdb_id}"
+    if season_number is not None:
+        endpoint += f"/season/{int(season_number)}"
+    return await tmdb_api_request(
+        config,
+        f"{endpoint}/images",
+        params={},
+        include_locale=False,
+        session=session,
+    )
+
+
+def _inventory_pairs(inventory):
+    return {
+        (int(season), int(episode))
+        for season, episodes in (inventory or {}).items()
+        for episode in episodes
+    }
+
+
+async def resolve_episode_group_mapping(
+    config,
+    tmdb_id,
+    plex_inventory,
+    episode_ordering=None,
+    session=None,
+):
+    """Return a TMDb episode-group mapping only when one layout is unambiguous."""
+    if not config.get("tmdb", {}).get("episode_group_fallback", True):
+        return None
+    wanted = _inventory_pairs(plex_inventory)
+    if not wanted:
+        return None
+    listing = await tmdb_api_request(
+        config, f"tv/{tmdb_id}/episode_groups", session=session
+    )
+    descriptors = listing.get("results", []) if isinstance(listing, dict) else []
+    preferred_types = {
+        "tmdb_aired": 1,
+        "tvdb_aired": 1,
+        "tvdb_absolute": 2,
+        "absolute": 2,
+        "tvdb_dvd": 3,
+        "dvd": 3,
+    }
+    preferred = preferred_types.get(str(episode_ordering or "").lower())
+    if preferred and any(item.get("type") == preferred for item in descriptors):
+        descriptors = [item for item in descriptors if item.get("type") == preferred]
+
+    matches = {}
+    for descriptor in descriptors[:10]:
+        group_id = descriptor.get("id")
+        if not group_id:
+            continue
+        details = await tmdb_api_request(
+            config, f"tv/episode_group/{group_id}", session=session
+        )
+        groups = details.get("groups", []) if isinstance(details, dict) else []
+        for season_offset in (0, 1):
+            for episode_offset in (0, 1):
+                candidate = {}
+                season_context = {}
+                duplicate = False
+                for group_index, group in enumerate(groups):
+                    group_order = group.get("order", group_index)
+                    try:
+                        target_season = int(group_order) + season_offset
+                    except (TypeError, ValueError):
+                        duplicate = True
+                        break
+                    season_context[target_season] = {
+                        "title": group.get("name") or "",
+                        "summary": group.get("description") or "",
+                    }
+                    for episode_index, episode in enumerate(group.get("episodes", [])):
+                        order = episode.get("order", episode_index)
+                        try:
+                            target_episode = int(order) + episode_offset
+                        except (TypeError, ValueError):
+                            duplicate = True
+                            break
+                        key = (target_season, target_episode)
+                        if key in candidate:
+                            duplicate = True
+                            break
+                        candidate[key] = episode
+                    if duplicate:
+                        break
+                if duplicate or not wanted <= set(candidate):
+                    continue
+                selected = {key: candidate[key] for key in wanted}
+                signature = tuple(
+                    sorted((key, value.get("id")) for key, value in selected.items())
+                )
+                matches[signature] = {
+                    "group_id": group_id,
+                    "episodes": selected,
+                    "seasons": season_context,
+                }
+    return next(iter(matches.values())) if len(matches) == 1 else None

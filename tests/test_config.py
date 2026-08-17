@@ -89,6 +89,7 @@ def test_blank_environment_values_fall_back_to_yaml(tmp_path):
     assert config["plex"] == {
         "url": "http://yaml-plex:32400",
         "token": "yaml-token",
+        "path_mappings": [],
     }
     assert config["tmdb"]["api_key"] == "yaml-key"
     assert config["settings"]["mode"] == "plex"
@@ -159,6 +160,8 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
             "PLEX_TIMEOUT": "8",
             "SHUTDOWN_TIMEOUT": "12",
             "MAX_IMAGE_MB": "12",
+            "VALIDATE_MEDIA_MOUNTS": "false",
+            "MIN_FREE_SPACE_MB": "64",
             "ALLOW_AMBIGUOUS_EDITIONS": "true",
         },
     )
@@ -172,8 +175,47 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "plex_retry_delay": 1.0,
         "shutdown_timeout": 12.0,
         "max_image_mb": 12,
+        "validate_media_mounts": False,
+        "min_free_space_mb": 64,
     }
     assert config["safety"]["allow_ambiguous_editions"] is True
+
+
+def test_provider_mapping_json_environment_is_parsed_and_validated(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "TMDB_SPLIT_SERIES_MAPPINGS": (
+                '{"tvdb:42":{"show_policy":"primary","seasons":'
+                '{"2":{"tmdb_id":99,"season_number":1}}}}'
+            ),
+            "TMDB_EPISODE_OVERRIDES": (
+                '{"tvdb:42":{"S02E01":"S01E03"}}'
+            ),
+            "METADATA_PENDING_RECHECK_HOURS": "6",
+            "DESTINATION_HISTORY_REPORT_RETENTION": "4",
+        },
+    )
+
+    assert config["tmdb"]["split_series_mappings"]["tvdb:42"][
+        "seasons"
+    ]["2"]["tmdb_id"] == 99
+    assert config["tmdb"]["episode_overrides"]["tvdb:42"]["S02E01"] == "S01E03"
+    assert config["incremental"]["metadata_pending_recheck_hours"] == 6.0
+    assert config["output"]["destination_history_report_retention"] == 4
+
+
+def test_invalid_provider_mapping_environment_fails_validation(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"TMDB_EPISODE_OVERRIDES": "not-json"},
+    )
+
+    assert any(
+        "TMDB_EPISODE_OVERRIDES" in error for error in validate_config(config)
+    )
 
 
 def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
@@ -201,6 +243,45 @@ def test_image_upgrade_intervals_support_global_and_per_type_env(tmp_path):
     assert get_image_upgrade_days(inherited, "series") == 7
 
 
+def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "missing.yml",
+        environ={
+            "TMDB_CACHE_ENABLED": "true",
+            "TMDB_CACHE_TTL_HOURS": "12",
+            "TMDB_CACHE_MAX_ENTRIES": "3000",
+            "TMDB_CACHE_MAX_MB": "128.5",
+        },
+    )
+
+    assert config["tmdb_cache"] == {
+        "enabled": True,
+        "ttl_hours": 12.0,
+        "max_entries": 3000,
+        "max_mb": 128.5,
+    }
+
+
+def test_phase12_tmdb_and_kometa_policies_support_environment_overrides(tmp_path):
+    config = load_config_file(
+        config_file=tmp_path / "config.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "ARTWORK_ALLOW_ANY_LANGUAGE": "false",
+            "TMDB_TITLE_SEARCH_FALLBACK": "true",
+            "TMDB_EPISODE_GROUP_FALLBACK": "false",
+            "KOMETA_TAG_POLICY": "sync",
+        },
+    )
+
+    assert config["tmdb"]["artwork_allow_any_language"] is False
+    assert config["tmdb"]["title_search_fallback"] is True
+    assert config["tmdb"]["episode_group_fallback"] is False
+    assert config["kometa"]["tag_policy"] == "sync"
+    config["kometa"]["tag_policy"] = "replace"
+    assert any("kometa.tag_policy" in error for error in validate_config(config))
+
+
 def test_run_cleanup_controls_cleanup_setting(tmp_path):
     current, sources = load_config_file(
         config_file=tmp_path / "config.yml",
@@ -214,15 +295,15 @@ def test_run_cleanup_controls_cleanup_setting(tmp_path):
         environ={"RUN_PROCESS": "true"},
     )
 
-    assert current["cleanup"]["run_process"] is True
-    assert sources[("cleanup", "run_process")] == "RUN_CLEANUP"
-    assert legacy["cleanup"]["run_process"] is False
+    assert current["cleanup"]["run_cleanup"] is True
+    assert sources[("cleanup", "run_cleanup")] == "RUN_CLEANUP"
+    assert legacy["cleanup"]["run_cleanup"] is False
 
 
 def test_template_keeps_destructive_cleanup_disabled():
     template = yaml.safe_load(TEMPLATE_FILE.read_text(encoding="utf-8"))
 
-    assert template["cleanup"]["run_process"] is False
+    assert template["cleanup"]["run_cleanup"] is False
 
 
 def test_library_artwork_overrides_inherit_global_configuration():

@@ -56,3 +56,33 @@ def test_cleanup_summary_labels_dry_run_counts_as_proposed():
     )
 
     assert "Cleanup - Would remove: Titles: 1, Seasons: 2" in report
+
+
+def test_final_summary_reports_season_failures_without_other_season_actions():
+    logger = CaptureLogger()
+    log_final_summary(
+        logger,
+        1,
+        {
+            "Shows": {
+                "complete": 0,
+                "incomplete": 1,
+                "total_items": 1,
+                "percent_complete": 0,
+                "percent_incomplete": 100,
+                "library_type": "tv",
+                "library_summary": {"season_poster_failed": 1},
+            }
+        },
+        {"Shows": 0},
+        None,
+        None,
+        ["Shows"],
+        [{"title": "Shows"}],
+        {"settings": {"dry_run": False}},
+        {"season": True},
+    )
+
+    report = "\n".join(logger.lines)
+    assert "Season - Downloaded: 0, Upgraded: 0, Adopted: 0" in report
+    assert "Failed: 1" in report

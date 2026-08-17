@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,7 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
     config = {
         "plex_libraries": ["Old"],
         "assets": {"run_poster": True, "run_season": True, "run_background": True},
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "settings": {},
     }
@@ -51,7 +52,7 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
         "run_season": False,
         "run_background": False,
     }
-    assert config["cleanup"]["run_process"] is False
+    assert config["cleanup"]["run_cleanup"] is False
     assert config["_execution"] == {
         "rating_keys": ["123"],
         "targeted": True,
@@ -71,7 +72,7 @@ def test_asset_only_cli_disables_metadata_and_cleanup():
             "run_season": False,
             "run_background": True,
         },
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "settings": {"dry_run": False},
     }
@@ -79,7 +80,7 @@ def test_asset_only_cli_disables_metadata_and_cleanup():
     metafusion.override_config_with_cli(config, args)
 
     assert config["metadata"] == {"run_basic": False, "run_enhanced": False}
-    assert config["cleanup"]["run_process"] is False
+    assert config["cleanup"]["run_cleanup"] is False
     assert config["assets"] == {
         "run_poster": True,
         "run_season": False,
@@ -97,7 +98,7 @@ def test_explain_selection_cli_is_read_only():
             "run_season": False,
             "run_background": False,
         },
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {"run_basic": True, "run_enhanced": True},
         "settings": {"dry_run": False},
     }
@@ -105,7 +106,7 @@ def test_explain_selection_cli_is_read_only():
     metafusion.override_config_with_cli(config, args)
 
     assert config["settings"]["dry_run"] is True
-    assert config["cleanup"]["run_process"] is False
+    assert config["cleanup"]["run_cleanup"] is False
     assert config["_execution"]["explain_selection"] is True
 
 
@@ -150,7 +151,9 @@ def test_failed_run_returns_false_and_flushes_cache(monkeypatch):
         raise RuntimeError("run failed")
 
     monkeypatch.setattr(metafusion, "metafusion_main", fail_run)
-    monkeypatch.setattr(metafusion, "begin_cache_session", lambda: None)
+    monkeypatch.setattr(
+        metafusion, "begin_cache_session", lambda **_kwargs: None
+    )
     monkeypatch.setattr(metafusion, "flush_cache", lambda: flushed.append(True))
 
     successful = metafusion.run_metafusion_job(
@@ -160,6 +163,42 @@ def test_failed_run_returns_false_and_flushes_cache(monkeypatch):
 
     assert successful is False
     assert flushed == [True]
+
+
+def test_two_consecutive_dry_run_jobs_reinitialize_cleanly(monkeypatch):
+    calls = []
+    flushed = []
+    reports = []
+
+    async def successful_run(config, _logger):
+        calls.append(id(config))
+
+    monkeypatch.setattr(metafusion, "metafusion_main", successful_run)
+    monkeypatch.setattr(metafusion, "begin_cache_session", lambda **_kwargs: None)
+    monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: None)
+    monkeypatch.setattr(metafusion, "begin_plex_metadata_run", lambda _config: None)
+    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: None)
+    monkeypatch.setattr(metafusion, "flush_cache", lambda: flushed.append("metadata"))
+    monkeypatch.setattr(metafusion, "flush_tmdb_cache", lambda: flushed.append("tmdb"))
+    monkeypatch.setattr(
+        metafusion,
+        "write_artwork_gap_report",
+        lambda *_args, **_kwargs: reports.append(True),
+    )
+    monkeypatch.setattr(metafusion.tmdb_response_cache, "reset_memory", lambda: None)
+
+    config = {
+        "settings": {"dry_run": True},
+        "plex": {"token": "plex-secret"},
+        "tmdb": {"api_key": "tmdb-secret"},
+    }
+    logger = logging.getLogger("consecutive-jobs-test")
+
+    assert metafusion.run_metafusion_job(config, logger) is True
+    assert metafusion.run_metafusion_job(config, logger) is True
+    assert len(calls) == 2
+    assert flushed == ["metadata", "tmdb", "metadata", "tmdb"]
+    assert reports == []
 
 
 def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
@@ -201,7 +240,7 @@ def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
     config = {
         "settings": {"mode": "kometa", "path": str(tmp_path)},
         "runtime": {},
-        "cleanup": {"run_process": True},
+        "cleanup": {"run_cleanup": True},
         "metadata": {},
         "assets": {},
         "plex": {},
@@ -284,6 +323,27 @@ def test_scheduler_run_on_start_executes_before_wait_loop(monkeypatch, tmp_path)
     assert calls == ["run"]
 
 
+def test_schedule_catch_up_uses_durable_success_history():
+    now = datetime(2026, 1, 2, 7, 0, tzinfo=timezone.utc)
+    missed = metafusion.missed_schedule_due(
+        ["06:00", "18:30"], [], max_hours=24, now=now
+    )
+    assert missed == datetime(2026, 1, 2, 6, 0, tzinfo=timezone.utc)
+
+    completed = [
+        {
+            "status": "success",
+            "finished_at": "2026-01-02T06:30:00+00:00",
+        }
+    ]
+    assert metafusion.missed_schedule_due(
+        ["06:00", "18:30"], completed, max_hours=24, now=now
+    ) is None
+    assert metafusion.missed_schedule_due(
+        ["06:00"], [], max_hours=0.5, now=now
+    ) is None
+
+
 def test_shutdown_watchdog_forces_bounded_exit(monkeypatch):
     exits = []
     monkeypatch.setattr(metafusion.os, "_exit", lambda code: exits.append(code))
@@ -357,6 +417,7 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
             "TMDB_API_KEY": "test-key",
             "METAFUSION_RUN": "false",
             "RUN_SCHEDULE": "true",
+            "SCHEDULE_CATCH_UP": "false",
             "RUN_TIMES": "23:59",
             "SHUTDOWN_TIMEOUT": "2",
             "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),

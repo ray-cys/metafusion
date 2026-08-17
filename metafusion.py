@@ -8,12 +8,14 @@ import signal
 import sys
 import threading
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
 
-from helper.cache import begin_cache_session, flush_cache
+from helper.asset_registry import AssetDestinationRegistry
+from helper.build_info import build_info
+from helper.cache import begin_cache_session, flush_cache, load_cache
 from helper.config import (
     BASE_CONFIG_DIR,
     ConfigError,
@@ -27,8 +29,14 @@ from helper.config import (
 )
 from helper.incremental import (
     config_fingerprint,
-    mark_full_scan_complete,
-    should_run_full_scan,
+    library_full_scan_decisions,
+    mark_library_scan_complete,
+    mark_library_scan_started,
+)
+from helper.diagnostics import (
+    write_artwork_gap_report,
+    write_destination_history_report,
+    write_support_report,
 )
 from helper.logging import (
     check_sys_requirements,
@@ -43,9 +51,21 @@ from helper.plex import (
     _plex_cache,
     connect_plex_library,
     connect_plex_server,
+    get_plex_metadata,
     plex_operation,
 )
-from helper.runtime import RuntimeStatus, validate_runtime_paths
+from helper.plex_metadata import (
+    begin_plex_metadata_run,
+    finish_plex_metadata_run,
+    restore_plex_metadata,
+)
+from helper.runtime import (
+    JobAlreadyRunningError,
+    JobRunLock,
+    RuntimeStatus,
+    validate_runtime_paths,
+)
+from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
 from helper.tmdb import (
     begin_tmdb_cache,
     flush_tmdb_cache,
@@ -98,6 +118,11 @@ def parse_cli_args(argv=None):
         help="Validate configuration and report value sources without running",
     )
     parser.add_argument(
+        "--support-report",
+        action="store_true",
+        help="Write a redacted diagnostic report under /config/reports and exit",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         help="Process only this Plex library; repeat or use comma-separated names",
@@ -116,6 +141,16 @@ def parse_cli_args(argv=None):
         "--full-scan",
         action="store_true",
         help="Bypass incremental skipping and reconcile the selected libraries",
+    )
+    parser.add_argument(
+        "--plex-metadata-restore",
+        action="store_true",
+        help="Restore MetaFusion-owned Plex fields selected by --rating-key",
+    )
+    parser.add_argument(
+        "--plex-metadata-unlock",
+        action="store_true",
+        help="Remove only MetaFusion-created Plex locks selected by --rating-key",
     )
     return parser.parse_args(argv)
 
@@ -155,16 +190,25 @@ def override_config_with_cli(config, args):
         config["assets"].update(
             {"run_poster": False, "run_season": False, "run_background": False}
         )
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     if args.asset_only:
         config["metadata"].update({"run_basic": False, "run_enhanced": False})
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     if args.explain_selection:
         config["settings"]["dry_run"] = True
-        config["cleanup"]["run_process"] = False
+        config["cleanup"]["run_cleanup"] = False
     if libraries or rating_keys:
-        config["cleanup"]["run_process"] = False
-    config["_execution"] = {
+        config["cleanup"]["run_cleanup"] = False
+    maintenance_action = None
+    if args.plex_metadata_restore:
+        maintenance_action = "restore"
+    elif args.plex_metadata_unlock:
+        maintenance_action = "unlock"
+    if maintenance_action:
+        config["metafusion_run"] = True
+        config["plex_metadata"]["enabled"] = True
+        config["cleanup"]["run_cleanup"] = False
+    execution = {
         "rating_keys": rating_keys,
         "targeted": bool(libraries or rating_keys),
         "full_scan": bool(args.full_scan),
@@ -172,10 +216,15 @@ def override_config_with_cli(config, args):
         "asset_only": bool(args.asset_only),
         "explain_selection": bool(args.explain_selection),
     }
+    if maintenance_action:
+        execution["plex_metadata_maintenance"] = maintenance_action
+    config["_execution"] = execution
 
 
-async def preflight_connectors(config, session):
+async def preflight_connectors(config, session, require_tmdb=True):
     plex_task = asyncio.create_task(asyncio.to_thread(connect_plex_server, config))
+    if not require_tmdb:
+        return await plex_task
     tmdb_task = asyncio.create_task(
         tmdb_api_request(
             config,
@@ -207,6 +256,28 @@ def normalize_library_type(value):
     return library_type
 
 
+def build_scan_scopes(plex, sections, config):
+    server_id = getattr(plex, "machineIdentifier", None) or "unknown"
+    scopes = []
+    for section in sections:
+        library_name = section.title
+        library_config = config_for_library(config, library_name)
+        scopes.append(
+            {
+                "server_id": str(server_id),
+                "library_uuid": str(
+                    getattr(section, "uuid", None)
+                    or getattr(section, "key", None)
+                    or library_name
+                ),
+                "library_name": library_name,
+                "config_fingerprint": config_fingerprint(library_config),
+                "item_count": None,
+            }
+        )
+    return scopes
+
+
 def complete_inventory_types(all_libraries, successful_sections):
     detected = {"movie": set(), "tv": set()}
     successful = {"movie": set(), "tv": set()}
@@ -228,11 +299,57 @@ def complete_inventory_types(all_libraries, successful_sections):
     }
 
 
+def missed_schedule_due(run_times, recent_runs, max_hours=24, now=None):
+    """Return the latest missed slot that has not had a later successful job."""
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    candidates = []
+    for run_time in run_times or []:
+        try:
+            parsed = datetime.strptime(str(run_time), "%H:%M").time()
+        except (TypeError, ValueError):
+            continue
+        for days_ago in (0, 1):
+            day = (current - timedelta(days=days_ago)).date()
+            candidate = datetime.combine(day, parsed, tzinfo=current.tzinfo)
+            if candidate <= current:
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    latest_due = max(candidates)
+    if current - latest_due > timedelta(hours=max(0.1, float(max_hours))):
+        return None
+
+    successful = []
+    for run in recent_runs or []:
+        if run.get("status") != "success" or not run.get("finished_at"):
+            continue
+        try:
+            finished = datetime.fromisoformat(
+                str(run["finished_at"]).replace("Z", "+00:00")
+            )
+            if finished.tzinfo is None:
+                finished = finished.astimezone()
+            successful.append(finished.astimezone(current.tzinfo))
+        except (TypeError, ValueError):
+            continue
+    if successful and max(successful) >= latest_due:
+        return None
+    return latest_due
+
+
 async def metafusion_main(config, logger):
     _plex_cache.clear()
     plex_metadata_dict.clear()
     try:
         get_meta_banner(logger)
+        current_build = build_info()
+        logger.info(
+            "[MetaFusion] Version %s (commit %s)",
+            current_build["version"],
+            current_build["commit"],
+        )
         check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
             "main_started", start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -253,23 +370,35 @@ async def metafusion_main(config, logger):
         )
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            plex = await preflight_connectors(config, session)
+            execution = config.get("_execution", {})
+            maintenance_action = execution.get("plex_metadata_maintenance")
+            if maintenance_action:
+                plex = await preflight_connectors(config, session, require_tmdb=False)
+            else:
+                plex = await preflight_connectors(config, session)
             sections, selected_libraries, all_libraries = connect_plex_library(
                 config,
                 plex=plex,
             )
             metadata_summaries = {}
+            library_results = {}
+            config["_job_library_results"] = library_results
             library_filesize = {}
             successful_sections = []
             failures = []
-            execution = config.get("_execution", {})
             targeted = bool(execution.get("targeted"))
-            full_scan = bool(execution.get("full_scan")) or should_run_full_scan(
+            explain_selection = bool(execution.get("explain_selection"))
+            scan_scopes = build_scan_scopes(plex, sections, config)
+            scan_decisions = library_full_scan_decisions(
                 config,
                 targeted=targeted,
+                scopes=scan_scopes,
             )
+            if execution.get("full_scan"):
+                scan_decisions = {key: True for key in scan_decisions}
             run_feature_flags = dict(feature_flags)
             cleanup_skip_reason = None
+            all_full_scan = False
 
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
@@ -283,30 +412,33 @@ async def metafusion_main(config, logger):
                 log_main_event("main_no_libraries")
                 failures.append("No configured Plex libraries were available")
             else:
-                if mode_check(config, "kometa") and not full_scan:
+                if mode_check(config, "kometa") and not all(scan_decisions.values()):
                     metadata_dir = Path(config.get("settings", {}).get("path", ".")) / "metadata"
-                    expected_outputs = {
-                        metadata_dir
-                        / (
-                            "movie_metadata.yml"
-                            if normalize_library_type(
-                                getattr(section, "type", None)
-                                or getattr(section, "TYPE", None)
-                            )
-                            == "movie"
-                            else "tv_metadata.yml"
+                    missing_types = {
+                        library_type
+                        for library_type, output in (
+                            ("movie", metadata_dir / "movie_metadata.yml"),
+                            ("tv", metadata_dir / "tv_metadata.yml"),
                         )
-                        for section in sections
+                        if not output.exists()
                     }
-                    if any(not output.exists() for output in expected_outputs):
-                        full_scan = True
+                    for section, scope in zip(sections, scan_scopes):
+                        library_type = normalize_library_type(
+                            getattr(section, "type", None)
+                            or getattr(section, "TYPE", None)
+                        )
+                        if library_type in missing_types:
+                            scan_decisions[
+                                (scope["server_id"], scope["library_uuid"])
+                            ] = True
+                all_full_scan = bool(scan_decisions) and all(scan_decisions.values())
                 if targeted and feature_flags.get("cleanup", False):
                     cleanup_skip_reason = (
                         "targeted run; full reconciliation requires every configured "
                         "library"
                     )
                     run_feature_flags["cleanup"] = False
-                elif not full_scan:
+                elif not all_full_scan:
                     if feature_flags.get("cleanup", False):
                         cleanup_skip_reason = (
                             "incremental run; full reconciliation required"
@@ -323,6 +455,10 @@ async def metafusion_main(config, logger):
                             description=f"List library {section.title}",
                         )
                         section_items[section.title] = inventory
+                        for scope in scan_scopes:
+                            if scope["library_name"] == section.title:
+                                scope["item_count"] = len(inventory)
+                                break
                         for item in inventory:
                             media_type = normalize_library_type(
                                 getattr(item, "type", None)
@@ -339,15 +475,97 @@ async def metafusion_main(config, logger):
                         raise
                     except Exception as error:
                         failures.append(f"{section.title}: {error}")
+                        library_results[section.title] = {
+                            "status": "failed",
+                            "items_processed": 0,
+                            "items_succeeded": 0,
+                            "items_failed": None,
+                        }
 
+                if maintenance_action:
+                    if not mode_check(config, "plex"):
+                        raise RuntimeError(
+                            "Plex metadata restore/unlock requires RUN_MODE=plex"
+                        )
+                    target_keys = {
+                        str(value) for value in execution.get("rating_keys", [])
+                    }
+                    if not target_keys:
+                        raise RuntimeError(
+                            "Plex metadata restore/unlock requires --rating-key"
+                        )
+                    found_keys = set()
+                    maintenance_failures = list(failures)
+                    for section in sections:
+                        library_config = config_for_library(config, section.title)
+                        for item in section_items.get(section.title, []):
+                            rating_key = str(getattr(item, "ratingKey", ""))
+                            if rating_key not in target_keys:
+                                continue
+                            found_keys.add(rating_key)
+                            meta = await get_plex_metadata(
+                                item,
+                                _runtime_config=runtime_config,
+                                _plex_config=library_config.get("plex", {}),
+                            )
+                            result = await restore_plex_metadata(
+                                item,
+                                library_config,
+                                meta,
+                                unlock_only=maintenance_action == "unlock",
+                            )
+                            if result.get("failures"):
+                                maintenance_failures.append(
+                                    f"{section.title}/{rating_key}"
+                                )
+                    missing_keys = target_keys - found_keys
+                    if missing_keys:
+                        maintenance_failures.append(
+                            "rating keys not found: " + ", ".join(sorted(missing_keys))
+                        )
+                    if maintenance_failures:
+                        raise RuntimeError("; ".join(maintenance_failures))
+                    logger.info(
+                        "[Plex Metadata] %s completed for %d item(s)",
+                        maintenance_action,
+                        len(found_keys),
+                    )
+                    return
+
+                asset_destination_registry = AssetDestinationRegistry()
+                cache_store = load_cache()
+                if hasattr(cache_store, "asset_destination_records"):
+                    asset_destination_registry = AssetDestinationRegistry(
+                        cache_store.asset_destination_records()
+                    )
                 for section in sections:
                     if section.title not in section_items:
                         continue
                     try:
                         library_config = config_for_library(config, section.title)
+                        library_config["_asset_destination_registry"] = (
+                            asset_destination_registry
+                        )
+                        library_config["_artwork_gaps"] = config.setdefault(
+                            "_artwork_gaps", []
+                        )
+                        scope = next(
+                            candidate
+                            for candidate in scan_scopes
+                            if candidate["library_name"] == section.title
+                        )
+                        section_full_scan = scan_decisions.get(
+                            (scope["server_id"], scope["library_uuid"]), True
+                        )
                         library_flags = dict(get_feature_flags(library_config))
-                        if not full_scan:
+                        if not section_full_scan:
                             library_flags["cleanup"] = False
+                        if not targeted and not explain_selection:
+                            mark_library_scan_started(
+                                [scope],
+                                full_scan=section_full_scan,
+                                dry_run=feature_flags.get("dry_run", False),
+                            )
                         await process_library(
                             library_section=section,
                             config=library_config,
@@ -359,19 +577,56 @@ async def metafusion_main(config, logger):
                             movie_cache={},
                             session=session,
                             feature_flags=library_flags,
-                            full_scan=full_scan,
+                            full_scan=section_full_scan,
                             rating_keys=execution.get("rating_keys"),
                             incremental_fingerprint=config_fingerprint(library_config),
                             all_items=section_items[section.title],
                             global_identity_counts=identity_counts,
                             global_edition_counts=edition_counts,
-                            explain_selection=bool(execution.get("explain_selection")),
+                            explain_selection=explain_selection,
                         )
                         successful_sections.append(section)
+                        summary = metadata_summaries.get(section.title, {})
+                        library_summary = summary.get("library_summary", {})
+                        failed_items = int(library_summary.get("item_failures", 0))
+                        processed_items = int(summary.get("total_items", 0))
+                        library_results[section.title] = {
+                            "status": "success",
+                            "items_processed": processed_items,
+                            "items_succeeded": max(0, processed_items - failed_items),
+                            "items_failed": failed_items,
+                            "items_unchanged": int(
+                                library_summary.get("incremental_skipped", 0)
+                            ),
+                        }
+                        if not targeted and not explain_selection:
+                            mark_library_scan_complete(
+                                [scope],
+                                full_scan=section_full_scan,
+                                dry_run=feature_flags.get("dry_run", False),
+                            )
                     except asyncio.CancelledError:
                         raise
                     except Exception as error:
                         failures.append(f"{section.title}: {error}")
+                        summary = metadata_summaries.get(section.title, {})
+                        library_summary = summary.get("library_summary", {})
+                        processed_items = int(summary.get("total_items", 0))
+                        failed_items = library_summary.get("item_failures")
+                        library_results[section.title] = {
+                            "status": "failed",
+                            "items_processed": processed_items,
+                            "items_succeeded": (
+                                max(0, processed_items - int(failed_items))
+                                if failed_items is not None else 0
+                            ),
+                            "items_failed": (
+                                int(failed_items) if failed_items is not None else None
+                            ),
+                            "items_unchanged": int(
+                                library_summary.get("incremental_skipped", 0)
+                            ),
+                        }
 
             cleanup_result = CleanupResult()
             if run_feature_flags.get("cleanup", False):
@@ -410,10 +665,6 @@ async def metafusion_main(config, logger):
             )
             if failures:
                 raise RuntimeError("; ".join(failures))
-            if full_scan and not targeted:
-                mark_full_scan_complete(
-                    dry_run=feature_flags.get("dry_run", False),
-                )
     finally:
         _plex_cache.clear()
         plex_metadata_dict.clear()
@@ -450,13 +701,34 @@ def request_shutdown(_signum=None, _frame=None):
 
 def run_metafusion_job(config, logger, runtime_status=None):
     global _active_loop, _active_task
-    begin_cache_session()
-    begin_tmdb_cache(config)
+    job_lock = None
+    if not config.get("settings", {}).get("dry_run", False):
+        job_lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        try:
+            job_lock.acquire()
+        except JobAlreadyRunningError as error:
+            log_main_event("main_job_already_running", error=error, logger=logger)
+            if runtime_status:
+                runtime_status.run_started()
+                runtime_status.run_finished(False, error=error)
+            return False
+    try:
+        begin_cache_session(
+            writable=not config.get("settings", {}).get("dry_run", False)
+        )
+        begin_tmdb_cache(config)
+        begin_plex_metadata_run(config)
+    except Exception:
+        if job_lock is not None:
+            job_lock.release()
+        raise
     if runtime_status:
         runtime_status.run_started()
 
     success = False
     error = None
+    config["_job_library_results"] = {}
+    config["_artwork_gaps"] = []
 
     async def run_active_job():
         global _active_loop, _active_task
@@ -481,6 +753,36 @@ def run_metafusion_job(config, logger, runtime_status=None):
         _active_loop = None
         _active_task = None
         try:
+            try:
+                report_path = finish_plex_metadata_run(config)
+                if report_path:
+                    logger.info("[Plex Metadata] Report saved to %s", report_path)
+            except Exception as caught:
+                success = False
+                error = f"Failed to write Plex metadata report: {caught}"
+                log_main_event("main_unhandled_exception", error=error, logger=logger)
+            if not config.get("settings", {}).get("dry_run", False):
+                try:
+                    gap_report = write_artwork_gap_report(config.get("_artwork_gaps"))
+                    if gap_report:
+                        logger.info(
+                            "[Diagnostics] Artwork gap report saved to %s", gap_report
+                        )
+                    destination_report = write_destination_history_report(
+                        load_cache(),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    if destination_report:
+                        logger.info(
+                            "[Diagnostics] Artwork destination history saved to %s",
+                            destination_report,
+                        )
+                except OSError as caught:
+                    logger.warning(
+                        "[Diagnostics] Unable to write artwork gap report: %s", caught
+                    )
             flush_cache()
             flush_tmdb_cache()
         except Exception as caught:
@@ -489,8 +791,16 @@ def run_metafusion_job(config, logger, runtime_status=None):
             log_main_event("main_unhandled_exception", error=error, logger=logger)
         finally:
             tmdb_response_cache.reset_memory()
-        if runtime_status:
-            runtime_status.run_finished(success, error=error)
+        try:
+            if runtime_status:
+                runtime_status.run_finished(
+                    success,
+                    error=error,
+                    library_results=config.get("_job_library_results", {}),
+                )
+        finally:
+            if job_lock is not None:
+                job_lock.release()
     return success
 
 
@@ -502,15 +812,34 @@ def main(argv=None):
     if args.metadata_only and args.asset_only:
         print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
         return 2
+    if args.plex_metadata_restore and args.plex_metadata_unlock:
+        print(
+            "Configuration error: choose only one Plex metadata maintenance action",
+            file=sys.stderr,
+        )
+        return 2
+    if (args.plex_metadata_restore or args.plex_metadata_unlock) and not args.rating_key:
+        print(
+            "Configuration error: Plex metadata restore/unlock requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
     if args.status:
         status_path = Path(
-            os.environ.get("STATUS_FILE", str(BASE_CONFIG_DIR / "metafusion-status.json"))
+            os.environ.get("STATUS_FILE", "/tmp/metafusion-status.json")
         )
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
             print(f"Unable to read runtime status: {error}", file=sys.stderr)
             return 1
+        try:
+            recent_runs = recent_job_runs(path=STATE_DATABASE)
+        except StateDatabaseError as state_error:
+            status["history_error"] = str(state_error)
+            recent_runs = []
+        if recent_runs:
+            status["recent_jobs"] = recent_runs
         print(json.dumps(status, indent=2, sort_keys=True))
         return 0
     try:
@@ -533,7 +862,7 @@ def main(argv=None):
         ("assets", "run_poster"): args.run_poster or args.metadata_only,
         ("assets", "run_season"): args.run_season or args.metadata_only,
         ("assets", "run_background"): args.run_background or args.metadata_only,
-        ("cleanup", "run_process"): args.metadata_only or args.asset_only or bool(args.rating_key),
+        ("cleanup", "run_cleanup"): args.metadata_only or args.asset_only or bool(args.rating_key),
         ("plex_libraries",): bool(args.library),
     }
     for path, used in cli_sources.items():
@@ -541,6 +870,14 @@ def main(argv=None):
             sources[path] = "CLI"
 
     validation_errors = validate_config(config)
+    if args.support_report:
+        try:
+            report = write_support_report(config, validation_errors)
+        except OSError as error:
+            print(f"Unable to write support report: {error}", file=sys.stderr)
+            return 1
+        print(f"Support report saved to {report}")
+        return 0
     if args.doctor:
         print("MetaFusion configuration sources:")
         for line in config_source_report(config, sources):
@@ -567,9 +904,12 @@ def main(argv=None):
     default_status_file = (
         f"/tmp/metafusion-status-{os.getpid()}.json"
         if dry_run
-        else str(BASE_CONFIG_DIR / "metafusion-status.json")
+        else "/tmp/metafusion-status.json"
     )
-    runtime_status = RuntimeStatus(os.environ.get("STATUS_FILE", default_status_file))
+    runtime_status = RuntimeStatus(
+        os.environ.get("STATUS_FILE", default_status_file),
+        state_database=None if dry_run else STATE_DATABASE,
+    )
     settings = config.get("settings", {})
     run_times = settings.get("run_times", [])
     schedule_enabled = settings.get("schedule", False)
@@ -596,8 +936,32 @@ def main(argv=None):
                 if not run_metafusion_job(config, logger, runtime_status):
                     exit_code = 1
         elif schedule_enabled and run_times:
-            if settings.get("run_on_start", False) and not shutdown_requested.is_set():
+            run_on_start = settings.get("run_on_start", False)
+            if run_on_start and not shutdown_requested.is_set():
                 run_metafusion_job(config, logger, runtime_status)
+            elif (
+                settings.get("schedule_catch_up", True)
+                and not shutdown_requested.is_set()
+            ):
+                try:
+                    job_history = recent_job_runs(path=STATE_DATABASE)
+                except StateDatabaseError as state_error:
+                    logger.warning(
+                        "[Scheduler] Unable to read job history for catch-up: %s",
+                        state_error,
+                    )
+                    job_history = []
+                missed_slot = missed_schedule_due(
+                    run_times,
+                    job_history,
+                    max_hours=settings.get("schedule_catch_up_max_hours", 24),
+                )
+                if missed_slot is not None:
+                    logger.info(
+                        "[Scheduler] Running missed schedule from %s.",
+                        missed_slot.isoformat(),
+                    )
+                    run_metafusion_job(config, logger, runtime_status)
             scheduled_count = 0
             for run_time in run_times:
                 try:

@@ -195,6 +195,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_scheduled_run": "[MetaFusion] Scheduled run at {run_time}",
         "main_invalid_schedule_time": "[MetaFusion] Invalid schedule time '{run_time}': {error}",
         "main_shutdown_requested": "[MetaFusion] Shutdown requested; stopping safely.",
+        "main_job_already_running": "[MetaFusion] Job skipped: {error}",
     }
     levels = {
         "main_started": "info",
@@ -205,6 +206,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_scheduled_run": "info",
         "main_invalid_schedule_time": "error",
         "main_shutdown_requested": "warning",
+        "main_job_already_running": "warning",
     }
     msg = messages.get(event, "[MetaFusion] Unknown event")
     try:
@@ -279,7 +281,7 @@ def log_cache_event(event, logger=None, **kwargs):
         "cache_empty": "debug",
         "cache_load_failed": "error",
         "cache_saved": "debug",
-        "cache_updated": "debug",        
+        "cache_updated": "debug",
     }
     msg = messages.get(event, "[Cache] Unknown event")
     try:
@@ -358,7 +360,8 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_request_failed": "[TMDb] Attempt {attempt}: Request failed for URL {url} with params {query}: {error}",
         "tmdb_retrying": "[TMDb] Retrying in {sleep_time}s... (Attempt {next_attempt}/{retries})",
         "tmdb_failed": "[TMDb] Failed after {retries} attempts for {url} with params {query}",
-        "tmdb_cache_stats": "[TMDb] Cache entries: {entries}, hits: {hits}, misses: {misses}, evictions: {evictions}",
+        "tmdb_cache_stats": "[TMDb] SQLite cache entries: {entries}, compressed: {stored_mib:.1f} MiB, disk: {disk_mib:.1f} MiB, hits: {hits}, misses: {misses}, evictions: {evictions}, recoveries: {recoveries}",
+        "tmdb_cache_degraded": "[TMDb] Persistent cache is degraded; continuing with memory cache: {error}",
     }
     levels = {
         "tmdb_no_api_key": "error",
@@ -372,6 +375,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_retrying": "info",
         "tmdb_failed": "error",
         "tmdb_cache_stats": "debug",
+        "tmdb_cache_degraded": "warning",
     }
     msg = messages.get(event, "[TMDb] Unknown event")
     try:
@@ -442,13 +446,33 @@ def log_builder_event(event, logger=None, **kwargs):
     messages = {
         "builder_missing_tmdb_and_imdb_id": "[{media_type}] Missing TMDb or IMDb ID: {full_title}. Skipping...",
         "builder_missing_tvdb_id_and_tmdb_id": "[{media_type}] Missing TVDb and TMDb ID: {full_title}. Skipping...",
+        "builder_missing_tvdb_id_and_imdb_id": "[{media_type}] Missing TVDb and IMDb ID: {full_title}. Skipping...",
+        "builder_no_tmdb_id": "[{media_type}] No TMDb identity could be resolved for {full_title}. Skipping...",
+        "builder_invalid_tmdb_id": "[{media_type}] TMDb returned no data for {full_title}. Skipping...",
+        "builder_tmdb_id_recovered": "[{media_type}] Recovered stale TMDb identity for {full_title}: {old_id} -> {new_id}.",
+        "builder_tmdb_identity_mismatch": "[{media_type}] Rejected TMDb identity for {full_title}: {reason}.",
+        "builder_tmdb_identity_warning": "[{media_type}] TMDb identity warning for {full_title}: {reason}.",
+        "builder_tmdb_identity_alias": "[{media_type}] Accepted TMDb identity alias for {full_title}: {reason}.",
         "builder_no_tmdb_season_data": "[{media_type}] Missing TMDb data: {full_title} of Season {season_number}. Skipping...",
-        "builder_no_metadata_changes": "[{media_type}] No metadata changes detected: {full_title}, ({percent}%/{incomplete_percent}%) completed. Skipping updates...",
+        "builder_episode_group_fallback": "[{media_type}] Resolved alternate episode ordering for {full_title} with TMDb group {group_id}.",
+        "builder_split_series_mapping": "[{media_type}] Applied cross-provider season mapping for {full_title}: Plex season(s) {seasons}.",
+        "builder_split_series_show_preserved": "[{media_type}] Preserving top-level metadata and artwork for split series {full_title}; mapped season and episode updates remain enabled.",
+        "builder_episode_overrides": "[{media_type}] Applied {count} configured episode-number override(s) for {full_title}.",
+        "builder_episode_metadata_pending": "[{media_type}] TMDb metadata is not available yet for {count} Plex episode(s) in {full_title} ({episodes}); existing metadata is preserved.",
+        "builder_episode_order_unresolved": "[{media_type}] Could not safely map {count} Plex episode(s) for {full_title} ({episodes}); existing metadata is preserved.",
+        "builder_metadata_diagnostics": "[{media_type}] Metadata diagnostics for {full_title}: {diagnostics}",
+        "builder_no_metadata_changes": "[{media_type}] No metadata changes detected: {full_title}. Metadata completeness: {percent}% present, {incomplete_percent}% missing. Skipping updates...",
         "build_metadata_changed": "[{media_type}] Metadata updated: {full_title} ({percent}%), TMDb ID: {tmdb_id}, {changes}",
         "builder_no_existing_metadata": "[{media_type}] No existing metadata: {full_title}. Creating new entries using TMDb ID {tmdb_id}...",
         "builder_dry_run_metadata": "[Dry Run] Would build metadata for {media_type}: {full_title}",
         "builder_metadata_cached": "[{media_type}] {full_title} cached as {cache_key}...",
         "builder_dry_run_asset": "[Dry Run] Would build {asset_type} asset for {media_type}: {full_title}",
+        "builder_dry_run_asset_selected": "[Dry Run] Selected TMDb {asset_type} for {media_type}: {full_title} ({source_path})",
+        "builder_artwork_language_fallback": "[{media_type}] Selected unrestricted-language TMDb {asset_type} for {full_title}: {language}.",
+        "builder_reusing_shared_asset": "[{media_type}] Reusing shared TMDb {asset_type} for {full_title} at {destination}.",
+        "builder_asset_ownership_adopted": "[{media_type}] Adopted existing {asset_type} ownership for {full_title} at {destination}; exact TMDb source {source_path} matched without rewriting the file.",
+        "builder_preserving_existing_asset": "[{media_type}] Preserving existing {asset_type} for {full_title} at {destination}: {reason}.",
+        "builder_asset_destination_collision": "[{media_type}] Refusing {asset_type} destination collision for {full_title} at {destination}; already claimed by {owner}.",
         "builder_no_asset_path": "[{media_type}] Asset path could not be determined: {full_title} {extra}. Skipping...",
         "builder_no_suitable_asset": "[{media_type}] No suitable TMDb {asset_type} found: {full_title} {extra}. Skipping...",
         "builder_downloading_asset": "[{media_type}] Downloading TMDb {asset_type}: {full_title} ({filesize})...",
@@ -457,6 +481,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale": "[{media_type}] Force upgrade due to stale image: {full_title} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
         "builder_already_up_to_date": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
         "builder_no_upgrade_needed": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
+        "builder_stale_candidate_downgrade": "[{media_type}] Preserving higher-quality {asset_type} for {full_title}; the stale replacement candidate is lower quality.",
         "builder_no_image_for_compare": "[{media_type}] No image comparison: {full_title} {extra}. Skipping...",
         "builder_error_image_compare": "[{media_type}] Failed to compare temp image checksum: {full_title} {extra}, {error}",
         "builder_dry_run_asset_season": "[Dry Run] Would build {asset_type} asset for {media_type} Season {season_number}: {full_title}",
@@ -469,19 +494,35 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale_season": "[{media_type}] Force upgrade due to stale image: {full_title} Season {season_number} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
         "builder_already_up_to_date_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
         "builder_no_upgrade_needed_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
+        "builder_stale_candidate_downgrade_season": "[{media_type}] Preserving higher-quality season {asset_type} for {full_title} Season {season_number}; the stale replacement candidate is lower quality.",
         "builder_no_image_for_compare_season": "[{media_type}] No image comparison: {full_title} Season {season_number}. Skipping...",
         "builder_error_image_compare_season": "[{media_type}] Failed to compare temp image checksum: {full_title} Season {season_number}: {error}",
     }
     levels = {
         "builder_missing_tmdb_and_imdb_id": "warning",
         "builder_missing_tvdb_id_and_tmdb_id": "warning",
+        "builder_missing_tvdb_id_and_imdb_id": "warning",
+        "builder_no_tmdb_id": "warning",
+        "builder_invalid_tmdb_id": "warning",
+        "builder_tmdb_id_recovered": "warning",
+        "builder_tmdb_identity_mismatch": "error",
+        "builder_tmdb_identity_warning": "warning",
         "builder_no_tmdb_season_data": "warning",
+        "builder_episode_group_fallback": "info",
+        "builder_episode_order_unresolved": "warning",
+        "builder_metadata_diagnostics": "debug",
         "builder_no_metadata_changes": "info",
         "builder_no_existing_metadata": "info",
         "build_metadata_changed": "info",
         "builder_dry_run_metadata": "info",
         "builder_metadata_cached": "debug",
         "builder_dry_run_asset": "info",
+        "builder_dry_run_asset_selected": "info",
+        "builder_artwork_language_fallback": "info",
+        "builder_reusing_shared_asset": "info",
+        "builder_asset_ownership_adopted": "info",
+        "builder_preserving_existing_asset": "warning",
+        "builder_asset_destination_collision": "error",
         "builder_no_asset_path": "error",
         "builder_no_suitable_asset": "info",
         "builder_downloading_asset": "debug",
@@ -490,6 +531,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale": "info",
         "builder_already_up_to_date": "info",
         "builder_no_upgrade_needed": "info",
+        "builder_stale_candidate_downgrade": "warning",
         "builder_no_image_for_compare": "warning",
         "builder_error_image_compare": "error",
         "builder_dry_run_asset_season": "info",
@@ -501,6 +543,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale_season": "info",
         "builder_already_up_to_date_season": "info",
         "builder_no_upgrade_needed_season": "info",
+        "builder_stale_candidate_downgrade_season": "warning",
         "builder_no_image_for_compare_season": "warning",
         "builder_error_image_compare_season": "error",
     }
@@ -565,11 +608,13 @@ def log_asset_status(
         "FORCE_UPGRADE_STALE": "builder_force_upgrade_stale",
         "ALREADY_UP_TO_DATE": "builder_already_up_to_date",
         "NO_UPGRADE_NEEDED": "builder_no_upgrade_needed",
+        "STALE_CANDIDATE_DOWNGRADE": "builder_stale_candidate_downgrade",
         "NO_IMAGE_FOR_COMPARE": "builder_no_image_for_compare",
         "ERROR_IMAGE_COMPARE": "builder_error_image_compare",
         "FORCE_UPGRADE_STALE_SEASON": "builder_force_upgrade_stale_season",
         "ALREADY_UP_TO_DATE_SEASON": "builder_already_up_to_date_season",
         "NO_UPGRADE_NEEDED_SEASON": "builder_no_upgrade_needed_season",
+        "STALE_CANDIDATE_DOWNGRADE_SEASON": "builder_stale_candidate_downgrade_season",
         "NO_IMAGE_FOR_COMPARE_SEASON": "builder_no_image_for_compare_season",
         "ERROR_IMAGE_COMPARE_SEASON": "builder_error_image_compare_season",
     }
@@ -732,6 +777,7 @@ def log_library_summary(
         lines.extend(box_line(
             f"Poster - Downloaded: {library_summary.get('poster_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('poster_upgraded', 0)}, "
+            f"Adopted: {library_summary.get('poster_adopted', 0)}, "
             f"Skipped: {library_summary.get('poster_skipped', 0)}, "
             f"Missing: {library_summary.get('poster_missing', 0)}, "
             f"Failed: {library_summary.get('poster_failed', 0)}", box_width))
@@ -739,6 +785,7 @@ def log_library_summary(
         lines.extend(box_line(
             f"Background - Downloaded: {library_summary.get('background_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('background_upgraded', 0)}, "
+            f"Adopted: {library_summary.get('background_adopted', 0)}, "
             f"Skipped: {library_summary.get('background_skipped', 0)}, "
             f"Missing: {library_summary.get('background_missing', 0)}, "
             f"Failed: {library_summary.get('background_failed', 0)}", box_width))
@@ -748,6 +795,7 @@ def log_library_summary(
         and (
             library_summary.get('season_poster_downloaded', 0) > 0 or
             library_summary.get('season_poster_upgraded', 0) > 0 or
+            library_summary.get('season_poster_adopted', 0) > 0 or
             library_summary.get('season_poster_skipped', 0) > 0 or
             library_summary.get('season_poster_missing', 0) > 0 or
             library_summary.get('season_poster_failed', 0) > 0
@@ -756,6 +804,7 @@ def log_library_summary(
         lines.extend(box_line(
             f"Season - Downloaded: {library_summary.get('season_poster_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('season_poster_upgraded', 0)}, "
+            f"Adopted: {library_summary.get('season_poster_adopted', 0)}, "
             f"Skipped: {library_summary.get('season_poster_skipped', 0)}, "
             f"Missing: {library_summary.get('season_poster_missing', 0)}, "
             f"Failed: {library_summary.get('season_poster_failed', 0)}", box_width))
@@ -856,6 +905,7 @@ def log_final_summary(
             lines.extend(box_line(
                 f"Poster - Downloaded: {libsum.get('poster_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('poster_upgraded', 0)}, "
+                f"Adopted: {libsum.get('poster_adopted', 0)}, "
                 f"Skipped: {libsum.get('poster_skipped', 0)}, "
                 f"Missing: {libsum.get('poster_missing', 0)}, "
                 f"Failed: {libsum.get('poster_failed', 0)}", box_width))
@@ -864,6 +914,7 @@ def log_final_summary(
             lines.extend(box_line(
                 f"Background - Downloaded: {libsum.get('background_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('background_upgraded', 0)}, "
+                f"Adopted: {libsum.get('background_adopted', 0)}, "
                 f"Skipped: {libsum.get('background_skipped', 0)}, "
                 f"Missing: {libsum.get('background_missing', 0)}, "
                 f"Failed: {libsum.get('background_failed', 0)}", box_width))
@@ -874,13 +925,16 @@ def log_final_summary(
             and (
                 libsum.get('season_poster_downloaded', 0) > 0 or
                 libsum.get('season_poster_upgraded', 0) > 0 or
+                libsum.get('season_poster_adopted', 0) > 0 or
                 libsum.get('season_poster_skipped', 0) > 0 or
-                libsum.get('season_poster_missing', 0) > 0
+                libsum.get('season_poster_missing', 0) > 0 or
+                libsum.get('season_poster_failed', 0) > 0
             )
         ):
             lines.extend(box_line(
                 f"Season - Downloaded: {libsum.get('season_poster_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('season_poster_upgraded', 0)}, "
+                f"Adopted: {libsum.get('season_poster_adopted', 0)}, "
                 f"Skipped: {libsum.get('season_poster_skipped', 0)}, "
                 f"Missing: {libsum.get('season_poster_missing', 0)}, "
                 f"Failed: {libsum.get('season_poster_failed', 0)}", box_width))

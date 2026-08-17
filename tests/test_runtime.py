@@ -3,10 +3,13 @@ import io
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from helper import tmdb as tmdb_module
 from helper import logging as logging_module
 from helper import plex as plex_module
 from helper.plex import get_plex_metadata
+from helper.runtime import JobAlreadyRunningError, JobRunLock, RuntimeStatus
 from modules.utils import get_best_background
 
 
@@ -50,6 +53,242 @@ def test_tmdb_id_resolution_uses_external_ids_and_active_session(monkeypatch):
     assert calls == [
         ("find/123", {"external_source": "tvdb_id"}, active_session)
     ]
+
+
+def test_tmdb_title_search_fallback_accepts_only_one_exact_title_and_year(monkeypatch):
+    async def request(_config, endpoint, params=None, **_kwargs):
+        assert endpoint == "search/movie"
+        assert params["year"] == 2020
+        return {
+            "results": [
+                {"id": 1, "title": "Example!", "release_date": "2020-01-01"},
+                {"id": 2, "title": "Example", "release_date": "2019-01-01"},
+                {"id": 3, "title": "Different", "release_date": "2020-01-01"},
+            ]
+        }
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {"tmdb": {"title_search_fallback": True}},
+            "movie",
+            title="Example",
+            year=2020,
+            session=object(),
+        )
+    )
+
+    assert resolved == "1"
+
+
+def test_tmdb_title_search_prefers_terminal_title_year_over_conflicting_plex_year(
+    monkeypatch,
+):
+    async def request(_config, endpoint, params=None, **_kwargs):
+        assert endpoint == "search/movie"
+        assert params["query"] == "Monster"
+        assert params["year"] == 2022
+        return {
+            "results": [
+                {"id": 10, "title": "Monster", "release_date": "2022-06-01"},
+                {"id": 11, "title": "Monster", "release_date": "2024-06-01"},
+            ]
+        }
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {"tmdb": {"title_search_fallback": True}},
+            "movie",
+            title="Monster (2022)",
+            year=2024,
+            session=object(),
+        )
+    )
+
+    assert resolved == "10"
+
+
+def test_tmdb_identity_accepts_matching_title_year_over_conflicting_plex_year():
+    accepted, reason = tmdb_module.tmdb_identity_consistent(
+        "movie",
+        "Monster (2022)",
+        2024,
+        {
+            "title": "Monster",
+            "original_title": "Monster",
+            "release_date": "2022-05-01",
+        },
+    )
+
+    assert accepted is True
+    assert reason == "matched title year 2022; ignored conflicting Plex year 2024"
+
+
+def test_tmdb_identity_accepts_trusted_anthology_alias_and_title_year():
+    accepted, reason = tmdb_module.tmdb_identity_consistent(
+        "tv",
+        "Monster (2022)",
+        2024,
+        {
+            "name": "DAHMER - Monster: The Jeffrey Dahmer Story",
+            "original_name": "Dahmer – Monster: The Jeffrey Dahmer Story",
+            "first_air_date": "2022-09-21",
+        },
+        trusted_external_id=True,
+    )
+
+    assert accepted is True
+    assert reason == (
+        "trusted external ID matched title year 2022; "
+        "ignored conflicting Plex year 2024"
+    )
+
+
+def test_tmdb_identity_keeps_untrusted_anthology_alias_rejected():
+    accepted, reason = tmdb_module.tmdb_identity_consistent(
+        "tv",
+        "Monster (2022)",
+        2024,
+        {
+            "name": "DAHMER - Monster: The Jeffrey Dahmer Story",
+            "first_air_date": "2022-09-21",
+        },
+    )
+
+    assert accepted is False
+    assert reason == "year mismatch (2024 vs 2022)"
+
+
+@pytest.mark.parametrize(
+    ("title", "details", "reason"),
+    [
+        (
+            "Different (2022)",
+            {"title": "Monster", "release_date": "2022-05-01"},
+            "year mismatch (2024 vs 2022)",
+        ),
+        (
+            "Monster (2025)",
+            {"title": "Monster", "release_date": "2022-05-01"},
+            "title year mismatch (2025 vs 2022)",
+        ),
+        (
+            "Monster",
+            {"title": "Monster", "release_date": "2022-05-01"},
+            "year mismatch (2024 vs 2022)",
+        ),
+    ],
+)
+def test_tmdb_identity_does_not_weaken_genuine_year_rejections(
+    title, details, reason
+):
+    accepted, actual_reason = tmdb_module.tmdb_identity_consistent(
+        "movie", title, 2024, details
+    )
+
+    assert accepted is False
+    assert actual_reason == reason
+
+
+def test_tmdb_external_id_consensus_trusts_match_and_rejects_conflict():
+    details = {"external_ids": {"imdb_id": "tt123", "tvdb_id": 456}}
+
+    assert tmdb_module.tmdb_external_id_consensus(
+        "tv", details, imdb_id="TT123", tvdb_id="456"
+    ) == (True, True, "matched IMDb, TVDB")
+
+    accepted, trusted, reason = tmdb_module.tmdb_external_id_consensus(
+        "tv", details, imdb_id="tt999", tvdb_id="456"
+    )
+    assert accepted is False
+    assert trusted is False
+    assert "IMDb tt999 vs tt123" in reason
+
+
+def test_tmdb_external_id_consensus_allows_explicit_split_tvdb_mapping():
+    assert tmdb_module.tmdb_external_id_consensus(
+        "tv",
+        {"external_ids": {"tvdb_id": 999}},
+        tvdb_id="456",
+        allow_tvdb_mismatch=True,
+    ) == (True, True, "accepted configured split-series TVDB mapping")
+
+
+def test_tmdb_id_resolution_excludes_a_rejected_external_match(monkeypatch):
+    async def request(_config, endpoint, **_kwargs):
+        assert endpoint == "find/tt123"
+        return {"movie_results": [{"id": 100}, {"id": 101}]}
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    resolved = asyncio.run(
+        tmdb_module.resolve_tmdb_id(
+            {},
+            "movie",
+            imdb_id="tt123",
+            excluded_ids={"100"},
+            session=object(),
+        )
+    )
+
+    assert resolved == "101"
+
+
+def test_unfiltered_image_request_disables_metadata_locale(monkeypatch):
+    calls = []
+
+    async def request(_config, endpoint, **kwargs):
+        calls.append((endpoint, kwargs))
+        return {"posters": []}
+
+    monkeypatch.setattr(tmdb_module, "tmdb_api_request", request)
+    asyncio.run(
+        tmdb_module.tmdb_unfiltered_images(
+            {}, "tv", "10", season_number=2, session=object()
+        )
+    )
+
+    assert calls[0][0] == "tv/10/season/2/images"
+    assert calls[0][1]["include_locale"] is False
+
+
+def test_job_run_lock_rejects_overlapping_writer(tmp_path):
+    first = JobRunLock(tmp_path / ".metafusion-run.lock").acquire()
+    try:
+        with pytest.raises(JobAlreadyRunningError):
+            JobRunLock(tmp_path / ".metafusion-run.lock").acquire()
+    finally:
+        first.release()
+
+    with JobRunLock(tmp_path / ".metafusion-run.lock"):
+        assert (tmp_path / ".metafusion-run.lock").read_text().strip()
+
+
+def test_heartbeat_retries_after_transient_write_failure(tmp_path, caplog):
+    status = RuntimeStatus(tmp_path / "status.json", heartbeat_seconds=0)
+
+    class StopAfterRetry:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self, _seconds):
+            self.calls += 1
+            return self.calls > 1
+
+    attempts = []
+
+    def fail_once(**_values):
+        attempts.append(True)
+        raise OSError("temporary")
+
+    status._stop = StopAfterRetry()
+    status._update = fail_once
+    with caplog.at_level(logging.WARNING):
+        status._heartbeat_loop()
+
+    assert attempts == [True]
+    assert "retrying" in caplog.text
 
 
 def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():
@@ -425,6 +664,57 @@ def test_tmdb_rate_limit_retries_and_recovers(monkeypatch):
 
     assert result == {"ok": True}
     assert sleeps == [1]
+
+
+def test_tmdb_not_found_is_not_retried(monkeypatch):
+    calls = []
+    sleeps = []
+
+    class Response:
+        status = 404
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"status_code":34}'
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            calls.append(True)
+            return Response()
+
+    class Limiter:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tmdb_module, "get_tmdb_limiter", lambda: Limiter())
+    monkeypatch.setattr(
+        tmdb_module.asyncio,
+        "sleep",
+        lambda seconds: _record_sleep(sleeps, seconds),
+    )
+
+    result = asyncio.run(
+        tmdb_module.tmdb_api_request(
+            {"tmdb": {"api_key": "key"}},
+            "movie/1306363",
+            retries=3,
+            session=Session(),
+            cache=False,
+        )
+    )
+
+    assert result is None
+    assert len(calls) == 1
+    assert sleeps == []
 
 
 async def _record_sleep(calls, seconds):

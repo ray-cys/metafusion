@@ -2,12 +2,17 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from helper.config import CACHE_DIR, get_image_upgrade_days
-from helper.io import atomic_write_json, read_json_with_backup
-
-
-STATE_FILE = CACHE_DIR / "incremental_state.json"
+from helper.config import get_image_upgrade_days
+from helper.state_db import (
+    STATE_DATABASE,
+    load_global_full_scan,
+    load_scan_states,
+    mark_scan_complete as persist_scan_complete,
+    mark_scan_started as persist_scan_started,
+    mark_global_full_scan,
+)
 
 
 @dataclass(frozen=True)
@@ -36,12 +41,33 @@ def config_fingerprint(config):
         "library_name": config.get("_library_name"),
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
+        "kometa": config.get("kometa", {}),
         "assets": config.get("assets", {}),
+        "plex_metadata": config.get("plex_metadata", {}),
+        "plex_path_mappings": config.get("plex", {}).get("path_mappings", []),
         "image_upgrades": config.get("image_upgrades", {}),
         "tmdb": {
             "language": config.get("tmdb", {}).get("language"),
             "fallback": config.get("tmdb", {}).get("fallback"),
             "region": config.get("tmdb", {}).get("region"),
+            "artwork_allow_any_language": config.get("tmdb", {}).get(
+                "artwork_allow_any_language"
+            ),
+            "title_search_fallback": config.get("tmdb", {}).get(
+                "title_search_fallback"
+            ),
+            "episode_group_fallback": config.get("tmdb", {}).get(
+                "episode_group_fallback"
+            ),
+            "split_series_show_policy": config.get("tmdb", {}).get(
+                "split_series_show_policy"
+            ),
+            "split_series_mappings": config.get("tmdb", {}).get(
+                "split_series_mappings", {}
+            ),
+            "episode_overrides": config.get("tmdb", {}).get(
+                "episode_overrides", {}
+            ),
         },
         "poster_set": config.get("poster_set", {}),
         "season_set": config.get("season_set", {}),
@@ -51,44 +77,139 @@ def config_fingerprint(config):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def load_state(path=None):
-    path = STATE_FILE if path is None else path
-    document = read_json_with_backup(path, default={})
-    return document if isinstance(document, dict) else {}
+def load_state(path=None, scopes=None):
+    database = Path(path or STATE_DATABASE)
+    document = {"libraries": load_scan_states(scopes or [], path=database)}
+    if not scopes:
+        document["last_full_scan"] = load_global_full_scan(path=database)
+    return document
 
 
-def should_run_full_scan(config, targeted=False, state=None, now=None):
-    if not config.get("incremental", {}).get("enabled", True):
-        return True
-    if targeted:
-        return False
-    state = load_state() if state is None else state
-    last_value = state.get("last_full_scan")
-    if not last_value:
+def _timestamp_is_due(value, interval, now):
+    if not value:
         return True
     try:
-        last_full = datetime.fromisoformat(str(last_value).replace("Z", "+00:00"))
+        last_full = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if last_full.tzinfo is None:
             last_full = last_full.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return True
+    return now - last_full >= interval
+
+
+def should_run_full_scan(
+    config, targeted=False, state=None, now=None, scopes=None, path=None
+):
+    if not config.get("incremental", {}).get("enabled", True):
+        return True
+    if targeted:
+        return False
     now = utc_now() if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     interval = timedelta(
         hours=max(
             1.0,
             float(config.get("incremental", {}).get("full_scan_interval_hours", 168)),
         )
     )
-    return now - last_full >= interval
+    if state is not None:
+        return _timestamp_is_due(state.get("last_full_scan"), interval, now)
+
+    decisions = library_full_scan_decisions(
+        config,
+        targeted=targeted,
+        now=now,
+        scopes=scopes,
+        path=path,
+    )
+    return True if not decisions else any(decisions.values())
 
 
-def mark_full_scan_complete(dry_run=False, path=None, now=None):
+def library_full_scan_decisions(
+    config, targeted=False, now=None, scopes=None, path=None
+):
+    scopes = list(scopes or [])
+    if not scopes:
+        return {}
+    if not config.get("incremental", {}).get("enabled", True):
+        return {_scope_key(scope): True for scope in scopes}
+    if targeted:
+        return {_scope_key(scope): False for scope in scopes}
+    now = utc_now() if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    interval = timedelta(
+        hours=max(
+            1.0,
+            float(config.get("incremental", {}).get("full_scan_interval_hours", 168)),
+        )
+    )
+    states = load_state(path=path, scopes=scopes).get("libraries", {})
+    decisions = {}
+    for scope in scopes:
+        key = (
+            str(scope.get("server_id") or "unknown"),
+            str(scope.get("library_uuid") or scope.get("library_name")),
+        )
+        library_state = states.get(key)
+        if library_state is None:
+            decisions[key] = True
+            continue
+        expected_fingerprint = scope.get("config_fingerprint")
+        stored_fingerprint = library_state.get("config_fingerprint")
+        if (
+            expected_fingerprint
+            and stored_fingerprint
+            and expected_fingerprint != stored_fingerprint
+        ):
+            decisions[key] = True
+            continue
+        decisions[key] = _timestamp_is_due(
+            library_state.get("last_full_scan_completed"), interval, now
+        )
+    return decisions
+
+
+def _scope_key(scope):
+    return (
+        str(scope.get("server_id") or "unknown"),
+        str(scope.get("library_uuid") or scope.get("library_name")),
+    )
+
+
+def mark_full_scan_complete(dry_run=False, path=None, now=None, scopes=None):
     if dry_run:
         return False
-    path = STATE_FILE if path is None else path
     now = utc_now() if now is None else now
-    atomic_write_json(path, {"last_full_scan": now.isoformat()}, backup=True)
-    return True
+    value = now.isoformat() if isinstance(now, datetime) else str(now)
+    if scopes:
+        return persist_scan_complete(
+            scopes, full_scan=True, path=path or STATE_DATABASE, now=value
+        )
+    return mark_global_full_scan(value, path=path or STATE_DATABASE)
+
+
+def mark_library_scan_started(scopes, full_scan, dry_run=False, path=None, now=None):
+    if dry_run:
+        return False
+    value = utc_now() if now is None else now
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    return persist_scan_started(
+        scopes, full_scan=full_scan, path=path or STATE_DATABASE, now=value
+    )
+
+
+def mark_library_scan_complete(scopes, full_scan, dry_run=False, path=None, now=None):
+    if dry_run:
+        return False
+    value = utc_now() if now is None else now
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    return persist_scan_complete(
+        scopes, full_scan=full_scan, path=path or STATE_DATABASE, now=value
+    )
 
 
 def timestamp_due(value, days, now=None):
@@ -137,6 +258,38 @@ def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=No
         return set()
 
     reasons = set()
+    try:
+        pending_count = int(cached.get("metadata_pending_count") or 0)
+    except (TypeError, ValueError):
+        pending_count = 0
+    metadata_enabled = feature_flags is None or any(
+        flags.get(name, False)
+        for name in ("metadata_basic", "metadata_enhanced", "plex_metadata")
+    )
+    if pending_count > 0 and metadata_enabled:
+        recheck_hours = max(
+            0.1,
+            float(
+                config.get("incremental", {}).get(
+                    "metadata_pending_recheck_hours", 24.0
+                )
+            ),
+        )
+        check_time = utc_now() if now is None else now
+        if check_time.tzinfo is None:
+            check_time = check_time.replace(tzinfo=timezone.utc)
+        if _timestamp_is_due(
+            cached.get("metadata_pending_at"),
+            timedelta(hours=recheck_hours),
+            check_time,
+        ):
+            reasons.add("metadata")
+    if flags.get("plex_metadata", False) and timestamp_due(
+        cached.get("plex_metadata_last_checked"),
+        config.get("plex_metadata", {}).get("recheck_days", 30),
+        now=now,
+    ):
+        reasons.add("metadata")
     if flags.get("poster", False) and timestamp_due(
         cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
         days,
@@ -182,7 +335,11 @@ def enabled_work_reasons(media_type, feature_flags=None):
         normalized_type = "movie"
 
     reasons = set()
-    if flags.get("metadata_basic", True) or flags.get("metadata_enhanced", False):
+    if (
+        flags.get("metadata_basic", True)
+        or flags.get("metadata_enhanced", False)
+        or flags.get("plex_metadata", False)
+    ):
         reasons.add("metadata")
     if flags.get("poster", False):
         reasons.add("poster")
@@ -202,6 +359,8 @@ def plan_items(
     config=None,
     feature_flags=None,
     now=None,
+    server_id=None,
+    library_uuid=None,
 ):
     """Plan selected items without losing which operations made them eligible."""
     target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
@@ -223,9 +382,20 @@ def plan_items(
             for item in candidates
         ]
 
+    scoped_cache = (
+        cache.entries_for_scope(
+            server_id,
+            library_uuid,
+            rating_keys=[getattr(item, "ratingKey", "") for item in candidates],
+        ).values()
+        if server_id is not None
+        and library_uuid is not None
+        and hasattr(cache, "entries_for_scope")
+        else cache.values()
+    )
     cache_by_rating_key = {
         str(entry.get("rating_key")): entry
-        for entry in cache.values()
+        for entry in scoped_cache
         if isinstance(entry, dict) and entry.get("rating_key") is not None
     }
     planned = []
@@ -265,6 +435,8 @@ def select_items(
     config=None,
     feature_flags=None,
     now=None,
+    server_id=None,
+    library_uuid=None,
 ):
     return [
         planned.item
@@ -277,5 +449,7 @@ def select_items(
             config=config,
             feature_flags=feature_flags,
             now=now,
+            server_id=server_id,
+            library_uuid=library_uuid,
         )
     ]

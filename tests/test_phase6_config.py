@@ -114,6 +114,15 @@ def test_image_upgrade_interval_validation_is_actionable():
     assert any("image_upgrades.series_days" in error for error in errors)
 
 
+def test_tmdb_cache_byte_limit_validation_is_actionable():
+    config = valid_config()
+    config["tmdb_cache"]["max_mb"] = -1
+
+    assert any(
+        "tmdb_cache.max_mb" in error for error in validate_config(config)
+    )
+
+
 def test_malformed_yaml_is_a_validation_error_even_with_environment_secrets(tmp_path):
     config_file = tmp_path / "config.yml"
     config_file.write_text("settings: [broken", encoding="utf-8")

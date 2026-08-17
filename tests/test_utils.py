@@ -118,6 +118,7 @@ def test_background_selection_and_asset_paths_cover_plex_and_kometa(tmp_path):
         "movie_dir": str(tmp_path / "movie"),
         "movie_path": "Example (2020)",
     }
+    (tmp_path / "movie").mkdir()
     plex_config = {"settings": {"mode": "plex"}}
     assert get_asset_path(plex_config, movie, "poster") == tmp_path / "movie" / "poster.jpg"
     assert get_asset_path(plex_config, movie, "background") == tmp_path / "movie" / "fanart.jpg"

@@ -1,14 +1,27 @@
 import asyncio, copy, yaml
 from collections import Counter
 from pathlib import Path
-from helper.cache import load_cache, meta_cache_async
+from helper.cache import (
+    load_cache,
+    meta_cache_async,
+    reset_cache_scope,
+    set_cache_scope,
+)
 from helper.config import mode_check
 from helper.incremental import plan_items
 from helper.logging import log_processing_event, log_library_summary
 from helper.plex import get_plex_metadata, plex_operation
-from helper.identity import cache_key_for_meta, item_identity, legacy_cache_key
+from helper.identity import cache_key_for_meta, item_identity
+from helper.io import sha256_file
 from modules.builder import build_movie, build_tv
-from modules.kometa import validate_metadata_document, write_kometa_metadata
+from modules.kometa import (
+    normalize_metadata_order,
+    remove_deprecated_metadata_fields,
+    validate_metadata_document,
+    write_kometa_metadata,
+)
+from helper.plex_metadata import apply_plex_metadata
+from helper.state_db import prune_plex_metadata_library
 
 
 class ItemProcessingError(RuntimeError):
@@ -21,6 +34,62 @@ class LibraryProcessingError(RuntimeError):
 
 class AmbiguousEditionError(LibraryProcessingError):
     pass
+
+
+MAX_ITEM_FAILURE_DETAILS = 10
+
+
+def apply_cached_tmdb_recovery(meta, cache):
+    """Reuse a verified replacement while Plex still reports the stale ID."""
+    if not isinstance(meta, dict) or not meta.get("tmdb_id"):
+        return False
+    entry = cache.get(cache_key_for_meta(meta), {})
+    if not isinstance(entry, dict):
+        return False
+    source_id = entry.get("tmdb_recovery_source_id")
+    replacement_id = entry.get("tmdb_id")
+    plex_id = meta.get("tmdb_id")
+    if (
+        source_id is None
+        or replacement_id is None
+        or str(source_id) != str(plex_id)
+        or str(replacement_id) == str(plex_id)
+    ):
+        return False
+    meta["plex_tmdb_id"] = str(plex_id)
+    meta["tmdb_id"] = str(replacement_id)
+    return True
+
+
+def _item_failure_label(item):
+    title = getattr(item, "title", None) or "Unknown"
+    year = getattr(item, "year", None)
+    label = f"{title} ({year})" if year is not None else str(title)
+    rating_key = getattr(item, "ratingKey", None)
+    if rating_key is not None:
+        label += f" [rating key {rating_key}]"
+    return label
+
+
+def _root_error_message(error):
+    cause = error
+    seen = set()
+    while getattr(cause, "__cause__", None) is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        cause = cause.__cause__
+    return str(cause) or cause.__class__.__name__
+
+
+def format_item_failures(item_errors):
+    ordered_errors = sorted(item_errors, key=lambda item: item[0].casefold())
+    details = [
+        f"{label}: {_root_error_message(error)}"
+        for label, error in ordered_errors[:MAX_ITEM_FAILURE_DETAILS]
+    ]
+    remaining = len(item_errors) - len(details)
+    if remaining:
+        details.append(f"... and {remaining} more item(s)")
+    return "; ".join(details)
 
 
 def find_ambiguous_editions(metadata):
@@ -89,7 +158,7 @@ async def process_item(
         log_processing_event("processing_no_item")
         return None
 
-    meta = await get_plex_metadata(plex_item)
+    meta = await get_plex_metadata(plex_item, _plex_config=config.get("plex", {}))
     title = meta.get("title", "Unknown")
     year = meta.get("year", "Unknown")
     full_title = f"{title} ({year})"
@@ -138,8 +207,11 @@ async def process_item(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        log_processing_event("processing_failed_item", full_title=full_title, error=str(e))
-        raise ItemProcessingError(f"Failed to process {full_title}") from e
+        failure_label = _item_failure_label(plex_item)
+        log_processing_event(
+            "processing_failed_item", full_title=failure_label, error=str(e)
+        )
+        raise ItemProcessingError(f"Failed to process {failure_label}") from e
     failed_actions = []
     if isinstance(stats, dict):
         failed_actions.extend(
@@ -154,6 +226,46 @@ async def process_item(
         )
     if not isinstance(stats, dict):
         raise ItemProcessingError(f"Builder returned no result for {full_title}")
+    plex_result = await apply_plex_metadata(
+        plex_item,
+        stats.pop("plex_candidate", None),
+        config,
+        meta,
+    )
+    stats["plex_metadata_writes"] = plex_result.get("writes", 0)
+    if feature_flags.get("plex_metadata", False):
+        stats["metadata_action"] = (
+            "failed"
+            if plex_result.get("failures")
+            else ("upgraded" if plex_result.get("writes") else "skipped")
+        )
+    if plex_result.get("writes") and hasattr(plex_item, "reload"):
+        await plex_operation(
+            lambda: plex_item.reload(),
+            config.get("runtime", {}),
+            description=f"Reload Plex metadata identity for {full_title}",
+        )
+        updated_at = getattr(plex_item, "updatedAt", None)
+        meta["updatedAt"] = (
+            updated_at.isoformat()
+            if hasattr(updated_at, "isoformat")
+            else (str(updated_at) if updated_at is not None else None)
+        )
+    if feature_flags.get("plex_metadata", False) and not feature_flags.get(
+        "dry_run", False
+    ):
+        normalized_type = "tv" if library_type == "show" else library_type
+        await meta_cache_async(
+            cache_key_for_meta(meta),
+            meta.get("tmdb_id"),
+            title,
+            year,
+            normalized_type,
+            update_timestamp=False,
+            plex_metadata_checked=True,
+        )
+    if plex_result.get("failures"):
+        failed_actions.append("failed")
     stats["_incremental_success"] = not failed_actions
     return stats
 
@@ -172,6 +284,7 @@ async def process_library(
         ignored_fields = {"runtime", "guest"}
     existing_yaml_data = {}
     original_yaml_data = {}
+    normalized_metadata_order = 0
 
     if library_item_counts is not None:
         library_item_counts[library_name] = 0
@@ -182,9 +295,20 @@ async def process_library(
     completed = incomplete = 0
     season_count = episode_count = 0
     meta_downloaded = meta_upgraded = meta_skipped = 0
-    poster_downloaded = poster_upgraded = poster_skipped = poster_missing = poster_failed = 0
-    background_downloaded = background_upgraded = background_skipped = background_missing = background_failed = 0
-    season_poster_downloaded = season_poster_upgraded = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+    poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_missing = poster_failed = 0
+    background_downloaded = background_upgraded = background_adopted = background_skipped = background_missing = background_failed = 0
+    season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+
+    server = getattr(library_section, "_server", None)
+    scope_token = set_cache_scope(
+        server_id=getattr(server, "machineIdentifier", None),
+        library_uuid=(
+            getattr(library_section, "uuid", None)
+            or getattr(library_section, "key", None)
+            or library_name
+        ),
+        library_name=library_name,
+    )
 
     try:
         library_name = library_section.title
@@ -202,6 +326,12 @@ async def process_library(
             rating_keys=rating_keys,
             config=config,
             feature_flags=feature_flags,
+            server_id=getattr(server, "machineIdentifier", None) or "unknown",
+            library_uuid=(
+                getattr(library_section, "uuid", None)
+                or getattr(library_section, "key", None)
+                or library_name
+            ),
         )
         items = [planned.item for planned in planned_items]
         total_library_items = len(all_items)
@@ -232,6 +362,7 @@ async def process_library(
                     _episode_cache=episode_cache,
                     _movie_cache=movie_cache,
                     _runtime_config=config.get("runtime", {}),
+                    _plex_config=config.get("plex", {}),
                 )
                 preloaded_metadata.append(meta)
             except Exception as e:
@@ -253,6 +384,9 @@ async def process_library(
             raise LibraryProcessingError(
                 "Plex metadata inventory was incomplete: " + "; ".join(metadata_errors)
             )
+        cache = load_cache()
+        for meta in preloaded_metadata:
+            apply_cached_tmdb_recovery(meta, cache)
         if feature_flags.get("cleanup", False):
             inventory_errors = cleanup_inventory_errors(
                 preloaded_metadata, feature_flags
@@ -352,6 +486,7 @@ async def process_library(
                 library_type = "unknown"
 
         output_path = None
+        output_snapshot = None
         consolidated_metadata = {"metadata": {}}
         if mode_check(config, "kometa"):
             kometa_root = config.get("settings", {}).get("path", ".")
@@ -359,6 +494,10 @@ async def process_library(
             if not feature_flags["dry_run"]:
                 metadata_dir.mkdir(parents=True, exist_ok=True)
             output_path = metadata_dir / f"{library_type}_metadata.yml"
+            output_snapshot = (
+                output_path.exists(),
+                sha256_file(output_path) if output_path.exists() else None,
+            )
             if output_path.exists():
                 try:
                     with open(output_path, "r", encoding="utf-8") as f:
@@ -371,6 +510,8 @@ async def process_library(
                         f"Unable to parse existing metadata file: {output_path}"
                     ) from e
             original_yaml_data = copy.deepcopy(existing_yaml_data)
+            remove_deprecated_metadata_fields(existing_yaml_data, library_type)
+            normalized_metadata_order = normalize_metadata_order(existing_yaml_data)
             consolidated_metadata = existing_yaml_data if existing_yaml_data else {"metadata": {}}
 
         existing_assets = set()    
@@ -381,13 +522,14 @@ async def process_library(
             nonlocal poster_size, background_size, season_poster_size, total_asset_size
             nonlocal completed, incomplete, season_count, episode_count
             nonlocal meta_downloaded, meta_upgraded, meta_skipped
-            nonlocal poster_downloaded, poster_upgraded, poster_skipped, poster_missing, poster_failed
-            nonlocal background_downloaded, background_upgraded, background_skipped, background_missing, background_failed
-            nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_skipped, season_poster_missing, season_poster_failed
+            nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_missing, poster_failed
+            nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_missing, background_failed
+            nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_missing, season_poster_failed
 
             item = planned.item
+            item_metadata = {"metadata": {}}
             stats = await process_item(
-                plex_item=item, consolidated_metadata=consolidated_metadata, config=config,
+                plex_item=item, consolidated_metadata=item_metadata, config=config,
                 feature_flags=feature_flags, existing_yaml_data=existing_yaml_data,
                 library_name=library_name, existing_assets=existing_assets,
                 session=session, ignored_fields=ignored_fields,
@@ -395,14 +537,29 @@ async def process_library(
                 work_reasons=planned.reasons,
             )
             if stats and isinstance(stats, dict):
+                generated_entries = item_metadata.get("metadata", {})
+                if isinstance(generated_entries, dict):
+                    consolidated_metadata.setdefault("metadata", {}).update(
+                        generated_entries
+                    )
                 all_stats.append(stats)
                 if (
                     stats.pop("_incremental_success", False)
                     and not feature_flags.get("dry_run", False)
                 ):
-                    pending_incremental.append(meta_by_rating_key.get(
-                        str(getattr(item, "ratingKey", ""))
-                    ))
+                    pending_count = (
+                        stats.get("metadata_pending_count", 0)
+                        if "metadata" in planned.reasons
+                        else None
+                    )
+                    pending_incremental.append(
+                        (
+                            meta_by_rating_key.get(
+                                str(getattr(item, "ratingKey", ""))
+                            ),
+                            pending_count,
+                        )
+                    )
 
                 action = stats.get("metadata_action")
                 if action == "downloaded":
@@ -417,6 +574,8 @@ async def process_library(
                     poster_downloaded += 1
                 elif action == "upgraded":
                     poster_upgraded += 1
+                elif action == "adopted":
+                    poster_adopted += 1
                 elif action == "skipped":
                     poster_skipped += 1
                 elif action == "missing":
@@ -429,6 +588,8 @@ async def process_library(
                     background_downloaded += 1
                 elif action == "upgraded":
                     background_upgraded += 1
+                elif action == "adopted":
+                    background_adopted += 1
                 elif action == "skipped":
                     background_skipped += 1
                 elif action == "missing":
@@ -442,6 +603,8 @@ async def process_library(
                         season_poster_downloaded += 1
                     elif season_action == "upgraded":
                         season_poster_upgraded += 1
+                    elif season_action == "adopted":
+                        season_poster_adopted += 1
                     elif season_action == "skipped":
                         season_poster_skipped += 1
                     elif season_action == "missing":
@@ -498,7 +661,7 @@ async def process_library(
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    item_errors.append(error)
+                    item_errors.append((_item_failure_label(planned.item), error))
                 finally:
                     queue.task_done()
 
@@ -513,15 +676,32 @@ async def process_library(
                 worker_task.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
-        if item_errors:
-            raise LibraryProcessingError(
-                f"{len(item_errors)} of {total_items} items failed in {library_name}"
-            ) from item_errors[0]
+        if (
+            full_scan
+            and not item_errors
+            and mode_check(config, "plex")
+            and feature_flags.get("plex_metadata", False)
+            and not feature_flags.get("dry_run", False)
+        ):
+            prune_plex_metadata_library(
+                getattr(server, "machineIdentifier", None) or "unknown",
+                getattr(library_section, "uuid", None)
+                or getattr(library_section, "key", None)
+                or library_name,
+                {
+                    str(getattr(item, "ratingKey", ""))
+                    for item in all_items
+                    if getattr(item, "ratingKey", None) is not None
+                },
+            )
 
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size
 
-        output_changed = consolidated_metadata != original_yaml_data
+        output_changed = (
+            consolidated_metadata != original_yaml_data
+            or normalized_metadata_order > 0
+        )
         if (
             mode_check(config, "kometa")
             and not feature_flags["dry_run"]
@@ -535,6 +715,8 @@ async def process_library(
                     consolidated_metadata,
                     validate_schema=output_config.get("validate_schema", True),
                     backup_count=output_config.get("backup_count", 3),
+                    library_type=library_type,
+                    expected_snapshot=output_snapshot,
                 )
                 log_processing_event("processing_metadata_saved", output_path=output_path)
             except Exception as e:
@@ -545,7 +727,7 @@ async def process_library(
         elif mode_check(config, "kometa") and feature_flags["dry_run"]:
             log_processing_event("processing_metadata_dry_run", library_name=library_name)
 
-        for meta in pending_incremental:
+        for meta, metadata_pending_count in pending_incremental:
             if not meta:
                 continue
             media_type = (meta.get("library_type") or "unknown").lower()
@@ -558,10 +740,10 @@ async def process_library(
                 meta.get("year"),
                 media_type,
                 update_timestamp=False,
-                legacy_cache_key=legacy_cache_key(meta),
                 rating_key=meta.get("ratingKey"),
                 plex_updated_at=meta.get("updatedAt"),
                 config_fingerprint=incremental_fingerprint,
+                metadata_pending_count=metadata_pending_count,
             )
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]
@@ -570,13 +752,14 @@ async def process_library(
 
         library_summary = {
             "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded, "meta_skipped": meta_skipped,
-            "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_skipped": poster_skipped,
+            "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped,
             "poster_failed": poster_failed, "poster_missing": poster_missing,
-            "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_skipped": background_skipped,
+            "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped,
             "background_failed": background_failed, "background_missing": background_missing,
-            "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_skipped": season_poster_skipped,
+            "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_adopted": season_poster_adopted, "season_poster_skipped": season_poster_skipped,
             "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
             "incremental_skipped": total_library_items - total_items,
+            "item_failures": len(item_errors),
         }
 
         log_library_summary(
@@ -600,8 +783,16 @@ async def process_library(
                 "library_type": library_type,
                 "season_count": season_count,
                 "episode_count": episode_count,
+                "status": "failed" if item_errors else "success",
             }
-        
+
+        if item_errors:
+            raise LibraryProcessingError(
+                f"{len(item_errors)} of {total_items} items failed in {library_name}; "
+                f"failed items: {format_item_failures(item_errors)}; "
+                "successful item output was preserved"
+            ) from item_errors[0][1]
+
         return all_stats
     except asyncio.CancelledError:
         raise
@@ -610,3 +801,5 @@ async def process_library(
         if isinstance(e, LibraryProcessingError):
             raise
         raise LibraryProcessingError(f"Failed to process library: {library_name}") from e
+    finally:
+        reset_cache_scope(scope_token)

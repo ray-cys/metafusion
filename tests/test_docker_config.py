@@ -17,7 +17,8 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert service["image"] == "${METAFUSION_IMAGE:-ghcr.io/ray-cys/metafusion:main}"
     assert service["init"] is True
     assert service["read_only"] is True
-    assert service["cap_drop"] == ["ALL"]
+    assert "user" not in service
+    assert "cap_drop" not in service
     assert "no-new-privileges:true" in service["security_opt"]
     assert "healthcheck" in service
     assert environment["METAFUSION_RUN"] == "${METAFUSION_RUN-}"
@@ -33,15 +34,22 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert environment["SHUTDOWN_TIMEOUT"] == "${SHUTDOWN_TIMEOUT-}"
     assert environment["INCREMENTAL"] == "${INCREMENTAL-}"
     assert environment["TMDB_CACHE_ENABLED"] == "${TMDB_CACHE_ENABLED-}"
+    assert environment["TMDB_CACHE_MAX_MB"] == "${TMDB_CACHE_MAX_MB-}"
     assert environment["VALIDATE_OUTPUT"] == "${VALIDATE_OUTPUT-}"
     assert environment["HEALTH_FAIL_ON_JOB_ERROR"] == "${HEALTH_FAIL_ON_JOB_ERROR:-False}"
     assert environment["HEALTH_MAX_HEARTBEAT_AGE"] == "${HEALTH_MAX_HEARTBEAT_AGE:-120}"
+    assert environment["STATUS_FILE"] == "/tmp/metafusion-status.json"
     assert service["stop_grace_period"] == "${STOP_GRACE_PERIOD:-20s}"
     assert service["healthcheck"]["start_period"] == "20s"
 
 
-def test_readme_documents_every_supported_environment_variable():
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_configuration_reference_documents_every_supported_environment_variable():
+    documentation = "\n".join(
+        (
+            (REPO_ROOT / "README.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8"),
+        )
+    )
     documented = {env_name for env_name, _path, _converter in ENV_BINDINGS}
     documented.update(
         file_env for file_env, _path, _direct_env in SECRET_FILE_BINDINGS
@@ -62,7 +70,7 @@ def test_readme_documents_every_supported_environment_variable():
         }
     )
 
-    missing = sorted(name for name in documented if f"`{name}`" not in readme)
+    missing = sorted(name for name in documented if f"`{name}`" not in documentation)
     assert missing == []
 
 
@@ -101,6 +109,8 @@ def test_ci_smoke_tests_unraid_runtime_identity():
     assert "Smoke test Unraid UID/GID remapping" in workflow
     assert "--env PUID=99" in workflow
     assert "--env PGID=100" in workflow
+    assert "--security-opt no-new-privileges" in workflow
+    assert "--read-only" in workflow
     assert "(os.getuid(), os.getgid()) == (99, 100)" in workflow
     assert "(status.st_uid, status.st_gid) == (99, 100)" in workflow
 
@@ -118,13 +128,35 @@ def test_ci_publishes_versioned_and_immutable_signed_images():
     assert "cosign sign --yes" in workflow
 
 
-def test_readme_documents_exact_image_pinning_and_rollback():
+def test_deployment_docs_document_exact_image_pinning_and_rollback():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    deployment_docs = "\n".join(
+        (
+            readme,
+            (REPO_ROOT / "docs" / "docker-compose.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "unraid.md").read_text(encoding="utf-8"),
+        )
+    )
 
-    assert "## Versioned Docker releases and rollback" in readme
-    assert "ghcr.io/ray-cys/metafusion:1.2.3" in readme
-    assert "METAFUSION_IMAGE" in readme
-    assert "sha-<full-commit>" in readme
+    assert "## Docker image tags and rollback" in readme
+    assert "docs/docker-compose.md#update-or-roll-back" in readme
+    assert "docs/unraid.md#update-or-roll-back" in readme
+    assert "ghcr.io/ray-cys/metafusion:1.2.3" in deployment_docs
+    assert "METAFUSION_IMAGE" in deployment_docs
+    assert "sha-<full-commit>" in deployment_docs
+
+
+def test_docker_build_embeds_version_and_commit():
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ARG METAFUSION_VERSION" in dockerfile
+    assert "ARG METAFUSION_COMMIT" in dockerfile
+    assert "org.opencontainers.image.revision" in dockerfile
+    assert "METAFUSION_VERSION=${{ github.ref_name }}" in workflow
+    assert "METAFUSION_COMMIT=${{ github.sha }}" in workflow
 
 
 def test_unraid_template_exposes_every_container_environment_variable():
@@ -177,7 +209,8 @@ def test_unraid_template_preserves_hardened_runtime_and_unraid_identity():
     assert configs["/config"].attrib["Mode"] == "rw"
     assert configs["PUID"].text == "99"
     assert configs["PGID"].text == "100"
+    assert configs["STATUS_FILE"].text == "/tmp/metafusion-status.json"
     assert "--read-only" in extra_params
-    assert "--cap-drop=ALL" in extra_params
+    assert "--cap-drop" not in extra_params
     assert "--security-opt=no-new-privileges" in extra_params
     assert "--stop-timeout=20" in extra_params

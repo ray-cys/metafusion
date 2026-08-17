@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import shutil
 from datetime import datetime
@@ -8,6 +9,8 @@ from urllib.parse import urlparse
 import yaml
 
 from helper.logging import log_config_event
+from helper.plex_paths import PlexPathError, parse_path_mappings
+from helper.provider_mappings import validate_provider_mapping_config
 
 
 class ConfigError(RuntimeError):
@@ -50,6 +53,30 @@ def safe_list(val, default, key=None):
         log_config_event("invalid_env_var", key=key, value=val, default=default)
     return copy.deepcopy(default)
 
+
+def safe_path_mappings(val, default, key=None):
+    if isinstance(val, list):
+        return [str(item).strip() for item in val if str(item).strip()]
+    if isinstance(val, str):
+        return [item.strip() for item in val.split(";") if item.strip()]
+    if key:
+        log_config_event("invalid_env_var", key=key, value=val, default=default)
+    return copy.deepcopy(default)
+
+
+def safe_json_mapping(val, default, key=None):
+    if isinstance(val, dict):
+        return copy.deepcopy(val)
+    try:
+        parsed = json.loads(str(val))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    if key:
+        log_config_event("invalid_env_var", key=key, value=val, default=default)
+    return copy.deepcopy(default)
+
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_FILE = BASE_CONFIG_DIR / "config.yml"
 TEMPLATE_FILE = Path(__file__).parent.parent / "config_template.yml"
@@ -60,6 +87,8 @@ DEFAULT_CONFIG = {
     "settings": {
         "schedule": True,
         "run_on_start": False,
+        "schedule_catch_up": True,
+        "schedule_catch_up_max_hours": 24.0,
         "run_times": ["06:00", "18:30"],
         "dry_run": False,
         "log_level": "INFO",
@@ -69,6 +98,7 @@ DEFAULT_CONFIG = {
     "plex": {
         "url": "http://10.0.0.1:32400",
         "token": "PLEX_TOKEN",
+        "path_mappings": [],
     },
     "plex_libraries": ["Movies", "TV Shows"],
     "tmdb": {
@@ -76,18 +106,39 @@ DEFAULT_CONFIG = {
         "language": "en-US",
         "fallback": ["zh", "ja"],
         "region": "US",
+        "artwork_allow_any_language": True,
+        "title_search_fallback": False,
+        "episode_group_fallback": True,
+        "split_series_show_policy": "preserve",
+        "split_series_mappings": {},
+        "episode_overrides": {},
     },
     "metadata": {
         "run_basic": True,
         "run_enhanced": True,
     },
+    "kometa": {
+        "tag_policy": "append",
+    },
+    "plex_metadata": {
+        "enabled": False,
+        "policy": "fill_missing",
+        "lock_writes": False,
+        "lock_merged_tags": False,
+        "allow_overwrite": False,
+        "recheck_days": 30.0,
+        "max_writes_per_run": 100,
+        "report_retention": 10,
+        "fields": [],
+    },
     "assets": {
         "run_poster": True,
         "run_season": True,
         "run_background": False,
+        "update_policy": "managed",
     },
     "cleanup": {
-        "run_process": False,
+        "run_cleanup": False,
     },
     "runtime": {
         "max_concurrency": 8,
@@ -98,10 +149,13 @@ DEFAULT_CONFIG = {
         "plex_retry_delay": 1.0,
         "shutdown_timeout": 15.0,
         "max_image_mb": 25,
+        "validate_media_mounts": True,
+        "min_free_space_mb": 256,
     },
     "incremental": {
         "enabled": True,
         "full_scan_interval_hours": 168.0,
+        "metadata_pending_recheck_hours": 24.0,
     },
     "image_upgrades": {
         "default_days": 30.0,
@@ -114,10 +168,12 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "ttl_hours": 24.0,
         "max_entries": 5000,
+        "max_mb": 0.0,
     },
     "output": {
         "validate_schema": True,
         "backup_count": 3,
+        "destination_history_report_retention": 10,
     },
     "safety": {
         "allow_ambiguous_editions": False,
@@ -155,6 +211,8 @@ ENV_BINDINGS = (
     ("METAFUSION_RUN", ("metafusion_run",), safe_bool),
     ("RUN_SCHEDULE", ("settings", "schedule"), safe_bool),
     ("RUN_ON_START", ("settings", "run_on_start"), safe_bool),
+    ("SCHEDULE_CATCH_UP", ("settings", "schedule_catch_up"), safe_bool),
+    ("SCHEDULE_CATCH_UP_MAX_HOURS", ("settings", "schedule_catch_up_max_hours"), safe_float),
     ("RUN_TIMES", ("settings", "run_times"), safe_list),
     ("DRY_RUN", ("settings", "dry_run"), safe_bool),
     ("LOG_LEVEL", ("settings", "log_level"), None),
@@ -162,17 +220,35 @@ ENV_BINDINGS = (
     ("KOMETA_PATH", ("settings", "path"), None),
     ("PLEX_URL", ("plex", "url"), None),
     ("PLEX_TOKEN", ("plex", "token"), None),
+    ("PLEX_PATH_MAPPINGS", ("plex", "path_mappings"), safe_path_mappings),
     ("PLEX_LIBRARIES", ("plex_libraries",), safe_list),
     ("TMDB_API_KEY", ("tmdb", "api_key"), None),
     ("TMDB_LANGUAGE", ("tmdb", "language"), None),
     ("TMDB_LANGUAGE_FALLBACK", ("tmdb", "fallback"), safe_list),
     ("TMDB_REGION", ("tmdb", "region"), None),
+    ("ARTWORK_ALLOW_ANY_LANGUAGE", ("tmdb", "artwork_allow_any_language"), safe_bool),
+    ("TMDB_TITLE_SEARCH_FALLBACK", ("tmdb", "title_search_fallback"), safe_bool),
+    ("TMDB_EPISODE_GROUP_FALLBACK", ("tmdb", "episode_group_fallback"), safe_bool),
+    ("TMDB_SPLIT_SERIES_SHOW_POLICY", ("tmdb", "split_series_show_policy"), None),
+    ("TMDB_SPLIT_SERIES_MAPPINGS", ("tmdb", "split_series_mappings"), safe_json_mapping),
+    ("TMDB_EPISODE_OVERRIDES", ("tmdb", "episode_overrides"), safe_json_mapping),
     ("RUN_BASIC", ("metadata", "run_basic"), safe_bool),
     ("RUN_ENHANCED", ("metadata", "run_enhanced"), safe_bool),
+    ("KOMETA_TAG_POLICY", ("kometa", "tag_policy"), None),
+    ("PLEX_METADATA_UPDATES", ("plex_metadata", "enabled"), safe_bool),
+    ("PLEX_METADATA_POLICY", ("plex_metadata", "policy"), None),
+    ("PLEX_METADATA_LOCK_WRITES", ("plex_metadata", "lock_writes"), safe_bool),
+    ("PLEX_METADATA_LOCK_MERGED_TAGS", ("plex_metadata", "lock_merged_tags"), safe_bool),
+    ("PLEX_METADATA_ALLOW_OVERWRITE", ("plex_metadata", "allow_overwrite"), safe_bool),
+    ("PLEX_METADATA_RECHECK_DAYS", ("plex_metadata", "recheck_days"), safe_float),
+    ("PLEX_METADATA_MAX_WRITES_PER_RUN", ("plex_metadata", "max_writes_per_run"), safe_int),
+    ("PLEX_METADATA_REPORT_RETENTION", ("plex_metadata", "report_retention"), safe_int),
+    ("PLEX_METADATA_FIELDS", ("plex_metadata", "fields"), safe_list),
     ("RUN_POSTER", ("assets", "run_poster"), safe_bool),
     ("RUN_SEASON", ("assets", "run_season"), safe_bool),
     ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
-    ("RUN_CLEANUP", ("cleanup", "run_process"), safe_bool),
+    ("ASSET_UPDATE_POLICY", ("assets", "update_policy"), None),
+    ("RUN_CLEANUP", ("cleanup", "run_cleanup"), safe_bool),
     ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
     ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
     ("CONNECT_TIMEOUT", ("runtime", "connect_timeout"), safe_float),
@@ -181,8 +257,11 @@ ENV_BINDINGS = (
     ("PLEX_RETRY_DELAY", ("runtime", "plex_retry_delay"), safe_float),
     ("SHUTDOWN_TIMEOUT", ("runtime", "shutdown_timeout"), safe_float),
     ("MAX_IMAGE_MB", ("runtime", "max_image_mb"), safe_int),
+    ("VALIDATE_MEDIA_MOUNTS", ("runtime", "validate_media_mounts"), safe_bool),
+    ("MIN_FREE_SPACE_MB", ("runtime", "min_free_space_mb"), safe_int),
     ("INCREMENTAL", ("incremental", "enabled"), safe_bool),
     ("FULL_SCAN_INTERVAL_HOURS", ("incremental", "full_scan_interval_hours"), safe_float),
+    ("METADATA_PENDING_RECHECK_HOURS", ("incremental", "metadata_pending_recheck_hours"), safe_float),
     ("IMAGE_UPGRADE_DAYS", ("image_upgrades", "default_days"), safe_float),
     ("MOVIE_IMAGE_UPGRADE_DAYS", ("image_upgrades", "movie_days"), safe_float),
     ("SERIES_IMAGE_UPGRADE_DAYS", ("image_upgrades", "series_days"), safe_float),
@@ -190,8 +269,10 @@ ENV_BINDINGS = (
     ("TMDB_CACHE_ENABLED", ("tmdb_cache", "enabled"), safe_bool),
     ("TMDB_CACHE_TTL_HOURS", ("tmdb_cache", "ttl_hours"), safe_float),
     ("TMDB_CACHE_MAX_ENTRIES", ("tmdb_cache", "max_entries"), safe_int),
+    ("TMDB_CACHE_MAX_MB", ("tmdb_cache", "max_mb"), safe_float),
     ("VALIDATE_OUTPUT", ("output", "validate_schema"), safe_bool),
     ("OUTPUT_BACKUP_COUNT", ("output", "backup_count"), safe_int),
+    ("DESTINATION_HISTORY_REPORT_RETENTION", ("output", "destination_history_report_retention"), safe_int),
     ("ALLOW_AMBIGUOUS_EDITIONS", ("safety", "allow_ambiguous_editions"), safe_bool),
     ("POSTER_MAX_WIDTH", ("poster_set", "max_width"), safe_int),
     ("POSTER_MAX_HEIGHT", ("poster_set", "max_height"), safe_int),
@@ -222,6 +303,20 @@ SECRET_FILE_BINDINGS = (
 )
 
 SECRET_PATHS = {("plex", "token"), ("tmdb", "api_key")}
+PLEX_METADATA_FIELDS = {
+    "title",
+    "originalTitle",
+    "originallyAvailableAt",
+    "contentRating",
+    "studio",
+    "tagline",
+    "summary",
+    "country",
+    "genre",
+    "director",
+    "writer",
+    "producer",
+}
 
 
 def _leaf_paths(value, prefix=()):
@@ -243,7 +338,7 @@ def get_disabled_features(config, logger):
         (("assets", "run_poster"), "Poster Assets Download"),
         (("assets", "run_season"), "Season Assets Download"),
         (("assets", "run_background"), "Background Assets Download"),
-        (("cleanup", "run_process"), "Cleanup Libraries"),
+        (("cleanup", "run_cleanup"), "Cleanup Libraries"),
     ]
     for key_tuple, feature in features:
         sub_config = config
@@ -256,14 +351,21 @@ def get_disabled_features(config, logger):
         log_config_event(event, feature=feature)
 
 def get_feature_flags(config):
+    plex_metadata = config.get("plex_metadata", {})
+    direct_plex_metadata = mode_check(config, "plex") and plex_metadata.get(
+        "enabled", False
+    )
     feature_flags = {
         "dry_run": config.get("settings", {}).get("dry_run", False),
-        "metadata_basic": config.get("metadata", {}).get("run_basic", True),
-        "metadata_enhanced": config.get("metadata", {}).get("run_enhanced", True),
+        "metadata_basic": config.get("metadata", {}).get("run_basic", True)
+        and (not mode_check(config, "plex") or direct_plex_metadata),
+        "metadata_enhanced": config.get("metadata", {}).get("run_enhanced", True)
+        and (not mode_check(config, "plex") or direct_plex_metadata),
+        "plex_metadata": direct_plex_metadata,
         "poster": config.get("assets", {}).get("run_poster", True),
         "season": config.get("assets", {}).get("run_season", True),
         "background": config.get("assets", {}).get("run_background", False),
-        "cleanup": config.get("cleanup", {}).get("run_process", False),
+        "cleanup": config.get("cleanup", {}).get("run_cleanup", False),
     }
     return feature_flags
 
@@ -287,7 +389,11 @@ def get_image_upgrade_days(config, media_type):
         return 30.0
 
 def warn_unknown_keys(user_cfg, default_cfg, parent_key=""):
-    if parent_key == "library_overrides":
+    if parent_key in {
+        "library_overrides",
+        "tmdb.split_series_mappings",
+        "tmdb.episode_overrides",
+    }:
         return
     for key in user_cfg:
         if key not in default_cfg:
@@ -315,6 +421,9 @@ def config_for_library(config, library_name):
         upgrades = override.get("image_upgrades")
         if isinstance(upgrades, dict):
             effective["image_upgrades"].update(upgrades)
+        plex_metadata = override.get("plex_metadata")
+        if isinstance(plex_metadata, dict):
+            effective["plex_metadata"].update(plex_metadata)
     return effective
 
 def _set_path(config, path, value):
@@ -341,8 +450,12 @@ def _valid_env_conversion(converter, raw_value):
                 "on",
                 "off",
             }
-        elif converter is safe_list:
+        elif converter in (safe_list, safe_path_mappings):
             return isinstance(raw_value, (str, list))
+        elif converter is safe_json_mapping:
+            if isinstance(raw_value, dict):
+                return True
+            return isinstance(json.loads(str(raw_value)), dict)
         return True
     except (TypeError, ValueError):
         return False
@@ -401,12 +514,46 @@ def validate_config(config):
     plex = config.get("plex", {})
     tmdb = config.get("tmdb", {})
     runtime = config.get("runtime", {})
+    plex_metadata = config.get("plex_metadata", {})
+    kometa = config.get("kometa", {})
+
+    errors.extend(validate_provider_mapping_config(tmdb))
 
     mode = str(settings.get("mode", "")).lower()
     if mode not in {"kometa", "plex"}:
         errors.append("settings.mode must be either 'kometa' or 'plex'")
     if mode == "kometa" and not str(settings.get("path", "")).strip():
         errors.append("settings.path is required in Kometa mode")
+    if plex_metadata.get("enabled", False) and mode != "plex":
+        errors.append("plex_metadata.enabled requires settings.mode 'plex'")
+    tag_policy = str(kometa.get("tag_policy", "append")).lower()
+    if tag_policy not in {"append", "sync"}:
+        errors.append("kometa.tag_policy must be append or sync")
+    policy = str(plex_metadata.get("policy", "fill_missing")).lower()
+    if policy not in {"fill_missing", "managed", "overwrite"}:
+        errors.append(
+            "plex_metadata.policy must be fill_missing, managed, or overwrite"
+        )
+    if policy == "overwrite" and not plex_metadata.get("allow_overwrite", False):
+        errors.append(
+            "plex_metadata.allow_overwrite must be true for overwrite policy"
+        )
+    fields = plex_metadata.get("fields", [])
+    if not isinstance(fields, list):
+        errors.append("plex_metadata.fields must be a list")
+    elif set(fields) - PLEX_METADATA_FIELDS:
+        errors.append(
+            "plex_metadata.fields contains unsupported fields: "
+            + ", ".join(sorted(set(fields) - PLEX_METADATA_FIELDS))
+        )
+    mappings = plex.get("path_mappings", [])
+    if not isinstance(mappings, list):
+        errors.append("plex.path_mappings must be a list")
+    else:
+        try:
+            parse_path_mappings(mappings)
+        except PlexPathError as error:
+            errors.append(str(error))
 
     plex_url = str(plex.get("url", "")).strip()
     parsed_url = urlparse(plex_url)
@@ -438,6 +585,12 @@ def validate_config(config):
                     errors.append(f"Invalid schedule time: {run_time!r}; expected HH:MM")
 
     numeric_rules = (
+        (
+            "settings.schedule_catch_up_max_hours",
+            settings.get("schedule_catch_up_max_hours"),
+            0.1,
+            168,
+        ),
         ("runtime.max_concurrency", runtime.get("max_concurrency"), 1, 64),
         ("runtime.request_timeout", runtime.get("request_timeout"), 1, 600),
         ("runtime.connect_timeout", runtime.get("connect_timeout"), 1, 120),
@@ -446,10 +599,17 @@ def validate_config(config):
         ("runtime.plex_retry_delay", runtime.get("plex_retry_delay"), 0, 60),
         ("runtime.shutdown_timeout", runtime.get("shutdown_timeout"), 1, 300),
         ("runtime.max_image_mb", runtime.get("max_image_mb"), 1, 250),
+        ("runtime.min_free_space_mb", runtime.get("min_free_space_mb"), 0, 1048576),
         (
             "incremental.full_scan_interval_hours",
             config.get("incremental", {}).get("full_scan_interval_hours"),
             1,
+            8760,
+        ),
+        (
+            "incremental.metadata_pending_recheck_hours",
+            config.get("incremental", {}).get("metadata_pending_recheck_hours"),
+            0.1,
             8760,
         ),
         (
@@ -460,7 +620,27 @@ def validate_config(config):
         ),
         ("tmdb_cache.ttl_hours", config.get("tmdb_cache", {}).get("ttl_hours"), 0.1, 8760),
         ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 1, 100000),
+        ("tmdb_cache.max_mb", config.get("tmdb_cache", {}).get("max_mb"), 0, 102400),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),
+        (
+            "output.destination_history_report_retention",
+            config.get("output", {}).get("destination_history_report_retention"),
+            1,
+            1000,
+        ),
+        ("plex_metadata.recheck_days", plex_metadata.get("recheck_days"), 0, 3650),
+        (
+            "plex_metadata.max_writes_per_run",
+            plex_metadata.get("max_writes_per_run"),
+            1,
+            100000,
+        ),
+        (
+            "plex_metadata.report_retention",
+            plex_metadata.get("report_retention"),
+            1,
+            1000,
+        ),
     )
     for name, value, minimum, maximum in numeric_rules:
         try:
@@ -486,7 +666,7 @@ def validate_config(config):
     if not isinstance(library_overrides, dict):
         errors.append("library_overrides must be a mapping keyed by Plex library name")
     else:
-        allowed_override_keys = {"image_upgrades"}
+        allowed_override_keys = {"image_upgrades", "plex_metadata"}
         allowed_image_keys = {
             "default_days", "movie_days", "series_days", "season_days"
         }
@@ -526,6 +706,73 @@ def validate_config(config):
                     errors.append(
                         f"library_overrides.{library_name}.image_upgrades.{key} must be between 0 and 3650"
                     )
+            metadata_override = override.get("plex_metadata", {})
+            if not isinstance(metadata_override, dict):
+                errors.append(
+                    f"library_overrides.{library_name}.plex_metadata must be a mapping"
+                )
+            else:
+                allowed_metadata_keys = {
+                    "enabled", "policy", "lock_writes", "lock_merged_tags",
+                    "allow_overwrite", "recheck_days", "max_writes_per_run",
+                    "report_retention", "fields",
+                }
+                unexpected = set(metadata_override) - allowed_metadata_keys
+                if unexpected:
+                    errors.append(
+                        f"library_overrides.{library_name}.plex_metadata contains unsupported keys: "
+                        + ", ".join(sorted(unexpected))
+                    )
+                effective_metadata = {**plex_metadata, **metadata_override}
+                if effective_metadata.get("enabled", False) and mode != "plex":
+                    errors.append(
+                        f"library_overrides.{library_name}.plex_metadata.enabled "
+                        "requires settings.mode 'plex'"
+                    )
+                override_policy = str(
+                    effective_metadata.get("policy", "fill_missing")
+                ).lower()
+                if override_policy not in {"fill_missing", "managed", "overwrite"}:
+                    errors.append(
+                        f"library_overrides.{library_name}.plex_metadata.policy "
+                        "must be fill_missing, managed, or overwrite"
+                    )
+                if override_policy == "overwrite" and not effective_metadata.get(
+                    "allow_overwrite", False
+                ):
+                    errors.append(
+                        f"library_overrides.{library_name}.plex_metadata.allow_overwrite "
+                        "must be true for overwrite policy"
+                    )
+                override_fields = effective_metadata.get("fields", [])
+                if not isinstance(override_fields, list):
+                    errors.append(
+                        f"library_overrides.{library_name}.plex_metadata.fields must be a list"
+                    )
+                elif set(override_fields) - PLEX_METADATA_FIELDS:
+                    errors.append(
+                        f"library_overrides.{library_name}.plex_metadata.fields contains unsupported fields: "
+                        + ", ".join(
+                            sorted(set(override_fields) - PLEX_METADATA_FIELDS)
+                        )
+                    )
+                for key, minimum, maximum in (
+                    ("recheck_days", 0, 3650),
+                    ("max_writes_per_run", 1, 100000),
+                    ("report_retention", 1, 1000),
+                ):
+                    try:
+                        number = float(effective_metadata.get(key))
+                    except (TypeError, ValueError):
+                        errors.append(
+                            f"library_overrides.{library_name}.plex_metadata.{key} must be numeric"
+                        )
+                        continue
+                    if number < minimum or number > maximum:
+                        errors.append(
+                            f"library_overrides.{library_name}.plex_metadata.{key} "
+                            f"must be between {minimum} and {maximum}"
+                        )
     try:
         if float(runtime.get("request_timeout")) < float(runtime.get("connect_timeout")):
             errors.append("runtime.request_timeout must be at least runtime.connect_timeout")
@@ -534,11 +781,27 @@ def validate_config(config):
 
     metadata = config.get("metadata", {})
     assets = config.get("assets", {})
+    asset_policy = str(assets.get("update_policy", "managed")).strip().lower()
+    if asset_policy not in {"fill_missing", "managed", "overwrite"}:
+        errors.append(
+            "assets.update_policy must be one of fill_missing, managed, overwrite"
+        )
     if metadata.get("run_enhanced", False) and not metadata.get("run_basic", False):
         errors.append("metadata.run_basic must be enabled for enhanced metadata")
-    any_processing = metadata.get("run_basic", False) or any(
+    override_metadata_enabled = any(
+        isinstance(override, dict)
+        and isinstance(override.get("plex_metadata"), dict)
+        and override["plex_metadata"].get("enabled", False)
+        for override in config.get("library_overrides", {}).values()
+    ) if isinstance(config.get("library_overrides", {}), dict) else False
+    metadata_processing = metadata.get("run_basic", False) and (
+        mode == "kometa"
+        or plex_metadata.get("enabled", False)
+        or override_metadata_enabled
+    )
+    any_processing = metadata_processing or any(
         assets.get(key, False) for key in ("run_poster", "run_season", "run_background")
-    ) or config.get("cleanup", {}).get("run_process", False)
+    ) or config.get("cleanup", {}).get("run_cleanup", False)
     if not any_processing:
         errors.append("No processing feature is enabled")
 

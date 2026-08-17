@@ -9,11 +9,11 @@ on:
   # schedule:
   #   - cron: '32 6 * * *'
   push:
-    branches: [ "main", "codex/**" ]
+    branches: [ "main", "develop", "codex/**" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -62,12 +62,20 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Build image for vulnerability scan
-        run: docker build --tag metafusion-ci:${GITHUB_SHA} .
+        run: >-
+          docker build
+          --build-arg METAFUSION_VERSION=${GITHUB_REF_NAME}
+          --build-arg METAFUSION_COMMIT=${GITHUB_SHA}
+          --tag metafusion-ci:${GITHUB_SHA} .
 
       - name: Smoke test Unraid UID/GID remapping
         run: |
           config_dir="$(mktemp -d)"
           docker run --rm \
+            --read-only \
+            --tmpfs /tmp:size=256m,mode=1777 \
+            --security-opt no-new-privileges \
+            --stop-timeout 20 \
             --env PUID=99 \
             --env PGID=100 \
             --volume "${config_dir}:/config" \
@@ -103,11 +111,17 @@ jobs:
             --volume "${config_dir}:/config" \
             metafusion-ci:${GITHUB_SHA})"
           for attempt in $(seq 1 20); do
-            test -f "${config_dir}/metafusion-status.json" && break
+            docker exec --user 99:100 "${container_id}" \
+              test -f /tmp/metafusion-status.json && break
             sleep 1
           done
-          test -f "${config_dir}/metafusion-status.json"
+          docker exec --user 99:100 "${container_id}" \
+            test -f /tmp/metafusion-status.json
+          test ! -e "${config_dir}/metafusion-status.json"
           test ! -e "${config_dir}/config.yml"
+          cmp "${config_dir}/config_template.yml" config_template.yml
+          test "$(stat -c '%a' "${config_dir}/config_template.yml")" = "664"
+          test "$(stat -c '%u:%g' "${config_dir}/config_template.yml")" = "99:100"
           docker exec --user 99:100 "${container_id}" python healthcheck.py
           docker stop --timeout 10 "${container_id}"
           docker rm "${container_id}"
@@ -192,6 +206,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            METAFUSION_VERSION=${{ github.ref_name }}
+            METAFUSION_COMMIT=${{ github.sha }}
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker

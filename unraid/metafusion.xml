@@ -14,7 +14,7 @@
   <WebUI/>
   <TemplateURL>https://raw.githubusercontent.com/ray-cys/metafusion/main/unraid/metafusion.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/ray-cys/metafusion/main/asset/app_logo.png</Icon>
-  <ExtraParams>--init --read-only --tmpfs /tmp:size=256m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges --stop-timeout=20</ExtraParams>
+  <ExtraParams>--init --read-only --tmpfs /tmp:size=256m,mode=1777 --security-opt=no-new-privileges --stop-timeout=20</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DonateText/>
@@ -22,7 +22,7 @@
   <Requires>A reachable Plex server, a Plex token, a TMDb API key, exact Plex library names, and writable output paths. Do not override the image entrypoint or Docker user.</Requires>
 
   <!-- Required paths and output paths -->
-  <Config Name="Appdata Config Path" Target="/config" Default="/mnt/user/appdata/metafusion" Mode="rw" Description="Required persistent configuration, cache, logs, and status storage. The container prepares this path for PUID and PGID." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/metafusion</Config>
+  <Config Name="Appdata Config Path" Target="/config" Default="/mnt/user/appdata/metafusion" Mode="rw" Description="Required persistent configuration, cache, logs, and state storage. The container maintains a value-free config_template.yml here; copy it to config.yml only if YAML configuration is wanted. The container prepares this path for PUID and PGID." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/metafusion</Config>
   <Config Name="Kometa Output Path" Target="/kometa" Default="/mnt/user/appdata/kometa" Mode="rw" Description="Required when RUN_MODE is kometa. Map the host directory where MetaFusion may write metadata and assets." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/kometa</Config>
   <Config Name="Plex Media Path" Target="/media" Default="" Mode="rw" Description="Optional Plex-mode media mapping. The container paths must match the paths reported by Plex; add or edit mappings when Plex uses paths other than /media." Type="Path" Display="advanced" Required="false" Mask="false"/>
 
@@ -31,6 +31,7 @@
   <Config Name="Plex URL" Target="PLEX_URL" Default="" Mode="" Description="Required complete Plex server URL, for example http://192.168.1.10:32400." Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Plex Token" Target="PLEX_TOKEN" Default="" Mode="" Description="Required Plex authentication token. It is masked in the Unraid form and redacted from MetaFusion logs." Type="Variable" Display="always" Required="true" Mask="true"/>
   <Config Name="Plex Libraries" Target="PLEX_LIBRARIES" Default="Movies,TV Shows" Mode="" Description="Required comma-separated exact Plex library names." Type="Variable" Display="always" Required="true" Mask="false">Movies,TV Shows</Config>
+  <Config Name="Plex Path Mappings" Target="PLEX_PATH_MAPPINGS" Default="" Mode="" Description="Optional semicolon-separated Plex-to-container translations such as /volume1/media=&gt;/media. Matching Docker path mappings are still required." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="TMDb API Key" Target="TMDB_API_KEY" Default="" Mode="" Description="Required TMDb API key. It is masked in the Unraid form and redacted from MetaFusion logs." Type="Variable" Display="always" Required="true" Mask="true"/>
 
   <!-- Unraid identity and locale -->
@@ -45,19 +46,38 @@
   <Config Name="TMDb Metadata Language" Target="TMDB_LANGUAGE" Default="en-US" Mode="" Description="Metadata language and primary artwork language." Type="Variable" Display="advanced" Required="false" Mask="false">en-US</Config>
   <Config Name="TMDb Artwork Fallbacks" Target="TMDB_LANGUAGE_FALLBACK" Default="zh,ja" Mode="" Description="Comma-separated artwork-only fallback languages. Metadata text still uses TMDB_LANGUAGE." Type="Variable" Display="advanced" Required="false" Mask="false">zh,ja</Config>
   <Config Name="TMDb Region" Target="TMDB_REGION" Default="US" Mode="" Description="Release and certification region used for metadata." Type="Variable" Display="advanced" Required="false" Mask="false">US</Config>
+  <Config Name="Allow Any Artwork Language" Target="ARTWORK_ALLOW_ANY_LANGUAGE" Default="True|False" Mode="" Description="When preferred languages have no usable artwork, make one unfiltered TMDb image request." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
+  <Config Name="TMDb Title Search Fallback" Target="TMDB_TITLE_SEARCH_FALLBACK" Default="False|True" Mode="" Description="Use conservative exact-title and year search only when Plex provides no usable external ID." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="TMDb Episode Group Fallback" Target="TMDB_EPISODE_GROUP_FALLBACK" Default="True|False" Mode="" Description="Use alternate TMDb episode ordering only when one group uniquely covers the Plex inventory." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
+  <Config Name="Split-Series Show Policy" Target="TMDB_SPLIT_SERIES_SHOW_POLICY" Default="preserve|primary" Mode="" Description="For mapped split series, preserve keeps Plex top-level show metadata and artwork; primary uses the primary TMDb show." Type="Variable" Display="advanced" Required="false" Mask="false">preserve</Config>
+  <Config Name="Split-Series Mappings JSON" Target="TMDB_SPLIT_SERIES_MAPPINGS" Default="{}" Mode="" Description="Advanced JSON provider mapping keyed by tmdb:, tvdb:, or imdb:. Leave {} unless documenting a verified anthology mapping." Type="Variable" Display="advanced" Required="false" Mask="false">{}</Config>
+  <Config Name="Episode Overrides JSON" Target="TMDB_EPISODE_OVERRIDES" Default="{}" Mode="" Description="Advanced JSON Plex-to-TMDb episode-number exceptions keyed by provider ID. Leave {} unless a verified numbering correction is required." Type="Variable" Display="advanced" Required="false" Mask="false">{}</Config>
 
   <!-- Optional scheduling and processing -->
   <Config Name="Run Once on Container Start" Target="METAFUSION_RUN" Default="False|True" Mode="" Description="Run once instead of remaining in scheduler mode. Normally keep False for an Unraid service." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
   <Config Name="Enable Scheduler" Target="RUN_SCHEDULE" Default="True|False" Mode="" Description="Keep the container running and execute at RUN_TIMES." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
   <Config Name="Run When Scheduler Starts" Target="RUN_ON_START" Default="False|True" Mode="" Description="Run one job immediately after scheduler startup, then continue normally." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="Catch Up Missed Schedule" Target="SCHEDULE_CATCH_UP" Default="True|False" Mode="" Description="After a restart, run the latest missed scheduled slot when it is within the catch-up window." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
+  <Config Name="Schedule Catch-Up Window Hours" Target="SCHEDULE_CATCH_UP_MAX_HOURS" Default="24" Mode="" Description="Maximum age of a missed schedule that may run after startup." Type="Variable" Display="advanced" Required="false" Mask="false">24</Config>
   <Config Name="Scheduled Run Times" Target="RUN_TIMES" Default="06:00,18:30" Mode="" Description="Comma-separated daily HH:MM times interpreted using TZ." Type="Variable" Display="always" Required="false" Mask="false">06:00,18:30</Config>
   <Config Name="Dry Run" Target="DRY_RUN" Default="False|True" Mode="" Description="Calculate and log without writing generated data or deleting files." Type="Variable" Display="always" Required="false" Mask="false">False</Config>
   <Config Name="Log Level" Target="LOG_LEVEL" Default="INFO|DEBUG|WARNING|ERROR|CRITICAL" Mode="" Description="Application logging verbosity." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
   <Config Name="Generate Basic Metadata" Target="RUN_BASIC" Default="True|False" Mode="" Description="Generate core metadata. Enhanced metadata requires this option." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
-  <Config Name="Generate Enhanced Metadata" Target="RUN_ENHANCED" Default="True|False" Mode="" Description="Generate extended cast and crew metadata." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
+  <Config Name="Generate Enhanced Metadata" Target="RUN_ENHANCED" Default="True|False" Mode="" Description="Generate Kometa-supported director, writer, and producer metadata. Cast remains managed by Plex's online provider." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
+  <Config Name="Kometa Tag Policy" Target="KOMETA_TAG_POLICY" Default="append|sync" Mode="" Description="Kometa mode tag behavior. append preserves provider and user tags; sync makes supported tags match TMDb." Type="Variable" Display="advanced" Required="false" Mask="false">append</Config>
+  <Config Name="Direct Plex Metadata Updates" Target="PLEX_METADATA_UPDATES" Default="False|True" Mode="" Description="Plex mode only. Opt in to direct metadata edits through the Plex API. Test with Dry Run first." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="Plex Metadata Policy" Target="PLEX_METADATA_POLICY" Default="fill_missing|managed|overwrite" Mode="" Description="fill_missing is safest; managed updates only MetaFusion-owned values; overwrite exactly syncs selected fields and requires explicit acknowledgement." Type="Variable" Display="advanced" Required="false" Mask="false">fill_missing</Config>
+  <Config Name="Lock Plex Scalar Writes" Target="PLEX_METADATA_LOCK_WRITES" Default="False|True" Mode="" Description="Lock scalar fields written by MetaFusion. Leave False unless provider refreshes overwrite them." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="Lock Merged Plex Tags" Target="PLEX_METADATA_LOCK_MERGED_TAGS" Default="False|True" Mode="" Description="Lock a complete merged tag field after MetaFusion adds tags. Use cautiously because the lock affects tags from every source." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="Allow Plex Overwrite" Target="PLEX_METADATA_ALLOW_OVERWRITE" Default="False|True" Mode="" Description="Required safety acknowledgement before overwrite policy can start." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="Plex Metadata Recheck Days" Target="PLEX_METADATA_RECHECK_DAYS" Default="30" Mode="" Description="Minimum interval before unchanged Plex metadata is compared with TMDb again." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
+  <Config Name="Plex Metadata Write Limit" Target="PLEX_METADATA_MAX_WRITES_PER_RUN" Default="100" Mode="" Description="Maximum Plex items or child objects written in one job." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Plex Metadata Report Retention" Target="PLEX_METADATA_REPORT_RETENTION" Default="10" Mode="" Description="Number of text audit reports retained under /config/reports." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+  <Config Name="Plex Metadata Fields" Target="PLEX_METADATA_FIELDS" Default="" Mode="" Description="Optional comma-separated supported field allowlist. Blank enables all safe supported fields." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Manage Posters" Target="RUN_POSTER" Default="True|False" Mode="" Description="Manage movie and show posters." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
   <Config Name="Manage Season Posters" Target="RUN_SEASON" Default="True|False" Mode="" Description="Manage season posters, including Specials." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
   <Config Name="Manage Backgrounds" Target="RUN_BACKGROUND" Default="False|True" Mode="" Description="Manage movie and show background artwork." Type="Variable" Display="always" Required="false" Mask="false">False</Config>
+  <Config Name="Artwork Update Policy" Target="ASSET_UPDATE_POLICY" Default="managed|fill_missing|overwrite" Mode="" Description="managed replaces only unmodified MetaFusion-owned files; fill_missing never replaces existing artwork; overwrite permits replacing any existing artwork." Type="Variable" Display="advanced" Required="false" Mask="false">managed</Config>
   <Config Name="Guarded Cleanup" Target="RUN_CLEANUP" Default="False|True" Mode="" Description="Enable guarded orphan cleanup. Run with DRY_RUN first and verify every library name." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
 
   <!-- Optional runtime and Plex reliability -->
@@ -69,10 +89,13 @@
   <Config Name="Plex Retry Delay" Target="PLEX_RETRY_DELAY" Default="1" Mode="" Description="Base delay between Plex connection retries in seconds." Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
   <Config Name="Shutdown Timeout" Target="SHUTDOWN_TIMEOUT" Default="15" Mode="" Description="Internal graceful shutdown deadline in seconds. Keep below the Docker stop timeout." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
   <Config Name="Maximum Image Size" Target="MAX_IMAGE_MB" Default="25" Mode="" Description="Maximum accepted artwork download size in MiB." Type="Variable" Display="advanced" Required="false" Mask="false">25</Config>
+  <Config Name="Validate Plex Media Mounts" Target="VALIDATE_MEDIA_MOUNTS" Default="True|False" Mode="" Description="Fail before artwork writes when configured Plex mapping destinations are absent, read-only, or unavailable." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
+  <Config Name="Minimum Free Space MiB" Target="MIN_FREE_SPACE_MB" Default="256" Mode="" Description="Minimum free space required on runtime and artwork destinations before a write." Type="Variable" Display="advanced" Required="false" Mask="false">256</Config>
 
   <!-- Optional incremental, cache, output, and health settings -->
   <Config Name="Incremental Processing" Target="INCREMENTAL" Default="True|False" Mode="" Description="Skip successfully processed unchanged items." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
   <Config Name="Full Scan Interval Hours" Target="FULL_SCAN_INTERVAL_HOURS" Default="168" Mode="" Description="Maximum interval between complete reconciliation scans." Type="Variable" Display="advanced" Required="false" Mask="false">168</Config>
+  <Config Name="Pending Metadata Recheck Hours" Target="METADATA_PENDING_RECHECK_HOURS" Default="24" Mode="" Description="Short recheck interval for Plex episodes that exist before TMDb publishes their metadata." Type="Variable" Display="advanced" Required="false" Mask="false">24</Config>
   <Config Name="Default Image Upgrade Days" Target="IMAGE_UPGRADE_DAYS" Default="30" Mode="" Description="Minimum age before unchanged artwork is reconsidered. Set 0 to disable timed upgrades." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
   <Config Name="Movie Image Upgrade Days" Target="MOVIE_IMAGE_UPGRADE_DAYS" Default="" Mode="" Description="Optional movie-specific interval. Blank inherits IMAGE_UPGRADE_DAYS." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Series Image Upgrade Days" Target="SERIES_IMAGE_UPGRADE_DAYS" Default="" Mode="" Description="Optional series-specific interval. Blank inherits IMAGE_UPGRADE_DAYS." Type="Variable" Display="advanced" Required="false" Mask="false"/>
@@ -80,15 +103,17 @@
   <Config Name="TMDb Cache" Target="TMDB_CACHE_ENABLED" Default="True|False" Mode="" Description="Persist successful TMDb JSON responses." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
   <Config Name="TMDb Cache TTL Hours" Target="TMDB_CACHE_TTL_HOURS" Default="24" Mode="" Description="TMDb response lifetime in hours." Type="Variable" Display="advanced" Required="false" Mask="false">24</Config>
   <Config Name="TMDb Cache Maximum Entries" Target="TMDB_CACHE_MAX_ENTRIES" Default="5000" Mode="" Description="Maximum persisted TMDb responses." Type="Variable" Display="advanced" Required="false" Mask="false">5000</Config>
+  <Config Name="TMDb Cache Maximum MiB" Target="TMDB_CACHE_MAX_MB" Default="0" Mode="" Description="Optional compressed-payload limit in MiB. Set 0 to disable the byte cap." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
   <Config Name="Validate Kometa Output" Target="VALIDATE_OUTPUT" Default="True|False" Mode="" Description="Validate generated Kometa YAML before replacing known-good output." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
   <Config Name="Output Backup Count" Target="OUTPUT_BACKUP_COUNT" Default="3" Mode="" Description="Metadata backups retained per output file." Type="Variable" Display="advanced" Required="false" Mask="false">3</Config>
+  <Config Name="Destination Report Retention" Target="DESTINATION_HISTORY_REPORT_RETENTION" Default="10" Mode="" Description="Artwork rename history reports retained under /config/reports. Old artwork is reported, never automatically deleted." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
   <Config Name="Allow Ambiguous Editions" Target="ALLOW_AMBIGUOUS_EDITIONS" Default="False|True" Mode="" Description="Allow unsafe duplicate edition matching. Leave False unless explicitly accepting the risk." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
   <Config Name="Fail Healthcheck After Job Error" Target="HEALTH_FAIL_ON_JOB_ERROR" Default="False|True" Mode="" Description="Mark the container unhealthy when the latest job failed." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
   <Config Name="Health Heartbeat Maximum Age" Target="HEALTH_MAX_HEARTBEAT_AGE" Default="120" Mode="" Description="Maximum scheduler heartbeat age in seconds." Type="Variable" Display="advanced" Required="false" Mask="false">120</Config>
 
   <!-- Optional poster selection -->
-  <Config Name="Poster Maximum Width" Target="POSTER_MAX_WIDTH" Default="2000" Mode="" Description="Preferred maximum poster width." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
-  <Config Name="Poster Maximum Height" Target="POSTER_MAX_HEIGHT" Default="3000" Mode="" Description="Preferred maximum poster height." Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
+  <Config Name="Poster Preferred Width" Target="POSTER_MAX_WIDTH" Default="2000" Mode="" Description="Preferred high-resolution width threshold; this does not cap download dimensions." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
+  <Config Name="Poster Preferred Height" Target="POSTER_MAX_HEIGHT" Default="3000" Mode="" Description="Preferred high-resolution height threshold; this does not cap download dimensions." Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
   <Config Name="Poster Minimum Width" Target="POSTER_MIN_WIDTH" Default="1000" Mode="" Description="Minimum preferred poster width." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
   <Config Name="Poster Minimum Height" Target="POSTER_MIN_HEIGHT" Default="1500" Mode="" Description="Minimum preferred poster height." Type="Variable" Display="advanced" Required="false" Mask="false">1500</Config>
   <Config Name="Poster Preferred Vote" Target="POSTER_PREFER_VOTE" Default="5.0" Mode="" Description="Preferred TMDb poster vote score." Type="Variable" Display="advanced" Required="false" Mask="false">5.0</Config>
@@ -96,8 +121,8 @@
   <Config Name="Poster Upgrade Vote Threshold" Target="POSTER_VOTE_THRESHOLD" Default="5.0" Mode="" Description="Vote score used when deciding poster upgrades." Type="Variable" Display="advanced" Required="false" Mask="false">5.0</Config>
 
   <!-- Optional season-poster selection -->
-  <Config Name="Season Poster Maximum Width" Target="SEASON_MAX_WIDTH" Default="2000" Mode="" Description="Preferred maximum season-poster width." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
-  <Config Name="Season Poster Maximum Height" Target="SEASON_MAX_HEIGHT" Default="3000" Mode="" Description="Preferred maximum season-poster height." Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
+  <Config Name="Season Poster Preferred Width" Target="SEASON_MAX_WIDTH" Default="2000" Mode="" Description="Preferred high-resolution season-poster width threshold." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
+  <Config Name="Season Poster Preferred Height" Target="SEASON_MAX_HEIGHT" Default="3000" Mode="" Description="Preferred high-resolution season-poster height threshold." Type="Variable" Display="advanced" Required="false" Mask="false">3000</Config>
   <Config Name="Season Poster Minimum Width" Target="SEASON_MIN_WIDTH" Default="1000" Mode="" Description="Minimum preferred season-poster width." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
   <Config Name="Season Poster Minimum Height" Target="SEASON_MIN_HEIGHT" Default="1500" Mode="" Description="Minimum preferred season-poster height." Type="Variable" Display="advanced" Required="false" Mask="false">1500</Config>
   <Config Name="Season Poster Preferred Vote" Target="SEASON_PREFER_VOTE" Default="5.0" Mode="" Description="Preferred TMDb season-poster vote score." Type="Variable" Display="advanced" Required="false" Mask="false">5.0</Config>
@@ -105,8 +130,8 @@
   <Config Name="Season Poster Upgrade Vote Threshold" Target="SEASON_VOTE_THRESHOLD" Default="3.0" Mode="" Description="Vote score used when deciding season-poster upgrades." Type="Variable" Display="advanced" Required="false" Mask="false">3.0</Config>
 
   <!-- Optional background selection -->
-  <Config Name="Background Maximum Width" Target="BG_MAX_WIDTH" Default="3840" Mode="" Description="Preferred maximum background width." Type="Variable" Display="advanced" Required="false" Mask="false">3840</Config>
-  <Config Name="Background Maximum Height" Target="BG_MAX_HEIGHT" Default="2160" Mode="" Description="Preferred maximum background height." Type="Variable" Display="advanced" Required="false" Mask="false">2160</Config>
+  <Config Name="Background Preferred Width" Target="BG_MAX_WIDTH" Default="3840" Mode="" Description="Preferred high-resolution background width threshold." Type="Variable" Display="advanced" Required="false" Mask="false">3840</Config>
+  <Config Name="Background Preferred Height" Target="BG_MAX_HEIGHT" Default="2160" Mode="" Description="Preferred high-resolution background height threshold." Type="Variable" Display="advanced" Required="false" Mask="false">2160</Config>
   <Config Name="Background Minimum Width" Target="BG_MIN_WIDTH" Default="1920" Mode="" Description="Minimum preferred background width." Type="Variable" Display="advanced" Required="false" Mask="false">1920</Config>
   <Config Name="Background Minimum Height" Target="BG_MIN_HEIGHT" Default="1080" Mode="" Description="Minimum preferred background height." Type="Variable" Display="advanced" Required="false" Mask="false">1080</Config>
   <Config Name="Background Preferred Vote" Target="BG_PREFER_VOTE" Default="5.0" Mode="" Description="Preferred TMDb background vote score." Type="Variable" Display="advanced" Required="false" Mask="false">5.0</Config>
@@ -115,5 +140,5 @@
 
   <!-- Normally fixed container paths; exposed for completeness -->
   <Config Name="Container Config Directory" Target="CONFIG_DIR" Default="/config" Mode="" Description="Container configuration and state directory. Normally leave unchanged." Type="Variable" Display="advanced" Required="false" Mask="false">/config</Config>
-  <Config Name="Runtime Status File" Target="STATUS_FILE" Default="/config/metafusion-status.json" Mode="" Description="Scheduler status and healthcheck file. Normally leave unchanged." Type="Variable" Display="advanced" Required="false" Mask="false">/config/metafusion-status.json</Config>
+  <Config Name="Runtime Status File" Target="STATUS_FILE" Default="/tmp/metafusion-status.json" Mode="" Description="Ephemeral scheduler heartbeat and healthcheck file. Normally leave unchanged." Type="Variable" Display="advanced" Required="false" Mask="false">/tmp/metafusion-status.json</Config>
 </Container>
