@@ -68,6 +68,10 @@ jobs:
         run: |
           config_dir="$(mktemp -d)"
           docker run --rm \
+            --read-only \
+            --tmpfs /tmp:size=256m,mode=1777 \
+            --security-opt no-new-privileges \
+            --stop-timeout 20 \
             --env PUID=99 \
             --env PGID=100 \
             --volume "${config_dir}:/config" \

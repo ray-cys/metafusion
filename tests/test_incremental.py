@@ -8,6 +8,7 @@ from helper.incremental import (
     image_upgrade_due,
     item_updated_at,
     load_state,
+    library_full_scan_decisions,
     mark_full_scan_complete,
     plan_items,
     select_items,
@@ -126,6 +127,40 @@ def test_per_library_scan_state_and_fingerprint_control_full_scans(tmp_path):
         now=now + timedelta(hours=23),
         path=state_path,
     ) is True
+
+
+def test_full_scan_decisions_are_independent_per_library(tmp_path):
+    state_path = tmp_path / "meta_db.sqlite3"
+    now = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    scopes = [
+        {
+            "server_id": "server",
+            "library_uuid": "movies",
+            "library_name": "Movies",
+            "config_fingerprint": "same",
+        },
+        {
+            "server_id": "server",
+            "library_uuid": "tv",
+            "library_name": "TV",
+            "config_fingerprint": "same",
+        },
+    ]
+    mark_full_scan_complete(
+        path=state_path, now=now, scopes=[scopes[0]]
+    )
+
+    decisions = library_full_scan_decisions(
+        incremental_config(),
+        scopes=scopes,
+        path=state_path,
+        now=now + timedelta(hours=1),
+    )
+
+    assert decisions == {
+        ("server", "movies"): False,
+        ("server", "tv"): True,
+    }
 
 
 def test_legacy_full_scan_json_is_ignored(tmp_path):

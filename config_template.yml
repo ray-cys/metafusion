@@ -7,6 +7,9 @@ metafusion_run: false
 settings:
   schedule: true
   run_on_start: false
+  # Run the latest missed slot after a restart, if it is still recent enough.
+  schedule_catch_up: true
+  schedule_catch_up_max_hours: 24
   run_times:
     - "06:00"
     - "18:30"
@@ -71,6 +74,9 @@ assets:
   run_poster: true
   run_season: true
   run_background: false
+  # managed updates only files whose checksum still matches MetaFusion's record.
+  # fill_missing never replaces artwork; overwrite permits replacing any file.
+  update_policy: "managed"
 
 cleanup:
   # Cleanup is intentionally opt-in. Test with dry_run before enabling it.

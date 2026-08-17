@@ -148,6 +148,7 @@ def test_corrupt_tmdb_database_is_rebuilt_without_blocking_jobs(tmp_path):
     cache.configure(path)
 
     assert cache.stats()["recoveries"] == 1
+    assert cache.stats()["health"] == "recovered"
     assert cache == {}
     cache["movie/1"] = {"id": 1}
     assert cache.flush() is True
@@ -165,6 +166,8 @@ def test_corrupt_read_only_tmdb_database_is_left_untouched(tmp_path):
     assert cache["memory-only"] == {"id": 1}
     assert cache.flush() is False
     assert path.read_text(encoding="utf-8") == "{broken"
+    assert cache.stats()["health"] == "degraded"
+    assert "DatabaseError" in cache.stats()["last_error"]
 
 
 def test_corrupt_cached_response_becomes_a_miss_instead_of_failing_the_job(tmp_path):

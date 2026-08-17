@@ -17,7 +17,8 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert service["image"] == "${METAFUSION_IMAGE:-ghcr.io/ray-cys/metafusion:main}"
     assert service["init"] is True
     assert service["read_only"] is True
-    assert service["cap_drop"] == ["ALL"]
+    assert "user" not in service
+    assert "cap_drop" not in service
     assert "no-new-privileges:true" in service["security_opt"]
     assert "healthcheck" in service
     assert environment["METAFUSION_RUN"] == "${METAFUSION_RUN-}"
@@ -103,6 +104,8 @@ def test_ci_smoke_tests_unraid_runtime_identity():
     assert "Smoke test Unraid UID/GID remapping" in workflow
     assert "--env PUID=99" in workflow
     assert "--env PGID=100" in workflow
+    assert "--security-opt no-new-privileges" in workflow
+    assert "--read-only" in workflow
     assert "(os.getuid(), os.getgid()) == (99, 100)" in workflow
     assert "(status.st_uid, status.st_gid) == (99, 100)" in workflow
 
@@ -181,6 +184,6 @@ def test_unraid_template_preserves_hardened_runtime_and_unraid_identity():
     assert configs["PGID"].text == "100"
     assert configs["STATUS_FILE"].text == "/tmp/metafusion-status.json"
     assert "--read-only" in extra_params
-    assert "--cap-drop=ALL" in extra_params
+    assert "--cap-drop" not in extra_params
     assert "--security-opt=no-new-privileges" in extra_params
     assert "--stop-timeout=20" in extra_params

@@ -28,3 +28,19 @@ def test_support_report_omits_configuration_values(tmp_path):
     assert "/private/source" not in contents
     assert "PLEX_TOKEN" in contents
     assert "TMDB_API_KEY" in contents
+
+
+def test_support_reports_do_not_overwrite_within_one_second(tmp_path):
+    config = {
+        "settings": {"mode": "kometa", "dry_run": True},
+        "plex": {"path_mappings": []},
+        "plex_libraries": [],
+        "plex_metadata": {},
+    }
+
+    first = write_support_report(config, base_dir=tmp_path, environ={})
+    second = write_support_report(config, base_dir=tmp_path, environ={})
+
+    assert first != second
+    assert first.exists()
+    assert second.exists()

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -284,6 +285,27 @@ def test_scheduler_run_on_start_executes_before_wait_loop(monkeypatch, tmp_path)
         metafusion.schedule.clear()
 
     assert calls == ["run"]
+
+
+def test_schedule_catch_up_uses_durable_success_history():
+    now = datetime(2026, 1, 2, 7, 0, tzinfo=timezone.utc)
+    missed = metafusion.missed_schedule_due(
+        ["06:00", "18:30"], [], max_hours=24, now=now
+    )
+    assert missed == datetime(2026, 1, 2, 6, 0, tzinfo=timezone.utc)
+
+    completed = [
+        {
+            "status": "success",
+            "finished_at": "2026-01-02T06:30:00+00:00",
+        }
+    ]
+    assert metafusion.missed_schedule_due(
+        ["06:00", "18:30"], completed, max_hours=24, now=now
+    ) is None
+    assert metafusion.missed_schedule_due(
+        ["06:00"], [], max_hours=0.5, now=now
+    ) is None
 
 
 def test_shutdown_watchdog_forces_bounded_exit(monkeypatch):

@@ -9,7 +9,6 @@ from helper.config import BASE_CONFIG_DIR, mode_check
 from helper.io import atomic_write_text
 from helper.state_db import (
     load_plex_metadata_ownership,
-    prune_plex_metadata_children,
     save_plex_metadata_ownership,
     utc_now,
 )
@@ -121,7 +120,7 @@ class PlexMetadataReporter:
         if not self.enabled:
             return None
         report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
         path = report_dir / f"plex-metadata-{timestamp}.txt"
         lines = [
             "MetaFusion Plex metadata report",
@@ -554,13 +553,9 @@ def _apply_candidate(item, candidate, config, meta, reporter):
             type(error).__name__,
         )
         return {"writes": 0, "failures": 1}
-    if not config.get("settings", {}).get("dry_run", False):
-        prune_plex_metadata_children(
-            identity["server_id"],
-            identity["library_uuid"],
-            identity["rating_key"],
-            existing_children,
-        )
+    pending_records = []
+    pending_deleted = []
+    rollback_batches = []
     for child_key, child, child_candidate in children:
         try:
             child_writes, child_records = _apply_object(
@@ -576,20 +571,17 @@ def _apply_candidate(item, candidate, config, meta, reporter):
             )
             writes += child_writes
             if child_records and not config.get("settings", {}).get("dry_run", False):
-                deleted = [
+                pending_deleted.extend(
                     record["_delete_key"]
                     for record in child_records
                     if "_delete_key" in record
-                ]
+                )
                 persisted = [
                     record for record in child_records if "_delete_key" not in record
                 ]
-                try:
-                    save_plex_metadata_ownership(persisted, deleted=deleted)
-                except Exception:
-                    if child_writes:
-                        _rollback_untracked_write(child, persisted)
-                    raise
+                pending_records.extend(persisted)
+                if child_writes and persisted:
+                    rollback_batches.append((child, persisted))
         except Exception as error:
             failures += 1
             reporter.record(
@@ -604,6 +596,35 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 "[Plex Metadata] Failed %s for %s (%s)",
                 child_key or "item",
                 meta.get("title") or getattr(item, "title", "Unknown"),
+                type(error).__name__,
+            )
+    if not config.get("settings", {}).get("dry_run", False):
+        try:
+            save_plex_metadata_ownership(
+                pending_records,
+                deleted=pending_deleted,
+                prune_scope=(
+                    identity["server_id"],
+                    identity["library_uuid"],
+                    identity["rating_key"],
+                ),
+                valid_child_keys=existing_children,
+            )
+        except Exception as error:
+            for child, records in reversed(rollback_batches):
+                try:
+                    _rollback_untracked_write(child, records)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "[Plex Metadata] Failed to roll back an untracked write"
+                    )
+            failures += 1
+            reporter.record(
+                identity["library_name"],
+                meta.get("title") or getattr(item, "title", "Unknown"),
+                "item",
+                "ownership",
+                "failed",
                 type(error).__name__,
             )
     return {"writes": writes, "failures": failures}

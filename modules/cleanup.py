@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -7,8 +8,9 @@ import yaml
 
 from helper.cache import load_cache, mark_cache_dirty
 from helper.identity import cache_key_for_meta, metadata_key_for_meta
-from helper.io import atomic_write_yaml, sha256_file
+from helper.io import sha256_file
 from helper.logging import log_cleanup_event
+from modules.kometa import write_kometa_metadata
 
 
 class CleanupError(RuntimeError):
@@ -303,13 +305,18 @@ async def cleanup_title_orphans(
                 )
                 continue
             try:
-                with metadata_file.open("r", encoding="utf-8") as source:
-                    metadata_content = yaml.safe_load(source) or {}
+                source_bytes = metadata_file.read_bytes()
+                metadata_content = yaml.safe_load(source_bytes.decode("utf-8")) or {}
                 metadata_entries = metadata_content.get("metadata", {})
                 if not isinstance(metadata_entries, dict):
                     raise ValueError("metadata must be a mapping")
                 metadata_documents.append(
-                    (metadata_file, metadata_content, metadata_entries)
+                    (
+                        metadata_file,
+                        metadata_content,
+                        metadata_entries,
+                        (True, hashlib.sha256(source_bytes).hexdigest()),
+                    )
                 )
             except Exception as error:
                 log_cleanup_event(
@@ -321,7 +328,12 @@ async def cleanup_title_orphans(
                     f"Failed to clean metadata file: {metadata_file}"
                 ) from error
 
-        for metadata_file, metadata_content, metadata_entries in metadata_documents:
+        for (
+            metadata_file,
+            metadata_content,
+            metadata_entries,
+            output_snapshot,
+        ) in metadata_documents:
             try:
                 file_media_type = normalize_library_type(
                     metadata_file.name.split("_", 1)[0]
@@ -443,7 +455,15 @@ async def cleanup_title_orphans(
 
                 if not dry_run and yaml_changed:
                     metadata_content["metadata"] = cleaned_metadata
-                    atomic_write_yaml(metadata_file, metadata_content)
+                    output_config = config.get("output", {})
+                    write_kometa_metadata(
+                        metadata_file,
+                        metadata_content,
+                        validate_schema=output_config.get("validate_schema", True),
+                        backup_count=output_config.get("backup_count", 3),
+                        library_type=file_media_type,
+                        expected_snapshot=output_snapshot,
+                    )
             except Exception as error:
                 log_cleanup_event(
                     "cleanup_failed_remove_metadata",

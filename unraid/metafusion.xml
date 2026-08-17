@@ -14,7 +14,7 @@
   <WebUI/>
   <TemplateURL>https://raw.githubusercontent.com/ray-cys/metafusion/main/unraid/metafusion.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/ray-cys/metafusion/main/asset/app_logo.png</Icon>
-  <ExtraParams>--init --read-only --tmpfs /tmp:size=256m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges --stop-timeout=20</ExtraParams>
+  <ExtraParams>--init --read-only --tmpfs /tmp:size=256m,mode=1777 --security-opt=no-new-privileges --stop-timeout=20</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DonateText/>
@@ -54,6 +54,8 @@
   <Config Name="Run Once on Container Start" Target="METAFUSION_RUN" Default="False|True" Mode="" Description="Run once instead of remaining in scheduler mode. Normally keep False for an Unraid service." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
   <Config Name="Enable Scheduler" Target="RUN_SCHEDULE" Default="True|False" Mode="" Description="Keep the container running and execute at RUN_TIMES." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
   <Config Name="Run When Scheduler Starts" Target="RUN_ON_START" Default="False|True" Mode="" Description="Run one job immediately after scheduler startup, then continue normally." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
+  <Config Name="Catch Up Missed Schedule" Target="SCHEDULE_CATCH_UP" Default="True|False" Mode="" Description="After a restart, run the latest missed scheduled slot when it is within the catch-up window." Type="Variable" Display="advanced" Required="false" Mask="false">True</Config>
+  <Config Name="Schedule Catch-Up Window Hours" Target="SCHEDULE_CATCH_UP_MAX_HOURS" Default="24" Mode="" Description="Maximum age of a missed schedule that may run after startup." Type="Variable" Display="advanced" Required="false" Mask="false">24</Config>
   <Config Name="Scheduled Run Times" Target="RUN_TIMES" Default="06:00,18:30" Mode="" Description="Comma-separated daily HH:MM times interpreted using TZ." Type="Variable" Display="always" Required="false" Mask="false">06:00,18:30</Config>
   <Config Name="Dry Run" Target="DRY_RUN" Default="False|True" Mode="" Description="Calculate and log without writing generated data or deleting files." Type="Variable" Display="always" Required="false" Mask="false">False</Config>
   <Config Name="Log Level" Target="LOG_LEVEL" Default="INFO|DEBUG|WARNING|ERROR|CRITICAL" Mode="" Description="Application logging verbosity." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
@@ -72,6 +74,7 @@
   <Config Name="Manage Posters" Target="RUN_POSTER" Default="True|False" Mode="" Description="Manage movie and show posters." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
   <Config Name="Manage Season Posters" Target="RUN_SEASON" Default="True|False" Mode="" Description="Manage season posters, including Specials." Type="Variable" Display="always" Required="false" Mask="false">True</Config>
   <Config Name="Manage Backgrounds" Target="RUN_BACKGROUND" Default="False|True" Mode="" Description="Manage movie and show background artwork." Type="Variable" Display="always" Required="false" Mask="false">False</Config>
+  <Config Name="Artwork Update Policy" Target="ASSET_UPDATE_POLICY" Default="managed|fill_missing|overwrite" Mode="" Description="managed replaces only unmodified MetaFusion-owned files; fill_missing never replaces existing artwork; overwrite permits replacing any existing artwork." Type="Variable" Display="advanced" Required="false" Mask="false">managed</Config>
   <Config Name="Guarded Cleanup" Target="RUN_CLEANUP" Default="False|True" Mode="" Description="Enable guarded orphan cleanup. Run with DRY_RUN first and verify every library name." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
 
   <!-- Optional runtime and Plex reliability -->

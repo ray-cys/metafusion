@@ -416,6 +416,8 @@ your deployment supports protected secret mounts.
 | `METAFUSION_RUN` | `False` | Run once instead of waiting for the scheduler. |
 | `RUN_SCHEDULE` | `True` | Enable the long-running scheduler. |
 | `RUN_ON_START` | `False` | Run one job when scheduler mode starts, then continue normally. |
+| `SCHEDULE_CATCH_UP` | `True` | Run the most recent missed scheduled slot after a restart when no later successful job exists. |
+| `SCHEDULE_CATCH_UP_MAX_HOURS` | `24` | Maximum age, in hours, of a missed slot eligible for startup catch-up. |
 | `RUN_TIMES` | `06:00,18:30` | Comma-separated daily run times. |
 | `TZ` | `UTC` | Container timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate without edits/deletions; direct Plex metadata dry-runs still write a redacted audit report. |
@@ -435,6 +437,7 @@ your deployment supports protected secret mounts.
 | `RUN_POSTER` | `True` | Write movie/show posters to Kometa assets or beside Plex media, according to `RUN_MODE`. |
 | `RUN_SEASON` | `True` | Write season posters, including Specials, to the output selected by `RUN_MODE`. |
 | `RUN_BACKGROUND` | `False` | Write movie/show backgrounds to the output selected by `RUN_MODE`. |
+| `ASSET_UPDATE_POLICY` | `managed` | `managed` replaces only unchanged MetaFusion-owned artwork; `fill_missing` preserves every existing file; `overwrite` permits replacement of existing artwork. |
 | `RUN_CLEANUP` | `False` | Enable guarded mode-specific cleanup. Test with dry-run first; media files are never deleted. |
 
 ### Runtime and Plex reliability
@@ -534,6 +537,12 @@ supported (`0.5` is 12 hours), and `0` disables timed refreshes for that type.
 The interval is a minimum age: work starts at the first `RUN_TIMES` execution
 after the interval expires.
 
+With `SCHEDULE_CATCH_UP=True`, a restart also checks durable job history. If
+the latest scheduled slot was missed and is no older than
+`SCHEDULE_CATCH_UP_MAX_HOURS`, MetaFusion runs it once before returning to the
+normal schedule. This is based on saved job timestamps, not container uptime,
+so Unraid backup restarts do not silently lose a recent scheduled run.
+
 Movie settings apply to every configured movie library. Series and season
 settings apply to every configured TV library unless a `config.yml` library
 override is present. MetaFusion does not generate episode artwork.
@@ -617,6 +626,13 @@ Disabling an artwork feature also disables cleanup for that artwork type.
 Season 0/Specials are retained whenever they remain in Plex. Plex mode cleans
 stale MetaFusion cache entries only; it does not remove YAML or artwork.
 Neither mode deletes Plex media files.
+
+The same ownership rule applies to normal artwork refreshes when
+`ASSET_UPDATE_POLICY=managed`: a file changed by a user or another application
+is preserved. `fill_missing` preserves every existing file, while `overwrite`
+allows replacement. Stale artwork is never replaced by a candidate with lower
+dimensions or a lower TMDb vote score, and path collisions between different
+Plex items are rejected rather than writing both items to one destination.
 
 The final report separates title, season, episode, and artwork counts. A dry
 run reports the same proposed counts without changing cache, YAML, or assets.

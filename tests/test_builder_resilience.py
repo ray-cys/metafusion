@@ -56,6 +56,24 @@ def feature_flags(**overrides):
     return values
 
 
+def test_builder_rejects_destination_claimed_by_another_item(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    config = {
+        "assets": {"update_policy": "managed"},
+        "_asset_destination_registry": {str(destination.absolute()): "movie:1"},
+    }
+
+    with pytest.raises(builder.AssetDestinationCollisionError):
+        builder.protected_asset_destination(
+            config,
+            "movie:2",
+            destination,
+            "poster",
+            media_type="Movie",
+            full_title="Example (2020)",
+        )
+
+
 def movie_meta():
     return {
         "library_type": "movie",

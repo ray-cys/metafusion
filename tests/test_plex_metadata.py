@@ -295,6 +295,38 @@ def test_season_and_episode_candidates_use_one_write_per_object(tmp_path, monkey
     assert [writer.tag for writer in episode.writers] == ["Writer"]
 
 
+def test_item_ownership_is_committed_once_for_all_children(tmp_path, monkeypatch):
+    monkeypatch.setattr(state_db, "STATE_DATABASE", tmp_path / "meta_db.sqlite3")
+    calls = []
+    original_save = state_db.save_plex_metadata_ownership
+
+    def capture_save(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(
+        plex_metadata_module, "save_plex_metadata_ownership", capture_save
+    )
+    season = EditableItem(ratingKey="season", index=1, summary="", episodes=list)
+    show = EditableItem(ratingKey="10", summary="", seasons=lambda: [season])
+
+    result = _apply_candidate(
+        show,
+        {
+            "root": {"fields": {"summary": "Show summary"}},
+            "seasons": {1: {"fields": {"summary": "Season summary"}}},
+        },
+        plex_config(),
+        identity(),
+        PlexMetadataReporter(plex_config()),
+    )
+
+    assert result == {"writes": 2, "failures": 0}
+    assert len(calls) == 1
+    assert len(calls[0][0][0]) == 2
+    assert calls[0][1]["prune_scope"] == ("server-1", "library-1", "10")
+
+
 def test_unlock_keeps_value_and_clears_only_metafusion_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(state_db, "STATE_DATABASE", tmp_path / "meta_db.sqlite3")
     config = plex_config()

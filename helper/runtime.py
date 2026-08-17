@@ -130,7 +130,12 @@ class RuntimeStatus:
 
     def _heartbeat_loop(self):
         while not self._stop.wait(self.heartbeat_seconds):
-            self._update()
+            try:
+                self._update()
+            except OSError as error:
+                logging.getLogger().warning(
+                    "[Runtime] Unable to update heartbeat; retrying: %s", error
+                )
 
     def idle(self):
         self._update(state="idle")

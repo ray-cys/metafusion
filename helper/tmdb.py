@@ -34,7 +34,13 @@ def begin_tmdb_cache(config):
 
 def flush_tmdb_cache():
     result = tmdb_response_cache.flush()
-    log_tmdb_event("tmdb_cache_stats", **tmdb_response_cache.stats())
+    stats = tmdb_response_cache.stats()
+    log_tmdb_event("tmdb_cache_stats", **stats)
+    if stats.get("health") == "degraded":
+        log_tmdb_event(
+            "tmdb_cache_degraded",
+            error=stats.get("last_error") or "persistent cache unavailable",
+        )
     return result
 
 

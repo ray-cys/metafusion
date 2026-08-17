@@ -107,12 +107,37 @@ def should_run_full_scan(
     if state is not None:
         return _timestamp_is_due(state.get("last_full_scan"), interval, now)
 
-    scopes = list(scopes or [])
-    document = load_state(path=path, scopes=scopes)
-    if not scopes:
-        return True
+    decisions = library_full_scan_decisions(
+        config,
+        targeted=targeted,
+        now=now,
+        scopes=scopes,
+        path=path,
+    )
+    return True if not decisions else any(decisions.values())
 
-    states = document.get("libraries", {})
+
+def library_full_scan_decisions(
+    config, targeted=False, now=None, scopes=None, path=None
+):
+    scopes = list(scopes or [])
+    if not scopes:
+        return {}
+    if not config.get("incremental", {}).get("enabled", True):
+        return {_scope_key(scope): True for scope in scopes}
+    if targeted:
+        return {_scope_key(scope): False for scope in scopes}
+    now = utc_now() if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    interval = timedelta(
+        hours=max(
+            1.0,
+            float(config.get("incremental", {}).get("full_scan_interval_hours", 168)),
+        )
+    )
+    states = load_state(path=path, scopes=scopes).get("libraries", {})
+    decisions = {}
     for scope in scopes:
         key = (
             str(scope.get("server_id") or "unknown"),
@@ -120,7 +145,8 @@ def should_run_full_scan(
         )
         library_state = states.get(key)
         if library_state is None:
-            return True
+            decisions[key] = True
+            continue
         expected_fingerprint = scope.get("config_fingerprint")
         stored_fingerprint = library_state.get("config_fingerprint")
         if (
@@ -128,12 +154,19 @@ def should_run_full_scan(
             and stored_fingerprint
             and expected_fingerprint != stored_fingerprint
         ):
-            return True
-        if _timestamp_is_due(
+            decisions[key] = True
+            continue
+        decisions[key] = _timestamp_is_due(
             library_state.get("last_full_scan_completed"), interval, now
-        ):
-            return True
-    return False
+        )
+    return decisions
+
+
+def _scope_key(scope):
+    return (
+        str(scope.get("server_id") or "unknown"),
+        str(scope.get("library_uuid") or scope.get("library_name")),
+    )
 
 
 def mark_full_scan_complete(dry_run=False, path=None, now=None, scopes=None):
@@ -291,6 +324,8 @@ def plan_items(
     config=None,
     feature_flags=None,
     now=None,
+    server_id=None,
+    library_uuid=None,
 ):
     """Plan selected items without losing which operations made them eligible."""
     target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
@@ -312,9 +347,20 @@ def plan_items(
             for item in candidates
         ]
 
+    scoped_cache = (
+        cache.entries_for_scope(
+            server_id,
+            library_uuid,
+            rating_keys=[getattr(item, "ratingKey", "") for item in candidates],
+        ).values()
+        if server_id is not None
+        and library_uuid is not None
+        and hasattr(cache, "entries_for_scope")
+        else cache.values()
+    )
     cache_by_rating_key = {
         str(entry.get("rating_key")): entry
-        for entry in cache.values()
+        for entry in scoped_cache
         if isinstance(entry, dict) and entry.get("rating_key") is not None
     }
     planned = []
@@ -354,6 +400,8 @@ def select_items(
     config=None,
     feature_flags=None,
     now=None,
+    server_id=None,
+    library_uuid=None,
 ):
     return [
         planned.item
@@ -366,5 +414,7 @@ def select_items(
             config=config,
             feature_flags=feature_flags,
             now=now,
+            server_id=server_id,
+            library_uuid=library_uuid,
         )
     ]

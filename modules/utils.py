@@ -3,7 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from helper.config import mode_check
 from helper.cache import load_cache
-from helper.io import atomic_write_bytes
+from helper.io import atomic_write_bytes, sha256_file
 from helper.tmdb import tmdb_api_request
 
 def smart_meta_update(existing_metadata, new_metadata, exclude_fields=None):
@@ -258,7 +258,56 @@ def stale_image(last_upgraded, days=30):
         return now - last_dt >= interval
     except (TypeError, ValueError):
         return True
-    
+
+
+def _normalized_asset_path(path):
+    return str(Path(path).absolute()) if path else None
+
+
+def asset_write_allowed(config, cache_key, asset_path, asset_type, season_number=None):
+    """Return whether an existing artwork file is still owned by MetaFusion."""
+    if not asset_path.exists():
+        return True, "missing"
+
+    policy = str(config.get("assets", {}).get("update_policy", "managed")).strip().lower()
+    if policy == "overwrite":
+        return True, "overwrite"
+    if policy == "fill_missing":
+        return False, "fill_missing"
+
+    cached = load_cache().get(cache_key, {})
+    if not isinstance(cached, dict):
+        return False, "unmanaged"
+    if asset_type == "season":
+        asset_record = (cached.get("seasons") or {}).get(str(season_number), {})
+        expected_checksum = asset_record.get("season_checksum")
+        expected_path = asset_record.get("season_path")
+    else:
+        expected_checksum = cached.get(f"{asset_type}_checksum")
+        expected_path = cached.get(f"{asset_type}_path")
+    if not expected_checksum:
+        return False, "unmanaged"
+    if expected_path and _normalized_asset_path(expected_path) != _normalized_asset_path(asset_path):
+        return False, "unmanaged"
+    try:
+        current_checksum = sha256_file(asset_path)
+    except OSError:
+        return False, "unverifiable"
+    if current_checksum != expected_checksum:
+        return False, "modified"
+    return True, "managed"
+
+
+def claim_asset_destination(registry, cache_key, asset_path):
+    """Reserve a destination synchronously so concurrent builders cannot collide."""
+    normalized = _normalized_asset_path(asset_path)
+    existing_owner = registry.get(normalized)
+    if existing_owner not in (None, cache_key):
+        return False, existing_owner
+    registry[normalized] = cache_key
+    return True, cache_key
+
+
 def smart_asset_upgrade(
     config, asset_path, new_image_data, new_image_path=None, cache_key=None,
     asset_type="poster", stale_days=30
@@ -318,8 +367,23 @@ def smart_asset_upgrade(
     else:
         return False, "NO_IMAGE_FOR_COMPARE", context
 
+    try:
+        with Image.open(asset_path) as img:
+            existing_width, existing_height = img.size
+        context["existing_width"] = existing_width
+        context["existing_height"] = existing_height
+    except Exception as e:
+        context["error"] = str(e)
+        return False, "ERROR_IMAGE_COMPARE", context
+
     if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE", context
+        if (
+            new_width >= existing_width
+            and new_height >= existing_height
+            and new_votes >= cached_votes
+        ):
+            return True, "FORCE_UPGRADE_STALE", context
+        return False, "STALE_CANDIDATE_DOWNGRADE", context
 
     if cached_votes < vote_threshold and new_votes >= vote_threshold:
         return True, "UPGRADE_THRESHOLD", context
@@ -330,16 +394,8 @@ def smart_asset_upgrade(
     if cached_votes >= vote_threshold and new_votes >= vote_threshold and new_votes > cached_votes:
         return True, "UPGRADE_STRICT", context
 
-    try:
-        with Image.open(asset_path) as img:
-            existing_width, existing_height = img.size
-        context["existing_width"] = existing_width
-        context["existing_height"] = existing_height
-        if new_width > existing_width or new_height > existing_height:
-            return True, "UPGRADE_DIMENSIONS", context
-    except Exception as e:
-        context["error"] = str(e)
-        return False, "ERROR_IMAGE_COMPARE", context
+    if new_width > existing_width or new_height > existing_height:
+        return True, "UPGRADE_DIMENSIONS", context
 
     return False, "NO_UPGRADE_NEEDED", context
 
@@ -399,9 +455,6 @@ def smart_season_asset_upgrade(
     else:
         return False, "NO_IMAGE_FOR_COMPARE_SEASON", context
 
-    if stale_image(last_upgraded, stale_days):
-        return True, "FORCE_UPGRADE_STALE_SEASON", context
-
     try:
         with Image.open(asset_path) as img:
             existing_width, existing_height = img.size
@@ -410,6 +463,15 @@ def smart_season_asset_upgrade(
     except Exception as e:
         context["error"] = str(e)
         return False, "ERROR_IMAGE_COMPARE_SEASON", context
+
+    if stale_image(last_upgraded, stale_days):
+        if (
+            new_width >= existing_width
+            and new_height >= existing_height
+            and new_votes >= cached_votes
+        ):
+            return True, "FORCE_UPGRADE_STALE_SEASON", context
+        return False, "STALE_CANDIDATE_DOWNGRADE_SEASON", context
 
     if cached_votes == 0:
         if new_votes > 0 and (new_width > existing_width or new_height > existing_height or new_votes > cached_votes):

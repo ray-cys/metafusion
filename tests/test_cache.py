@@ -212,6 +212,46 @@ def test_cache_updates_are_batched_until_flush(tmp_path):
     assert cache_module.flush_cache() is False
 
 
+def test_scoped_cache_read_returns_only_requested_library_rows(tmp_path):
+    store = configure_cache(tmp_path)
+    cache_module.save_cache(
+        {
+            "movie:1": {
+                "server_id": "server",
+                "library_uuid": "movies",
+                "rating_key": "1",
+                "media_type": "movie",
+                "seasons": {"1": {"season_average": 1}},
+            },
+            "tv:2": {
+                "server_id": "server",
+                "library_uuid": "tv",
+                "rating_key": "2",
+                "media_type": "tv",
+                "poster_path": str(tmp_path / "show" / "poster.jpg"),
+                "seasons": {
+                    "0": {
+                        "season_average": 2,
+                        "season_path": str(tmp_path / "show" / "Season00.jpg"),
+                    }
+                },
+            },
+        }
+    )
+
+    scoped = store.entries_for_scope("server", "tv", rating_keys=["2"])
+
+    assert set(scoped) == {"tv:2"}
+    assert scoped["tv:2"]["seasons"]["0"]["season_average"] == 2
+    owners = store.asset_destination_owners(
+        [{"server_id": "server", "library_uuid": "tv"}]
+    )
+    assert set(owners) == {
+        ("tv:2", str(tmp_path / "show" / "poster.jpg")),
+        ("tv:2", str(tmp_path / "show" / "Season00.jpg")),
+    }
+
+
 def test_unchanged_entry_does_not_create_pending_write(tmp_path):
     configure_cache(tmp_path)
     value = {"title": "One", "media_type": "movie"}

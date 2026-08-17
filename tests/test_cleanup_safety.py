@@ -244,6 +244,36 @@ def test_cleanup_validates_all_yaml_before_writing_any_file(monkeypatch, tmp_pat
     assert movie_file.read_text(encoding="utf-8") == original_movie
 
 
+def test_cleanup_refuses_to_overwrite_concurrent_metadata_edit(monkeypatch, tmp_path):
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    metadata_file = metadata_dir / "movie_metadata.yml"
+    metadata_file.write_text(
+        "metadata:\n  Old Movie (2000): {}\n", encoding="utf-8"
+    )
+    external = "metadata:\n  External Edit (2024): {}\n"
+    real_writer = cleanup_module.write_kometa_metadata
+
+    def concurrent_writer(path, document, **kwargs):
+        path.write_text(external, encoding="utf-8")
+        return real_writer(path, document, **kwargs)
+
+    monkeypatch.setattr(cleanup_module, "load_cache", dict)
+    monkeypatch.setattr(cleanup_module, "write_kometa_metadata", concurrent_writer)
+
+    with pytest.raises(cleanup_module.CleanupError, match="Failed to clean"):
+        asyncio.run(
+            cleanup_module.cleanup_title_orphans(
+                kometa_config(tmp_path),
+                flags(poster=False, season=False, background=False),
+                preloaded_plex_metadata={},
+                safe_library_types={"movie"},
+            )
+        )
+
+    assert metadata_file.read_text(encoding="utf-8") == external
+
+
 def test_cleanup_asset_permission_failure_is_recoverable(monkeypatch, tmp_path):
     asset_root = tmp_path / "assets"
     poster = asset_root / "movie" / "Old Movie (2000)" / "poster.jpg"

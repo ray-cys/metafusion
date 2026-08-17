@@ -97,6 +97,42 @@ def test_process_library_propagates_item_failures(monkeypatch, tmp_path):
         )
 
 
+def test_process_library_preserves_successful_yaml_when_another_item_crashes(
+    monkeypatch, tmp_path
+):
+    async def fake_metadata(item, **_kwargs):
+        return metadata_for(item)
+
+    async def fake_process_item(plex_item, consolidated_metadata, **_kwargs):
+        consolidated_metadata["metadata"][f"Movie {plex_item} (2020)"] = {
+            "summary": "generated"
+        }
+        if plex_item == 2:
+            raise RuntimeError("builder failed after a partial edit")
+        return {"_incremental_success": True}
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+
+    with pytest.raises(
+        processing.LibraryProcessingError, match="successful item output was preserved"
+    ):
+        asyncio.run(
+            processing.process_library(
+                FakeSection([1, 2]),
+                config(tmp_path, mode="kometa"),
+                feature_flags=feature_flags(),
+                incremental_fingerprint="fingerprint",
+            )
+        )
+
+    output = tmp_path / "metadata" / "movie_metadata.yml"
+    document = processing.yaml.safe_load(output.read_text(encoding="utf-8"))
+    assert document["metadata"] == {
+        "Movie 1 (2020)": {"summary": "generated"}
+    }
+
+
 def test_ambiguous_blank_editions_fail_safely(monkeypatch, tmp_path):
     async def fake_metadata(item, **_kwargs):
         value = metadata_for(item)
