@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
 from helper.config import get_image_upgrade_days
@@ -28,6 +30,81 @@ from modules.kometa import (
 
 class AssetDestinationCollisionError(RuntimeError):
     pass
+
+
+def _normalized_destination(path):
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def _movie_asset_lock(config, meta, feature_flags):
+    """Serialize Kometa artwork work for movies sharing one asset folder."""
+    feature_flags = feature_flags or {}
+    if (
+        config.get("settings", {}).get("mode", "kometa") != "kometa"
+        or feature_flags.get("dry_run", False)
+        or not any(
+            feature_flags.get(name, False) for name in ("poster", "background")
+        )
+        or not meta
+        or not meta.get("movie_path")
+    ):
+        return None
+
+    asset_directory = (
+        Path(config.get("settings", {}).get("path", "."))
+        / "assets"
+        / "movie"
+        / meta["movie_path"]
+    )
+    key = _normalized_destination(asset_directory)
+    loop = asyncio.get_running_loop()
+    locks = config.setdefault("_asset_destination_locks", {})
+    entry = locks.get(key)
+    if entry is None or entry[0] is not loop:
+        entry = (loop, asyncio.Lock())
+        locks[key] = entry
+    return entry[1]
+
+
+def _movie_asset_claim_key(tmdb_id, asset_type, source_path):
+    """Use the canonical TMDb asset as the shared destination owner."""
+    return f"movie:tmdb:{tmdb_id}:{asset_type}:{source_path}"
+
+
+def _managed_shared_asset_checksum(
+    cache_key, tmdb_id, source_path, asset_path, asset_type
+):
+    """Return a checksum when another edition safely owns the same TMDb asset."""
+    if not asset_path.exists() or not source_path or tmdb_id is None:
+        return None
+
+    path_field = f"{asset_type}_path"
+    checksum_field = f"{asset_type}_checksum"
+    source_field = f"{asset_type}_source_path"
+    try:
+        current_checksum = sha256_file(asset_path)
+        normalized_path = _normalized_destination(asset_path)
+    except OSError:
+        return None
+
+    for other_key, cached in load_cache().items():
+        if other_key == cache_key or not isinstance(cached, dict):
+            continue
+        if cached.get("media_type") not in (None, "movie"):
+            continue
+        if str(cached.get("tmdb_id")) != str(tmdb_id):
+            continue
+        if cached.get(source_field) != source_path:
+            continue
+        expected_path = cached.get(path_field)
+        expected_checksum = cached.get(checksum_field)
+        if not expected_path or not expected_checksum:
+            continue
+        if _normalized_destination(expected_path) != normalized_path:
+            continue
+        if expected_checksum == current_checksum:
+            return current_checksum
+    return None
 
 
 def regional_movie_certification(release_dates, region="US"):
@@ -80,10 +157,24 @@ def cached_source_matches(cache_key, source_path, asset_path, asset_type, season
 
 
 def protected_asset_destination(
-    config, cache_key, asset_path, asset_type, *, media_type, full_title, season_number=None
+    config,
+    cache_key,
+    asset_path,
+    asset_type,
+    *,
+    media_type,
+    full_title,
+    season_number=None,
+    claim_key=None,
+    shared_managed=False,
 ):
     registry = config.setdefault("_asset_destination_registry", {})
-    claimed, owner = claim_asset_destination(registry, cache_key, asset_path)
+    destination_key = str(Path(asset_path).absolute())
+    destination_owner = claim_key or cache_key
+    existing_owner = registry.get(destination_key)
+    claimed, owner = claim_asset_destination(
+        registry, destination_owner, asset_path
+    )
     if not claimed:
         log_builder_event(
             "builder_asset_destination_collision",
@@ -96,6 +187,12 @@ def protected_asset_destination(
         raise AssetDestinationCollisionError(
             f"Artwork destination {asset_path} is already claimed by {owner}"
         )
+    if (
+        existing_owner == destination_owner
+        and shared_managed
+        and asset_path.exists()
+    ):
+        return False, "shared"
     allowed, reason = asset_write_allowed(
         config,
         cache_key,
@@ -206,6 +303,35 @@ async def tmdb_details_with_recovery(
     return str(replacement_id), replacement_details, str(tmdb_id)
 
 async def build_movie(
+    config, consolidated_metadata, feature_flags=None, existing_yaml_data=None, session=None, ignored_fields=None,
+    existing_assets=None, meta=None,
+):
+    lock = _movie_asset_lock(config, meta, feature_flags)
+    if lock is None:
+        return await _build_movie(
+            config,
+            consolidated_metadata,
+            feature_flags=feature_flags,
+            existing_yaml_data=existing_yaml_data,
+            session=session,
+            ignored_fields=ignored_fields,
+            existing_assets=existing_assets,
+            meta=meta,
+        )
+    async with lock:
+        return await _build_movie(
+            config,
+            consolidated_metadata,
+            feature_flags=feature_flags,
+            existing_yaml_data=existing_yaml_data,
+            session=session,
+            ignored_fields=ignored_fields,
+            existing_assets=existing_assets,
+            meta=meta,
+        )
+
+
+async def _build_movie(
     config, consolidated_metadata, feature_flags=None, existing_yaml_data=None, session=None, ignored_fields=None,
     existing_assets=None, meta=None, 
 ):
@@ -584,14 +710,39 @@ async def build_movie(
             poster_action = "failed"
             return
 
-        allowed, _protection_status = protected_asset_destination(
+        source_path = best.get("file_path")
+        shared_checksum = _managed_shared_asset_checksum(
+            cache_key, tmdb_id, source_path, asset_path, "poster"
+        )
+        if shared_checksum:
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "movie",
+                update_timestamp=False, poster_checked=True,
+                poster_average=best.get("vote_average", 0),
+                poster_source_path=source_path,
+                poster_path=str(asset_path.resolve()),
+                poster_checksum=shared_checksum,
+            )
+        allowed, protection_status = protected_asset_destination(
             config, cache_key, asset_path, "poster",
             media_type="Movie", full_title=full_title,
+            claim_key=_movie_asset_claim_key(
+                tmdb_id, "poster", source_path
+            ),
+            shared_managed=bool(shared_checksum),
         )
         if not allowed:
             poster_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
+            if protection_status == "shared":
+                log_builder_event(
+                    "builder_reusing_shared_asset",
+                    media_type="Movie",
+                    asset_type="poster",
+                    full_title=full_title,
+                    destination=asset_path,
+                )
             result["poster"]["size"] = poster_size
             poster_action = "skipped"
             return
@@ -730,14 +881,39 @@ async def build_movie(
             background_action = "failed"
             return
 
-        allowed, _protection_status = protected_asset_destination(
+        source_path = best.get("file_path")
+        shared_checksum = _managed_shared_asset_checksum(
+            cache_key, tmdb_id, source_path, asset_path, "background"
+        )
+        if shared_checksum:
+            await meta_cache_async(
+                cache_key, tmdb_id, title, year, "movie",
+                update_timestamp=False, background_checked=True,
+                bg_average=best.get("vote_average", 0),
+                background_source_path=source_path,
+                background_path=str(asset_path.resolve()),
+                background_checksum=shared_checksum,
+            )
+        allowed, protection_status = protected_asset_destination(
             config, cache_key, asset_path, "background",
             media_type="Movie", full_title=full_title,
+            claim_key=_movie_asset_claim_key(
+                tmdb_id, "background", source_path
+            ),
+            shared_managed=bool(shared_checksum),
         )
         if not allowed:
             background_size = asset_path.stat().st_size if asset_path.exists() else 0
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
+            if protection_status == "shared":
+                log_builder_event(
+                    "builder_reusing_shared_asset",
+                    media_type="Movie",
+                    asset_type="background",
+                    full_title=full_title,
+                    destination=asset_path,
+                )
             result["background"]["size"] = background_size
             background_action = "skipped"
             return

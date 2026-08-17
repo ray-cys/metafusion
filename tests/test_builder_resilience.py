@@ -74,6 +74,65 @@ def test_builder_rejects_destination_claimed_by_another_item(tmp_path):
         )
 
 
+def test_builder_shares_only_an_identical_canonical_tmdb_asset(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    config = {"assets": {"update_policy": "managed"}}
+    canonical_claim = "movie:tmdb:100:poster:/poster.jpg"
+
+    assert builder.protected_asset_destination(
+        config,
+        "movie:plex:1",
+        destination,
+        "poster",
+        media_type="Movie",
+        full_title="Example (2020) [Theatrical]",
+        claim_key=canonical_claim,
+    )[0]
+    assert builder.protected_asset_destination(
+        config,
+        "movie:plex:2",
+        destination,
+        "poster",
+        media_type="Movie",
+        full_title="Example (2020) [Director's Cut]",
+        claim_key=canonical_claim,
+    )[0]
+
+    with pytest.raises(builder.AssetDestinationCollisionError):
+        builder.protected_asset_destination(
+            config,
+            "movie:plex:3",
+            destination,
+            "poster",
+            media_type="Movie",
+            full_title="Different Mapping (2020)",
+            claim_key="movie:tmdb:999:poster:/different.jpg",
+        )
+
+
+def test_secondary_shared_claim_never_rewrites_under_overwrite_policy(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"managed")
+    canonical_claim = "movie:tmdb:100:poster:/poster.jpg"
+    config = {
+        "assets": {"update_policy": "overwrite"},
+        "_asset_destination_registry": {
+            str(destination.absolute()): canonical_claim
+        },
+    }
+
+    assert builder.protected_asset_destination(
+        config,
+        "movie:plex:2",
+        destination,
+        "poster",
+        media_type="Movie",
+        full_title="Example (2020) [Director's Cut]",
+        claim_key=canonical_claim,
+        shared_managed=True,
+    ) == (False, "shared")
+
+
 def movie_meta():
     return {
         "library_type": "movie",
@@ -86,6 +145,122 @@ def movie_meta():
         "movie_dir": "/media/Example Movie (2020)",
         "edition_title": None,
     }
+
+
+def test_movie_editions_share_managed_artwork_without_duplicate_writes(
+    monkeypatch, tmp_path
+):
+    cache = {}
+    downloads = []
+
+    async def cache_write(
+        cache_key, tmdb_id, title, year, media_type, **kwargs
+    ):
+        entry = cache.setdefault(cache_key, {})
+        entry.update(
+            {
+                "tmdb_id": tmdb_id,
+                "title": title,
+                "year": year,
+                "media_type": media_type,
+            }
+        )
+        entry.update(
+            {
+                key: value
+                for key, value in kwargs.items()
+                if key
+                not in {
+                    "update_timestamp",
+                    "poster_checked",
+                    "background_checked",
+                    "poster_upgraded",
+                    "background_upgraded",
+                }
+            }
+        )
+
+    async def download(_config, image_path, save_path, **_kwargs):
+        downloads.append(image_path)
+        save_path.write_bytes(image_path.encode())
+        return True, 200, None
+
+    def write_allowed(_config, cache_key, asset_path, asset_type, **_kwargs):
+        if not asset_path.exists():
+            return True, "missing"
+        entry = cache.get(cache_key, {})
+        expected_path = entry.get(f"{asset_type}_path")
+        expected_checksum = entry.get(f"{asset_type}_checksum")
+        if (
+            expected_path
+            and expected_checksum
+            and builder._normalized_destination(expected_path)
+            == builder._normalized_destination(asset_path)
+            and expected_checksum == builder.sha256_file(asset_path)
+        ):
+            return True, "managed"
+        return False, "unmanaged"
+
+    monkeypatch.setattr(builder, "load_cache", lambda: cache)
+    monkeypatch.setattr(builder, "meta_cache_async", cache_write)
+    monkeypatch.setattr(builder, "download_poster", download)
+    monkeypatch.setattr(builder, "asset_write_allowed", write_allowed)
+    monkeypatch.setattr(
+        builder,
+        "smart_asset_upgrade",
+        lambda *_args, **_kwargs: (True, "NO_EXISTING_ASSET", {}),
+    )
+    tmdb_response_cache["movie/100"] = movie_details()
+
+    theatrical = movie_meta()
+    theatrical.update(
+        {
+            "ratingKey": "1",
+            "edition_title": "Theatrical",
+            "requires_unique_key": True,
+        }
+    )
+    directors_cut = movie_meta()
+    directors_cut.update(
+        {
+            "ratingKey": "2",
+            "edition_title": "Director's Cut",
+            "requires_unique_key": True,
+        }
+    )
+    config = build_config(tmp_path)
+
+    async def build_editions():
+        return await asyncio.gather(
+            builder.build_movie(
+                config,
+                {"metadata": {}},
+                feature_flags=feature_flags(season=False),
+                meta=theatrical,
+                session=object(),
+            ),
+            builder.build_movie(
+                config,
+                {"metadata": {}},
+                feature_flags=feature_flags(season=False),
+                meta=directors_cut,
+                session=object(),
+            ),
+        )
+
+    first, second = asyncio.run(build_editions())
+
+    assert first["poster_action"] == "downloaded"
+    assert first["background_action"] == "downloaded"
+    assert second["poster_action"] == "skipped"
+    assert second["background_action"] == "skipped"
+    assert downloads.count("/poster.jpg") == 1
+    assert downloads.count("/background.jpg") == 1
+    for cache_key in ("movie:plex:1", "movie:plex:2"):
+        assert cache[cache_key]["poster_path"].endswith("/poster.jpg")
+        assert cache[cache_key]["background_path"].endswith("/fanart.jpg")
+        assert len(cache[cache_key]["poster_checksum"]) == 64
+        assert len(cache[cache_key]["background_checksum"]) == 64
 
 
 def movie_details():

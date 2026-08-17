@@ -207,8 +207,11 @@ async def process_item(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        log_processing_event("processing_failed_item", full_title=full_title, error=str(e))
-        raise ItemProcessingError(f"Failed to process {full_title}") from e
+        failure_label = _item_failure_label(plex_item)
+        log_processing_event(
+            "processing_failed_item", full_title=failure_label, error=str(e)
+        )
+        raise ItemProcessingError(f"Failed to process {failure_label}") from e
     failed_actions = []
     if isinstance(stats, dict):
         failed_actions.extend(
