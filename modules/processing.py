@@ -1,7 +1,12 @@
 import asyncio, copy, yaml
 from collections import Counter
 from pathlib import Path
-from helper.cache import load_cache, meta_cache_async
+from helper.cache import (
+    load_cache,
+    meta_cache_async,
+    reset_cache_scope,
+    set_cache_scope,
+)
 from helper.config import mode_check
 from helper.incremental import plan_items
 from helper.logging import log_processing_event, log_library_summary
@@ -185,6 +190,17 @@ async def process_library(
     poster_downloaded = poster_upgraded = poster_skipped = poster_missing = poster_failed = 0
     background_downloaded = background_upgraded = background_skipped = background_missing = background_failed = 0
     season_poster_downloaded = season_poster_upgraded = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+
+    server = getattr(library_section, "_server", None)
+    scope_token = set_cache_scope(
+        server_id=getattr(server, "machineIdentifier", None),
+        library_uuid=(
+            getattr(library_section, "uuid", None)
+            or getattr(library_section, "key", None)
+            or library_name
+        ),
+        library_name=library_name,
+    )
 
     try:
         library_name = library_section.title
@@ -610,3 +626,5 @@ async def process_library(
         if isinstance(e, LibraryProcessingError):
             raise
         raise LibraryProcessingError(f"Failed to process library: {library_name}") from e
+    finally:
+        reset_cache_scope(scope_token)

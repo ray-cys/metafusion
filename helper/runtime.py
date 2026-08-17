@@ -1,10 +1,12 @@
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from helper.io import atomic_write_json
+from helper.state_db import StateDatabaseError, record_job_run
 
 
 def utc_now():
@@ -41,10 +43,17 @@ def validate_runtime_paths(config, config_dir):
 
 
 class RuntimeStatus:
-    def __init__(self, path, heartbeat_seconds=30, history_limit=10):
+    def __init__(
+        self,
+        path,
+        heartbeat_seconds=30,
+        history_limit=10,
+        state_database=None,
+    ):
         self.path = Path(path)
         self.heartbeat_seconds = heartbeat_seconds
         self.history_limit = max(1, int(history_limit))
+        self.state_database = None if state_database is None else Path(state_database)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -93,16 +102,22 @@ class RuntimeStatus:
         }
         if success:
             values["last_success"] = now
-        history = list(self._data.get("history", []))
-        history.append(
-            {
-                "started_at": self._data.get("last_run_started"),
-                "finished_at": now,
-                "status": values["last_run_status"],
-                "error": values["last_error"],
-            }
-        )
-        values["history"] = history[-self.history_limit :]
+        if self.state_database is not None:
+            try:
+                record_job_run(
+                    mode=self._data.get("mode"),
+                    started_at=self._data.get("last_run_started"),
+                    finished_at=now,
+                    status=values["last_run_status"],
+                    error=values["last_error"],
+                    history_limit=self.history_limit,
+                    path=self.state_database,
+                )
+            except StateDatabaseError as state_error:
+                logging.getLogger().warning(
+                    "[Runtime] Unable to persist completed job history: %s",
+                    state_error,
+                )
         self._update(**values)
 
     def stopping(self):

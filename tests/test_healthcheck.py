@@ -7,11 +7,15 @@ import pytest
 from healthcheck import check_status
 from helper import runtime as runtime_module
 from helper.runtime import RuntimeStatus, validate_runtime_paths
+from helper.state_db import recent_job_runs
 
 
 def test_runtime_status_is_healthy_after_success(tmp_path):
     status_path = tmp_path / "status.json"
-    status = RuntimeStatus(status_path, heartbeat_seconds=3600)
+    database = tmp_path / "metafusion.sqlite3"
+    status = RuntimeStatus(
+        status_path, heartbeat_seconds=3600, state_database=database
+    )
     status.start("scheduler")
     status.run_started()
     status.run_finished(True)
@@ -23,12 +27,19 @@ def test_runtime_status_is_healthy_after_success(tmp_path):
     assert healthy is True
     assert message == "idle"
     saved = json.loads(status_path.read_text(encoding="utf-8"))
-    assert saved["history"][-1]["status"] == "success"
+    assert "history" not in saved
+    assert recent_job_runs(path=database)[-1]["status"] == "success"
 
 
 def test_runtime_status_bounds_recent_job_history(tmp_path):
     status_path = tmp_path / "status.json"
-    status = RuntimeStatus(status_path, heartbeat_seconds=3600, history_limit=2)
+    database = tmp_path / "metafusion.sqlite3"
+    status = RuntimeStatus(
+        status_path,
+        heartbeat_seconds=3600,
+        history_limit=2,
+        state_database=database,
+    )
     status.start("scheduler")
     try:
         for success in (True, False, True):
@@ -37,8 +48,10 @@ def test_runtime_status_bounds_recent_job_history(tmp_path):
     finally:
         status.stop()
 
-    saved = json.loads(status_path.read_text(encoding="utf-8"))
-    assert [entry["status"] for entry in saved["history"]] == ["failed", "success"]
+    assert [entry["status"] for entry in recent_job_runs(path=database)] == [
+        "failed",
+        "success",
+    ]
 
 
 def test_healthcheck_separates_liveness_from_failed_jobs(tmp_path):

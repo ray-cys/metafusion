@@ -243,9 +243,12 @@ your deployment supports protected secret mounts.
 | `CONFIG_PATH` | `./config` | Host path mounted at `/config`. |
 | `KOMETA_HOST_PATH` | `./kometa` | Host path mounted at `/kometa`. |
 | `CONFIG_DIR` | `/config` | Container configuration/state directory. |
-| `STATUS_FILE` | `/config/metafusion-status.json` | Container health/status file. |
+| `STATUS_FILE` | `/tmp/metafusion-status.json` | Ephemeral container heartbeat and health-status file. |
 
 `CONFIG_DIR` and `STATUS_FILE` are normally left at their image defaults.
+Existing Unraid installations that retained the older
+`/config/metafusion-status.json` value should change `STATUS_FILE` to
+`/tmp/metafusion-status.json` to stop persistent heartbeat writes.
 
 ## Artwork refresh intervals
 
@@ -305,6 +308,27 @@ manually after the SQLite cache has been tested.
 `TMDB_CACHE_MAX_ENTRIES` remains the primary bound. Set `TMDB_CACHE_MAX_MB` to
 an optional compressed-payload limit when appdata space matters; its default
 of `0` preserves the existing entry capacity without a byte cap.
+
+## Durable application state
+
+MetaFusion stores media state, per-season artwork state, per-library scan
+history, and recent completed jobs in `/config/cache/metafusion.sqlite3`.
+Changed media and season rows are committed together after a job instead of
+loading and rewriting one large JSON cache. Full-scan timing is tracked per
+Plex server and library, so one library cannot incorrectly represent the scan
+state of every configured library.
+
+On the first writable run, valid `meta_cache.json` and
+`incremental_state.json` data is imported transactionally when the new tables
+are empty. The original JSON and `.bak` files are left untouched and can be
+removed manually after the SQLite state has completed a successful soak test.
+Dry runs can read existing SQLite or legacy JSON state but never create or
+update the database.
+
+The disposable TMDb response cache remains in its separate SQLite file. This
+keeps cache expiry, pruning, or corruption recovery from affecting durable
+scan and artwork state. Back up SQLite files while MetaFusion is stopped, as
+the standard Unraid appdata backup workflow already does.
 
 ## Cleanup safety
 
@@ -395,12 +419,19 @@ assets/tv/...
 
 Plex mode places artwork beside media and does not create Kometa metadata YAML.
 
-The main diagnostic files are stored under `/config`:
+Persistent diagnostics and state are stored under `/config`:
 
 ```text
 logs/metafusion.log
-metafusion-status.json
+cache/metafusion.sqlite3
+cache/tmdb_response_cache.sqlite3
 ```
+
+The live heartbeat is intentionally stored at
+`/tmp/metafusion-status.json`, avoiding a persistent appdata write every 30
+seconds. Completed job history is retained in `metafusion.sqlite3`. View the
+combined current status and recent history with `python metafusion.py
+--status` inside the container.
 
 Inspect logs and container health with:
 
@@ -409,7 +440,7 @@ docker compose logs --tail=200 metafusion
 docker inspect --format '{{json .State.Health}}' metafusion
 ```
 
-A scheduled-job failure is recorded in `metafusion-status.json` and shown in
+A scheduled-job failure is recorded in the live status and durable job history and shown in
 the health message. By default, the scheduler remains healthy so a failed job
 does not create a restart loop. Set `HEALTH_FAIL_ON_JOB_ERROR=True` if Docker
 should mark the container unhealthy after a job failure.

@@ -27,7 +27,8 @@ from helper.config import (
 )
 from helper.incremental import (
     config_fingerprint,
-    mark_full_scan_complete,
+    mark_library_scan_complete,
+    mark_library_scan_started,
     should_run_full_scan,
 )
 from helper.logging import (
@@ -46,6 +47,7 @@ from helper.plex import (
     plex_operation,
 )
 from helper.runtime import RuntimeStatus, validate_runtime_paths
+from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
 from helper.tmdb import (
     begin_tmdb_cache,
     flush_tmdb_cache,
@@ -207,6 +209,28 @@ def normalize_library_type(value):
     return library_type
 
 
+def build_scan_scopes(plex, sections, config):
+    server_id = getattr(plex, "machineIdentifier", None) or "unknown"
+    scopes = []
+    for section in sections:
+        library_name = section.title
+        library_config = config_for_library(config, library_name)
+        scopes.append(
+            {
+                "server_id": str(server_id),
+                "library_uuid": str(
+                    getattr(section, "uuid", None)
+                    or getattr(section, "key", None)
+                    or library_name
+                ),
+                "library_name": library_name,
+                "config_fingerprint": config_fingerprint(library_config),
+                "item_count": None,
+            }
+        )
+    return scopes
+
+
 def complete_inventory_types(all_libraries, successful_sections):
     detected = {"movie": set(), "tv": set()}
     successful = {"movie": set(), "tv": set()}
@@ -264,9 +288,12 @@ async def metafusion_main(config, logger):
             failures = []
             execution = config.get("_execution", {})
             targeted = bool(execution.get("targeted"))
+            explain_selection = bool(execution.get("explain_selection"))
+            scan_scopes = build_scan_scopes(plex, sections, config)
             full_scan = bool(execution.get("full_scan")) or should_run_full_scan(
                 config,
                 targeted=targeted,
+                scopes=scan_scopes,
             )
             run_feature_flags = dict(feature_flags)
             cleanup_skip_reason = None
@@ -312,6 +339,12 @@ async def metafusion_main(config, logger):
                             "incremental run; full reconciliation required"
                         )
                     run_feature_flags["cleanup"] = False
+                if not targeted and not explain_selection:
+                    mark_library_scan_started(
+                        scan_scopes,
+                        full_scan=full_scan,
+                        dry_run=feature_flags.get("dry_run", False),
+                    )
                 section_items = {}
                 identity_counts = Counter()
                 edition_counts = Counter()
@@ -323,6 +356,10 @@ async def metafusion_main(config, logger):
                             description=f"List library {section.title}",
                         )
                         section_items[section.title] = inventory
+                        for scope in scan_scopes:
+                            if scope["library_name"] == section.title:
+                                scope["item_count"] = len(inventory)
+                                break
                         for item in inventory:
                             media_type = normalize_library_type(
                                 getattr(item, "type", None)
@@ -365,7 +402,7 @@ async def metafusion_main(config, logger):
                             all_items=section_items[section.title],
                             global_identity_counts=identity_counts,
                             global_edition_counts=edition_counts,
-                            explain_selection=bool(execution.get("explain_selection")),
+                            explain_selection=explain_selection,
                         )
                         successful_sections.append(section)
                     except asyncio.CancelledError:
@@ -410,8 +447,10 @@ async def metafusion_main(config, logger):
             )
             if failures:
                 raise RuntimeError("; ".join(failures))
-            if full_scan and not targeted:
-                mark_full_scan_complete(
+            if not targeted and not explain_selection:
+                mark_library_scan_complete(
+                    scan_scopes,
+                    full_scan=full_scan,
                     dry_run=feature_flags.get("dry_run", False),
                 )
     finally:
@@ -450,7 +489,9 @@ def request_shutdown(_signum=None, _frame=None):
 
 def run_metafusion_job(config, logger, runtime_status=None):
     global _active_loop, _active_task
-    begin_cache_session()
+    begin_cache_session(
+        writable=not config.get("settings", {}).get("dry_run", False)
+    )
     begin_tmdb_cache(config)
     if runtime_status:
         runtime_status.run_started()
@@ -504,13 +545,20 @@ def main(argv=None):
         return 2
     if args.status:
         status_path = Path(
-            os.environ.get("STATUS_FILE", str(BASE_CONFIG_DIR / "metafusion-status.json"))
+            os.environ.get("STATUS_FILE", "/tmp/metafusion-status.json")
         )
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
             print(f"Unable to read runtime status: {error}", file=sys.stderr)
             return 1
+        try:
+            recent_runs = recent_job_runs(path=STATE_DATABASE)
+        except StateDatabaseError as state_error:
+            status["history_error"] = str(state_error)
+            recent_runs = []
+        if recent_runs:
+            status["recent_jobs"] = recent_runs
         print(json.dumps(status, indent=2, sort_keys=True))
         return 0
     try:
@@ -567,9 +615,12 @@ def main(argv=None):
     default_status_file = (
         f"/tmp/metafusion-status-{os.getpid()}.json"
         if dry_run
-        else str(BASE_CONFIG_DIR / "metafusion-status.json")
+        else "/tmp/metafusion-status.json"
     )
-    runtime_status = RuntimeStatus(os.environ.get("STATUS_FILE", default_status_file))
+    runtime_status = RuntimeStatus(
+        os.environ.get("STATUS_FILE", default_status_file),
+        state_database=None if dry_run else STATE_DATABASE,
+    )
     settings = config.get("settings", {})
     run_times = settings.get("run_times", [])
     schedule_enabled = settings.get("schedule", False)

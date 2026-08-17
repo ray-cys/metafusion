@@ -273,6 +273,8 @@ def log_cache_event(event, logger=None, **kwargs):
         "cache_load_failed": "[Cache] Failed to load {cache_file}: {error}. Starting with an empty cache.",
         "cache_saved": "[Cache] Saved {count} entries to {cache_file}",
         "cache_updated": "[Cache] Updated cache for key '{cache_key}' ({media_type}): {title} ({year})",
+        "cache_migrated": "[Cache] Imported {count} media-state entries from {cache_file} into {database}; the JSON file was left untouched.",
+        "incremental_state_migrated": "[Cache] Imported the full-scan timestamp from {cache_file} into {database}; the JSON file was left untouched.",
     }
     levels = {
         "cache_loaded": "debug",
@@ -280,6 +282,8 @@ def log_cache_event(event, logger=None, **kwargs):
         "cache_load_failed": "error",
         "cache_saved": "debug",
         "cache_updated": "debug",        
+        "cache_migrated": "info",
+        "incremental_state_migrated": "info",
     }
     msg = messages.get(event, "[Cache] Unknown event")
     try:

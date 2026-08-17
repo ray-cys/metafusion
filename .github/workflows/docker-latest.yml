@@ -103,10 +103,13 @@ jobs:
             --volume "${config_dir}:/config" \
             metafusion-ci:${GITHUB_SHA})"
           for attempt in $(seq 1 20); do
-            test -f "${config_dir}/metafusion-status.json" && break
+            docker exec --user 99:100 "${container_id}" \
+              test -f /tmp/metafusion-status.json && break
             sleep 1
           done
-          test -f "${config_dir}/metafusion-status.json"
+          docker exec --user 99:100 "${container_id}" \
+            test -f /tmp/metafusion-status.json
+          test ! -e "${config_dir}/metafusion-status.json"
           test ! -e "${config_dir}/config.yml"
           docker exec --user 99:100 "${container_id}" python healthcheck.py
           docker stop --timeout 10 "${container_id}"

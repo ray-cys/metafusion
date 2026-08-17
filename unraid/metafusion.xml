@@ -22,7 +22,7 @@
   <Requires>A reachable Plex server, a Plex token, a TMDb API key, exact Plex library names, and writable output paths. Do not override the image entrypoint or Docker user.</Requires>
 
   <!-- Required paths and output paths -->
-  <Config Name="Appdata Config Path" Target="/config" Default="/mnt/user/appdata/metafusion" Mode="rw" Description="Required persistent configuration, cache, logs, and status storage. The container prepares this path for PUID and PGID." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/metafusion</Config>
+  <Config Name="Appdata Config Path" Target="/config" Default="/mnt/user/appdata/metafusion" Mode="rw" Description="Required persistent configuration, cache, logs, and state storage. The container prepares this path for PUID and PGID." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/metafusion</Config>
   <Config Name="Kometa Output Path" Target="/kometa" Default="/mnt/user/appdata/kometa" Mode="rw" Description="Required when RUN_MODE is kometa. Map the host directory where MetaFusion may write metadata and assets." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/kometa</Config>
   <Config Name="Plex Media Path" Target="/media" Default="" Mode="rw" Description="Optional Plex-mode media mapping. The container paths must match the paths reported by Plex; add or edit mappings when Plex uses paths other than /media." Type="Path" Display="advanced" Required="false" Mask="false"/>
 
@@ -116,5 +116,5 @@
 
   <!-- Normally fixed container paths; exposed for completeness -->
   <Config Name="Container Config Directory" Target="CONFIG_DIR" Default="/config" Mode="" Description="Container configuration and state directory. Normally leave unchanged." Type="Variable" Display="advanced" Required="false" Mask="false">/config</Config>
-  <Config Name="Runtime Status File" Target="STATUS_FILE" Default="/config/metafusion-status.json" Mode="" Description="Scheduler status and healthcheck file. Normally leave unchanged." Type="Variable" Display="advanced" Required="false" Mask="false">/config/metafusion-status.json</Config>
+  <Config Name="Runtime Status File" Target="STATUS_FILE" Default="/tmp/metafusion-status.json" Mode="" Description="Ephemeral scheduler heartbeat and healthcheck file. Normally leave unchanged." Type="Variable" Display="advanced" Required="false" Mask="false">/tmp/metafusion-status.json</Config>
 </Container>

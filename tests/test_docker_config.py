@@ -37,6 +37,7 @@ def test_compose_defaults_are_safe_for_scheduler():
     assert environment["VALIDATE_OUTPUT"] == "${VALIDATE_OUTPUT-}"
     assert environment["HEALTH_FAIL_ON_JOB_ERROR"] == "${HEALTH_FAIL_ON_JOB_ERROR:-False}"
     assert environment["HEALTH_MAX_HEARTBEAT_AGE"] == "${HEALTH_MAX_HEARTBEAT_AGE:-120}"
+    assert environment["STATUS_FILE"] == "/tmp/metafusion-status.json"
     assert service["stop_grace_period"] == "${STOP_GRACE_PERIOD:-20s}"
     assert service["healthcheck"]["start_period"] == "20s"
 
@@ -178,6 +179,7 @@ def test_unraid_template_preserves_hardened_runtime_and_unraid_identity():
     assert configs["/config"].attrib["Mode"] == "rw"
     assert configs["PUID"].text == "99"
     assert configs["PGID"].text == "100"
+    assert configs["STATUS_FILE"].text == "/tmp/metafusion-status.json"
     assert "--read-only" in extra_params
     assert "--cap-drop=ALL" in extra_params
     assert "--security-opt=no-new-privileges" in extra_params

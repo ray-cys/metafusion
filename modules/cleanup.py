@@ -248,6 +248,7 @@ async def cleanup_title_orphans(
             if not isinstance(seasons, dict) or removal["season_key"] not in seasons:
                 continue
             del seasons[removal["season_key"]]
+            cache[removal["cache_key"]] = cache_entry
             changed = True
             log_cleanup_event(
                 "cleanup_removed_orphaned_season_cache",

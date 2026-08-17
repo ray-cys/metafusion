@@ -150,7 +150,9 @@ def test_failed_run_returns_false_and_flushes_cache(monkeypatch):
         raise RuntimeError("run failed")
 
     monkeypatch.setattr(metafusion, "metafusion_main", fail_run)
-    monkeypatch.setattr(metafusion, "begin_cache_session", lambda: None)
+    monkeypatch.setattr(
+        metafusion, "begin_cache_session", lambda **_kwargs: None
+    )
     monkeypatch.setattr(metafusion, "flush_cache", lambda: flushed.append(True))
 
     successful = metafusion.run_metafusion_job(

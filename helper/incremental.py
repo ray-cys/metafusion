@@ -2,12 +2,18 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from helper.config import CACHE_DIR, get_image_upgrade_days
-from helper.io import atomic_write_json, read_json_with_backup
-
-
-STATE_FILE = CACHE_DIR / "incremental_state.json"
+from helper.config import get_image_upgrade_days
+from helper.io import read_json_with_backup
+from helper.state_db import (
+    LEGACY_INCREMENTAL_STATE,
+    STATE_DATABASE,
+    load_scan_states,
+    mark_scan_complete as persist_scan_complete,
+    mark_scan_started as persist_scan_started,
+    set_legacy_full_scan,
+)
 
 
 @dataclass(frozen=True)
@@ -51,44 +57,114 @@ def config_fingerprint(config):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def load_state(path=None):
-    path = STATE_FILE if path is None else path
-    document = read_json_with_backup(path, default={})
-    return document if isinstance(document, dict) else {}
+def load_state(path=None, scopes=None):
+    database = Path(path or STATE_DATABASE)
+    states, legacy = load_scan_states(scopes or [], path=database)
+    if legacy is None and database == Path(STATE_DATABASE):
+        document = read_json_with_backup(LEGACY_INCREMENTAL_STATE, default={})
+        if isinstance(document, dict):
+            legacy = document.get("last_full_scan")
+    document = {"libraries": states}
+    if legacy:
+        document["last_full_scan"] = legacy
+    return document
 
 
-def should_run_full_scan(config, targeted=False, state=None, now=None):
-    if not config.get("incremental", {}).get("enabled", True):
-        return True
-    if targeted:
-        return False
-    state = load_state() if state is None else state
-    last_value = state.get("last_full_scan")
-    if not last_value:
+def _timestamp_is_due(value, interval, now):
+    if not value:
         return True
     try:
-        last_full = datetime.fromisoformat(str(last_value).replace("Z", "+00:00"))
+        last_full = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if last_full.tzinfo is None:
             last_full = last_full.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return True
+    return now - last_full >= interval
+
+
+def should_run_full_scan(
+    config, targeted=False, state=None, now=None, scopes=None, path=None
+):
+    if not config.get("incremental", {}).get("enabled", True):
+        return True
+    if targeted:
+        return False
     now = utc_now() if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     interval = timedelta(
         hours=max(
             1.0,
             float(config.get("incremental", {}).get("full_scan_interval_hours", 168)),
         )
     )
-    return now - last_full >= interval
+    if state is not None:
+        return _timestamp_is_due(state.get("last_full_scan"), interval, now)
+
+    scopes = list(scopes or [])
+    document = load_state(path=path, scopes=scopes)
+    legacy = document.get("last_full_scan")
+    if not scopes:
+        return _timestamp_is_due(legacy, interval, now)
+
+    states = document.get("libraries", {})
+    for scope in scopes:
+        key = (
+            str(scope.get("server_id") or "unknown"),
+            str(scope.get("library_uuid") or scope.get("library_name")),
+        )
+        library_state = states.get(key)
+        if library_state is None:
+            if _timestamp_is_due(legacy, interval, now):
+                return True
+            continue
+        expected_fingerprint = scope.get("config_fingerprint")
+        stored_fingerprint = library_state.get("config_fingerprint")
+        if (
+            expected_fingerprint
+            and stored_fingerprint
+            and expected_fingerprint != stored_fingerprint
+        ):
+            return True
+        if _timestamp_is_due(
+            library_state.get("last_full_scan_completed") or legacy, interval, now
+        ):
+            return True
+    return False
 
 
-def mark_full_scan_complete(dry_run=False, path=None, now=None):
+def mark_full_scan_complete(dry_run=False, path=None, now=None, scopes=None):
     if dry_run:
         return False
-    path = STATE_FILE if path is None else path
     now = utc_now() if now is None else now
-    atomic_write_json(path, {"last_full_scan": now.isoformat()}, backup=True)
-    return True
+    value = now.isoformat() if isinstance(now, datetime) else str(now)
+    if scopes:
+        return persist_scan_complete(
+            scopes, full_scan=True, path=path or STATE_DATABASE, now=value
+        )
+    return set_legacy_full_scan(value, path=path or STATE_DATABASE)
+
+
+def mark_library_scan_started(scopes, full_scan, dry_run=False, path=None, now=None):
+    if dry_run:
+        return False
+    value = utc_now() if now is None else now
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    return persist_scan_started(
+        scopes, full_scan=full_scan, path=path or STATE_DATABASE, now=value
+    )
+
+
+def mark_library_scan_complete(scopes, full_scan, dry_run=False, path=None, now=None):
+    if dry_run:
+        return False
+    value = utc_now() if now is None else now
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    return persist_scan_complete(
+        scopes, full_scan=full_scan, path=path or STATE_DATABASE, now=value
+    )
 
 
 def timestamp_due(value, days, now=None):

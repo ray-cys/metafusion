@@ -50,7 +50,7 @@ def prepare_runtime_paths(config_dir, uid, gid):
         _prepare_managed_directory(directory, uid, gid)
 
     status_file = Path(
-        os.environ.get("STATUS_FILE", str(config_dir / "metafusion-status.json"))
+        os.environ.get("STATUS_FILE", "/tmp/metafusion-status.json")
     )
     if status_file.parent == config_dir and status_file.exists():
         _set_owner(status_file, uid, gid)

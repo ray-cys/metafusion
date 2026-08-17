@@ -150,7 +150,12 @@ def test_mocked_plex_tmdb_pipeline_generates_valid_movie_show_and_specials(
     monkeypatch.setattr(metafusion, "get_meta_banner", lambda *_args: None)
     monkeypatch.setattr(metafusion, "get_disabled_features", lambda *_args: None)
     monkeypatch.setattr(metafusion, "log_final_summary", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(metafusion, "mark_full_scan_complete", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        metafusion, "mark_library_scan_started", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        metafusion, "mark_library_scan_complete", lambda *_args, **_kwargs: True
+    )
     monkeypatch.setattr(metafusion.aiohttp, "ClientSession", lambda **_kwargs: FakeSession())
     monkeypatch.setattr(metafusion.aiohttp, "TCPConnector", lambda **_kwargs: object())
     tmdb_response_cache.configure(tmp_path / "tmdb.json")
