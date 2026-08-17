@@ -381,7 +381,8 @@ specific build. Published images support AMD64 and ARM64 and are signed.
 | `1.2` | Moves to the newest patch in the `1.2` line. |
 | `1` | Moves to the newest release in the `1` line. |
 | `sha-<full-commit>` | Immutable build for exact recovery or diagnosis. |
-| `main`, `latest` | Move with successful builds from `main`. |
+| `develop` | Moves with successful testing builds from `develop`; never updates `latest`. |
+| `main`, `latest` | Move with successful production builds from `main`. |
 
 For Docker Compose, pin a tested version in `.env`:
 
@@ -404,6 +405,9 @@ On Unraid, set the container's **Repository** field to an exact image such as
 `ghcr.io/ray-cys/metafusion:1.2.3`. Roll back by selecting the prior exact tag,
 applying the template, and restarting the container. Keep `PUID=99`,
 `PGID=100`, and all existing path mappings unchanged.
+
+For pre-release testing, use `ghcr.io/ray-cys/metafusion:develop`. Return to
+`latest` or a tested version tag after the changes are promoted to `main`.
 
 ## Output, health, and troubleshooting
 
