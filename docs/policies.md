@@ -296,9 +296,11 @@ file.
 
 MetaFusion prefers usable Plex external IDs and validates the returned TMDb
 title/type/year before accepting the identity. A year embedded at the end of a
-Plex title can resolve a conflicting Plex year only when the base title matches
-TMDb and the embedded year matches the TMDb release year. Ordinary unexplained
-year mismatches remain rejected.
+Plex title can resolve a conflicting Plex year when the embedded year matches
+the TMDb release year and the result came from a Plex external ID. Title-search
+results do not receive this exception, and ordinary unexplained year mismatches
+remain rejected. Trusted external-ID aliases are recorded at `INFO`; ambiguous
+or rejected identities remain `WARNING` or `ERROR`.
 
 `TMDB_TITLE_SEARCH_FALLBACK=True` permits exact normalized title/year search
 only when Plex exposes no usable external ID. Ambiguous results are rejected.
@@ -306,6 +308,17 @@ only when Plex exposes no usable external ID. Ambiguous results are rejected.
 `TMDB_EPISODE_GROUP_FALLBACK=True` can use alternate TMDb ordering only when
 one episode group uniquely maps the complete Plex inventory. Unresolved
 episodes preserve existing generated YAML rather than deleting it.
+
+MetaFusion also contains narrow provider-compatibility mappings for anthologies
+that TheTVDB/Plex stores as one multi-season show but TMDb stores as separate
+series. The original Plex season number remains in the output while metadata
+and season artwork come from the corresponding TMDb series. Current mappings
+cover `The Haunting` (TheTVDB 345246) and `Monster` (TheTVDB 389492).
+
+When Plex lists a future episode beyond TMDb's latest episode for that season,
+MetaFusion records an `INFO` message and preserves existing metadata. It does
+not fail or repeatedly retry the whole show. A gap inside the available TMDb
+episode range is still treated as an unresolved ordering warning.
 
 For multiple same-title/year movie copies, unique Plex edition names are the
 safe identity. `ALLOW_AMBIGUOUS_EDITIONS=True` disables that fail-safe and can

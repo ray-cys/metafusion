@@ -11,6 +11,7 @@ from helper.tmdb import (
     artwork_language_codes,
     resolve_episode_group_mapping,
     resolve_tmdb_id,
+    split_series_season_sources,
     tmdb_api_request,
     tmdb_identity_consistent,
     tmdb_unfiltered_images,
@@ -53,6 +54,14 @@ def _record_artwork_gap(
             "detail": detail,
         }
     )
+
+
+def _episode_pair_labels(pairs, limit=12):
+    ordered = sorted((int(season), int(episode)) for season, episode in pairs)
+    labels = [f"S{season:02d}E{episode:02d}" for season, episode in ordered[:limit]]
+    if len(ordered) > limit:
+        labels.append(f"+{len(ordered) - limit} more")
+    return ", ".join(labels)
 
 
 def _normalized_destination(path):
@@ -705,6 +714,7 @@ async def _build_movie(
     movie_path = meta.get("movie_path") if meta else None
     tmdb_id = meta.get("tmdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
+    identity_from_external_id = bool(tmdb_id or imdb_id)
     tmdb_id = await resolve_tmdb_id(
         config,
         "movie",
@@ -801,7 +811,8 @@ async def _build_movie(
             new_id=tmdb_id,
         )
     identity_ok, identity_reason = tmdb_identity_consistent(
-        "movie", title, year, details
+        "movie", title, year, details,
+        trusted_external_id=identity_from_external_id,
     )
     if not identity_ok:
         log_builder_event(
@@ -823,7 +834,14 @@ async def _build_movie(
             "background_action": "failed" if run_background else background_action,
             **result,
         }
-    if identity_reason != "matched":
+    if identity_reason.startswith("trusted external ID"):
+        log_builder_event(
+            "builder_tmdb_identity_alias",
+            media_type="Movie",
+            full_title=full_title,
+            reason=identity_reason,
+        )
+    elif identity_reason != "matched":
         log_builder_event(
             "builder_tmdb_identity_warning",
             media_type="Movie",
@@ -1493,6 +1511,7 @@ async def _build_tv(
     tmdb_id = meta.get("tmdb_id") if meta else None
     tvdb_id = meta.get("tvdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
+    identity_from_external_id = bool(tmdb_id or tvdb_id or imdb_id)
     tmdb_id = await resolve_tmdb_id(
         config,
         "tv",
@@ -1576,7 +1595,8 @@ async def _build_tv(
             new_id=tmdb_id,
         )
     identity_ok, identity_reason = tmdb_identity_consistent(
-        "tv", title, year, details
+        "tv", title, year, details,
+        trusted_external_id=identity_from_external_id,
     )
     if not identity_ok:
         log_builder_event(
@@ -1600,7 +1620,14 @@ async def _build_tv(
             "season_poster_actions": season_poster_actions,
             **result,
         }
-    if identity_reason != "matched":
+    if identity_reason.startswith("trusted external ID"):
+        log_builder_event(
+            "builder_tmdb_identity_alias",
+            media_type="TV Show",
+            full_title=full_title,
+            reason=identity_reason,
+        )
+    elif identity_reason != "matched":
         log_builder_event(
             "builder_tmdb_identity_warning",
             media_type="TV Show",
@@ -1675,15 +1702,47 @@ async def _build_tv(
     country_codes = get_meta_field(details, "origin_country", [])
     countries = [get_plex_country(code) for code in country_codes]
 
-    season_infos = get_meta_field(details, "seasons", [])
+    season_sources = split_series_season_sources(tvdb_id)
+    season_info_by_number = {
+        int(info["season_number"]): info
+        for info in get_meta_field(details, "seasons", [])
+        if info.get("season_number") is not None
+    }
+    mapped_inventory_seasons = {
+        int(number)
+        for number in (seasons_episodes or {})
+        if int(number) in season_sources
+    }
+    for season_number in mapped_inventory_seasons:
+        season_info_by_number.setdefault(
+            season_number, {"season_number": season_number}
+        )
+    season_infos = [
+        season_info_by_number[number] for number in sorted(season_info_by_number)
+    ]
+    if mapped_inventory_seasons:
+        log_builder_event(
+            "builder_split_series_mapping",
+            media_type="TV Show",
+            full_title=full_title,
+            seasons=", ".join(str(number) for number in sorted(mapped_inventory_seasons)),
+        )
     season_details_by_number = {}
+
+    def season_source(season_number):
+        source = season_sources.get(int(season_number), {})
+        return (
+            source.get("tmdb_id", tmdb_id),
+            int(source.get("season_number", season_number)),
+        )
 
     async def get_season_details(season_number):
         if season_number in season_details_by_number:
             return season_details_by_number[season_number]
+        source_tmdb_id, source_season_number = season_source(season_number)
         season_details = await tmdb_api_request(
             config,
-            f"tv/{tmdb_id}/season/{season_number}",
+            f"tv/{source_tmdb_id}/season/{source_season_number}",
             params={
                 "append_to_response": "credits,images",
                 "include_image_language": artwork_language_codes(config),
@@ -1836,6 +1895,8 @@ async def _build_tv(
             for episode in season_data.get("episodes", {})
         }
         missing_pairs = wanted_pairs - generated_pairs
+        pending_pairs = set()
+        unresolved_pairs = set()
         if missing_pairs:
             group_mapping = await resolve_episode_group_mapping(
                 config,
@@ -1874,11 +1935,34 @@ async def _build_tv(
                     group_id=group_mapping["group_id"],
                 )
             else:
-                metadata_fetch_failed = True
-                log_builder_event(
-                    "builder_episode_order_unresolved", media_type="TV Show",
-                    full_title=full_title, count=len(missing_pairs),
-                )
+                for season_number, episode_number in missing_pairs:
+                    season_details = season_details_by_number.get(season_number)
+                    available = {
+                        int(episode.get("episode_number"))
+                        for episode in get_meta_field(
+                            season_details or {}, "episodes", []
+                        )
+                        if episode.get("episode_number") is not None
+                    }
+                    if season_details and (
+                        not available or episode_number > max(available)
+                    ):
+                        pending_pairs.add((season_number, episode_number))
+                    else:
+                        unresolved_pairs.add((season_number, episode_number))
+                if pending_pairs:
+                    log_builder_event(
+                        "builder_episode_metadata_pending", media_type="TV Show",
+                        full_title=full_title, count=len(pending_pairs),
+                        episodes=_episode_pair_labels(pending_pairs),
+                    )
+                if unresolved_pairs:
+                    metadata_fetch_failed = True
+                    log_builder_event(
+                        "builder_episode_order_unresolved", media_type="TV Show",
+                        full_title=full_title, count=len(unresolved_pairs),
+                        episodes=_episode_pair_labels(unresolved_pairs),
+                    )
         if failed_seasons:
             metadata_fetch_failed = True
 
@@ -1941,7 +2025,8 @@ async def _build_tv(
                 full_title=full_title, percent=grand_percent,
                 incomplete_percent=100 - grand_percent,
             )
-        diagnostics["fetch_failed"] = len(failed_seasons) + len(missing_pairs)
+        diagnostics["fetch_failed"] = len(failed_seasons) + len(unresolved_pairs)
+        diagnostics["pending"] = len(pending_pairs)
         log_builder_event(
             "builder_metadata_diagnostics", media_type="TV Show",
             full_title=full_title, diagnostics=diagnostics,
@@ -1975,12 +2060,13 @@ async def _build_tv(
                 )
             return await unfiltered_images_task or {}
         if season_number not in season_unfiltered_tasks:
+            source_tmdb_id, source_season_number = season_source(season_number)
             season_unfiltered_tasks[season_number] = asyncio.create_task(
                 tmdb_unfiltered_images(
                     config,
                     "tv",
-                    tmdb_id,
-                    season_number=season_number,
+                    source_tmdb_id,
+                    season_number=source_season_number,
                     session=session,
                 )
             )
