@@ -1,3 +1,4 @@
+import fcntl
 import json
 import logging
 import os
@@ -40,6 +41,51 @@ def validate_runtime_paths(config, config_dir):
                 f"Required path is not writable: {path}. "
                 "Check the bind-mount owner and PUID/PGID settings."
             ) from error
+
+
+class JobAlreadyRunningError(RuntimeError):
+    pass
+
+
+class JobRunLock:
+    """Cross-process lock protecting shared cache, state, YAML, and assets."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self._handle = None
+
+    def acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            self._handle.close()
+            self._handle = None
+            raise JobAlreadyRunningError(
+                "Another MetaFusion job is already using the configured output"
+            ) from error
+        self._handle.seek(0)
+        self._handle.truncate()
+        self._handle.write(f"{os.getpid()}\n")
+        self._handle.flush()
+        os.chmod(self.path, 0o664)
+        return self
+
+    def release(self):
+        if self._handle is None:
+            return
+        try:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        self.release()
 
 
 class RuntimeStatus:

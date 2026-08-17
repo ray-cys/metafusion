@@ -1,4 +1,4 @@
-import asyncio, json, hashlib
+import asyncio, json, hashlib, re, unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from aiolimiter import AsyncLimiter
 from helper.config import CACHE_DIR
@@ -104,7 +104,7 @@ def _redact_url(url):
 async def tmdb_api_request(
     config, endpoint_or_url, params=None, retries=3, delay=2, backoff_factor=2, api_key=None,
     language=None, region=None, cache=True, raw=False, session=None,
-    max_response_bytes=None, **kwargs,
+    max_response_bytes=None, include_locale=True, **kwargs,
 ):
     if endpoint_or_url.startswith("http"):
         url = endpoint_or_url
@@ -122,16 +122,16 @@ async def tmdb_api_request(
                         "region": tmdb_config.get("region"),
                     },
                 )
-        if language is None:
+        if language is None and include_locale:
             language = config.get("tmdb", {}).get("language", "en-US")
-        if region is None:
+        if region is None and include_locale:
             region = config.get("tmdb", {}).get("region", "US")
         url = f"https://api.themoviedb.org/3/{endpoint_or_url}"
         query = {"api_key": api_key}
         params = dict(params or {})
-        if "language" not in params:
+        if include_locale and "language" not in params:
             params["language"] = language
-        if "region" not in params:
+        if include_locale and "region" not in params:
             params["region"] = region
         query.update(params)
         cache_key = f"{url}:{json.dumps(query, sort_keys=True)}"
@@ -214,6 +214,8 @@ async def resolve_tmdb_id(
     tmdb_id=None,
     imdb_id=None,
     tvdb_id=None,
+    title=None,
+    year=None,
     session=None,
 ):
     """Resolve a missing TMDb ID from IDs exposed by Plex legacy agents."""
@@ -236,4 +238,176 @@ async def resolve_tmdb_id(
         matches = result.get(result_key, []) if isinstance(result, dict) else []
         if matches and matches[0].get("id") is not None:
             return str(matches[0]["id"])
-    return None
+
+    if not config.get("tmdb", {}).get("title_search_fallback", False) or not title:
+        return None
+    search_type = "movie" if normalized_type in {"movie", "movies"} else "tv"
+    params = {"query": str(title), "include_adult": "false"}
+    if year:
+        params["year" if search_type == "movie" else "first_air_date_year"] = year
+    result = await tmdb_api_request(
+        config,
+        f"search/{search_type}",
+        params=params,
+        session=session,
+    )
+    candidates = []
+    wanted_title = normalize_title(title)
+    wanted_year = _year_value(year)
+    for candidate in result.get("results", []) if isinstance(result, dict) else []:
+        names = (
+            (candidate.get("title"), candidate.get("original_title"))
+            if search_type == "movie"
+            else (candidate.get("name"), candidate.get("original_name"))
+        )
+        candidate_year = _year_value(
+            candidate.get("release_date")
+            if search_type == "movie"
+            else candidate.get("first_air_date")
+        )
+        if wanted_title not in {normalize_title(name) for name in names if name}:
+            continue
+        if wanted_year and candidate_year and wanted_year != candidate_year:
+            continue
+        if candidate.get("id") is not None:
+            candidates.append(str(candidate["id"]))
+    return candidates[0] if len(set(candidates)) == 1 else None
+
+
+def normalize_title(value):
+    normalized = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    return re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def _year_value(value):
+    match = re.match(r"^(\d{4})", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def tmdb_identity_consistent(media_type, title, year, details):
+    """Reject strong TMDb identity conflicts while tolerating translated titles."""
+    normalized_type = str(media_type or "").lower()
+    date_value = (
+        details.get("release_date")
+        if normalized_type in {"movie", "movies"}
+        else details.get("first_air_date")
+    )
+    expected_year = _year_value(year)
+    actual_year = _year_value(date_value)
+    if expected_year and actual_year and abs(expected_year - actual_year) > 1:
+        return False, f"year mismatch ({expected_year} vs {actual_year})"
+    names = (
+        (details.get("title"), details.get("original_title"))
+        if normalized_type in {"movie", "movies"}
+        else (details.get("name"), details.get("original_name"))
+    )
+    expected_title = normalize_title(title)
+    if expected_title and not any(normalize_title(name) == expected_title for name in names if name):
+        return True, "title differs from localized/original TMDb names"
+    return True, "matched"
+
+
+async def tmdb_unfiltered_images(
+    config, media_type, tmdb_id, session=None, season_number=None
+):
+    normalized_type = "tv" if str(media_type).lower() in {"tv", "show"} else "movie"
+    endpoint = f"{normalized_type}/{tmdb_id}"
+    if season_number is not None:
+        endpoint += f"/season/{int(season_number)}"
+    return await tmdb_api_request(
+        config,
+        f"{endpoint}/images",
+        params={},
+        include_locale=False,
+        session=session,
+    )
+
+
+def _inventory_pairs(inventory):
+    return {
+        (int(season), int(episode))
+        for season, episodes in (inventory or {}).items()
+        for episode in episodes
+    }
+
+
+async def resolve_episode_group_mapping(
+    config,
+    tmdb_id,
+    plex_inventory,
+    episode_ordering=None,
+    session=None,
+):
+    """Return a TMDb episode-group mapping only when one layout is unambiguous."""
+    if not config.get("tmdb", {}).get("episode_group_fallback", True):
+        return None
+    wanted = _inventory_pairs(plex_inventory)
+    if not wanted:
+        return None
+    listing = await tmdb_api_request(
+        config, f"tv/{tmdb_id}/episode_groups", session=session
+    )
+    descriptors = listing.get("results", []) if isinstance(listing, dict) else []
+    preferred_types = {
+        "tmdb_aired": 1,
+        "tvdb_aired": 1,
+        "tvdb_absolute": 2,
+        "absolute": 2,
+        "tvdb_dvd": 3,
+        "dvd": 3,
+    }
+    preferred = preferred_types.get(str(episode_ordering or "").lower())
+    if preferred and any(item.get("type") == preferred for item in descriptors):
+        descriptors = [item for item in descriptors if item.get("type") == preferred]
+
+    matches = {}
+    for descriptor in descriptors[:10]:
+        group_id = descriptor.get("id")
+        if not group_id:
+            continue
+        details = await tmdb_api_request(
+            config, f"tv/episode_group/{group_id}", session=session
+        )
+        groups = details.get("groups", []) if isinstance(details, dict) else []
+        for season_offset in (0, 1):
+            for episode_offset in (0, 1):
+                candidate = {}
+                season_context = {}
+                duplicate = False
+                for group_index, group in enumerate(groups):
+                    group_order = group.get("order", group_index)
+                    try:
+                        target_season = int(group_order) + season_offset
+                    except (TypeError, ValueError):
+                        duplicate = True
+                        break
+                    season_context[target_season] = {
+                        "title": group.get("name") or "",
+                        "summary": group.get("description") or "",
+                    }
+                    for episode_index, episode in enumerate(group.get("episodes", [])):
+                        order = episode.get("order", episode_index)
+                        try:
+                            target_episode = int(order) + episode_offset
+                        except (TypeError, ValueError):
+                            duplicate = True
+                            break
+                        key = (target_season, target_episode)
+                        if key in candidate:
+                            duplicate = True
+                            break
+                        candidate[key] = episode
+                    if duplicate:
+                        break
+                if duplicate or not wanted <= set(candidate):
+                    continue
+                selected = {key: candidate[key] for key in wanted}
+                signature = tuple(
+                    sorted((key, value.get("id")) for key, value in selected.items())
+                )
+                matches[signature] = {
+                    "group_id": group_id,
+                    "episodes": selected,
+                    "seasons": season_context,
+                }
+    return next(iter(matches.values())) if len(matches) == 1 else None

@@ -41,6 +41,7 @@ def config_fingerprint(config):
         "library_name": config.get("_library_name"),
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
+        "kometa": config.get("kometa", {}),
         "assets": config.get("assets", {}),
         "plex_metadata": config.get("plex_metadata", {}),
         "plex_path_mappings": config.get("plex", {}).get("path_mappings", []),
@@ -49,6 +50,15 @@ def config_fingerprint(config):
             "language": config.get("tmdb", {}).get("language"),
             "fallback": config.get("tmdb", {}).get("fallback"),
             "region": config.get("tmdb", {}).get("region"),
+            "artwork_allow_any_language": config.get("tmdb", {}).get(
+                "artwork_allow_any_language"
+            ),
+            "title_search_fallback": config.get("tmdb", {}).get(
+                "title_search_fallback"
+            ),
+            "episode_group_fallback": config.get("tmdb", {}).get(
+                "episode_group_fallback"
+            ),
         },
         "poster_set": config.get("poster_set", {}),
         "season_set": config.get("season_set", {}),

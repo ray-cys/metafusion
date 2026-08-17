@@ -222,7 +222,8 @@ MetaFusion's job ends after writing Kometa-compatible files:
 
 - `RUN_BASIC=True` writes the core metadata to
   `/kometa/metadata/movie_metadata.yml` and `tv_metadata.yml`.
-- `RUN_ENHANCED=True` adds the supported cast and crew metadata to those files.
+- `RUN_ENHANCED=True` adds only Kometa-supported director, writer, and producer
+  metadata. Cast and character roles remain owned by Plex's online provider.
 - `RUN_POSTER`, `RUN_SEASON`, and `RUN_BACKGROUND` control artwork under
   `/kometa/assets`.
 
@@ -230,6 +231,16 @@ MetaFusion does not edit Plex metadata or place artwork beside media in this
 mode. Kometa must be configured to read the generated YAML/assets and must run
 afterward before Plex changes. `PLEX_METADATA_UPDATES=True` is rejected in
 Kometa mode because direct Plex edits and Kometa output are separate workflows.
+
+Generated updates are non-destructive: MetaFusion preserves unknown/manual YAML
+fields and keeps existing non-empty values when TMDb has no replacement.
+Temporary season failures never remove previous season or episode metadata.
+`KOMETA_TAG_POLICY=append` preserves tags from Plex and the user; select `sync`
+only when TMDb should be authoritative for supported tag fields.
+
+If either generated metadata file is deleted, the next Kometa-mode job forces a
+full scan and recreates it. This requires `RUN_BASIC=True`; artwork remains
+controlled independently by the three artwork switches.
 
 ### `RUN_MODE=plex`: work directly with a Plex library
 
@@ -364,9 +375,9 @@ for `/media`, `/archive`, or each chosen destination. With no mappings,
 MetaFusion uses Plex's path unchanged. A translated media directory must
 already exist and be writable; MetaFusion will not create a missing media
 directory that may indicate a bad mount. Movie parts must resolve to one movie
-folder, every season must resolve to one real season folder, and all seasons
-must share one show folder; ambiguous layouts are skipped rather than written
-to a guessed path. Specials use Plex's documented
+folder. Conventional season folders, flat show layouts, mixed layouts, and
+Plex show locations are detected when they resolve to one unambiguous show
+folder; genuinely ambiguous destinations are skipped. Specials use Plex's documented
 `season-specials-poster.jpg` name in their actual `Season 00` or `Specials`
 folder.
 
@@ -388,6 +399,9 @@ The tables below list every supported user-configurable Docker variable.
 | `TMDB_LANGUAGE` | `en-US` | TMDb metadata language and primary artwork language. |
 | `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered artwork-only language fallbacks; these never change metadata text. |
 | `TMDB_REGION` | `US` | Metadata release/certification region, with US as the fallback. |
+| `ARTWORK_ALLOW_ANY_LANGUAGE` | `True` | Make one unfiltered TMDb image request when preferred languages contain no usable artwork. |
+| `TMDB_TITLE_SEARCH_FALLBACK` | `False` | Opt in to exact normalized title/year search when Plex supplies no usable external ID; ambiguous results are rejected. |
+| `TMDB_EPISODE_GROUP_FALLBACK` | `True` | Use an alternate TMDb episode group only when one mapping uniquely covers the Plex inventory. |
 | `RUN_MODE` | `kometa` | Select the output workflow: `kometa` writes YAML/assets for Kometa; `plex` never writes Kometa YAML. |
 | `KOMETA_PATH` | `/kometa` | Kometa mode only. Container path for generated YAML and assets. |
 
@@ -407,7 +421,8 @@ your deployment supports protected secret mounts.
 | `DRY_RUN` | `False` | Calculate without edits/deletions; direct Plex metadata dry-runs still write a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `RUN_BASIC` | `True` | Kometa mode: write core YAML fields. Plex mode: enable core API fields only when `PLEX_METADATA_UPDATES=True`. |
-| `RUN_ENHANCED` | `True` | Add supported cast/crew YAML in Kometa mode or limited crew API fields in opted-in Plex mode. Requires `RUN_BASIC=True`. |
+| `RUN_ENHANCED` | `True` | Add supported director/writer/producer YAML in Kometa mode or limited crew API fields in opted-in Plex mode. Cast remains with Plex's provider. Requires `RUN_BASIC=True`. |
+| `KOMETA_TAG_POLICY` | `append` | Kometa mode: `append` preserves provider/user tags; `sync` makes supported TMDb tags authoritative. |
 | `PLEX_METADATA_UPDATES` | `False` | Plex mode only. Opt in to direct Plex API metadata enrichment; when false, MetaFusion leaves Plex metadata unchanged. |
 | `PLEX_METADATA_POLICY` | `fill_missing` | `fill_missing`, `managed`, or acknowledged `overwrite`. |
 | `PLEX_METADATA_LOCK_WRITES` | `False` | Lock scalar fields written through Plex; use cautiously. |
@@ -462,22 +477,22 @@ your deployment supports protected secret mounts.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `POSTER_MAX_WIDTH` | `2000` | Preferred maximum poster width. |
-| `POSTER_MAX_HEIGHT` | `3000` | Preferred maximum poster height. |
+| `POSTER_MAX_WIDTH` | `2000` | Preferred high-resolution poster width threshold; it is not a download-size cap. |
+| `POSTER_MAX_HEIGHT` | `3000` | Preferred high-resolution poster height threshold; it is not a download-size cap. |
 | `POSTER_MIN_WIDTH` | `1000` | Minimum preferred poster width. |
 | `POSTER_MIN_HEIGHT` | `1500` | Minimum preferred poster height. |
 | `POSTER_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
 | `POSTER_VOTE_RELAXED` | `3.5` | Relaxed fallback vote score. |
 | `POSTER_VOTE_THRESHOLD` | `5.0` | Score used when deciding artwork upgrades. |
-| `SEASON_MAX_WIDTH` | `2000` | Preferred maximum season-poster width. |
-| `SEASON_MAX_HEIGHT` | `3000` | Preferred maximum season-poster height. |
+| `SEASON_MAX_WIDTH` | `2000` | Preferred high-resolution season-poster width threshold. |
+| `SEASON_MAX_HEIGHT` | `3000` | Preferred high-resolution season-poster height threshold. |
 | `SEASON_MIN_WIDTH` | `1000` | Minimum preferred season-poster width. |
 | `SEASON_MIN_HEIGHT` | `1500` | Minimum preferred season-poster height. |
 | `SEASON_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
 | `SEASON_VOTE_RELAXED` | `0.5` | Relaxed fallback vote score. |
 | `SEASON_VOTE_THRESHOLD` | `3.0` | Score used when deciding season-poster upgrades. |
-| `BG_MAX_WIDTH` | `3840` | Preferred maximum background width. |
-| `BG_MAX_HEIGHT` | `2160` | Preferred maximum background height. |
+| `BG_MAX_WIDTH` | `3840` | Preferred high-resolution background width threshold. |
+| `BG_MAX_HEIGHT` | `2160` | Preferred high-resolution background height threshold. |
 | `BG_MIN_WIDTH` | `1920` | Minimum preferred background width. |
 | `BG_MIN_HEIGHT` | `1080` | Minimum preferred background height. |
 | `BG_PREFER_VOTE` | `5.0` | Preferred TMDb vote score. |
@@ -690,6 +705,7 @@ config_template.yml
 logs/metafusion.log
 cache/meta_db.sqlite3
 cache/tmdb_cache.sqlite3
+.metafusion-run.lock                 # prevents overlapping real jobs
 reports/plex-metadata-YYYYMMDD-HHMMSS.txt  # direct Plex metadata runs only
 ```
 
@@ -719,6 +735,10 @@ Common problems:
 | Plex mode does not write artwork | Add writable media bind mounts and configure `PLEX_PATH_MAPPINGS` when Plex and container paths differ. |
 | Direct Plex metadata is unchanged | Confirm `PLEX_METADATA_UPDATES=True`, inspect field locks, the policy, field allowlist, write cap, and the latest report. |
 | Kometa output is missing | Confirm `RUN_MODE=kometa`, `KOMETA_PATH`, and the writable `/kometa` mapping. |
+| Kometa output changed during a run | Stop any process that writes the same YAML, then rerun; MetaFusion refuses to overwrite a concurrently modified file. |
+| A job says another job is active | Wait for the scheduled/manual job holding `/config/.metafusion-run.lock`; stale files are harmless because the operating-system lock, not file existence, controls access. |
+| TMDb artwork exists but is skipped | Keep `ARTWORK_ALLOW_ANY_LANGUAGE=True`, then use a dry-run to see the selected source or path error. |
+| Episodes remain unmapped | Check Plex episode ordering and the warning identifying unresolved items; MetaFusion preserves existing YAML when no unique TMDb episode group matches. |
 | Scheduled runs do not start | Check `RUN_SCHEDULE`, `RUN_TIMES`, and `TZ`. |
 | Container is slow to stop | Keep `SHUTDOWN_TIMEOUT` lower than `STOP_GRACE_PERIOD` and do not bypass the image entrypoint. |
 

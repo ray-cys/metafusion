@@ -53,7 +53,12 @@ from helper.plex_metadata import (
     finish_plex_metadata_run,
     restore_plex_metadata,
 )
-from helper.runtime import RuntimeStatus, validate_runtime_paths
+from helper.runtime import (
+    JobAlreadyRunningError,
+    JobRunLock,
+    RuntimeStatus,
+    validate_runtime_paths,
+)
 from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
 from helper.tmdb import (
     begin_tmdb_cache,
@@ -579,11 +584,27 @@ def request_shutdown(_signum=None, _frame=None):
 
 def run_metafusion_job(config, logger, runtime_status=None):
     global _active_loop, _active_task
-    begin_cache_session(
-        writable=not config.get("settings", {}).get("dry_run", False)
-    )
-    begin_tmdb_cache(config)
-    begin_plex_metadata_run(config)
+    job_lock = None
+    if not config.get("settings", {}).get("dry_run", False):
+        job_lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        try:
+            job_lock.acquire()
+        except JobAlreadyRunningError as error:
+            log_main_event("main_job_already_running", error=error, logger=logger)
+            if runtime_status:
+                runtime_status.run_started()
+                runtime_status.run_finished(False, error=error)
+            return False
+    try:
+        begin_cache_session(
+            writable=not config.get("settings", {}).get("dry_run", False)
+        )
+        begin_tmdb_cache(config)
+        begin_plex_metadata_run(config)
+    except Exception:
+        if job_lock is not None:
+            job_lock.release()
+        raise
     if runtime_status:
         runtime_status.run_started()
 
@@ -629,8 +650,12 @@ def run_metafusion_job(config, logger, runtime_status=None):
             log_main_event("main_unhandled_exception", error=error, logger=logger)
         finally:
             tmdb_response_cache.reset_memory()
-        if runtime_status:
-            runtime_status.run_finished(success, error=error)
+        try:
+            if runtime_status:
+                runtime_status.run_finished(success, error=error)
+        finally:
+            if job_lock is not None:
+                job_lock.release()
     return success
 
 

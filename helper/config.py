@@ -88,10 +88,16 @@ DEFAULT_CONFIG = {
         "language": "en-US",
         "fallback": ["zh", "ja"],
         "region": "US",
+        "artwork_allow_any_language": True,
+        "title_search_fallback": False,
+        "episode_group_fallback": True,
     },
     "metadata": {
         "run_basic": True,
         "run_enhanced": True,
+    },
+    "kometa": {
+        "tag_policy": "append",
     },
     "plex_metadata": {
         "enabled": False,
@@ -192,8 +198,12 @@ ENV_BINDINGS = (
     ("TMDB_LANGUAGE", ("tmdb", "language"), None),
     ("TMDB_LANGUAGE_FALLBACK", ("tmdb", "fallback"), safe_list),
     ("TMDB_REGION", ("tmdb", "region"), None),
+    ("ARTWORK_ALLOW_ANY_LANGUAGE", ("tmdb", "artwork_allow_any_language"), safe_bool),
+    ("TMDB_TITLE_SEARCH_FALLBACK", ("tmdb", "title_search_fallback"), safe_bool),
+    ("TMDB_EPISODE_GROUP_FALLBACK", ("tmdb", "episode_group_fallback"), safe_bool),
     ("RUN_BASIC", ("metadata", "run_basic"), safe_bool),
     ("RUN_ENHANCED", ("metadata", "run_enhanced"), safe_bool),
+    ("KOMETA_TAG_POLICY", ("kometa", "tag_policy"), None),
     ("PLEX_METADATA_UPDATES", ("plex_metadata", "enabled"), safe_bool),
     ("PLEX_METADATA_POLICY", ("plex_metadata", "policy"), None),
     ("PLEX_METADATA_LOCK_WRITES", ("plex_metadata", "lock_writes"), safe_bool),
@@ -461,6 +471,7 @@ def validate_config(config):
     tmdb = config.get("tmdb", {})
     runtime = config.get("runtime", {})
     plex_metadata = config.get("plex_metadata", {})
+    kometa = config.get("kometa", {})
 
     mode = str(settings.get("mode", "")).lower()
     if mode not in {"kometa", "plex"}:
@@ -469,6 +480,9 @@ def validate_config(config):
         errors.append("settings.path is required in Kometa mode")
     if plex_metadata.get("enabled", False) and mode != "plex":
         errors.append("plex_metadata.enabled requires settings.mode 'plex'")
+    tag_policy = str(kometa.get("tag_policy", "append")).lower()
+    if tag_policy not in {"append", "sync"}:
+        errors.append("kometa.tag_policy must be append or sync")
     policy = str(plex_metadata.get("policy", "fill_missing")).lower()
     if policy not in {"fill_missing", "managed", "overwrite"}:
         errors.append(

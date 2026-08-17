@@ -195,6 +195,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_scheduled_run": "[MetaFusion] Scheduled run at {run_time}",
         "main_invalid_schedule_time": "[MetaFusion] Invalid schedule time '{run_time}': {error}",
         "main_shutdown_requested": "[MetaFusion] Shutdown requested; stopping safely.",
+        "main_job_already_running": "[MetaFusion] Job skipped: {error}",
     }
     levels = {
         "main_started": "info",
@@ -205,6 +206,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_scheduled_run": "info",
         "main_invalid_schedule_time": "error",
         "main_shutdown_requested": "warning",
+        "main_job_already_running": "warning",
     }
     msg = messages.get(event, "[MetaFusion] Unknown event")
     try:
@@ -273,17 +275,13 @@ def log_cache_event(event, logger=None, **kwargs):
         "cache_load_failed": "[Cache] Failed to load {cache_file}: {error}. Starting with an empty cache.",
         "cache_saved": "[Cache] Saved {count} entries to {cache_file}",
         "cache_updated": "[Cache] Updated cache for key '{cache_key}' ({media_type}): {title} ({year})",
-        "cache_migrated": "[Cache] Imported {count} media-state entries from {cache_file} into {database}; the JSON file was left untouched.",
-        "incremental_state_migrated": "[Cache] Imported the full-scan timestamp from {cache_file} into {database}; the JSON file was left untouched.",
     }
     levels = {
         "cache_loaded": "debug",
         "cache_empty": "debug",
         "cache_load_failed": "error",
         "cache_saved": "debug",
-        "cache_updated": "debug",        
-        "cache_migrated": "info",
-        "incremental_state_migrated": "info",
+        "cache_updated": "debug",
     }
     msg = messages.get(event, "[Cache] Unknown event")
     try:
@@ -446,13 +444,23 @@ def log_builder_event(event, logger=None, **kwargs):
     messages = {
         "builder_missing_tmdb_and_imdb_id": "[{media_type}] Missing TMDb or IMDb ID: {full_title}. Skipping...",
         "builder_missing_tvdb_id_and_tmdb_id": "[{media_type}] Missing TVDb and TMDb ID: {full_title}. Skipping...",
+        "builder_missing_tvdb_id_and_imdb_id": "[{media_type}] Missing TVDb and IMDb ID: {full_title}. Skipping...",
+        "builder_no_tmdb_id": "[{media_type}] No TMDb identity could be resolved for {full_title}. Skipping...",
+        "builder_invalid_tmdb_id": "[{media_type}] TMDb returned no data for {full_title}. Skipping...",
+        "builder_tmdb_identity_mismatch": "[{media_type}] Rejected TMDb identity for {full_title}: {reason}.",
+        "builder_tmdb_identity_warning": "[{media_type}] TMDb identity warning for {full_title}: {reason}.",
         "builder_no_tmdb_season_data": "[{media_type}] Missing TMDb data: {full_title} of Season {season_number}. Skipping...",
+        "builder_episode_group_fallback": "[{media_type}] Resolved alternate episode ordering for {full_title} with TMDb group {group_id}.",
+        "builder_episode_order_unresolved": "[{media_type}] Could not safely map {count} Plex episode(s) for {full_title}; existing metadata is preserved.",
+        "builder_metadata_diagnostics": "[{media_type}] Metadata diagnostics for {full_title}: {diagnostics}",
         "builder_no_metadata_changes": "[{media_type}] No metadata changes detected: {full_title}, ({percent}%/{incomplete_percent}%) completed. Skipping updates...",
         "build_metadata_changed": "[{media_type}] Metadata updated: {full_title} ({percent}%), TMDb ID: {tmdb_id}, {changes}",
         "builder_no_existing_metadata": "[{media_type}] No existing metadata: {full_title}. Creating new entries using TMDb ID {tmdb_id}...",
         "builder_dry_run_metadata": "[Dry Run] Would build metadata for {media_type}: {full_title}",
         "builder_metadata_cached": "[{media_type}] {full_title} cached as {cache_key}...",
         "builder_dry_run_asset": "[Dry Run] Would build {asset_type} asset for {media_type}: {full_title}",
+        "builder_dry_run_asset_selected": "[Dry Run] Selected TMDb {asset_type} for {media_type}: {full_title} ({source_path})",
+        "builder_artwork_language_fallback": "[{media_type}] Selected unrestricted-language TMDb {asset_type} for {full_title}: {language}.",
         "builder_no_asset_path": "[{media_type}] Asset path could not be determined: {full_title} {extra}. Skipping...",
         "builder_no_suitable_asset": "[{media_type}] No suitable TMDb {asset_type} found: {full_title} {extra}. Skipping...",
         "builder_downloading_asset": "[{media_type}] Downloading TMDb {asset_type}: {full_title} ({filesize})...",
@@ -479,13 +487,23 @@ def log_builder_event(event, logger=None, **kwargs):
     levels = {
         "builder_missing_tmdb_and_imdb_id": "warning",
         "builder_missing_tvdb_id_and_tmdb_id": "warning",
+        "builder_missing_tvdb_id_and_imdb_id": "warning",
+        "builder_no_tmdb_id": "warning",
+        "builder_invalid_tmdb_id": "warning",
+        "builder_tmdb_identity_mismatch": "error",
+        "builder_tmdb_identity_warning": "warning",
         "builder_no_tmdb_season_data": "warning",
+        "builder_episode_group_fallback": "info",
+        "builder_episode_order_unresolved": "warning",
+        "builder_metadata_diagnostics": "debug",
         "builder_no_metadata_changes": "info",
         "builder_no_existing_metadata": "info",
         "build_metadata_changed": "info",
         "builder_dry_run_metadata": "info",
         "builder_metadata_cached": "debug",
         "builder_dry_run_asset": "info",
+        "builder_dry_run_asset_selected": "info",
+        "builder_artwork_language_fallback": "info",
         "builder_no_asset_path": "error",
         "builder_no_suitable_asset": "info",
         "builder_downloading_asset": "debug",
