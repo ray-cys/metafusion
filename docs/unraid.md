@@ -36,6 +36,9 @@ View** and set **Concurrency Safety Ceiling** to `0`. Unraid preserves the old
 saved value of `8`; that value is safe and still adaptive, but limits automatic
 growth to eight workers.
 
+Phase 20 defaults **Plex Libraries** to `auto`. Existing exact saved names
+remain valid and continue to limit processing to those libraries.
+
 ## Required settings
 
 Provide these connection and workflow values:
@@ -45,7 +48,7 @@ Provide these connection and workflow values:
 | Output Mode | `RUN_MODE` | `kometa` or `plex` |
 | Plex URL | `PLEX_URL` | Complete server URL including port |
 | Plex Token | `PLEX_TOKEN` | Owner/admin token; masked by the template |
-| Plex Libraries | `PLEX_LIBRARIES` | Comma-separated exact library names |
+| Plex Libraries | `PLEX_LIBRARIES` | `auto` discovers all movie/show libraries; exact comma-separated names limit scope |
 | TMDb API Key | `TMDB_API_KEY` | TMDb v3 API key; masked by the template |
 | Appdata Config Path | `/config` | Persistent writable appdata directory |
 
@@ -142,6 +145,11 @@ Add a matching Unraid path mapping for every right-hand container path. The
 variable translates Plex paths but cannot expose host files to the container.
 Resolved directories must already exist and be writable; MetaFusion refuses to
 create missing media roots that may indicate a bad mapping.
+
+Run `python metafusion.py --preflight` in the container console after adding
+the mounts. It samples a bounded number of Plex paths and may print a suggested
+mapping when one visible container root matches unambiguously. Review that
+suggestion; MetaFusion never creates or edits the Unraid path mapping itself.
 
 Direct Plex metadata updates do not need media mappings when
 `RUN_POSTER=False`, `RUN_SEASON=False`, and `RUN_BACKGROUND=False`. They remain

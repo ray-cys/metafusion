@@ -597,6 +597,7 @@ def _rollback_untracked_write(obj, records):
 
 
 def _apply_candidate(item, candidate, config, meta, reporter):
+    write_limit_before = reporter.counts.get("write_limit", 0)
     settings = config.get("plex_metadata", {})
     identity = {
         "server_id": meta.get("server_id") or "unknown",
@@ -701,7 +702,13 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 "failed",
                 type(error).__name__,
             )
-    return {"writes": writes, "failures": failures}
+    result = {"writes": writes, "failures": failures}
+    deferred = max(
+        0, reporter.counts.get("write_limit", 0) - write_limit_before
+    )
+    if deferred:
+        result["deferred"] = deferred
+    return result
 
 
 async def apply_plex_metadata(item, candidate, config, meta):
@@ -744,7 +751,10 @@ async def apply_plex_metadata(item, candidate, config, meta):
                     "[Plex Metadata] No API metadata changes required for %s.",
                     title,
                 )
-            return {"writes": total_writes, "failures": 0}
+            response = {"writes": total_writes, "failures": 0}
+            if result.get("deferred", 0):
+                response["deferred"] = result["deferred"]
+            return response
         if attempt < retries and delay:
             await asyncio.sleep(delay * attempt)
     logging.getLogger(__name__).error(
@@ -752,7 +762,13 @@ async def apply_plex_metadata(item, candidate, config, meta):
         title,
         retries,
     )
-    return {"writes": total_writes, "failures": result.get("failures", 0)}
+    response = {
+        "writes": total_writes,
+        "failures": result.get("failures", 0),
+    }
+    if result.get("deferred", 0):
+        response["deferred"] = result["deferred"]
+    return response
 
 
 def _existing_children(item):

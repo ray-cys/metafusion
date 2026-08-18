@@ -377,7 +377,7 @@ def test_write_limit_stops_after_first_plex_object(tmp_path, monkeypatch):
         reporter,
     )
 
-    assert result == {"writes": 1, "failures": 0}
+    assert result == {"writes": 1, "failures": 0, "deferred": 1}
     assert show.summary == "Show summary"
     assert season.summary == ""
     assert reporter.counts["write_limit"] == 1
@@ -528,7 +528,7 @@ def test_version_one_state_database_upgrades_in_place(tmp_path):
     store.close()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         tables = {
             row[0]
             for row in connection.execute(

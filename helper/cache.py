@@ -129,6 +129,27 @@ def _record_destination_change(
     del history[:-100]
 
 
+def _record_artwork_observation(entry, asset_type, candidate, missing_count=0):
+    """Track unchanged/missing observations used by adaptive refresh timing."""
+    marker_key = f"{asset_type}_candidate_fingerprint"
+    unchanged_key = f"{asset_type}_unchanged_checks"
+    missing_key = f"{asset_type}_missing_checks"
+    marker = "" if candidate is None else str(candidate)
+    previous = entry.get(marker_key)
+    if previous is None or str(previous) != marker:
+        unchanged = 0
+    else:
+        unchanged = int(entry.get(unchanged_key) or 0) + 1
+    missing = max(0, int(missing_count or 0))
+    if missing:
+        entry[missing_key] = int(entry.get(missing_key) or 0) + 1
+        unchanged = 0
+    else:
+        entry[missing_key] = 0
+    entry[marker_key] = marker
+    entry[unchanged_key] = min(20, unchanged)
+
+
 async def meta_cache_async(
     cache_key,
     tmdb_id,
@@ -150,6 +171,20 @@ async def meta_cache_async(
     async with get_cache_lock():
         cache = load_cache()
         entry = copy.deepcopy(cache.get(cache_key, {}))
+        previous_tmdb_id = entry.get("tmdb_id")
+        if (
+            previous_tmdb_id is not None
+            and tmdb_id is not None
+            and str(previous_tmdb_id) != str(tmdb_id)
+        ):
+            for asset_type in ("poster", "background", "season"):
+                for suffix in (
+                    "candidate_fingerprint",
+                    "unchanged_checks",
+                    "missing_checks",
+                    "last_checked",
+                ):
+                    entry.pop(f"{asset_type}_{suffix}", None)
         identity_fields = {
             "tmdb_id": tmdb_id,
             "title": title,
@@ -167,14 +202,50 @@ async def meta_cache_async(
             entry["asset_last_upgraded"] = now_iso
         if poster_upgraded:
             entry["poster_last_upgraded"] = now_iso
+            entry["poster_unchanged_checks"] = 0
         if background_upgraded:
             entry["background_last_upgraded"] = now_iso
+            entry["background_unchanged_checks"] = 0
         if poster_checked:
             entry["poster_last_checked"] = now_iso
+            _record_artwork_observation(
+                entry,
+                "poster",
+                kwargs.get(
+                    "poster_candidate_source_path",
+                    kwargs.get("poster_source_path"),
+                ),
+                missing_count=1
+                if not kwargs.get(
+                    "poster_candidate_source_path",
+                    kwargs.get("poster_source_path"),
+                )
+                else 0,
+            )
         if background_checked:
             entry["background_last_checked"] = now_iso
+            _record_artwork_observation(
+                entry,
+                "background",
+                kwargs.get(
+                    "background_candidate_source_path",
+                    kwargs.get("background_source_path"),
+                ),
+                missing_count=1
+                if not kwargs.get(
+                    "background_candidate_source_path",
+                    kwargs.get("background_source_path"),
+                )
+                else 0,
+            )
         if season_checked:
             entry["season_last_checked"] = now_iso
+            _record_artwork_observation(
+                entry,
+                "season",
+                kwargs.get("season_candidate_fingerprint"),
+                missing_count=kwargs.get("season_missing_count", 0),
+            )
         if plex_metadata_checked:
             entry["plex_metadata_last_checked"] = now_iso
         if metadata_pending_count is not None:
@@ -199,6 +270,7 @@ async def meta_cache_async(
                 season_entry[key] = value
             if type(season_upgraded) is int and season_upgraded == int(season_number):
                 season_entry["season_last_upgraded"] = now_iso
+                entry["season_unchanged_checks"] = 0
         else:
             for asset_type, path_field, checksum_field in (
                 ("poster", "poster_path", "poster_checksum"),

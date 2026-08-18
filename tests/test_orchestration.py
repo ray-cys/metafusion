@@ -318,9 +318,13 @@ def test_status_command_does_not_require_connector_configuration(
     status_path = tmp_path / "status.json"
     status_path.write_text(json.dumps({"state": "idle"}), encoding="utf-8")
     monkeypatch.setenv("STATUS_FILE", str(status_path))
+    monkeypatch.setattr(metafusion, "retry_queue_summary", lambda **_kwargs: {})
 
     assert metafusion.main(["--status"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"state": "idle"}
+    assert json.loads(capsys.readouterr().out) == {
+        "state": "idle",
+        "retry_queue": {},
+    }
 
 
 def test_scheduler_run_on_start_executes_before_wait_loop(monkeypatch, tmp_path):

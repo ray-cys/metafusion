@@ -57,11 +57,13 @@ from helper.logging import (
 )
 from helper.plex import (
     _plex_cache,
+    collect_plex_path_samples,
     connect_plex_library,
     connect_plex_server,
     get_plex_metadata,
     plex_operation,
 )
+from helper.plex_paths import advise_path_mappings
 from helper.plex_metadata import (
     begin_plex_metadata_run,
     finish_plex_metadata_run,
@@ -81,7 +83,15 @@ from helper.runtime import (
     validate_preflight_paths,
     validate_runtime_paths,
 )
-from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
+from helper.state_db import (
+    STATE_DATABASE,
+    StateDatabaseError,
+    maintain_state_database,
+    missing_library_inventory,
+    recent_job_runs,
+    reconcile_library_inventory,
+    retry_queue_summary,
+)
 from helper.tmdb import (
     begin_tmdb_cache,
     flush_tmdb_cache,
@@ -322,10 +332,20 @@ async def connector_preflight(config):
         raise RuntimeError(
             "Configured Plex libraries were not found: " + ", ".join(missing)
         )
+    path_samples = await asyncio.to_thread(collect_plex_path_samples, sections)
+    path_advice = await asyncio.to_thread(
+        advise_path_mappings,
+        path_samples,
+        config.get("plex", {}).get("path_mappings", []),
+    )
     return {
         "plex_version": str(getattr(plex, "version", "unknown")),
         "libraries": [section.title for section in sections],
         "available_count": len(available),
+        "library_discovery": (
+            "auto" if config.get("_library_discovery_auto", False) else "explicit"
+        ),
+        "path_advice": path_advice,
     }
 
 
@@ -484,6 +504,35 @@ async def metafusion_main(config, logger):
             cleanup_skip_reason = None
             all_full_scan = False
 
+            missing_discovered_libraries = []
+            if config.get("_library_discovery_auto", False):
+                eligible_libraries = [
+                    library
+                    for library in all_libraries
+                    if normalize_library_type(library.get("type")) in {"movie", "tv"}
+                ]
+                inventory_function = (
+                    missing_library_inventory
+                    if feature_flags.get("dry_run", False)
+                    else reconcile_library_inventory
+                )
+                missing_discovered_libraries = await asyncio.to_thread(
+                    inventory_function,
+                    getattr(plex, "machineIdentifier", None) or "unknown",
+                    eligible_libraries,
+                )
+                if missing_discovered_libraries:
+                    logger.warning(
+                        "[Plex] Previously discovered libraries are unavailable; "
+                        "processing continues but cleanup is disabled: %s",
+                        ", ".join(
+                            sorted(
+                                library.get("library_name") or library.get("library_uuid")
+                                for library in missing_discovered_libraries
+                            )
+                        ),
+                    )
+
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
             if missing_selected:
@@ -521,6 +570,13 @@ async def metafusion_main(config, logger):
                         "targeted run; full reconciliation requires every configured "
                         "library"
                     )
+                    run_feature_flags["cleanup"] = False
+                elif missing_discovered_libraries:
+                    if feature_flags.get("cleanup", False):
+                        cleanup_skip_reason = (
+                            "previously discovered Plex library unavailable; cleanup "
+                            "requires a complete stable inventory"
+                        )
                     run_feature_flags["cleanup"] = False
                 elif not all_full_scan:
                     if feature_flags.get("cleanup", False):
@@ -935,6 +991,23 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
+            if not config.get("settings", {}).get("dry_run", False):
+                try:
+                    tmdb_maintenance = tmdb_response_cache.maintain()
+                    state_maintenance = maintain_state_database()
+                    retry_summary = retry_queue_summary()
+                    logger.info(
+                        "[Maintenance] SQLite optimization complete; state "
+                        "checkpoint=%s, TMDb checkpoint=%s, retry queue=%s.",
+                        state_maintenance.get("checkpointed", False),
+                        tmdb_maintenance.get("checkpointed", False),
+                        retry_summary or "empty",
+                    )
+                except Exception as maintenance_error:
+                    logger.warning(
+                        "[Maintenance] Deferred optional SQLite maintenance: %s",
+                        maintenance_error,
+                    )
         except Exception as caught:
             success = False
             error = f"Failed to flush persistent cache: {caught}"
@@ -997,6 +1070,10 @@ def main(argv=None):
             recent_runs = []
         if recent_runs:
             status["recent_jobs"] = recent_runs
+        try:
+            status["retry_queue"] = retry_queue_summary(path=STATE_DATABASE)
+        except StateDatabaseError as state_error:
+            status["retry_queue_error"] = str(state_error)
         print(json.dumps(status, indent=2, sort_keys=True))
         return 0
     try:
@@ -1072,7 +1149,30 @@ def main(argv=None):
         print(f"Plex version: {result['plex_version']}")
         print(f"Configured libraries: {', '.join(result['libraries'])}")
         print(f"Available Plex libraries: {result['available_count']}")
-        print("TMDb authentication, mappings, and storage checks passed.")
+        print(f"Library selection: {result.get('library_discovery', 'explicit')}")
+        path_advice = result.get("path_advice", {})
+        suggestions = path_advice.get("suggestions", [])
+        unresolved = sum(
+            record.get("status") == "unresolved"
+            for record in path_advice.get("records", [])
+        )
+        if suggestions:
+            print(
+                "Suggested PLEX_PATH_MAPPINGS: " + ";".join(suggestions)
+            )
+        elif path_advice.get("records") and not unresolved:
+            print("Plex media paths are visible inside the container.")
+        elif unresolved:
+            print(
+                f"Plex path mapping needs attention for {unresolved} sample(s)."
+            )
+        if unresolved:
+            print(
+                "TMDb authentication and storage checks passed; "
+                "resolve the Plex path mapping advice above before processing."
+            )
+        else:
+            print("TMDb authentication, mappings, and storage checks passed.")
         return 0
     _shutdown_timeout = max(
         1.0,

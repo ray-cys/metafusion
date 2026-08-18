@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from helper.asset_registry import AssetDestinationRegistry, normalize_destination
 from helper.concurrency import bounded_callables, bounded_map
@@ -6,13 +7,20 @@ from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
 from helper.config import get_image_upgrade_days, mode_check
 from helper.diagnostics import record_kometa_metadata_audit
-from helper.identity import cache_key_for_meta, match_for_meta, metadata_key_for_meta
+from helper.identity import (
+    cache_key_for_meta,
+    match_for_meta,
+    metadata_key_for_meta,
+    plex_identity_fingerprint,
+)
 from helper.io import atomic_replace_file, sha256_file
 from helper.plex import get_plex_country
 from helper.provider_mappings import (
     resolve_episode_overrides,
     resolve_split_series_mapping,
 )
+from helper.runtime import DiskPressureError
+from helper.state_db import save_identity_binding
 from helper.tmdb import (
     artwork_language_codes,
     resolve_episode_group_mapping,
@@ -37,6 +45,55 @@ from modules.kometa import (
 
 class AssetDestinationCollisionError(RuntimeError):
     pass
+
+
+def _asset_temp_path_or_defer(config, meta):
+    try:
+        return asset_temp_path(config, meta)
+    except DiskPressureError as error:
+        config["_disk_pressure"] = {
+            "path": str(error.path),
+            "free_bytes": error.free_bytes,
+            "required_bytes": error.required_bytes,
+        }
+        config["_deferred_artwork"] = int(config.get("_deferred_artwork", 0)) + 1
+        if not config.get("_disk_pressure_logged"):
+            logging.getLogger(__name__).warning(
+                "[Artwork] Disk pressure detected; artwork writes are deferred "
+                "while metadata processing continues: %s",
+                error,
+            )
+            config["_disk_pressure_logged"] = True
+        return None
+
+
+async def _save_high_confidence_identity(meta, tmdb_id, *, trusted, dry_run):
+    server_id = meta.get("server_id") if meta else None
+    if (
+        dry_run
+        or not trusted
+        or not meta
+        or meta.get("ratingKey") is None
+        or not server_id
+        or server_id == "unknown"
+    ):
+        return False
+    fingerprint = plex_identity_fingerprint(meta)
+    if not fingerprint:
+        return False
+    return await asyncio.to_thread(
+        save_identity_binding,
+        server_id,
+        meta.get("library_uuid") or meta.get("library_name") or "unknown",
+        meta.get("ratingKey"),
+        "tv"
+        if str(meta.get("library_type") or "").lower() in {"tv", "show"}
+        else "movie",
+        tmdb_id,
+        fingerprint,
+        title=meta.get("title"),
+        year=meta.get("year"),
+    )
 
 
 def _record_artwork_gap(
@@ -476,6 +533,7 @@ async def _record_asset_observation(
     if asset_type == "poster":
         flags["poster_checked"] = True
         kwargs["poster_average"] = vote
+        kwargs["poster_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
                 poster_source_path=source_path,
@@ -485,6 +543,7 @@ async def _record_asset_observation(
     elif asset_type == "background":
         flags["background_checked"] = True
         kwargs["bg_average"] = vote
+        kwargs["background_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
                 background_source_path=source_path,
@@ -572,7 +631,9 @@ async def adopt_exact_tmdb_asset(
             )
         return False
 
-    temp_path = asset_temp_path(config, meta)
+    temp_path = _asset_temp_path_or_defer(config, meta)
+    if temp_path is None:
+        return None
     try:
         success, status, error = await download_poster(
             config,
@@ -887,6 +948,11 @@ async def _build_movie(
     cache_key = cache_key_for_meta(meta)
     movie_path = meta.get("movie_path") if meta else None
     tmdb_id = meta.get("tmdb_id") if meta else None
+    plex_tmdb_id = (
+        meta.get("plex_provider_tmdb_id")
+        if meta is not None and "plex_provider_tmdb_id" in meta
+        else (meta.get("plex_tmdb_id") if meta is not None else None)
+    )
     imdb_id = meta.get("imdb_id") if meta else None
     tmdb_id = await resolve_tmdb_id(
         config,
@@ -1027,6 +1093,15 @@ async def _build_movie(
             full_title=full_title,
             reason=identity_reason,
         )
+    await _save_high_confidence_identity(
+        meta,
+        tmdb_id,
+        trusted=bool(
+            consensus_trusted
+            or (plex_tmdb_id and str(plex_tmdb_id) == str(tmdb_id))
+        ),
+        dry_run=feature_flags.get("dry_run", False),
+    )
     if recovered_from_tmdb_id and not feature_flags.get("dry_run", False):
         await meta_cache_async(
             cache_key,
@@ -1036,6 +1111,7 @@ async def _build_movie(
             "movie",
             update_timestamp=False,
             tmdb_recovery_source_id=recovery_source_id,
+            tmdb_recovery_identity_fingerprint=plex_identity_fingerprint(meta),
         )
 
     release_dates = get_meta_field(details, "results", [], path=["release_dates"])
@@ -1328,7 +1404,11 @@ async def _build_movie(
                     destination=asset_path,
                 )
             result["poster"]["size"] = poster_size
-            poster_action = "adopted" if adopted else "skipped"
+            poster_action = (
+                "deferred"
+                if adopted is None
+                else ("adopted" if adopted else "skipped")
+            )
             return
 
         if managed_source_matches(
@@ -1347,7 +1427,13 @@ async def _build_movie(
             poster_action = "skipped"
             return
 
-        temp_path = asset_temp_path(config, meta)
+        temp_path = _asset_temp_path_or_defer(config, meta)
+        if temp_path is None:
+            result["poster"]["size"] = (
+                asset_path.stat().st_size if asset_path.exists() else 0
+            )
+            poster_action = "deferred"
+            return
         try:
             success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
             if not success:
@@ -1535,7 +1621,11 @@ async def _build_movie(
                     destination=asset_path,
                 )
             result["background"]["size"] = background_size
-            background_action = "adopted" if adopted else "skipped"
+            background_action = (
+                "deferred"
+                if adopted is None
+                else ("adopted" if adopted else "skipped")
+            )
             return
 
         if managed_source_matches(
@@ -1554,7 +1644,13 @@ async def _build_movie(
             background_action = "skipped"
             return
 
-        temp_path = asset_temp_path(config, meta)
+        temp_path = _asset_temp_path_or_defer(config, meta)
+        if temp_path is None:
+            result["background"]["size"] = (
+                asset_path.stat().st_size if asset_path.exists() else 0
+            )
+            background_action = "deferred"
+            return
         try:
             success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
             if not success:
@@ -1692,6 +1788,7 @@ async def _build_tv(
     poster_action = "skipped" if run_poster else "not_due"
     background_action = "skipped" if run_background else "not_due"
     season_poster_actions = {}
+    season_candidate_sources = {}
     result = {
         "poster": {"size": 0},
         "background": {"size": 0},
@@ -1721,6 +1818,11 @@ async def _build_tv(
     show_path = meta.get("show_path") if meta else None
     seasons_episodes = meta.get("seasons_episodes") if meta else None
     tmdb_id = meta.get("tmdb_id") if meta else None
+    plex_tmdb_id = (
+        meta.get("plex_provider_tmdb_id")
+        if meta is not None and "plex_provider_tmdb_id" in meta
+        else (meta.get("plex_tmdb_id") if meta is not None else None)
+    )
     tvdb_id = meta.get("tvdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
     tmdb_id = await resolve_tmdb_id(
@@ -1862,10 +1964,24 @@ async def _build_tv(
             reason=identity_reason,
         )
 
+    await _save_high_confidence_identity(
+        meta,
+        tmdb_id,
+        trusted=bool(
+            consensus_trusted
+            or bool(series_mapping)
+            or (plex_tmdb_id and str(plex_tmdb_id) == str(tmdb_id))
+        ),
+        dry_run=feature_flags.get("dry_run", False),
+    )
+
     if not feature_flags.get("dry_run", False):
         cache_fields = {}
         if recovery_source_id is not None:
             cache_fields["tmdb_recovery_source_id"] = recovery_source_id
+            cache_fields["tmdb_recovery_identity_fingerprint"] = (
+                plex_identity_fingerprint(meta)
+            )
         await meta_cache_async(
             cache_key,
             tmdb_id,
@@ -2486,7 +2602,11 @@ async def _build_tv(
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
             result["poster"]["size"] = poster_size
-            poster_action = "adopted" if adopted else "skipped"
+            poster_action = (
+                "deferred"
+                if adopted is None
+                else ("adopted" if adopted else "skipped")
+            )
             return
 
         if managed_source_matches(
@@ -2505,7 +2625,13 @@ async def _build_tv(
             poster_action = "skipped"
             return
 
-        temp_path = asset_temp_path(config, meta)
+        temp_path = _asset_temp_path_or_defer(config, meta)
+        if temp_path is None:
+            result["poster"]["size"] = (
+                asset_path.stat().st_size if asset_path.exists() else 0
+            )
+            poster_action = "deferred"
+            return
         try:
             success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
             if not success:
@@ -2675,7 +2801,11 @@ async def _build_tv(
             if asset_path.exists():
                 existing_assets.add(str(asset_path.resolve()))
             result["background"]["size"] = background_size
-            background_action = "adopted" if adopted else "skipped"
+            background_action = (
+                "deferred"
+                if adopted is None
+                else ("adopted" if adopted else "skipped")
+            )
             return
 
         if managed_source_matches(
@@ -2694,7 +2824,13 @@ async def _build_tv(
             background_action = "skipped"
             return
     
-        temp_path = asset_temp_path(config, meta)
+        temp_path = _asset_temp_path_or_defer(config, meta)
+        if temp_path is None:
+            result["background"]["size"] = (
+                asset_path.stat().st_size if asset_path.exists() else 0
+            )
+            background_action = "deferred"
+            return
         try:
             success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
             if not success:
@@ -2820,8 +2956,13 @@ async def _build_tv(
                 config, "artwork_missing", "TV Show", full_title,
                 f"season {season_number} poster",
             )
+            season_candidate_sources[int(season_number)] = ""
             season_poster_actions[season_number] = "missing"
             return
+
+        season_candidate_sources[int(season_number)] = str(
+            best.get("file_path") or ""
+        )
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
@@ -2879,7 +3020,9 @@ async def _build_tv(
                 existing_assets.add(str(asset_path.resolve()))
             result["season_posters"][season_number] = season_poster_size
             season_poster_actions[season_number] = (
-                "adopted" if adopted else "skipped"
+                "deferred"
+                if adopted is None
+                else ("adopted" if adopted else "skipped")
             )
             return
 
@@ -2903,7 +3046,13 @@ async def _build_tv(
             season_poster_actions[season_number] = "skipped"
             return
 
-        temp_path = asset_temp_path(config, meta)
+        temp_path = _asset_temp_path_or_defer(config, meta)
+        if temp_path is None:
+            result["season_posters"][season_number] = (
+                asset_path.stat().st_size if asset_path.exists() else 0
+            )
+            season_poster_actions[season_number] = "deferred"
+            return
         try:
             success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
             if not success:
@@ -3004,11 +3153,20 @@ async def _build_tv(
         feature_flags
         and feature_flags.get("season", True)
         and not feature_flags.get("dry_run", False)
-        and "failed" not in season_poster_actions.values()
+        and not {"failed", "deferred"}.intersection(
+            season_poster_actions.values()
+        )
     ):
         await meta_cache_async(
             cache_key, tmdb_id, title, year, "tv",
             update_timestamp=False, season_checked=True,
+            season_candidate_fingerprint="|".join(
+                f"{number}:{source}"
+                for number, source in sorted(season_candidate_sources.items())
+            ),
+            season_missing_count=sum(
+                action == "missing" for action in season_poster_actions.values()
+            ),
         )
 
     return {

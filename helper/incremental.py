@@ -267,6 +267,26 @@ def timestamp_due(value, days, now=None):
     return now - last_value >= timedelta(days=interval_days)
 
 
+def adaptive_artwork_days(cached, asset_type, configured_days):
+    """Return an automatic recheck interval from durable artwork observations."""
+    try:
+        base_days = float(configured_days)
+    except (TypeError, ValueError):
+        return configured_days
+    if base_days <= 0 or not isinstance(cached, dict):
+        return base_days
+    missing_checks = max(
+        0, int(cached.get(f"{asset_type}_missing_checks") or 0)
+    )
+    if missing_checks:
+        schedule = (1.0, 3.0, 7.0, 14.0, 30.0, 60.0)
+        return min(base_days, schedule[min(missing_checks - 1, len(schedule) - 1)])
+    unchanged_checks = max(
+        0, int(cached.get(f"{asset_type}_unchanged_checks") or 0)
+    )
+    return min(max(base_days, 180.0), base_days * (2 ** min(3, unchanged_checks)))
+
+
 def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=None):
     """Return the artwork operations due for an otherwise unchanged item."""
     causes = due_selection_causes(
@@ -346,21 +366,23 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
         causes.add("plex_metadata_recheck")
     if flags.get("poster", False) and timestamp_due(
         cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
-        days,
+        adaptive_artwork_days(cached, "poster", days),
         now=now,
     ):
         causes.add("poster_refresh_due")
     if flags.get("background", False) and timestamp_due(
         cached.get("background_last_checked")
         or cached.get("background_last_upgraded"),
-        days,
+        adaptive_artwork_days(cached, "background", days),
         now=now,
     ):
         causes.add("background_refresh_due")
     if normalized_type == "tv" and flags.get("season", False):
         if timestamp_due(
             cached.get("season_last_checked"),
-            get_image_upgrade_days(config, "season"),
+            adaptive_artwork_days(
+                cached, "season", get_image_upgrade_days(config, "season")
+            ),
             now=now,
         ):
             causes.add("season_refresh_due")
@@ -415,9 +437,13 @@ def plan_items(
     now=None,
     server_id=None,
     library_uuid=None,
+    retry_rating_keys=None,
 ):
     """Plan selected items without losing which operations made them eligible."""
     target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
+    retry_keys = {
+        str(value) for value in (retry_rating_keys or []) if str(value).strip()
+    }
     candidates = [
         item
         for item in items
@@ -461,6 +487,8 @@ def plan_items(
         child_fingerprint = child_inventory_fingerprint(item)
         cached = cache_by_rating_key.get(rating_key)
         selection_causes = set()
+        if rating_key in retry_keys:
+            selection_causes.add("deferred_retry_due")
         if not cached:
             selection_causes.add("new_rating_key")
         else:
@@ -520,6 +548,7 @@ def select_items(
     now=None,
     server_id=None,
     library_uuid=None,
+    retry_rating_keys=None,
 ):
     return [
         planned.item
@@ -534,5 +563,6 @@ def select_items(
             now=now,
             server_id=server_id,
             library_uuid=library_uuid,
+            retry_rating_keys=retry_rating_keys,
         )
     ]

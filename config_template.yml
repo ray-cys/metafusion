@@ -30,10 +30,10 @@ plex:
   path_mappings: []
   # - "/volume1/media=>/media"
 
-# Plex libraries to process
+# Auto-discover all supported Plex movie/show libraries. Replace auto with exact
+# library names when only part of the server should be processed.
 plex_libraries:
-  - Movies
-  - TV Shows
+  - auto
 
 # TMDb API configuration
 tmdb:
@@ -121,10 +121,9 @@ incremental:
   # Revisit future Plex episodes whose TMDb metadata was not published yet.
   metadata_pending_recheck_hours: 24
 
-# Unchanged items become eligible for an artwork refresh when these intervals
-# expire. Per-type null values inherit default_days. Set an interval to 0 to
-# disable timed refreshes for that type; changed items and full scans can still
-# install missing or objectively better artwork.
+# Adaptive artwork rechecks use these as base intervals. Missing candidates are
+# retried sooner; repeatedly unchanged candidates back off. Per-type null values
+# inherit default_days. Set an interval to 0 to disable timed refreshes.
 image_upgrades:
   default_days: 30
   movie_days: null
@@ -147,8 +146,10 @@ tmdb_cache:
   ttl_hours: 24
   # Avoid repeating permanent-looking 404 requests while still rechecking soon.
   negative_ttl_hours: 12
-  max_entries: 5000
-  max_mb: 0  # Optional compressed-payload limit; 0 disables the byte cap.
+  # 0 sizes each bound automatically from available storage. Positive values
+  # remain optional hard limits for unusually constrained installations.
+  max_entries: 0
+  max_mb: 0
 
 # Validate Kometa document structure and retain known-good output backups.
 output:

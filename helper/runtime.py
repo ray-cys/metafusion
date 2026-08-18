@@ -17,12 +17,35 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+class DiskPressureError(RuntimeError):
+    """Raised when a write is safely deferred because storage is constrained."""
+
+    def __init__(self, path, free_bytes, required_bytes, message):
+        self.path = Path(path)
+        self.free_bytes = int(free_bytes)
+        self.required_bytes = int(required_bytes)
+        super().__init__(message)
+
+
+def storage_pressure_threshold(config, usage):
+    configured_mb = max(
+        0, int(config.get("runtime", {}).get("min_free_space_mb", 256))
+    )
+    configured_bytes = configured_mb * 1024 * 1024
+    automatic_bytes = min(
+        2 * 1024 ** 3,
+        max(256 * 1024 ** 2, int(max(0, usage.total) * 0.01)),
+    )
+    return configured_mb, max(configured_bytes, automatic_bytes)
+
+
 def ensure_storage_available(
     config,
     path,
     *,
     create=False,
     description="output path",
+    require_space=True,
 ):
     """Validate a destination without changing ownership or permissions."""
     target = Path(path)
@@ -33,18 +56,32 @@ def ensure_storage_available(
             raise RuntimeError(f"Required {description} is unavailable: {target}")
         if not os.access(target, os.W_OK):
             raise RuntimeError(f"Required {description} is not writable: {target}")
-        free_bytes = shutil.disk_usage(target).free
+        usage = shutil.disk_usage(target)
+        free_bytes = usage.free
     except OSError as error:
         raise RuntimeError(f"Unable to inspect {description}: {target}") from error
 
-    minimum_mb = max(
-        0, int(config.get("runtime", {}).get("min_free_space_mb", 256))
-    )
-    if free_bytes < minimum_mb * 1024 * 1024:
+    if not require_space:
+        return target
+    minimum_mb, required_bytes = storage_pressure_threshold(config, usage)
+    if free_bytes < required_bytes:
+        try:
+            from helper.tmdb_cache import tmdb_response_cache
+
+            tmdb_response_cache.relieve_space(target, required_bytes)
+            free_bytes = shutil.disk_usage(target).free
+        except (ImportError, OSError, AttributeError):
+            pass
+    if free_bytes < required_bytes:
         free_mb = free_bytes // (1024 * 1024)
-        raise RuntimeError(
+        required_mb = required_bytes // (1024 * 1024)
+        raise DiskPressureError(
+            target,
+            free_bytes,
+            required_bytes,
             f"Required {description} has only {free_mb} MiB free at {target}; "
-            f"MIN_FREE_SPACE_MB requires {minimum_mb} MiB"
+            f"MIN_FREE_SPACE_MB requires {minimum_mb} MiB and the automatic "
+            f"disk safety floor currently requires {required_mb} MiB",
         )
     return target
 
@@ -61,11 +98,17 @@ def validate_runtime_paths(config, config_dir):
     if config.get("settings", {}).get("dry_run", False):
         return
 
-    required = [Path(config_dir), Path(config_dir) / "logs", Path(config_dir) / "cache"]
+    required = [
+        (Path(config_dir), True),
+        (Path(config_dir) / "logs", True),
+        (Path(config_dir) / "cache", True),
+    ]
     if config.get("settings", {}).get("mode", "kometa").lower() == "kometa":
-        required.append(Path(config.get("settings", {}).get("path", "/kometa")))
+        required.append(
+            (Path(config.get("settings", {}).get("path", "/kometa")), False)
+        )
 
-    for path in required:
+    for path, require_space in required:
         try:
             path.mkdir(parents=True, exist_ok=True)
             probe = path / ".metafusion-write-test"
@@ -76,7 +119,12 @@ def validate_runtime_paths(config, config_dir):
                 f"Required path is not writable: {path}. "
                 "Check the bind-mount owner and PUID/PGID settings."
             ) from error
-        ensure_storage_available(config, path, description="runtime path")
+        ensure_storage_available(
+            config,
+            path,
+            description="runtime path",
+            require_space=require_space,
+        )
 
     runtime = config.get("runtime", {})
     assets = config.get("assets", {})
@@ -99,6 +147,7 @@ def validate_runtime_paths(config, config_dir):
                 config,
                 destination,
                 description="Plex media mapping destination",
+                require_space=False,
             )
 
 
@@ -113,7 +162,12 @@ def validate_preflight_paths(config, config_dir):
             )
         )
     for path, description in required:
-        ensure_storage_available(config, path, description=description)
+        ensure_storage_available(
+            config,
+            path,
+            description=description,
+            require_space=description == "configuration directory",
+        )
 
     runtime = config.get("runtime", {})
     assets = config.get("assets", {})
@@ -136,6 +190,7 @@ def validate_preflight_paths(config, config_dir):
                 config,
                 destination,
                 description="Plex media mapping destination",
+                require_space=False,
             )
     return True
 
