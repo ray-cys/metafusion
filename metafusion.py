@@ -17,6 +17,11 @@ import aiohttp
 from helper.asset_registry import AssetDestinationRegistry
 from helper.build_info import build_info
 from helper.cache import begin_cache_session, flush_cache, load_cache
+from helper.concurrency import (
+    begin_adaptive_concurrency,
+    concurrency_ceiling,
+    finish_adaptive_concurrency,
+)
 from helper.config import (
     BASE_CONFIG_DIR,
     ConfigError,
@@ -295,7 +300,7 @@ async def preflight_connectors(config, session, require_tmdb=True):
 
 async def connector_preflight(config):
     runtime = config.get("runtime", {})
-    maximum = max(1, int(runtime.get("max_concurrency", 8)))
+    maximum = concurrency_ceiling(config, "network")
     timeout = aiohttp.ClientTimeout(
         total=max(1.0, float(runtime.get("request_timeout", 30.0))),
         connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
@@ -436,7 +441,7 @@ async def metafusion_main(config, logger):
         start_time = datetime.now()
         library_item_counts = {}
         runtime_config = config.get("runtime", {})
-        max_concurrency = max(1, int(runtime_config.get("max_concurrency", 8)))
+        max_concurrency = concurrency_ceiling(config, "network")
         timeout = aiohttp.ClientTimeout(
             total=max(1.0, float(runtime_config.get("request_timeout", 30.0))),
             connect=max(1.0, float(runtime_config.get("connect_timeout", 10.0))),
@@ -837,9 +842,14 @@ def run_metafusion_job(config, logger, runtime_status=None):
         _active_loop = asyncio.get_running_loop()
         _active_task = asyncio.current_task()
         performance_token = begin_performance_tracking(performance_tracker)
+        concurrency_controller, concurrency_token = begin_adaptive_concurrency(config)
         try:
             await metafusion_main(config, logger)
         finally:
+            finish_adaptive_concurrency(
+                concurrency_controller,
+                concurrency_token,
+            )
             reset_performance_tracking(performance_token)
 
     try:

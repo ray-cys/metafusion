@@ -8,6 +8,7 @@ from helper.cache import (
     set_cache_scope,
 )
 from helper.config import mode_check
+from helper.concurrency import concurrency_ceiling, runtime_slot
 from helper.incremental import child_inventory_fingerprint, plan_items
 from helper.logging import (
     PlexMetadataProgress,
@@ -698,10 +699,7 @@ async def process_library(
             if library_item_counts is not None and library_name != "Unknown":
                 library_item_counts[library_name] = library_item_counts.get(library_name, 0) + 1
 
-        max_concurrency = max(
-            1,
-            int(config.get("runtime", {}).get("max_concurrency", 8)),
-        )
+        max_concurrency = concurrency_ceiling(config, "item")
         meta_by_rating_key = {
             str(meta.get("ratingKey")): meta
             for meta in preloaded_metadata
@@ -753,7 +751,8 @@ async def process_library(
             while True:
                 planned = await queue.get()
                 try:
-                    await process_and_collect(planned)
+                    async with runtime_slot(config, "item"):
+                        await process_and_collect(planned)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:

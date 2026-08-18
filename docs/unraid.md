@@ -31,6 +31,11 @@ For testing current `develop` changes, temporarily change **Repository** to:
 ghcr.io/ray-cys/metafusion:develop
 ```
 
+When upgrading an existing template to Phase 19 or later, open **Advanced
+View** and set **Concurrency Safety Ceiling** to `0`. Unraid preserves the old
+saved value of `8`; that value is safe and still adaptive, but limits automatic
+growth to eight workers.
+
 ## Required settings
 
 Provide these connection and workflow values:

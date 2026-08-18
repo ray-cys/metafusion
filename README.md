@@ -12,6 +12,8 @@ scanner or metadata agent, and it never modifies video or audio files.
 - Skips unchanged items between periodic reconciliation scans.
 - Rechecks movie, series, and season artwork on separate schedules.
 - Preserves manual artwork through ownership and checksum safeguards.
+- Adapts Plex, TMDb, artwork, and item concurrency to container resources and
+  provider health.
 - Validates provider identities and mapped storage before destructive or write operations.
 - Handles multiple movie editions when Plex edition names are unique.
 - Runs once or as a long-running Docker scheduler on AMD64 and ARM64.

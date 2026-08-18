@@ -100,9 +100,10 @@ cleanup:
   # Cleanup is intentionally opt-in. Test with dry_run before enabling it.
   run_cleanup: false
 
-# Runtime limits protect large libraries from exhausting memory/connections.
+# Adaptive runtime limits protect large libraries from exhausting resources.
 runtime:
-  max_concurrency: 8
+  # 0 selects cgroup-aware automatic tuning. A positive value is only a ceiling.
+  max_concurrency: 0
   request_timeout: 30
   connect_timeout: 10
   plex_timeout: 10

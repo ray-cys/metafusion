@@ -143,7 +143,7 @@ DEFAULT_CONFIG = {
         "run_cleanup": False,
     },
     "runtime": {
-        "max_concurrency": 8,
+        "max_concurrency": 0,
         "request_timeout": 30.0,
         "connect_timeout": 10.0,
         "plex_timeout": 10.0,
@@ -599,7 +599,7 @@ def validate_config(config):
             0.1,
             168,
         ),
-        ("runtime.max_concurrency", runtime.get("max_concurrency"), 1, 64),
+        ("runtime.max_concurrency", runtime.get("max_concurrency"), 0, 64),
         ("runtime.request_timeout", runtime.get("request_timeout"), 1, 600),
         ("runtime.connect_timeout", runtime.get("connect_timeout"), 1, 120),
         ("runtime.plex_timeout", runtime.get("plex_timeout"), 1, 600),

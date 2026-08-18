@@ -1636,7 +1636,6 @@ async def _build_movie(
 
     await bounded_callables(
         [process_poster, process_background],
-        config.get("runtime", {}).get("max_concurrency", 8),
         config=config,
     )
 
@@ -2163,7 +2162,6 @@ async def _build_tv(
         results = await bounded_map(
             process_season,
             season_infos,
-            config.get("runtime", {}).get("max_concurrency", 8),
             config=config,
         )
         failed_seasons = set()
@@ -3000,7 +2998,6 @@ async def _build_tv(
 
     await bounded_callables(
         artwork_operations,
-        config.get("runtime", {}).get("max_concurrency", 8),
         config=config,
     )
     if (

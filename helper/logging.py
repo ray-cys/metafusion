@@ -389,6 +389,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_failed_extract_show_path": "[Plex] Failed to extract show path for {title} ({year}): {error}",
         "plex_failed_extract_seasons_episodes": "[Plex] Failed to extract seasons/episodes for {title} ({year}): {error}",
         "plex_operation_failed": "[Plex] {description} failed (attempt {attempt}/{retries}): {error}",
+        "plex_circuit_open": "[Plex] {description} skipped while the provider circuit cools down ({retry_after:.1f}s remaining).",
         "plex_critical_metadata_missing": "[Plex] Critical metadata missing for item [ratingKey={item_key}]: {missing_critical}. Extracted: {result}",
     }
     levels = {
@@ -405,6 +406,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_failed_extract_show_path": "warning",
         "plex_failed_extract_seasons_episodes": "warning",
         "plex_operation_failed": "warning",
+        "plex_circuit_open": "warning",
         "plex_critical_metadata_missing": "warning",
     }
     msg = messages.get(event, "[Plex] Unknown event")
@@ -429,6 +431,8 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_cache_hit": "[TMDb] Returning cached response for {url} params: {params}",
         "tmdb_negative_cache_hit": "[TMDb] Skipping recently missing resource {url}; cached HTTP 404 is still valid.",
         "tmdb_negative_cached": "[TMDb] Cached HTTP 404 for {url} for {ttl_hours:g} hour(s).",
+        "tmdb_request_coalesced": "[TMDb] Reusing the in-flight request for {url}.",
+        "tmdb_circuit_open": "[TMDb] Provider circuit is open; preserving existing data and retrying after the cooldown ({retry_after:.1f}s remaining).",
         "tmdb_request": "[TMDb] Requesting {url} with params: {query} (Attempt {attempt}/{retries})",
         "tmdb_success": "[TMDb] Successful response for {url} (Attempt {attempt})",
         "tmdb_rate_limited": "[TMDb] Rate limited (HTTP 429). Sleeping {retry_after}s before retry... Params: {query}",
@@ -445,6 +449,8 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_cache_hit": "debug",
         "tmdb_negative_cache_hit": "debug",
         "tmdb_negative_cached": "debug",
+        "tmdb_request_coalesced": "debug",
+        "tmdb_circuit_open": "debug",
         "tmdb_request": "debug",
         "tmdb_success": "debug",
         "tmdb_rate_limited": "warning",

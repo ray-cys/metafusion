@@ -6,7 +6,7 @@ from pathlib import Path
 
 from plexapi.server import PlexServer
 
-from helper.concurrency import runtime_slot
+from helper.concurrency import CircuitOpenError, runtime_slot
 
 from helper.logging import log_plex_event, redact_secrets
 from helper.plex_paths import translate_plex_path
@@ -449,6 +449,15 @@ async def plex_operation(operation, runtime=None, description="Plex operation"):
         try:
             async with runtime_slot({"runtime": runtime}, "plex"):
                 return await asyncio.to_thread(operation)
+        except CircuitOpenError as error:
+            log_plex_event(
+                "plex_circuit_open",
+                description=description,
+                retry_after=error.retry_after,
+            )
+            raise RuntimeError(
+                f"{description} skipped while the Plex circuit is cooling down"
+            ) from error
         except Exception as error:
             last_error = error
             log_plex_event(

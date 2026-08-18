@@ -104,7 +104,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAX_CONCURRENCY` | `8` | Global ceiling for media workers and nested TMDb/artwork work; Plex API calls are additionally capped at four. |
+| `MAX_CONCURRENCY` | `0` | `0` enables cgroup-aware adaptive tuning. A positive value is an optional hard ceiling; Plex, TMDb, nested artwork, and item lanes retain their lower internal safety caps. |
 | `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds; must not exceed `REQUEST_TIMEOUT`. |
 | `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |
@@ -117,6 +117,10 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 | `MIN_FREE_SPACE_MB` | `256` | Minimum free space required on runtime and artwork destinations before writes. |
 | `PUID` | `10001` | Runtime user ID; use `99` on standard Unraid. |
 | `PGID` | `10001` | Runtime group ID; use `100` on standard Unraid. |
+
+Existing installations that explicitly saved `MAX_CONCURRENCY=8` remain
+adaptive but cannot grow past eight. Change the value to `0`, or remove the
+environment variable, to use the complete automatic range.
 
 Do not use Compose `user:` or Docker `--user`; those options bypass
 `PUID`/`PGID` startup handling.
