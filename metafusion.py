@@ -34,6 +34,7 @@ from helper.config import (
     get_feature_flags,
     load_config_file,
     mode_check,
+    report_retention,
     validate_config,
 )
 from helper.database_maintenance import (
@@ -1322,16 +1323,17 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 log_main_event("main_unhandled_exception", error=error, logger=logger)
             if not config.get("settings", {}).get("dry_run", False):
                 try:
-                    gap_report = write_artwork_gap_report(config.get("_artwork_gaps"))
+                    retention = report_retention(config)
+                    gap_report = write_artwork_gap_report(
+                        config.get("_artwork_gaps"), retention=retention
+                    )
                     if gap_report:
                         logger.info(
                             "[Diagnostics] Artwork gap report saved to %s", gap_report
                         )
                     destination_report = write_destination_history_report(
                         load_cache(),
-                        retention=config.get("output", {}).get(
-                            "destination_history_report_retention", 10
-                        ),
+                        retention=retention,
                     )
                     if destination_report:
                         logger.info(
@@ -1352,9 +1354,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     audit_report = write_asset_audit_report(
                         config.get("_asset_audit_records"),
                         config.get("_artwork_gaps"),
-                        retention=config.get("output", {}).get(
-                            "destination_history_report_retention", 10
-                        ),
+                        retention=report_retention(config),
                     )
                     logger.info(
                         "[Diagnostics] Asset audit report saved to %s", audit_report
@@ -1369,9 +1369,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                         config.get("_metadata_audit_records"),
                         config.get("_artwork_gaps"),
                         mode=config.get("settings", {}).get("mode", "unknown"),
-                        retention=config.get("output", {}).get(
-                            "destination_history_report_retention", 10
-                        ),
+                        retention=report_retention(config),
                     )
                     logger.info(
                         "[Diagnostics] Metadata audit report saved to %s",
@@ -1390,9 +1388,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                         config.get("_artwork_gaps"),
                         config.get("_cleanup_result"),
                         mode=config.get("settings", {}).get("mode", "unknown"),
-                        retention=config.get("output", {}).get(
-                            "destination_history_report_retention", 10
-                        ),
+                        retention=report_retention(config),
                     )
                     logger.info(
                         "[Diagnostics] Read-only change plan saved to %s",
@@ -1409,9 +1405,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                         config.get("_asset_audit_records"),
                         config.get("_artwork_gaps"),
                         mode=config.get("settings", {}).get("mode", "unknown"),
-                        retention=config.get("output", {}).get(
-                            "destination_history_report_retention", 10
-                        ),
+                        retention=report_retention(config),
                     )
                     logger.info(
                         "[Diagnostics] Library and asset audit saved to %s",
@@ -1798,9 +1792,7 @@ def main(argv=None):
             compatibility = evaluate_compatibility(config, preflight)
             report = write_compatibility_report(
                 compatibility,
-                retention=config.get("output", {}).get(
-                    "destination_history_report_retention", 10
-                ),
+                retention=report_retention(config),
             )
         except Exception as error:
             message = redact_secrets(

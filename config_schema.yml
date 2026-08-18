@@ -49,7 +49,6 @@ defaults:
     allow_overwrite: false
     recheck_days: 30.0
     max_writes_per_run: 100
-    report_retention: 10
     fields: []
   assets:
     run_poster: true
@@ -88,7 +87,7 @@ defaults:
   output:
     validate_schema: true
     backup_count: 3
-    destination_history_report_retention: 10
+    report_retention: 10
   safety:
     allow_ambiguous_editions: false
   poster_set:
@@ -905,25 +904,6 @@ settings:
     mask: false
     value: '100'
     order: 40
-- name: PLEX_METADATA_REPORT_RETENTION
-  section: Scheduling and processing
-  description: Number of text audit reports retained under /config/reports.
-  path:
-  - plex_metadata
-  - report_retention
-  converter: safe_int
-  env_example: '10'
-  env_order: 44
-  compose: ${PLEX_METADATA_REPORT_RETENTION-}
-  compose_order: 42
-  unraid:
-    name: Plex Metadata Report Retention
-    default: '10'
-    display: advanced
-    required: false
-    mask: false
-    value: '10'
-    order: 41
 - name: PLEX_METADATA_FIELDS
   section: Scheduling and processing
   description: Optional comma-separated supported field allowlist. Blank enables all safe supported fields.
@@ -1551,20 +1531,19 @@ settings:
     mask: false
     value: '3'
     order: 71
-- name: DESTINATION_HISTORY_REPORT_RETENTION
+- name: REPORT_RETENTION
   section: Runtime, incremental, cache, and output
-  description: Artwork rename history reports retained under /config/reports. Old artwork is reported, never automatically
-    deleted.
+  description: Number of reports retained per report type under /config/reports.
   path:
   - output
-  - destination_history_report_retention
+  - report_retention
   converter: safe_int
   env_example: '10'
   env_order: 79
-  compose: ${DESTINATION_HISTORY_REPORT_RETENTION-}
+  compose: ${REPORT_RETENTION-}
   compose_order: 74
   unraid:
-    name: Destination Report Retention
+    name: Report Retention
     default: '10'
     display: advanced
     required: false

@@ -92,7 +92,6 @@ Docker or Unraid administrators when supplied as environment variables.
 | `PLEX_METADATA_ALLOW_OVERWRITE` | `False` | Required acknowledgement for direct Plex metadata `overwrite`. Not required for artwork overwrite. |
 | `PLEX_METADATA_RECHECK_DAYS` | `30` | Recheck unchanged direct Plex metadata after this many days; `0` disables timed rechecks. |
 | `PLEX_METADATA_MAX_WRITES_PER_RUN` | `100` | Maximum Plex items or child objects written in one job. |
-| `PLEX_METADATA_REPORT_RETENTION` | `10` | Audit reports retained under `/config/reports`. |
 | `PLEX_METADATA_FIELDS` | all supported safe fields | Optional comma-separated allowlist. |
 
 Supported values for `PLEX_METADATA_FIELDS` are:
@@ -148,7 +147,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `TMDB_CACHE_MAX_MB` | `0` | Compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
-| `DESTINATION_HISTORY_REPORT_RETENTION` | `10` | Artwork destination-change reports retained under `/config/reports`. |
+| `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |

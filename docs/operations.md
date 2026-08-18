@@ -507,7 +507,8 @@ Shared reports and logs are:
 /config/reports/compatibility-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
-/config/reports/metafusion-support-*.txt
+/config/reports/support-report-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/release-qualification-YYYYMMDD-HHMMSSffffff.txt
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
@@ -520,6 +521,8 @@ media paths and must be reviewed before sharing. Destination-history reports
 identify old and current artwork paths after a
 Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
 reports identify fields and outcomes. Reports are bounded.
+`REPORT_RETENTION` controls how many files are kept for each report type; its
+default is `10`.
 
 At the default `LOG_LEVEL=INFO`, MetaFusion logs confirmed mutations such as
 Kometa YAML writes, Plex API update batches, and artwork downloads or upgrades.

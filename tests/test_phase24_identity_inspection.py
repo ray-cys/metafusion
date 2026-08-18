@@ -393,6 +393,225 @@ def test_identity_diagnosis_explains_provider_binding_titles_and_destinations(
     assert "Director's Cut" in contents
 
 
+def test_plex_mode_identity_diagnosis_reports_api_and_mapped_tv_destinations(
+    monkeypatch, tmp_path
+):
+    config = complete_config(tmp_path, mode="plex")
+    show_dir = tmp_path / "media" / "Example Show"
+    specials_dir = show_dir / "Specials"
+    season_dir = show_dir / "Season 01"
+    for directory in (show_dir, specials_dir, season_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    item = SimpleNamespace(
+        ratingKey="20",
+        title="Example Show",
+        originalTitle="Original Example Show",
+        year=2024,
+        guid="plex://show/example",
+        guids=[SimpleNamespace(id="tmdb://200"), SimpleNamespace(id="tvdb://2000")],
+    )
+    meta = {
+        "server_id": "server",
+        "library_uuid": "library",
+        "library_name": "TV Shows",
+        "library_type": "show",
+        "ratingKey": "20",
+        "title": item.title,
+        "year": 2024,
+        "plex_provider_tmdb_id": "200",
+        "tmdb_id": "200",
+        "imdb_id": "tt200",
+        "tvdb_id": "2000",
+        "show_dir": str(show_dir),
+        "season_dirs": {"0": str(specials_dir), 1: str(season_dir)},
+    }
+
+    async def metadata(*_args, **_kwargs):
+        return copy.deepcopy(meta)
+
+    async def tmdb(_config, endpoint, **kwargs):
+        assert endpoint == "tv/200"
+        assert kwargs["cache"] is False
+        return {
+            "id": 200,
+            "name": "Example Show",
+            "original_name": "Original Example Show",
+            "first_air_date": "2024-01-01",
+            "external_ids": {"imdb_id": "tt200", "tvdb_id": 2000},
+        }
+
+    monkeypatch.setattr(identity_diagnostics, "get_plex_metadata", metadata)
+    monkeypatch.setattr(identity_diagnostics, "tmdb_api_request", tmdb)
+    monkeypatch.setattr(
+        identity_diagnostics,
+        "inspect_identity_binding",
+        lambda *_args, **_kwargs: {
+            "status": "missing",
+            "active": None,
+            "history": [],
+        },
+    )
+
+    record = asyncio.run(
+        identity_diagnostics.diagnose_identity(item, config, session=object())
+    )
+
+    assert record["status"] == "accepted"
+    assert record["selection"]["confidence"] == "high"
+    assert record["metadata_destination"] == {
+        "kind": "plex_api",
+        "path": "/library/metadata/20",
+        "entry": "Plex item fields",
+    }
+    artwork = record["artwork_destinations"]
+    assert artwork["poster"]["path"] == str(show_dir / "poster.jpg")
+    assert artwork["poster"]["directory_writable"] is True
+    assert artwork["seasons"] == [
+        {
+            "season": 0,
+            "path": str(specials_dir / "season-specials-poster.jpg"),
+            "directory_exists": True,
+            "directory_writable": True,
+        },
+        {
+            "season": 1,
+            "path": str(season_dir / "Season01.jpg"),
+            "directory_exists": True,
+            "directory_writable": True,
+        },
+    ]
+
+
+def test_identity_diagnosis_recovers_stale_provider_id_without_cache(
+    monkeypatch, tmp_path
+):
+    config = complete_config(tmp_path, mode="plex")
+    item = SimpleNamespace(
+        ratingKey="30",
+        title="Recovered Movie",
+        originalTitle=None,
+        year=2023,
+        guid="plex://movie/recovered",
+        guids=[SimpleNamespace(id="tmdb://100"), SimpleNamespace(id="imdb://tt200")],
+    )
+    meta = {
+        "server_id": "server",
+        "library_uuid": "library",
+        "library_name": "Movies",
+        "library_type": "movie",
+        "ratingKey": "30",
+        "title": item.title,
+        "year": 2023,
+        "plex_provider_tmdb_id": "100",
+        "tmdb_id": "100",
+        "imdb_id": "tt200",
+        "tvdb_id": None,
+        "movie_dir": str(tmp_path / "missing-media"),
+    }
+    endpoints = []
+
+    async def metadata(*_args, **_kwargs):
+        return copy.deepcopy(meta)
+
+    async def tmdb(_config, endpoint, **kwargs):
+        endpoints.append(endpoint)
+        assert kwargs["cache"] is False
+        if endpoint == "movie/100":
+            return None
+        return {
+            "id": 200,
+            "title": "Recovered Movie",
+            "original_title": "Recovered Movie",
+            "release_date": "2023-03-01",
+            "external_ids": {"imdb_id": "tt200"},
+        }
+
+    async def resolve(_config, media_type, **kwargs):
+        assert media_type == "movie"
+        assert kwargs["imdb_id"] == "tt200"
+        assert kwargs["excluded_ids"] == {"100"}
+        assert kwargs["cache"] is False
+        return "200"
+
+    monkeypatch.setattr(identity_diagnostics, "get_plex_metadata", metadata)
+    monkeypatch.setattr(identity_diagnostics, "tmdb_api_request", tmdb)
+    monkeypatch.setattr(identity_diagnostics, "resolve_tmdb_id", resolve)
+    monkeypatch.setattr(
+        identity_diagnostics,
+        "inspect_identity_binding",
+        lambda *_args, **_kwargs: {"status": "missing", "active": None, "history": []},
+    )
+
+    record = asyncio.run(
+        identity_diagnostics.diagnose_identity(item, config, session=object())
+    )
+
+    assert endpoints == ["movie/100", "movie/200"]
+    assert record["status"] == "accepted"
+    assert record["selection"]["tmdb_id"] == "200"
+    assert record["selection"]["source"] == "stale_identity_recovery_via_imdb_external_id"
+    assert record["artwork_destinations"]["poster"] == {
+        "path": str(tmp_path / "missing-media" / "poster.jpg"),
+        "directory_exists": False,
+        "directory_writable": False,
+    }
+
+
+def test_identity_diagnosis_reports_unresolved_without_external_ids(
+    monkeypatch, tmp_path
+):
+    config = complete_config(tmp_path, mode="plex")
+    item = SimpleNamespace(
+        ratingKey="40",
+        title="Unknown Movie",
+        originalTitle=None,
+        year=2025,
+        guid=None,
+        guids=[SimpleNamespace(id=f"provider://{index}") for index in range(25)],
+    )
+    meta = {
+        "server_id": "server",
+        "library_uuid": "library",
+        "library_name": "Movies",
+        "library_type": "movie",
+        "ratingKey": "40",
+        "title": item.title,
+        "year": 2025,
+        "plex_provider_tmdb_id": None,
+        "tmdb_id": None,
+        "imdb_id": None,
+        "tvdb_id": None,
+        "movie_dir": None,
+    }
+    searches = []
+
+    async def metadata(*_args, **_kwargs):
+        return copy.deepcopy(meta)
+
+    async def resolve(_config, media_type, **kwargs):
+        searches.append((media_type, kwargs["title"], kwargs["year"], kwargs["cache"]))
+        return None
+
+    monkeypatch.setattr(identity_diagnostics, "get_plex_metadata", metadata)
+    monkeypatch.setattr(identity_diagnostics, "resolve_tmdb_id", resolve)
+    monkeypatch.setattr(
+        identity_diagnostics,
+        "inspect_identity_binding",
+        lambda *_args, **_kwargs: {"status": "missing", "active": None, "history": []},
+    )
+
+    record = asyncio.run(
+        identity_diagnostics.diagnose_identity(item, config, session=object())
+    )
+
+    assert len(searches) == 2
+    assert all(search == ("movie", "Unknown Movie", 2025, False) for search in searches)
+    assert record["status"] == "unresolved"
+    assert record["selection"]["source"] == "unresolved"
+    assert len(record["plex"]["guids"]) == 20
+    assert record["artwork_destinations"]["poster"]["path"] is None
+
+
 def test_identity_inspection_runner_reports_missing_keys(monkeypatch, tmp_path):
     item = SimpleNamespace(ratingKey="10")
 

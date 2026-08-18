@@ -50,7 +50,6 @@ plex_metadata:
   allow_overwrite: false
   recheck_days: 30.0
   max_writes_per_run: 100
-  report_retention: 10
   fields: []
 assets:
   run_poster: true
@@ -89,7 +88,7 @@ tmdb_cache:
 output:
   validate_schema: true
   backup_count: 3
-  destination_history_report_retention: 10
+  report_retention: 10
 safety:
   allow_ambiguous_editions: false
 poster_set:
