@@ -71,14 +71,26 @@ or `config.yml` values.
 | Diagnostics | `--release-check` | None | Run the complete read-only preflight and SQLite health checks, write a redacted release-qualification report, and exit nonzero when an automated gate fails. |
 | Diagnostics | `--asset-audit` | None | Perform a read-only, full artwork selection and ownership/quality audit and write a report. |
 | Diagnostics | `--metadata-audit` | None | Perform a read-only full metadata comparison against TMDb and write field-level proposed actions. Artwork and cleanup are disabled. |
+| Diagnostics | `--plan` | None | Produce one read-only full-scan plan for metadata, artwork, and eligible cleanup. The report is the only deliberate output. |
+| Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork in either output mode without applying changes. |
+| Diagnostics | `--mapping-diagnose` | None | Compare one or more Plex TV inventories with TMDb standard ordering, configured overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
+| Diagnostics | `--identity-inspect` | None | Explain the current Plex-to-TMDb identity, active learned binding, bounded history, warning reasons, edition, and computed destinations. Requires `--rating-key`; writes only a report. |
+| Diagnostics | `--compatibility-check` | None | Test connectors, paths, and the configured Kometa/Plex output contract, write a compatibility report, and exit. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
 | Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
+| Compatibility | `--compatibility-profile` | `auto`, `kometa-2.4`, or `plex-api-v1` | Override `COMPATIBILITY_PROFILE` for this command or run. An explicit profile must match `RUN_MODE`. |
 | Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
 | Targeting | `--rating-key` | Plex rating key | Process only the named item. Repeat the option or use comma-separated keys. Targeted runs disable cleanup. |
+| Targeting | `--tmdb-id` | Numeric TMDb ID | Process items whose existing Plex GUID list exposes the ID. Repeat the option or use comma-separated IDs. |
+| Targeting | `--media-type` | `movie` or `show` | Limit processing to movie or show libraries. Repeat it to select both. |
 | Targeting | `--metadata-only` | None | Process metadata without artwork or cleanup. It cannot be combined with `--asset-only` or `--asset-audit`. |
 | Targeting | `--asset-only` | None | Process enabled artwork without metadata or cleanup. It cannot be combined with `--metadata-only`. |
 | Targeting | `--full-scan` | None | Bypass incremental skipping and reconcile the selected scope. |
 | Targeting | `--explain-selection` | None | Explain why selected items are or are not due without processing or writing. |
+| Recovery | `--retry-failed` | None | Immediately process matching durable retry-queue entries, including parked entries when selected. Cleanup stays disabled. |
+| Recovery | `--retry-status` | `all`, `pending`, `parked`, or `running` | Narrow `--retry-failed`; defaults to `all` and is invalid without that command. |
+| SQLite | `--sqlite-maintenance` | `check`, `optimize`, `checkpoint`, `vacuum`, or `backup` | Run one standalone, explicit database operation. Only `check` is read-only. |
+| SQLite | `--sqlite-target` | `all`, `state`, or `tmdb` | Limit `--sqlite-maintenance`; defaults to both databases and is invalid without that command. |
 | Plex maintenance | `--plex-metadata-restore` | None | Restore MetaFusion-owned Plex fields for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-unlock`. |
 | Plex maintenance | `--plex-metadata-unlock` | None | Remove only MetaFusion-created Plex locks for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-restore`. |
 
@@ -103,6 +115,21 @@ python metafusion.py --asset-audit
 
 # Compare TMDb with current Kometa/Plex metadata without applying changes
 python metafusion.py --metadata-audit
+
+# Preview metadata, artwork, and cleanup decisions in one report
+python metafusion.py --plan
+
+# Inventory every Plex movie/show library and enabled artwork destination
+python metafusion.py --library-audit
+
+# Explain difficult TV episode ordering without changing any mapping or metadata
+python metafusion.py --mapping-diagnose --rating-key 12345
+
+# Explain how a Plex item became associated with TMDb without changing it
+python metafusion.py --identity-inspect --rating-key 12345
+
+# Confirm the configured output contract and required connector/path support
+python metafusion.py --compatibility-check
 
 # Show live scheduler state, effective build, library counts, and recent jobs
 python metafusion.py --status
@@ -135,6 +162,50 @@ conflicts, missing source values, differences, and proposed actions. It does
 not write Plex fields, Kometa YAML, artwork, cache entries, ownership records,
 or incremental markers. Metadata values are omitted from the report.
 
+`--plan` combines the metadata and artwork evaluations with cleanup candidate
+calculation when cleanup is configured and the inventory is complete. It uses
+the same selection, ownership, schema, policy, and cleanup gates as a real run,
+but forces dry-run behavior. It does not write Kometa YAML, Plex fields,
+artwork, caches, ownership, retry state, or incremental markers. Its only
+intentional persistent output is `/config/reports/change-plan-*.txt`. A target
+option disables cleanup in the plan because a partial library/item scope cannot
+prove an orphan.
+
+`--library-audit` works in Kometa and Plex modes. It lists discovered and
+selected movie/show libraries, item counts, artwork ownership outcomes,
+candidate dimensions, and the normalized 0-100 artwork quality score. It also
+lists the highest-scoring rejected candidates, their score components, and
+whether language priority, dimensions, vote threshold, aspect ratio, downgrade
+protection against the existing file, or a deterministic tie-break determined
+the reported action. It
+writes `/config/reports/library-asset-audit-*.txt` and does not modify either
+output mode. Like the asset audit, it can take about as long as full artwork
+evaluation because it contacts Plex and TMDb.
+
+`--mapping-diagnose` accepts one or more TV show rating keys. It compares the
+complete Plex season/episode inventory with TMDb standard ordering, configured
+`TMDB_EPISODE_OVERRIDES`, split-series mappings, and available TMDb episode
+groups. When one complete one-step numbering offset is uniquely provable, the
+report includes a proposed configuration snippet for review. It never applies
+that proposal, changes a learned identity, writes Plex or Kometa metadata, or
+downloads artwork. Results are written to
+`/config/reports/mapping-diagnosis-*.txt`; an unresolved result is a successful
+diagnostic outcome rather than a mutation failure.
+
+`--identity-inspect` works for movies and shows in either output mode. For each
+requested Plex rating key it reports Plex GUIDs and external IDs, localized and
+original titles, year, edition, selected TMDb ID, resolution source, match
+confidence, warning/rejection reasons, active learned binding, and the newest
+50 binding-history events. It also computes the Kometa YAML entry or Plex API
+target and poster, background, and season artwork destinations. Provider
+response caching is disabled and SQLite is read in query-only mode. Its sole
+deliberate write is `/config/reports/identity-inspection-*.txt`; it does not
+touch bindings, caches, provider fields, YAML, artwork, ownership, incremental
+markers, or cleanup. History begins when the identity-history extension is
+installed. An older active binding remains visible, but earlier transitions
+cannot be reconstructed. The extension remains schema-4 rollback compatible;
+older MetaFusion images ignore its nullable columns and additional table.
+
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
 include configuration values, tokens, API keys, or metadata summaries.
@@ -152,13 +223,24 @@ python metafusion.py --metafusion_run \
 python metafusion.py --metafusion_run \
   --library "TV Shows" --rating-key 12345 --asset-only
 
+# Target IDs Plex already exposes through TMDb GUIDs
+python metafusion.py --metafusion_run \
+  --library Movies --tmdb-id 550,551 --metadata-only
+
+# Process every selected movie library but no show library
+python metafusion.py --metafusion_run --media-type movie
+
 # Explain why an item is or is not due without processing it
 python metafusion.py --library Movies --rating-key 12345 --explain-selection
 ```
 
 `--library` and `--rating-key` may be repeated or contain comma-separated
-values. Targeted runs disable cleanup. Add `--full-scan` to bypass incremental
-selection for the selected scope.
+values. `--tmdb-id` has the same repeat/comma behavior and matches only TMDb
+IDs already exposed in the Plex item's GUID list; it does not run a risky title
+search. Use `--rating-key` when Plex does not expose the expected provider GUID.
+Targeted runs disable cleanup. Add `--full-scan` to bypass incremental
+selection for the selected scope. An explicitly requested rating key or TMDb
+ID that is not found makes the job fail clearly instead of silently succeeding.
 
 ## Incremental and full scans
 
@@ -215,6 +297,24 @@ item a fresh attempt. Retry selection works during incremental mode and does
 not enable cleanup. `python metafusion.py --status` shows pending, running, and
 parked queue totals. Retry deadlines are evaluated at job start; MetaFusion
 does not wake outside configured schedule times solely for a retry.
+
+To retry a deliberate subset immediately:
+
+```bash
+# Retry every queued item in the currently selected libraries
+python metafusion.py --retry-failed
+
+# Retry only parked items in one library
+python metafusion.py --retry-failed --retry-status parked --library Movies
+
+# Retry one known queued item
+python metafusion.py --retry-failed --library Movies --rating-key 12345
+```
+
+This command still performs the item's normally enabled metadata and artwork
+work. A successful item is removed from the queue; another failure updates its
+bounded retry record. It never enables cleanup and a request matching no queue
+rows is a successful no-op with an explicit log message.
 
 In-flight markers and successful removals are committed once per library, not
 once per item. This preserves restart recovery without adding thousands of
@@ -312,13 +412,62 @@ MetaFusion uses two separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
-| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
+| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities and bounded transition history, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
 
 Rows are read and updated individually rather than loading and rewriting a
 large JSON cache. TMDb cache expiry or pruning cannot remove durable scan or
 artwork ownership state. After jobs, both databases run bounded optimization;
 WAL files are truncated only after reaching the maintenance threshold.
+
+### Explicit SQLite maintenance
+
+Normal jobs already perform bounded automatic optimization. Use the standalone
+maintenance CLI only for diagnosis, a deliberate backup, or an administrator
+maintenance window:
+
+```bash
+python metafusion.py --sqlite-maintenance check
+python metafusion.py --sqlite-maintenance backup --sqlite-target state
+python metafusion.py --sqlite-maintenance optimize
+python metafusion.py --sqlite-maintenance checkpoint --sqlite-target tmdb
+python metafusion.py --sqlite-maintenance vacuum --sqlite-target tmdb
+```
+
+`check` opens databases read-only and runs SQLite `quick_check`. `optimize`
+updates SQLite planner statistics. `checkpoint` explicitly truncates WAL state.
+`vacuum` rewrites the selected database and refuses to start unless conservative
+free-space headroom is available. `backup` uses SQLite's online backup API,
+verifies the copy, writes mode `0664` under `/config/backups`, and retains the
+newest three copies per database. Missing databases are reported and skipped,
+which is normal before the first run. Every mutating operation holds the normal
+job lock and refuses to overlap a MetaFusion job. Stop the container before
+copying live database files outside this command.
+
+To restore durable state, stop MetaFusion, keep the damaged database for
+forensics, copy a verified `meta_db-*.sqlite3` backup back to
+`/config/cache/meta_db.sqlite3`, retain owner/group write access, and run
+`--sqlite-maintenance check --sqlite-target state` before resuming scheduled
+jobs. Never replace a live database while the container is running. TMDb cache
+restoration is normally unnecessary because that database is disposable and
+rebuilds from later API responses.
+
+### Compatibility profiles
+
+`COMPATIBILITY_PROFILE=auto` is recommended. It resolves to `kometa-2.4` in
+Kometa mode and `plex-api-v1` in Plex mode. A profile is a declared output
+contract, not an emulation layer or a request to modify the connected server.
+
+- `kometa-2.4` checks that the selected mode, output root, and Kometa schema
+  validation support MetaFusion's generated YAML/assets contract.
+- `plex-api-v1` checks the Plex server identity, selected libraries, and mapped
+  artwork paths required by enabled features. Direct Plex metadata can remain
+  disabled for an artwork-only deployment.
+
+An explicit profile that conflicts with `RUN_MODE` is a configuration error.
+`--compatibility-check` contacts Plex and TMDb, performs the relevant path
+checks, writes `/config/reports/compatibility-*.txt`, and exits nonzero when a
+required capability is unavailable.
 
 Obsolete `meta_cache.json`, `incremental_state.json`,
 `tmdb_response_cache.json`, and `.bak` files are ignored. There is no JSON
@@ -351,6 +500,11 @@ Shared reports and logs are:
 /config/logs/metafusion.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
 /config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
+/config/reports/change-plan-YYYYMMDD-HHMMSS.txt
+/config/reports/library-asset-audit-YYYYMMDD-HHMMSS.txt
+/config/reports/mapping-diagnosis-YYYYMMDD-HHMMSS.txt
+/config/reports/identity-inspection-YYYYMMDD-HHMMSS.txt
+/config/reports/compatibility-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/metafusion-support-*.txt
@@ -358,13 +512,14 @@ Shared reports and logs are:
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
 Asset-audit reports include the selected candidate's language, dimensions,
-vote score, ownership status, existing dimensions, and the action a real run
-would consider. They omit filesystem paths and do not prove that a later
-download will succeed.
-Destination-history reports identify old and current artwork paths after a
+vote score, ownership status, existing dimensions, score components, the top
+rejected candidates, and the action a real run would consider. They omit
+filesystem paths and do not prove that a later download will succeed.
+Identity-inspection and destination-history reports contain computed or actual
+media paths and must be reviewed before sharing. Destination-history reports
+identify old and current artwork paths after a
 Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
-reports identify fields and outcomes. Reports are bounded. Destination reports
-contain host paths and must be reviewed before sharing.
+reports identify fields and outcomes. Reports are bounded.
 
 At the default `LOG_LEVEL=INFO`, MetaFusion logs confirmed mutations such as
 Kometa YAML writes, Plex API update batches, and artwork downloads or upgrades.
@@ -395,6 +550,14 @@ artwork is deferred to the retry queue while metadata processing continues.
 A missing/unmounted destination still fails safely instead of writing into an
 unintended container directory. `VALIDATE_MEDIA_MOUNTS=False` disables only the
 startup mapping-root check; per-artwork destination checks remain active.
+
+Plex inventories are retrieved through automatic bounded pages. A lightweight
+discovery pass establishes global title/edition counts; only one library's Plex
+objects are retained during its processing pass. MetaFusion verifies the item
+total before and after paging, rejects duplicate rating keys, and requires the
+processing pass to match discovery. Any missing, repeated, or changing page
+fails the library safely and disables cleanup for that run. Page size is
+automatic and has no user setting.
 
 ## Container health and shutdown
 

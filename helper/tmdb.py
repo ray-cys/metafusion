@@ -359,6 +359,7 @@ async def resolve_tmdb_id(
     year=None,
     session=None,
     excluded_ids=None,
+    cache=True,
 ):
     """Resolve a missing TMDb ID from IDs exposed by Plex legacy agents."""
     excluded_ids = {str(value) for value in (excluded_ids or set()) if value is not None}
@@ -377,6 +378,7 @@ async def resolve_tmdb_id(
             f"find/{external_id}",
             params={"external_source": source},
             session=session,
+            cache=cache,
         )
         matches = result.get(result_key, []) if isinstance(result, dict) else []
         for match in matches:
@@ -404,6 +406,7 @@ async def resolve_tmdb_id(
         f"search/{search_type}",
         params=params,
         session=session,
+        cache=cache,
     )
     candidates = []
     wanted_title = normalize_title(search_title)

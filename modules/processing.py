@@ -100,7 +100,7 @@ def apply_cached_tmdb_recovery(meta, cache):
     return True
 
 
-def apply_learned_tmdb_identity(meta, *, touch=True):
+def apply_learned_tmdb_identity(meta, *, touch=True, record_mismatch=False):
     """Reuse only a high-confidence binding whose provider GUIDs are unchanged."""
     if not isinstance(meta, dict) or meta.get("ratingKey") is None:
         return False
@@ -113,6 +113,7 @@ def apply_learned_tmdb_identity(meta, *, touch=True):
         meta.get("ratingKey"),
         fingerprint,
         touch=touch,
+        record_mismatch=record_mismatch,
     )
     if not binding:
         return False
@@ -204,9 +205,10 @@ def cleanup_inventory_errors(metadata, feature_flags):
             feature_flags.get(name, False)
             for name in ("metadata_basic", "metadata_enhanced", "season")
         )
-        if tv_inventory_cleanup_enabled:
-            if not isinstance(meta.get("seasons_episodes"), dict):
-                missing.append("seasons_episodes")
+        if tv_inventory_cleanup_enabled and not isinstance(
+            meta.get("seasons_episodes"), dict
+        ):
+            missing.append("seasons_episodes")
         if missing:
             errors.append(
                 f"{meta.get('title')} ({meta.get('year')}): {', '.join(missing)}"
@@ -602,6 +604,7 @@ async def process_library(
             apply_learned_tmdb_identity(
                 meta,
                 touch=False,
+                record_mismatch=not feature_flags.get("dry_run", False),
             )
         if feature_flags.get("cleanup", False):
             inventory_errors = cleanup_inventory_errors(

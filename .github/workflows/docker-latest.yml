@@ -45,10 +45,13 @@ jobs:
           fi
           git fetch --no-tags origin main:refs/remotes/origin/main
           tag_commit="$(git rev-list -n 1 "${tag}")"
-          git merge-base --is-ancestor "${tag_commit}" origin/main || {
-            echo "Release tags must reference a commit contained in main." >&2
+          main_commit="$(git rev-parse 'origin/main^{commit}')"
+          if [[ "${tag_commit}" != "${main_commit}" ]]; then
+            echo "Release tags must reference the exact current main commit." >&2
+            echo "Tag commit:  ${tag_commit}" >&2
+            echo "Main commit: ${main_commit}" >&2
             exit 1
-          }
+          fi
           duplicate_count="$(git tag --list | awk '{print tolower($0)}' | sort | uniq -d | wc -l | tr -d ' ')"
           test "${duplicate_count}" = "0" || {
             echo "Case-insensitive duplicate release tags were found." >&2
@@ -77,11 +80,15 @@ jobs:
 
       - name: Run static checks
         run: |
-          ruff check --select F,E9,I,DTZ,S110,S112,TRY004 .
+          ruff check .
+          mypy
           python tools/generate_config_surfaces.py --check
 
       - name: Run tests
-        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=85
+        run: |
+          pytest -q --cov=. --cov-report=term-missing \
+            --cov-report=json:coverage.json --cov-fail-under=85
+          python tools/check_targeted_coverage.py coverage.json
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
@@ -187,12 +194,16 @@ jobs:
 
   build:
     if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/develop' ||
-       startsWith(github.ref, 'refs/tags/v'))
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/develop' ||
+        startsWith(github.ref, 'refs/tags/v')))
     needs: [release-guard, test, kometa-contract, security]
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && format('metafusion-pr-build-{0}', github.event.pull_request.number) || 'metafusion-registry-publish' }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -246,7 +257,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix=sha-,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc.') }}
           labels: |
             org.opencontainers.image.licenses=LicenseRef-All-Rights-Reserved
       
@@ -277,24 +288,55 @@ jobs:
       - name: Sign the published Docker image
         if: ${{ github.event_name != 'pull_request' }}
         env:
-          # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
-          TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
-        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+        run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
       - name: Smoke test published AMD64 and ARM64 manifests
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
+          set -euo pipefail
           image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
-          docker run --rm --platform linux/amd64 "${image}" --version
+          amd64_version="$(docker run --rm --platform linux/amd64 "${image}" --version)"
+          [[ "${amd64_version}" == *"MetaFusion ${GITHUB_REF_NAME} (${GITHUB_SHA})"* ]]
           # Docker cannot keep two platform-specific images under the same
           # manifest-list digest in one local image store. Remove the first
           # platform before pulling and running the second one.
           docker image rm --force "${image}"
-          docker run --rm --platform linux/arm64 "${image}" --version
+          arm64_version="$(docker run --rm --platform linux/arm64 "${image}" --version)"
+          [[ "${arm64_version}" == *"MetaFusion ${GITHUB_REF_NAME} (${GITHUB_SHA})"* ]]
+
+      - name: Verify published aliases, signature, SBOM, and provenance
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          while IFS= read -r tag; do
+            [[ -n "${tag}" ]] || continue
+            manifest_json="$(docker buildx imagetools inspect "${tag}" --format '{{json .Manifest}}')"
+            resolved_digest="$(jq -r '.digest' <<<"${manifest_json}")"
+            if [[ "${resolved_digest}" != "${DIGEST}" ]]; then
+              echo "Published alias ${tag} resolved to ${resolved_digest}, expected ${DIGEST}." >&2
+              exit 1
+            fi
+          done <<<"${TAGS}"
+
+          cosign verify \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/docker-latest.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${image}" >/dev/null
+
+          sbom_json="$(docker buildx imagetools inspect "${image}" --format '{{json .SBOM}}')"
+          provenance_json="$(docker buildx imagetools inspect "${image}" --format '{{json .Provenance}}')"
+          [[ -n "${sbom_json}" && "${sbom_json}" != "null" && "${sbom_json}" != "{}" ]]
+          [[ -n "${provenance_json}" && "${provenance_json}" != "null" && "${provenance_json}" != "{}" ]]
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

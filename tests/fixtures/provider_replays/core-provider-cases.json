@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "description": "Sanitized provider-shaped regressions captured from MetaFusion edge cases.",
+  "cases": [
+    {
+      "name": "movie-edition-with-trusted-alias",
+      "plex": {
+        "type": "movie",
+        "ratingKey": "replay-43335",
+        "title": "AVPR: Aliens vs Predator - Requiem",
+        "year": 2007,
+        "editionTitle": "Unrated",
+        "guids": ["tmdb://440", "imdb://tt0758730"]
+      },
+      "tmdb": {
+        "details": {
+          "id": 440,
+          "title": "Aliens vs. Predator: Requiem",
+          "original_title": "Aliens vs. Predator: Requiem",
+          "release_date": "2007-12-25",
+          "external_ids": {"imdb_id": "tt0758730"}
+        }
+      },
+      "expected": {"identity_accepted": true, "trusted_external_id": true}
+    },
+    {
+      "name": "localized-show-title",
+      "plex": {
+        "type": "show",
+        "ratingKey": "replay-10002",
+        "title": "Doc (US)",
+        "year": 2025,
+        "guids": ["tmdb://245703", "tvdb://451757"]
+      },
+      "tmdb": {
+        "details": {
+          "id": 245703,
+          "name": "Doc",
+          "original_name": "Doc",
+          "first_air_date": "2025-01-07",
+          "external_ids": {"tvdb_id": 451757}
+        }
+      },
+      "expected": {"identity_accepted": true, "trusted_external_id": true}
+    },
+    {
+      "name": "title-year-disambiguates-plex-year",
+      "plex": {
+        "type": "show",
+        "ratingKey": "replay-10003",
+        "title": "Monster (2022)",
+        "year": 2024,
+        "guids": ["tmdb://113988"]
+      },
+      "tmdb": {
+        "details": {
+          "id": 113988,
+          "name": "Monster",
+          "original_name": "Dahmer – Monster: The Jeffrey Dahmer Story",
+          "first_air_date": "2022-09-21",
+          "external_ids": {}
+        }
+      },
+      "expected": {"identity_accepted": true, "reason_contains": "title year 2022"}
+    },
+    {
+      "name": "specials-and-alternate-episode-group",
+      "plex": {
+        "type": "show",
+        "ratingKey": "replay-10004",
+        "title": "The Haunting",
+        "year": 2018,
+        "guids": ["tmdb://72844", "tvdb://345246"],
+        "inventory": {"0": [1], "1": [1, 2, 3]}
+      },
+      "tmdb": {
+        "episode_groups": {
+          "results": [{"id": "group-haunting", "type": 1}]
+        },
+        "episode_group": {
+          "id": "group-haunting",
+          "groups": [
+            {
+              "order": 0,
+              "name": "Specials",
+              "episodes": [{"id": 9001, "order": 1, "name": "Special"}]
+            },
+            {
+              "order": 1,
+              "name": "Season 1",
+              "episodes": [
+                {"id": 9101, "order": 1, "name": "Steven Sees a Ghost"},
+                {"id": 9102, "order": 2, "name": "Open Casket"},
+                {"id": 9103, "order": 3, "name": "Touch"}
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {"episode_group_id": "group-haunting", "mapped_count": 4}
+    },
+    {
+      "name": "split-series-season-source",
+      "plex": {
+        "type": "show",
+        "ratingKey": "replay-10005",
+        "title": "Split Anthology",
+        "year": 2020,
+        "guids": ["tmdb://1000", "tvdb://2000"]
+      },
+      "configuration": {
+        "split_series_mappings": {
+          "tvdb:2000": {
+            "show_policy": "preserve",
+            "seasons": {
+              "2": {"tmdb_id": "1001", "season_number": 1}
+            }
+          }
+        }
+      },
+      "expected": {"mapped_tmdb_id": "1001", "mapped_season": 1}
+    },
+    {
+      "name": "missing-preferred-artwork-language",
+      "plex": {
+        "type": "movie",
+        "ratingKey": "replay-10006",
+        "title": "Artwork Gap",
+        "year": 2024,
+        "guids": ["tmdb://999001"]
+      },
+      "tmdb": {
+        "images": {
+          "posters": [
+            {
+              "file_path": "/fallback-poster.jpg",
+              "iso_639_1": "zh",
+              "width": 2000,
+              "height": 3000,
+              "vote_average": 7.5
+            }
+          ],
+          "backdrops": []
+        }
+      },
+      "expected": {"poster_language": "zh", "background_missing": true}
+    }
+  ]
+}

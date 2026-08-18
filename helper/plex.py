@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import re
 import time
@@ -455,7 +456,7 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     filtered_sections = []
     filtered_libraries = []
     skipped_libraries = []
-    for section, lib in zip(sections, libraries):
+    for section, lib in zip(sections, libraries, strict=False):
         if lib['title'] in selected_libraries and str(
             lib.get("type") or ""
         ).casefold() in {"movie", "movies", "show", "shows", "tv"}:
@@ -544,6 +545,151 @@ async def plex_operation(operation, runtime=None, description="Plex operation"):
             if attempt < retries and retry_delay:
                 await asyncio.sleep(retry_delay * attempt)
     raise RuntimeError(f"{description} failed after {retries} attempts") from last_error
+
+
+def _supports_paged_all(section):
+    """Return whether a Plex section or test double accepts paging keywords."""
+    try:
+        parameters = inspect.signature(section.all).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or parameter.name in {"container_start", "container_size", "maxresults"}
+        for parameter in parameters
+    )
+
+
+def _library_total(section):
+    """Read an uncached Plex library item total when the API exposes one."""
+    total_view_size = getattr(section, "totalViewSize", None)
+    if callable(total_view_size):
+        return int(total_view_size(includeCollections=False))
+    total = getattr(section, "totalSize", None)
+    if callable(total):
+        total = total()
+    try:
+        return None if total is None else int(total)
+    except (TypeError, ValueError):
+        return None
+
+
+def plex_inventory_record(item):
+    """Keep only fields needed for cross-library identity reconciliation."""
+    ids = _external_ids(item)
+    media_type = str(getattr(item, "type", None) or "").lower()
+    if media_type in {"show", "shows"}:
+        media_type = "tv"
+    elif media_type == "movies":
+        media_type = "movie"
+    return {
+        "rating_key": (
+            None
+            if getattr(item, "ratingKey", None) is None
+            else str(item.ratingKey)
+        ),
+        "title": getattr(item, "title", None),
+        "year": getattr(item, "year", None),
+        "media_type": media_type,
+        "edition": getattr(item, "editionTitle", None)
+        or getattr(item, "edition", None),
+        "tmdb_id": ids.get("tmdb"),
+    }
+
+
+async def load_plex_library_inventory(section, runtime=None, *, records_only=False):
+    """Load a stable Plex inventory through automatic bounded pages.
+
+    PlexAPI batches network calls internally, but MetaFusion historically kept
+    every selected library in memory at once. This loader makes paging explicit,
+    verifies a stable total and unique rating keys, and can return lightweight
+    records for the cross-library discovery pass.
+    """
+    runtime = runtime or {}
+    library_name = getattr(section, "title", "unknown")
+    expected_total = await plex_operation(
+        lambda: _library_total(section),
+        runtime,
+        description=f"Read library total for {library_name}",
+    )
+    page_size = (
+        max(1, expected_total)
+        if expected_total is not None and expected_total <= 500
+        else 200
+    )
+    supports_paging = _supports_paged_all(section)
+    offset = 0
+    pages = 0
+    seen_rating_keys = set()
+    results = []
+
+    while True:
+        if supports_paging:
+            page = await plex_operation(
+                lambda start=offset: list(
+                    section.all(
+                        container_start=start,
+                        container_size=page_size,
+                        maxresults=page_size,
+                    )
+                ),
+                runtime,
+                description=(
+                    f"List library {library_name} page starting at {offset}"
+                ),
+            )
+        else:
+            page = await plex_operation(
+                lambda: list(section.all()),
+                runtime,
+                description=f"List library {library_name}",
+            )
+        pages += 1
+        if not page:
+            break
+
+        for item in page:
+            rating_key = getattr(item, "ratingKey", None)
+            if rating_key is not None:
+                normalized = str(rating_key)
+                if normalized in seen_rating_keys:
+                    raise RuntimeError(
+                        f"Plex inventory for {library_name} repeated rating key "
+                        f"{normalized}; cleanup requires a stable complete inventory"
+                    )
+                seen_rating_keys.add(normalized)
+            results.append(plex_inventory_record(item) if records_only else item)
+
+        if not supports_paging or len(page) < page_size:
+            break
+        offset += len(page)
+
+    final_total = await plex_operation(
+        lambda: _library_total(section),
+        runtime,
+        description=f"Recheck library total for {library_name}",
+    )
+    observed_total = len(results)
+    if expected_total is not None and final_total is not None:
+        if expected_total != final_total:
+            raise RuntimeError(
+                f"Plex inventory for {library_name} changed during paging "
+                f"({expected_total} to {final_total}); retry the run"
+            )
+        if observed_total != expected_total:
+            raise RuntimeError(
+                f"Plex inventory for {library_name} was incomplete "
+                f"({observed_total} of {expected_total}); cleanup is disabled"
+            )
+
+    log_plex_event(
+        "plex_inventory_paged",
+        library_name=library_name,
+        pages=pages,
+        items=observed_total,
+        page_size=page_size,
+    )
+    return results
 
 
 async def get_plex_metadata(

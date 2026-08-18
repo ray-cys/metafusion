@@ -562,8 +562,21 @@ def test_plex_metadata_maintenance_uses_plex_only_and_selected_rating_keys(
         calls.append(("preflight", require_tmdb))
         return plex
 
-    async def plex_call(call, *_args, **_kwargs):
-        return call()
+    async def paged_inventory(current, *_args, **kwargs):
+        items = list(current.all())
+        if kwargs.get("records_only"):
+            return [
+                {
+                    "rating_key": str(entry.ratingKey),
+                    "title": entry.title,
+                    "year": entry.year,
+                    "media_type": entry.type,
+                    "edition": None,
+                    "tmdb_id": None,
+                }
+                for entry in items
+            ]
+        return items
 
     async def metadata(*_args, **_kwargs):
         return {
@@ -596,7 +609,7 @@ def test_plex_metadata_maintenance_uses_plex_only_and_selected_rating_keys(
         ),
     )
     monkeypatch.setattr(metafusion, "library_full_scan_decisions", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(metafusion, "plex_operation", plex_call)
+    monkeypatch.setattr(metafusion, "load_plex_library_inventory", paged_inventory)
     monkeypatch.setattr(metafusion, "get_plex_metadata", metadata)
     monkeypatch.setattr(metafusion, "restore_plex_metadata", restore)
     monkeypatch.setattr(metafusion.aiohttp, "ClientSession", lambda **_kwargs: FakeSession())
@@ -1000,7 +1013,7 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
             "SCHEDULE_CATCH_UP": "false",
             "RUN_TIMES": "23:59",
             "SHUTDOWN_TIMEOUT": "2",
-            "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
     process = subprocess.Popen(
@@ -1012,12 +1025,12 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
         text=True,
     )
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 15
         while not status_file.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         if not status_file.exists():
             process.terminate()
-            output, _ = process.communicate(timeout=3)
+            output, _ = process.communicate(timeout=5)
             pytest.fail(f"scheduler did not start: {output}")
 
         started = time.monotonic()

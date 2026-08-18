@@ -16,6 +16,8 @@ scanner or metadata agent, and it never modifies video or audio files.
   provider health.
 - Retries transient item failures durably after restarts and parks persistent
   failures without blocking healthy items.
+- Provides read-only change plans, cross-mode library/artwork audits, selective
+  retry, deterministic artwork scoring, and explicit SQLite maintenance.
 - Discovers Plex movie/show libraries automatically unless an explicit list is
   supplied.
 - Validates provider identities and mapped storage before destructive or write operations.
@@ -277,13 +279,18 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/cache/tmdb_cache.sqlite3
 /config/reports/artwork-gaps-*.txt
 /config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
+/config/reports/change-plan-*.txt       # explicit --plan runs only
+/config/reports/library-asset-audit-*.txt # explicit --library-audit runs only
+/config/reports/mapping-diagnosis-*.txt # explicit --mapping-diagnose runs only
+/config/reports/identity-inspection-*.txt # explicit --identity-inspect runs only
+/config/reports/compatibility-*.txt     # explicit --compatibility-check runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
 ```
 
 The TMDb response cache is disposable and automatically sized, pruned, and
 quarantined if corrupt. Durable inventory, scan, job, retry, learned identity,
-library-discovery, and artwork-ownership state remains isolated in
+bounded binding-history, library-discovery, and artwork-ownership state remains isolated in
 `meta_db.sqlite3`. SQLite optimization and bounded WAL checkpoints run after
 jobs. Before a schema upgrade, MetaFusion retains two versioned database
 backups. The live heartbeat is stored in `/tmp/metafusion-status.json` to avoid
@@ -298,7 +305,8 @@ stopped.
 | `1.2.3-rc.1` | Exact release candidate for testing |
 | `sha-<full-commit>` | Immutable diagnostic or rollback build |
 | `develop` | Moving test build; never updates `latest` |
-| `main`, `latest` | Moving production builds from `main` |
+| `main` | Moving production-candidate build from `main`; does not update `latest` |
+| `latest` | Most recent exact stable release tag; never an RC or branch build |
 
 Production installations should pin an exact release. Change only the image
 tag to roll back; keep `/config`, `/kometa`, permissions, and media mappings
@@ -315,6 +323,11 @@ python metafusion.py --doctor
 python metafusion.py --preflight
 python metafusion.py --asset-audit
 python metafusion.py --metadata-audit
+python metafusion.py --plan
+python metafusion.py --library-audit
+python metafusion.py --mapping-diagnose --rating-key 12345
+python metafusion.py --identity-inspect --rating-key 12345
+python metafusion.py --compatibility-check
 python metafusion.py --status
 python metafusion.py --support-report
 ```
@@ -333,6 +346,19 @@ checks and common symptoms, see
 missing, different, unchanged, locked, policy-excluded, unsupported, and
 identity-rejected metadata plus the proposed action, without writing metadata,
 artwork, cache state, or ownership records.
+
+`--plan` combines metadata, artwork, and eligible cleanup decisions in one
+read-only report. `--library-audit` provides a cross-mode inventory and artwork
+health report. Targeted processing, selective retries, artwork score details,
+SQLite maintenance actions, and `COMPATIBILITY_PROFILE` contracts are documented in the
+[complete CLI and operations guide](docs/operations.md#command-line-reference).
+
+`--identity-inspect` explains the current Plex GUIDs, selected TMDb identity,
+confidence and warning reasons, learned binding history, edition, and computed
+metadata/artwork destinations for one or more `--rating-key` values. It writes
+only its report: no binding, cache, Plex field, Kometa YAML, artwork, ownership,
+incremental, or cleanup state is changed. History begins when this extension is
+installed and cannot reconstruct earlier transitions.
 
 ## References
 

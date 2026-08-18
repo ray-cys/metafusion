@@ -91,6 +91,155 @@ def recursive_season_diff(old, new, path=""):
             changes.append(strip_indices(path))
     return list(set(changes))
 
+
+def artwork_quality_score(
+    config,
+    image,
+    *,
+    asset_type="poster",
+    preferred_language=None,
+):
+    """Score TMDb artwork deterministically without requiring image downloads."""
+    section_name = {
+        "poster": "poster_set",
+        "season": "season_set",
+        "background": "background_set",
+    }.get(asset_type, "poster_set")
+    settings = config.get(section_name, {})
+    width = max(0, int(image.get("width") or 0))
+    height = max(0, int(image.get("height") or 0))
+    vote = max(0.0, min(10.0, float(image.get("vote_average") or 0)))
+    target_width = max(1, int(settings.get("max_width") or width or 1))
+    target_height = max(1, int(settings.get("max_height") or height or 1))
+    target_area = target_width * target_height
+    resolution = min(1.0, (width * height) / target_area) * 45.0
+    vote_score = (vote / 10.0) * 35.0
+    target_ratio = 16 / 9 if asset_type == "background" else 2 / 3
+    actual_ratio = width / height if height else 0.0
+    ratio_error = abs(actual_ratio - target_ratio) / target_ratio if actual_ratio else 1.0
+    aspect = max(0.0, 1.0 - min(1.0, ratio_error)) * 10.0
+    language = image.get("iso_639_1")
+    if preferred_language is None or language == preferred_language:
+        language_score = 10.0
+    elif language in config.get("tmdb", {}).get("fallback", []):
+        language_score = 7.0
+    elif language in (None, ""):
+        language_score = 4.0
+    else:
+        language_score = 0.0
+    total = round(resolution + vote_score + aspect + language_score, 2)
+    return {
+        "score": total,
+        "resolution": round(resolution, 2),
+        "vote": round(vote_score, 2),
+        "aspect": round(aspect, 2),
+        "language": round(language_score, 2),
+    }
+
+
+def artwork_candidate_explanations(
+    config,
+    images,
+    selected,
+    *,
+    asset_type="poster",
+    preferred_language=None,
+    limit=3,
+):
+    """Explain why the highest-scoring rejected artwork candidates lost."""
+    if not selected or not images or limit <= 0:
+        return []
+    section_name = {
+        "poster": "poster_set",
+        "season": "season_set",
+        "background": "background_set",
+    }.get(asset_type, "poster_set")
+    settings = config.get(section_name, {})
+    selected_quality = artwork_quality_score(
+        config,
+        selected,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )
+    selected_path = str(selected.get("file_path") or "")
+    selected_language = selected.get("iso_639_1")
+    minimum_width = max(0, int(settings.get("min_width") or 0))
+    minimum_height = max(0, int(settings.get("min_height") or 0))
+    relaxed_vote = max(0.0, float(settings.get("vote_relaxed") or 0))
+    rejected = []
+
+    for image in images:
+        if image is selected or (
+            selected_path and str(image.get("file_path") or "") == selected_path
+        ):
+            continue
+        quality = artwork_quality_score(
+            config,
+            image,
+            asset_type=asset_type,
+            preferred_language=preferred_language,
+        )
+        width = max(0, int(image.get("width") or 0))
+        height = max(0, int(image.get("height") or 0))
+        vote = max(0.0, float(image.get("vote_average") or 0))
+        language = image.get("iso_639_1")
+        reasons = []
+        if preferred_language and language != preferred_language:
+            if selected_language == preferred_language:
+                reasons.append("lower language priority")
+            elif language not in config.get("tmdb", {}).get("fallback", []):
+                reasons.append("outside configured language fallback")
+        if width < minimum_width or height < minimum_height:
+            reasons.append("below minimum dimensions")
+        if vote < relaxed_vote:
+            reasons.append("below relaxed vote threshold")
+        if quality["aspect"] < selected_quality["aspect"]:
+            reasons.append("less suitable aspect ratio")
+        if quality["resolution"] < selected_quality["resolution"]:
+            reasons.append("lower resolution contribution")
+        if quality["vote"] < selected_quality["vote"]:
+            reasons.append("lower TMDb vote contribution")
+        if quality["score"] < selected_quality["score"]:
+            reasons.append("lower overall quality score")
+        if not reasons:
+            reasons.append("lost deterministic selection tie-break")
+        rejected.append(
+            {
+                "language": language or "untagged",
+                "width": width,
+                "height": height,
+                "vote": vote,
+                "quality_score": quality["score"],
+                "quality_components": quality,
+                "reasons": reasons,
+            }
+        )
+
+    rejected.sort(
+        key=lambda candidate: (
+            float(candidate["quality_score"]),
+            float(candidate["vote"]),
+            int(candidate["width"]) * int(candidate["height"]),
+        ),
+        reverse=True,
+    )
+    return rejected[: int(limit)]
+
+
+def _artwork_quality_key(config, image, asset_type, preferred_language=None):
+    score = artwork_quality_score(
+        config,
+        image,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )["score"]
+    return (
+        score,
+        float(image.get("vote_average") or 0),
+        int(image.get("width") or 0) * int(image.get("height") or 0),
+        str(image.get("file_path") or ""),
+    )
+
 def get_best_poster(
     config, images, preferred_language="en", fallback=None, prefer_vote=None, max_width=None,
     max_height=None, relaxed_vote=None, min_width=None, min_height=None,
@@ -128,7 +277,7 @@ def get_best_poster(
                img.get("height", 0) >= max_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
@@ -137,18 +286,18 @@ def get_best_poster(
                img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
             if img.get("width", 0) >= min_width and img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: x["width"] * x["height"])
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
 
     if images:
-        best = max(images, key=lambda x: x.get("width", 0) * x.get("height", 0))
+        best = max(images, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
         return best
     return None
 
@@ -189,7 +338,7 @@ def get_best_season(
                img.get("height", 0) >= max_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
@@ -198,18 +347,18 @@ def get_best_season(
                img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
             if img.get("width", 0) >= min_width and img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: x["width"] * x["height"])
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
 
     if images:
-        best = max(images, key=lambda x: x.get("width", 0) * x.get("height", 0))
+        best = max(images, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
         return best
     return None
 
@@ -237,7 +386,7 @@ def get_best_background(
            img.get("height", 0) >= max_height
     ]
     if filtered:
-        best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+        best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best 
     filtered = [
         img for img in images
@@ -246,18 +395,18 @@ def get_best_background(
            img.get("height", 0) >= min_height
     ]
     if filtered:
-        best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+        best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best    
     filtered = [
         img for img in images
         if img.get("width", 0) >= min_width and img.get("height", 0) >= min_height
     ]
     if filtered:
-        best = max(filtered, key=lambda x: x["width"] * x["height"])
+        best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best
 
     if images:
-        best = max(images, key=lambda x: x.get("width", 0) * x.get("height", 0))
+        best = max(images, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best
     return None
 
@@ -513,12 +662,12 @@ def smart_season_asset_upgrade(
             return True, "UPGRADE_ZERO_VOTE_SEASON", context
         if new_votes == 0 and (new_width > existing_width or new_height > existing_height):
             return True, "UPGRADE_VOTES_SEASON", context
-    if new_votes < cached_votes:
-        if new_width > existing_width or new_height > existing_height:
-            return True, "UPGRADE_VOTES_SEASON", context
-    if vote_relaxed <= new_votes < vote_threshold:
-        if new_votes > cached_votes:
-            return True, "UPGRADE_RELAXED_SEASON", context
+    if new_votes < cached_votes and (
+        new_width > existing_width or new_height > existing_height
+    ):
+        return True, "UPGRADE_VOTES_SEASON", context
+    if vote_relaxed <= new_votes < vote_threshold and new_votes > cached_votes:
+        return True, "UPGRADE_RELAXED_SEASON", context
     if new_votes >= vote_threshold:
         return True, "UPGRADE_THRESHOLD_SEASON", context
     if new_width > existing_width or new_height > existing_height:
@@ -595,15 +744,15 @@ def get_asset_path(config, meta, asset_type="poster", season_number=None):
         assets_path = Path(kometa_root) / "assets" / library_type
         if asset_type == "poster":
             if library_type == "movie":
-                return assets_path / movie_path / "poster.jpg"
+                return assets_path / movie_path / "poster.jpg" if movie_path else None
             elif library_type in ("show", "tv"):
-                return assets_path / show_path / "poster.jpg"
+                return assets_path / show_path / "poster.jpg" if show_path else None
         elif asset_type == "background":
             if library_type == "movie":
-                return assets_path / movie_path / "fanart.jpg"
+                return assets_path / movie_path / "fanart.jpg" if movie_path else None
             elif library_type in ("show", "tv"):
-                return assets_path / show_path / "fanart.jpg"
-        elif asset_type == "season" and season_number is not None:
+                return assets_path / show_path / "fanart.jpg" if show_path else None
+        elif asset_type == "season" and season_number is not None and show_path:
             return assets_path / show_path / f"Season{season_number:02}.jpg"
     return None
 
@@ -622,9 +771,9 @@ def asset_temp_path(config, meta, extension="jpg"):
             assets_path = Path(meta["show_dir"])
         else:
             assets_path = Path(".")
-    if config.get("settings", {}).get("dry_run", False):
-        assets_path.mkdir(parents=True, exist_ok=True)
-    elif mode_check(config, "kometa"):
+    if config.get("settings", {}).get("dry_run", False) or mode_check(
+        config, "kometa"
+    ):
         assets_path.mkdir(parents=True, exist_ok=True)
     ensure_storage_available(
         config,

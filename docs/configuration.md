@@ -150,6 +150,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `DESTINATION_HISTORY_REPORT_RETENTION` | `10` | Artwork destination-change reports retained under `/config/reports`. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
+| `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 

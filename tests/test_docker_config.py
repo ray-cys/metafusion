@@ -157,8 +157,50 @@ def test_ci_publishes_versioned_and_immutable_signed_images():
     assert "type=semver,pattern={{major}}.{{minor}}" in workflow
     assert "type=semver,pattern={{major}}" in workflow
     assert "type=sha,prefix=sha-,format=long" in workflow
+    assert (
+        "type=raw,value=latest,enable=${{ startsWith(github.ref, "
+        "'refs/tags/v') && !contains(github.ref_name, '-rc.') }}"
+    ) in workflow
+    assert "enable={{is_default_branch}}" not in workflow
     assert "cosign sign --yes" in workflow
     assert "org.opencontainers.image.licenses=LicenseRef-All-Rights-Reserved" in workflow
+
+
+def test_release_tags_require_the_exact_current_main_commit():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "main_commit=\"$(git rev-parse 'origin/main^{commit}')\"" in workflow
+    assert '[[ "${tag_commit}" != "${main_commit}" ]]' in workflow
+    assert "Release tags must reference the exact current main commit." in workflow
+    assert "git merge-base --is-ancestor" not in workflow
+
+
+def test_registry_publication_is_serialized_and_verified():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "'metafusion-registry-publish'" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "Verify published aliases, signature, SBOM, and provenance" in workflow
+    assert "resolved_digest" in workflow
+    assert "cosign verify" in workflow
+    assert "--certificate-identity" in workflow
+    assert "{{json .SBOM}}" in workflow
+    assert "{{json .Provenance}}" in workflow
+
+
+def test_pull_requests_build_both_architectures_without_publishing():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "github.event_name == 'pull_request' ||" in workflow
+    assert "platforms: linux/amd64,linux/arm64" in workflow
+    assert "push: ${{ github.event_name != 'pull_request' }}" in workflow
+    assert workflow.count("github.event_name != 'pull_request'") >= 6
 
 
 def test_ci_smoke_tests_each_published_platform_in_isolation():

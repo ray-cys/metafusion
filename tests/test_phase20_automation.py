@@ -13,6 +13,7 @@ from helper.plex_metadata import apply_plex_metadata, begin_plex_metadata_run
 from helper.plex_paths import advise_path_mappings
 from helper.runtime import DiskPressureError
 from helper.state_db import (
+    SCHEMA_VERSION,
     _connect,
     classify_item_failure,
     clear_item_retries,
@@ -42,14 +43,19 @@ def test_state_schema_upgrade_creates_bounded_sqlite_backup(tmp_path):
     connection.close()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-    assert {"item_retry_queue", "plex_library_inventory", "identity_bindings"} <= tables
+    assert {
+        "item_retry_queue",
+        "plex_library_inventory",
+        "identity_bindings",
+        "identity_binding_history",
+    } <= tables
     assert len(list(tmp_path.glob("meta_db.sqlite3.pre-v3-*.bak"))) == 1
 
 
