@@ -8,7 +8,6 @@ from modules import builder as builder_module
 from modules.kometa import build_episode_metadata, validate_metadata_document
 from modules.utils import smart_meta_update
 
-
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
 

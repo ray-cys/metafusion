@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from helper import tmdb as tmdb_module
 from helper import logging as logging_module
 from helper import plex as plex_module
+from helper import tmdb as tmdb_module
 from helper.plex import get_plex_metadata
 from helper.runtime import JobAlreadyRunningError, JobRunLock, RuntimeStatus
 from modules.utils import get_best_background

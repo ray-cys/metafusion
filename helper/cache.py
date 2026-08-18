@@ -7,7 +7,6 @@ from helper.asset_registry import normalize_destination
 from helper.logging import log_cache_event
 from helper.state_db import STATE_DATABASE, MediaStateStore
 
-
 _cache_store = None
 _cache_lock = None
 _cache_lock_loop = None

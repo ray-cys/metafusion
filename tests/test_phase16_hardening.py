@@ -2,8 +2,9 @@ import asyncio
 import copy
 import logging
 from datetime import datetime, timezone
-from PIL import Image
+
 import pytest
+from PIL import Image
 
 import metafusion
 from helper import tmdb as tmdb_module

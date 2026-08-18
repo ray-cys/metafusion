@@ -4,6 +4,11 @@ MetaFusion supports environment variables, secret files, and
 `/config/config.yml`. The supplied Docker Compose and Unraid templates expose
 the same application settings.
 
+The exhaustive [generated configuration table](configuration.generated.md),
+`.env.example`, `config_template.yml`, Docker Compose environment block, and
+Unraid variables are generated from the canonical `config_schema.yml` file.
+Maintainers update the schema and run `python tools/generate_config_surfaces.py`.
+
 ## Configuration priority
 
 Values are merged in this order, with later sources taking priority:

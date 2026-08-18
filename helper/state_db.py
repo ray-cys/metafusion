@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
+
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
 SCHEMA_VERSION = 4
 FILE_MODE = 0o664

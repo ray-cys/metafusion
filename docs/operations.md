@@ -55,6 +55,7 @@ or `config.yml` values.
 | Category | Option | Value | Purpose and requirements |
 | --- | --- | --- | --- |
 | Help | `-h`, `--help` | None | Print the supported command-line options and exit. |
+| Build | `--version` | None | Print the image version, commit, Python/architecture, and supported SQLite schema versions, then exit. |
 | Run control | `--metafusion_run` | None | Request one MetaFusion job immediately. |
 | Run control | `--schedule` | None | Enable the scheduler for the current process. |
 | Run control | `--run_times` | Comma-separated `HH:MM` values | Override the daily schedule, for example `--run_times 06:00,18:30`. Times use `TZ`. |
@@ -67,6 +68,7 @@ or `config.yml` values.
 | Configuration | `--run_background` | None | Enable background processing. |
 | Diagnostics | `--doctor`, `--check-config` | None | Validate configuration and show value sources without running a job. Both names perform the same action. |
 | Diagnostics | `--preflight` | None | Check Plex, TMDb, selected libraries, mappings, and storage without processing content. |
+| Diagnostics | `--release-check` | None | Run the complete read-only preflight and SQLite health checks, write a redacted release-qualification report, and exit nonzero when an automated gate fails. |
 | Diagnostics | `--asset-audit` | None | Perform a read-only, full artwork selection and ownership/quality audit and write a report. |
 | Diagnostics | `--metadata-audit` | None | Perform a read-only full metadata comparison against TMDb and write field-level proposed actions. Artwork and cleanup are disabled. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
@@ -93,6 +95,9 @@ python metafusion.py --doctor
 # without creating or changing configuration, metadata, artwork, or state
 python metafusion.py --preflight
 
+# Run connector, path, storage, architecture, and SQLite release qualification
+python metafusion.py --release-check
+
 # Perform a read-only full artwork selection and ownership/quality audit
 python metafusion.py --asset-audit
 
@@ -105,6 +110,11 @@ python metafusion.py --status
 # Write a value-free diagnostic report under /config/reports
 python metafusion.py --support-report
 ```
+
+Public CLI exit codes are `0` for success, `1` for an operational or connector
+failure, and `2` for invalid configuration or command combinations. Docker can
+forward public options directly, for example `docker run --rm IMAGE --help` or
+`docker run --rm IMAGE --version`.
 
 Preflight fails when authentication, explicitly selected library names, mapping
 roots, or required storage are unavailable. With `PLEX_LIBRARIES=auto`, it

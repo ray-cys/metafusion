@@ -2,7 +2,6 @@ import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[1] / ".github" / "scripts" / "cleanup_ghcr.py"
 SPEC = importlib.util.spec_from_file_location("cleanup_ghcr", SCRIPT)
 cleanup_ghcr = importlib.util.module_from_spec(SPEC)

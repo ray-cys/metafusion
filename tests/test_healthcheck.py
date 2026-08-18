@@ -1,11 +1,12 @@
 import json
 import os
+import runpy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
-from healthcheck import check_status
+from healthcheck import check_status, parse_time
 from helper import runtime as runtime_module
 from helper.runtime import (
     RuntimeStatus,
@@ -104,6 +105,43 @@ def test_healthcheck_separates_liveness_from_failed_jobs(tmp_path):
     assert healthy is True
     assert "last run failed" in message
     assert check_status(status_path, fail_on_job_error=True)[0] is False
+
+
+def test_healthcheck_parses_naive_time_and_rejects_missing_or_invalid_state(tmp_path):
+    assert parse_time(None) is None
+    assert parse_time("2026-01-01T00:00:00").tzinfo == timezone.utc
+
+    status_path = tmp_path / "status.json"
+    status_path.write_text('{"pid": 1}', encoding="utf-8")
+    assert check_status(status_path) == (False, "missing heartbeat")
+    status_path.write_text("broken", encoding="utf-8")
+    healthy, message = check_status(status_path)
+    assert healthy is False
+    assert message
+
+
+def test_healthcheck_command_uses_environment_and_returns_success(
+    monkeypatch, tmp_path, capsys
+):
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "state": "idle",
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STATUS_FILE", str(status_path))
+    monkeypatch.setenv("HEALTH_MAX_HEARTBEAT_AGE", "60")
+    monkeypatch.setenv("HEALTH_FAIL_ON_JOB_ERROR", "true")
+
+    with pytest.raises(SystemExit, match="0"):
+        runpy.run_module("healthcheck", run_name="__main__")
+
+    assert capsys.readouterr().out.strip() == "idle"
 
 
 def test_runtime_path_preflight_creates_required_paths(tmp_path):

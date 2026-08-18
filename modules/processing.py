@@ -1,35 +1,33 @@
-import asyncio, copy, time, yaml
+import asyncio
+import copy
+import time
 from collections import Counter
 from pathlib import Path
+
+import yaml
+
 from helper.cache import (
     load_cache,
     meta_cache_async,
     reset_cache_scope,
     set_cache_scope,
 )
-from helper.config import mode_check
 from helper.concurrency import concurrency_ceiling, runtime_slot
-from helper.incremental import child_inventory_fingerprint, plan_items
-from helper.logging import (
-    PlexMetadataProgress,
-    log_processing_event,
-    log_library_summary,
-)
-from helper.performance import tracker_for
-from helper.plex import get_plex_metadata, plex_operation
+from helper.config import mode_check
 from helper.identity import (
     cache_key_for_meta,
     item_identity,
     plex_identity_fingerprint,
 )
+from helper.incremental import child_inventory_fingerprint, plan_items
 from helper.io import sha256_file
-from modules.builder import build_movie, build_tv
-from modules.kometa import (
-    normalize_metadata_order,
-    remove_deprecated_metadata_fields,
-    validate_metadata_document,
-    write_kometa_metadata,
+from helper.logging import (
+    PlexMetadataProgress,
+    log_library_summary,
+    log_processing_event,
 )
+from helper.performance import tracker_for
+from helper.plex import get_plex_metadata, plex_operation
 from helper.plex_metadata import apply_plex_metadata
 from helper.state_db import (
     clear_item_retries,
@@ -38,6 +36,13 @@ from helper.state_db import (
     mark_items_started,
     prune_plex_metadata_library,
     record_item_failure,
+)
+from modules.builder import build_movie, build_tv
+from modules.kometa import (
+    normalize_metadata_order,
+    remove_deprecated_metadata_fields,
+    validate_metadata_document,
+    write_kometa_metadata,
 )
 
 

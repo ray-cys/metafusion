@@ -1,7 +1,6 @@
 import copy
 import re
 
-
 PROVIDER_KEY = re.compile(r"^(tmdb|tvdb|imdb):(.+)$", re.IGNORECASE)
 EPISODE_KEY = re.compile(r"^S(\d+)E(\d+)$", re.IGNORECASE)
 
