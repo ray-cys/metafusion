@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "kometa": {
+    "profile": "kometa-2.4",
+    "release": "v2.4.8",
+    "repository": "Kometa-Team/Kometa",
+    "image": "kometateam/kometa",
+    "digest": "sha256:c58f6d4af511613f218b6dafbfc84078af4e5a6089790c1fdba58fd7c5dad70a",
+    "schema_path": "json-schema/metadata-schema.json",
+    "schema_sha256": "39066877265f853bddd92d8e2b976587d8c796dd09a09d7a1ff24ddc78661c94"
+  },
+  "plex": {
+    "profile": "plex-api-v1",
+    "package": "plexapi",
+    "version_source": "requirements.in",
+    "replay_tests": [
+      "tests/test_phase23_post_release.py",
+      "tests/test_plex_metadata.py",
+      "tests/test_plex_paths.py",
+      "tests/test_phase24_identity_inspection.py",
+      "tests/test_provider_mappings.py",
+      "tests/test_runtime.py"
+    ]
+  }
+}

@@ -20,9 +20,10 @@ Dependencies and GitHub Actions are opened against `develop`. Python 3.10 and
 Python upgrade is a separate compatibility change, not an automatic merge.
 
 CI also validates representative generated YAML with the official Kometa
-2.4.8 container pinned by digest. Release-tag guards accept supported semantic
-or RC `v…` tags only when their commit is the exact current `main` HEAD; the tag
-workflow's own test and security jobs must then pass before an image publishes.
+container and digest declared in `.github/provider-contracts.json`. Release-tag
+guards accept supported semantic or RC `v…` tags only when their commit is the
+exact current `main` HEAD; the tag workflow's own test and security jobs must
+then pass before an image publishes.
 
 Published images include SBOM and maximum-mode build-provenance attestations.
 Registry publication is serialized so overlapping branch and tag workflows
@@ -44,6 +45,34 @@ cosign, recent, newest-retained, and referenced platform manifests are
 protected; only untagged, unreferenced versions older than 30 days are eligible,
 and the newest 50 untagged versions are retained. Manual runs default to
 report-only mode.
+
+## Provider compatibility automation
+
+`.github/provider-contracts.json` is the single source of truth for the Kometa
+release, immutable image digest, metadata-schema checksum, PlexAPI version
+source, and focused Plex replay suite. The weekly provider workflow runs from
+the default branch, checks out `develop`, and queries stable upstream releases.
+It never uses Kometa nightly builds and never accesses a private Plex server.
+
+For a new Kometa release, the workflow resolves the release-specific image
+digest, verifies and compares the old and candidate JSON schemas, runs the
+candidate's own `--validate-file` command, and opens a draft PR against
+`develop`. It never auto-merges. The PR keeps MetaFusion's existing output
+profile unless a reviewed code change deliberately adopts new schema features.
+A failed candidate remains visible for diagnosis instead of silently changing
+production output. The bot explicitly dispatches the normal qualification
+workflow because GitHub suppresses recursive workflow events created with its
+built-in token.
+
+PlexAPI package and lockfile updates remain owned by weekly Dependabot PRs
+against `develop`. Every such PR must pass the named `plex-contract` job, which
+runs the sanitized provider replays, Plex metadata writer and locking policies,
+path discovery, identity inspection, provider mappings, pagination, and
+temporary-disconnect tests. The scheduled workflow also runs that replay suite
+weekly. Actual Plex credentials and server behavior remain covered by an
+operator's explicit `--compatibility-check` and Unraid soak test.
+The provider-maintenance script itself has an enforced 85% targeted coverage
+floor so release automation cannot silently lose its failure-path tests.
 
 ## Required release gate
 

@@ -14,6 +14,7 @@ on:
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ "main", "develop" ]
+  workflow_dispatch:
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -101,13 +102,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Validate representative output with pinned Kometa 2.4.8
-        run: >-
-          docker run --rm
-          --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro"
-          kometateam/kometa@sha256:c58f6d4af511613f218b6dafbfc84078af4e5a6089790c1fdba58fd7c5dad70a
-          --config /contract/metadata.yml
-          --validate-file /contract/metadata.yml
+      - name: Resolve pinned provider contract
+        id: provider-contract
+        run: python3 tools/provider_compatibility.py outputs --github-output "${GITHUB_OUTPUT}"
+
+      - name: Validate representative output with pinned Kometa
+        run: |
+          docker run --rm \
+            --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro" \
+            "${{ steps.provider-contract.outputs.kometa_image }}" \
+            --config /contract/metadata.yml \
+            --validate-file /contract/metadata.yml
+
+  plex-contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Validate PlexAPI pin and replay contract
+        id: provider-contract
+        run: |
+          python tools/provider_compatibility.py verify
+          replay_tests="$(python tools/provider_compatibility.py outputs | python -c 'import json, sys; print(json.load(sys.stdin)["plex_replay_tests"])')"
+          # Paths are restricted to committed tests/*.py values by the contract validator.
+          read -r -a test_paths <<<"${replay_tests}"
+          pytest -q "${test_paths[@]}"
 
   security:
     needs: test
@@ -199,7 +230,7 @@ jobs:
        (github.ref == 'refs/heads/main' ||
         github.ref == 'refs/heads/develop' ||
         startsWith(github.ref, 'refs/tags/v')))
-    needs: [release-guard, test, kometa-contract, security]
+    needs: [release-guard, test, kometa-contract, plex-contract, security]
     runs-on: ubuntu-latest
     concurrency:
       group: ${{ github.event_name == 'pull_request' && format('metafusion-pr-build-{0}', github.event.pull_request.number) || 'metafusion-registry-publish' }}

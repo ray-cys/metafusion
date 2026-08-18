@@ -1,0 +1,186 @@
+name: Provider compatibility updates
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: provider-compatibility-updates
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  provider-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Validate committed provider contracts
+        run: python tools/provider_compatibility.py verify
+
+      - name: Resolve current provider contracts
+        id: current
+        run: python tools/provider_compatibility.py outputs --github-output "${GITHUB_OUTPUT}"
+
+      - name: Discover latest stable provider versions
+        id: upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/provider_compatibility.py discover --github-output "${GITHUB_OUTPUT}"
+
+      - name: Report PlexAPI update ownership
+        env:
+          CURRENT: ${{ steps.current.outputs.plexapi_version }}
+          LATEST: ${{ steps.upstream.outputs.plexapi_latest }}
+          CHANGED: ${{ steps.upstream.outputs.plexapi_changed }}
+        run: |
+          {
+            echo "## PlexAPI compatibility"
+            echo
+            echo "- Pinned version: \`${CURRENT}\`"
+            echo "- Latest stable version: \`${LATEST}\`"
+            if [[ "${CHANGED}" == "true" ]]; then
+              echo "- Update status: Dependabot owns the version-and-lockfile PR against develop."
+            else
+              echo "- Update status: current"
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Set up Docker Buildx
+        if: steps.upstream.outputs.kometa_changed == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Download and verify Kometa schemas
+        if: steps.upstream.outputs.kometa_changed == 'true'
+        env:
+          BASELINE_URL: ${{ steps.current.outputs.kometa_schema_url }}
+          BASELINE_SHA256: ${{ steps.current.outputs.kometa_schema_sha256 }}
+          CANDIDATE_RELEASE: ${{ steps.upstream.outputs.kometa_latest }}
+        run: |
+          set -euo pipefail
+          [[ "${CANDIDATE_RELEASE}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          curl --fail --silent --show-error --location \
+            "${BASELINE_URL}" --output /tmp/kometa-schema-old.json
+          echo "${BASELINE_SHA256}  /tmp/kometa-schema-old.json" | sha256sum --check --strict
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/Kometa-Team/Kometa/${CANDIDATE_RELEASE}/json-schema/metadata-schema.json" \
+            --output /tmp/kometa-schema-new.json
+          python -m json.tool /tmp/kometa-schema-new.json >/dev/null
+
+      - name: Resolve candidate Kometa image digest
+        if: steps.upstream.outputs.kometa_changed == 'true'
+        id: candidate-image
+        env:
+          CANDIDATE_RELEASE: ${{ steps.upstream.outputs.kometa_latest }}
+        run: |
+          set -euo pipefail
+          [[ "${CANDIDATE_RELEASE}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          image="kometateam/kometa:${CANDIDATE_RELEASE}"
+          manifest="$(docker buildx imagetools inspect "${image}" --format '{{json .Manifest}}')"
+          digest="$(jq -r '.digest' <<<"${manifest}")"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${digest}" >>"${GITHUB_OUTPUT}"
+          echo "image=kometateam/kometa@${digest}" >>"${GITHUB_OUTPUT}"
+
+      - name: Update candidate Kometa contract and compare schema
+        if: steps.upstream.outputs.kometa_changed == 'true'
+        env:
+          CANDIDATE_RELEASE: ${{ steps.upstream.outputs.kometa_latest }}
+          CANDIDATE_DIGEST: ${{ steps.candidate-image.outputs.digest }}
+        run: |
+          python tools/provider_compatibility.py update-kometa \
+            --release "${CANDIDATE_RELEASE}" \
+            --digest "${CANDIDATE_DIGEST}" \
+            --old-schema /tmp/kometa-schema-old.json \
+            --new-schema /tmp/kometa-schema-new.json \
+            --report /tmp/kometa-schema-report.md
+
+      - name: Validate candidate output with official Kometa
+        if: steps.upstream.outputs.kometa_changed == 'true'
+        id: kometa-candidate
+        continue-on-error: true
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate-image.outputs.image }}
+        run: |
+          docker run --rm \
+            --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro" \
+            "${CANDIDATE_IMAGE}" \
+            --config /contract/metadata.yml \
+            --validate-file /contract/metadata.yml
+
+      - name: Install replay-test dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run Plex provider replay contract
+        run: |
+          replay_tests="$(python tools/provider_compatibility.py outputs | python -c 'import json, sys; print(json.load(sys.stdin)["plex_replay_tests"])')"
+          # Paths are restricted to committed tests/*.py values by the contract validator.
+          read -r -a test_paths <<<"${replay_tests}"
+          pytest -q "${test_paths[@]}"
+
+      - name: Open or refresh the blocked-by-default Kometa update PR
+        if: steps.upstream.outputs.kometa_changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RELEASE: ${{ steps.upstream.outputs.kometa_latest }}
+          CANDIDATE_OUTCOME: ${{ steps.kometa-candidate.outcome }}
+          PLEX_CURRENT: ${{ steps.current.outputs.plexapi_version }}
+          PLEX_LATEST: ${{ steps.upstream.outputs.plexapi_latest }}
+        run: |
+          set -euo pipefail
+          [[ "${CANDIDATE_RELEASE}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          branch="automation/kometa-${CANDIDATE_RELEASE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "${branch}"
+          git add .github/provider-contracts.json
+          git commit -m "Update Kometa contract to ${CANDIDATE_RELEASE}"
+          git fetch origin "${branch}:refs/remotes/origin/${branch}" || true
+          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+
+          body="$(mktemp)"
+          {
+            echo "## Provider compatibility update"
+            echo
+            echo "This draft PR was opened automatically against \`develop\`. It is never auto-merged."
+            echo
+            echo "- Kometa candidate: \`${CANDIDATE_RELEASE}\`"
+            echo "- Candidate \`--validate-file\` result: **${CANDIDATE_OUTCOME}**"
+            echo "- PlexAPI pin/latest: \`${PLEX_CURRENT}\` / \`${PLEX_LATEST}\`"
+            echo "- MetaFusion output profile remains \`kometa-2.4\` unless a reviewed code change deliberately adopts a newer schema."
+            echo
+            cat /tmp/kometa-schema-report.md
+            echo
+            echo "Merging requires the dispatched full qualification workflow and normal review."
+          } >"${body}"
+
+          number="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base develop \
+            --head "${branch}" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "${number}" ]]; then
+            gh pr edit "${number}" --repo "${GITHUB_REPOSITORY}" \
+              --title "Update Kometa compatibility contract to ${CANDIDATE_RELEASE}" \
+              --body-file "${body}"
+          else
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base develop --head "${branch}" \
+              --draft --title "Update Kometa compatibility contract to ${CANDIDATE_RELEASE}" \
+              --body-file "${body}"
+          fi
+
+          # GITHUB_TOKEN-created PR events do not start another workflow. Explicit
+          # dispatch preserves full qualification without publishing an image.
+          gh workflow run docker-latest.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
