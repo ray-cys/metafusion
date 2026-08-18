@@ -304,9 +304,11 @@ class PersistentTTLCache(MutableMapping):
             self._memory_touched.pop(oldest, None)
             self._evictions += 1
 
-    def _store_memory(self, key, value, now):
+    def _store_memory(self, key, value, now, ttl_seconds=None):
         self._memory[key] = value
-        self._memory_expires[key] = now + self.ttl_seconds
+        self._memory_expires[key] = now + (
+            self.ttl_seconds if ttl_seconds is None else max(1.0, float(ttl_seconds))
+        )
         self._memory_touched[key] = now
         self._trim_memory()
 
@@ -401,6 +403,10 @@ class PersistentTTLCache(MutableMapping):
             return False
 
     def __setitem__(self, key, value):
+        self.set(key, value)
+
+    def set(self, key, value, ttl_seconds=None):
+        """Store a value with the default TTL or a shorter per-entry TTL."""
         if not self.enabled:
             return
         try:
@@ -408,8 +414,13 @@ class PersistentTTLCache(MutableMapping):
         except (TypeError, ValueError, OverflowError, RecursionError):
             return
         now = time.time()
+        effective_ttl = (
+            self.ttl_seconds
+            if ttl_seconds is None
+            else max(1.0, min(self.ttl_seconds, float(ttl_seconds)))
+        )
         if self._connection is None or not self.writable:
-            self._store_memory(key, value, now)
+            self._store_memory(key, value, now, effective_ttl)
             return
 
         try:
@@ -427,11 +438,11 @@ class PersistentTTLCache(MutableMapping):
                     touched_at = excluded.touched_at,
                     stored_bytes = excluded.stored_bytes
                 """,
-                (key, encoded, now + self.ttl_seconds, now, len(encoded)),
+                (key, encoded, now + effective_ttl, now, len(encoded)),
             )
         except sqlite3.Error as error:
             self._handle_database_error(error)
-            self._store_memory(key, value, now)
+            self._store_memory(key, value, now, effective_ttl)
             return
         if existing is None:
             self._entry_count += 1
@@ -444,7 +455,7 @@ class PersistentTTLCache(MutableMapping):
             self._trim_database()
         except sqlite3.Error as error:
             self._handle_database_error(error)
-            self._store_memory(key, value, now)
+            self._store_memory(key, value, now, effective_ttl)
 
     def __delitem__(self, key):
         if key in self._memory:

@@ -447,6 +447,9 @@ def test_successful_metadata_run_persists_pending_episode_marker(
         year = 2020
         ratingKey = "show-1"
         updatedAt = "updated"
+        childCount = 1
+        seasonCount = 1
+        leafCount = 2
 
     async def fake_metadata(_item, **_kwargs):
         return {
@@ -487,3 +490,6 @@ def test_successful_metadata_run_persists_pending_episode_marker(
     )
 
     assert marker_calls[-1][1]["metadata_pending_count"] == 1
+    assert marker_calls[-1][1]["plex_child_fingerprint"] == (
+        processing.child_inventory_fingerprint(Show())
+    )

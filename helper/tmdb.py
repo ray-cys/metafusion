@@ -10,6 +10,7 @@ from helper.tmdb_cache import tmdb_response_cache
 _tmdb_limiter = None
 _tmdb_limiter_loop = None
 _CACHE_MISS = object()
+_NEGATIVE_STATUS_KEY = "__metafusion_negative_http_status__"
 
 
 def get_tmdb_limiter():
@@ -166,6 +167,14 @@ async def tmdb_api_request(
     if cached_response is not _CACHE_MISS:
         if performance:
             performance.increment("tmdb_cache_hits")
+        if (
+            isinstance(cached_response, dict)
+            and cached_response.get(_NEGATIVE_STATUS_KEY) == 404
+        ):
+            log_tmdb_event(
+                "tmdb_negative_cache_hit", url=logged_url, params=logged_query
+            )
+            return None
         log_tmdb_event("tmdb_cache_hit", url=logged_url, params=logged_query)
         return cached_response
     if cache and performance:
@@ -206,8 +215,40 @@ async def tmdb_api_request(
                             body = redact_secrets(await response.text(), *sensitive_values)
                             log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
                             if response.status == 404:
-                                # A missing resource is permanent for this identifier;
-                                # retrying only delays recovery through other IDs.
+                                if cache:
+                                    negative_hours = max(
+                                        0.1,
+                                        float(
+                                            config.get("tmdb_cache", {}).get(
+                                                "negative_ttl_hours", 12.0
+                                            )
+                                        ),
+                                    )
+                                    if "/season/" in str(endpoint_or_url):
+                                        negative_hours = min(
+                                            negative_hours,
+                                            max(
+                                                0.1,
+                                                float(
+                                                    config.get("incremental", {}).get(
+                                                        "metadata_pending_recheck_hours",
+                                                        24.0,
+                                                    )
+                                                ),
+                                            ),
+                                        )
+                                    tmdb_response_cache.set(
+                                        cache_hash,
+                                        {_NEGATIVE_STATUS_KEY: 404},
+                                        ttl_seconds=negative_hours * 3600,
+                                    )
+                                    log_tmdb_event(
+                                        "tmdb_negative_cached",
+                                        url=logged_url,
+                                        ttl_hours=negative_hours,
+                                    )
+                                # Missing resources are retried after a short negative
+                                # TTL instead of on every item or caching them forever.
                                 return None
             if rate_limit_waited and attempt < retries:
                 if performance:

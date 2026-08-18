@@ -68,6 +68,7 @@ or `config.yml` values.
 | Diagnostics | `--doctor`, `--check-config` | None | Validate configuration and show value sources without running a job. Both names perform the same action. |
 | Diagnostics | `--preflight` | None | Check Plex, TMDb, selected libraries, mappings, and storage without processing content. |
 | Diagnostics | `--asset-audit` | None | Perform a read-only, full artwork selection and ownership/quality audit and write a report. |
+| Diagnostics | `--metadata-audit` | None | Perform a read-only full metadata comparison against TMDb and write field-level proposed actions. Artwork and cleanup are disabled. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
 | Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
 | Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
@@ -95,6 +96,9 @@ python metafusion.py --preflight
 # Perform a read-only full artwork selection and ownership/quality audit
 python metafusion.py --asset-audit
 
+# Compare TMDb with current Kometa/Plex metadata without applying changes
+python metafusion.py --metadata-audit
+
 # Show live scheduler state, effective build, library counts, and recent jobs
 python metafusion.py --status
 
@@ -108,6 +112,14 @@ probe files. The asset audit contacts Plex and TMDb and can take about as long
 as a full artwork evaluation, but it does not update YAML, artwork, ownership,
 incremental state, or TMDb cache. Its deliberate output is a value-safe
 `asset-audit-*.txt` report.
+
+The metadata audit always uses a dry-run full scan and writes
+`/config/reports/metadata-audit-*.txt`. In Kometa mode it compares generated
+TMDb fields with current YAML; in Plex mode it compares supported TMDb
+candidates with current Plex fields and reports locks, policy exclusions,
+conflicts, missing source values, differences, and proposed actions. It does
+not write Plex fields, Kometa YAML, artwork, cache entries, ownership records,
+or incremental markers. Metadata values are omitted from the report.
 
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
@@ -141,6 +153,24 @@ selected again when its Plex update marker changes, a metadata/artwork recheck
 becomes due, required generated output is missing, or a full reconciliation is
 required.
 
+For TV libraries, MetaFusion also fingerprints the show-level `childCount`,
+`seasonCount`, and `leafCount` values returned with the normal Plex library
+inventory. A new season or episode therefore selects its parent show even when
+Plex leaves the show's `updatedAt` value unchanged. This adds no media-tree scan
+and no per-episode Plex request to an otherwise skipped show. If a Plex server
+omits all three counters, `updatedAt` and the periodic full scan remain the
+fallbacks.
+
+The first successful run after enabling this behavior selects existing shows
+whose older SQLite records have no child fingerprint, establishing a baseline.
+Later unchanged runs return to normal incremental skipping.
+
+`--explain-selection` separates the trigger from the work that would run. Its
+per-item causes include a new rating key, Plex `updatedAt` change, TV child
+inventory change/baseline, configuration change, pending metadata recheck,
+Plex metadata recheck, artwork interval, targeted rating key, or full scan.
+Each library ends with selected, unchanged/not-due, and cause counts.
+
 `FULL_SCAN_INTERVAL_HOURS` is evaluated from the saved last successful full
 scan for each Plex server/library, not the current Docker runtime. The default
 `168` is seven days. Restarting the container does not force or postpone this
@@ -171,6 +201,13 @@ Blank type-specific values inherit `IMAGE_UPGRADE_DAYS`. Decimal values are
 supported; `0.5` means 12 hours. `0` disables timed refreshes for that type.
 The saved MetaFusion upgrade timestamp is used—there is no media-tree scan to
 calculate artwork age from filesystem dates.
+
+## Log retention
+
+The persistent log rotates at local midnight and whenever the active file
+reaches `LOG_MAX_MB` (10 MiB by default). `LOG_BACKUP_COUNT` keeps the newest
+14 rotated files by default. Set `LOG_MAX_MB=0` only when size-based rotation
+must be disabled; daily rotation remains active.
 
 At the first scheduled job after an interval expires, MetaFusion evaluates a
 candidate. [Artwork policy](policies.md#artwork-update-policies) and quality

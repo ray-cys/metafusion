@@ -463,6 +463,45 @@ def test_plex_report_logs_summary_and_safety_decisions(
     assert "locked fields: 1" in caplog.text
 
 
+def test_plex_metadata_audit_records_locked_policy_and_unchanged_fields(tmp_path):
+    config = plex_config(dry_run=True)
+    config["_execution"] = {"metadata_audit": True}
+    config["_metadata_audit_records"] = []
+    config["plex_metadata"]["fields"] = ["summary", "studio"]
+    reporter = PlexMetadataReporter(config)
+    item = EditableItem(
+        summary="Same summary",
+        studio="Manual studio",
+        tagline="Manual tagline",
+        locks={"studio": True},
+    )
+
+    _apply_candidate(
+        item,
+        {
+            "root": {
+                "fields": {
+                    "summary": "Same summary",
+                    "studio": "TMDb Studio",
+                    "tagline": "TMDb tagline",
+                }
+            }
+        },
+        config,
+        identity(),
+        reporter,
+    )
+
+    actions = {
+        (record["field"], record["state"])
+        for record in config["_metadata_audit_records"]
+    }
+    assert ("summary", "unchanged") in actions
+    assert ("studio", "locked_skipped") in actions
+    assert ("tagline", "policy_excluded") in actions
+    assert reporter.write(base_dir=tmp_path) is None
+
+
 def test_overwrite_policy_requires_explicit_acknowledgement():
     config = dict(DEFAULT_CONFIG)
     config["settings"] = {**DEFAULT_CONFIG["settings"], "mode": "plex"}

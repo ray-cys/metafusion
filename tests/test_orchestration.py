@@ -78,8 +78,37 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
         "metadata_only": True,
         "asset_only": False,
         "asset_audit": False,
+        "metadata_audit": False,
         "explain_selection": False,
     }
+
+
+def test_metadata_audit_forces_read_only_metadata_full_scan():
+    args = metafusion.parse_cli_args(["--metadata-audit"])
+    config = {
+        "metafusion_run": False,
+        "settings": {"mode": "plex", "dry_run": False},
+        "metadata": {"run_basic": False, "run_enhanced": True},
+        "assets": {
+            "run_poster": True,
+            "run_season": True,
+            "run_background": True,
+        },
+        "cleanup": {"run_cleanup": True},
+        "plex_metadata": {"enabled": False},
+        "plex_libraries": ["Movies"],
+    }
+
+    metafusion.override_config_with_cli(config, args)
+
+    assert config["metafusion_run"] is True
+    assert config["settings"]["dry_run"] is True
+    assert config["metadata"]["run_basic"] is True
+    assert not any(config["assets"].values())
+    assert config["cleanup"]["run_cleanup"] is False
+    assert config["plex_metadata"]["enabled"] is True
+    assert config["_execution"]["metadata_audit"] is True
+    assert config["_execution"]["full_scan"] is True
 
 
 def test_asset_only_cli_disables_metadata_and_cleanup():

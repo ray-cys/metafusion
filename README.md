@@ -209,6 +209,8 @@ scheduled slot after a restart. Scheduling is based on saved timestamps, not
 container uptime.
 
 `INCREMENTAL=True` skips successfully processed unchanged items.
+TV child-count fingerprints also select a show when Plex adds a season or
+episode without changing the parent show's update timestamp.
 `FULL_SCAN_INTERVAL_HOURS` controls the maximum time between complete
 reconciliation scans. Artwork refresh intervals independently make unchanged
 items eligible for reconsideration:
@@ -293,6 +295,7 @@ Useful commands inside the container are:
 python metafusion.py --doctor
 python metafusion.py --preflight
 python metafusion.py --asset-audit
+python metafusion.py --metadata-audit
 python metafusion.py --status
 python metafusion.py --support-report
 ```
@@ -306,6 +309,11 @@ connector secrets and the asset audit omits host paths. Do not publish
 inspection output, tokens, API keys, or unredacted host paths. For operational
 checks and common symptoms, see
 [Scheduling, maintenance, state, and troubleshooting](docs/operations.md).
+
+`--metadata-audit` performs a full read-only TMDb comparison. It reports
+missing, different, unchanged, locked, policy-excluded, unsupported, and
+identity-rejected metadata plus the proposed action, without writing metadata,
+artwork, cache state, or ownership records.
 
 ## References
 

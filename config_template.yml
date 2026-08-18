@@ -15,6 +15,9 @@ settings:
     - "18:30"
   dry_run: false
   log_level: "INFO"
+  # Rotate at midnight or when the active log reaches this size.
+  log_max_mb: 10
+  log_backup_count: 14
   mode: "kometa"  # or "plex"
   path: "/kometa"
 
@@ -141,6 +144,8 @@ library_overrides: {}
 tmdb_cache:
   enabled: true
   ttl_hours: 24
+  # Avoid repeating permanent-looking 404 requests while still rechecking soon.
+  negative_ttl_hours: 12
   max_entries: 5000
   max_mb: 0  # Optional compressed-payload limit; 0 disables the byte cap.
 

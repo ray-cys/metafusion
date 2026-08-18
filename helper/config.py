@@ -92,6 +92,8 @@ DEFAULT_CONFIG = {
         "run_times": ["06:00", "18:30"],
         "dry_run": False,
         "log_level": "INFO",
+        "log_max_mb": 10.0,
+        "log_backup_count": 14,
         "mode": "kometa",
         "path": "/kometa/",
     },
@@ -167,6 +169,7 @@ DEFAULT_CONFIG = {
     "tmdb_cache": {
         "enabled": True,
         "ttl_hours": 24.0,
+        "negative_ttl_hours": 12.0,
         "max_entries": 5000,
         "max_mb": 0.0,
     },
@@ -216,6 +219,8 @@ ENV_BINDINGS = (
     ("RUN_TIMES", ("settings", "run_times"), safe_list),
     ("DRY_RUN", ("settings", "dry_run"), safe_bool),
     ("LOG_LEVEL", ("settings", "log_level"), None),
+    ("LOG_MAX_MB", ("settings", "log_max_mb"), safe_float),
+    ("LOG_BACKUP_COUNT", ("settings", "log_backup_count"), safe_int),
     ("RUN_MODE", ("settings", "mode"), None),
     ("KOMETA_PATH", ("settings", "path"), None),
     ("PLEX_URL", ("plex", "url"), None),
@@ -268,6 +273,7 @@ ENV_BINDINGS = (
     ("SEASON_IMAGE_UPGRADE_DAYS", ("image_upgrades", "season_days"), safe_float),
     ("TMDB_CACHE_ENABLED", ("tmdb_cache", "enabled"), safe_bool),
     ("TMDB_CACHE_TTL_HOURS", ("tmdb_cache", "ttl_hours"), safe_float),
+    ("TMDB_CACHE_NEGATIVE_TTL_HOURS", ("tmdb_cache", "negative_ttl_hours"), safe_float),
     ("TMDB_CACHE_MAX_ENTRIES", ("tmdb_cache", "max_entries"), safe_int),
     ("TMDB_CACHE_MAX_MB", ("tmdb_cache", "max_mb"), safe_float),
     ("VALIDATE_OUTPUT", ("output", "validate_schema"), safe_bool),
@@ -585,6 +591,8 @@ def validate_config(config):
                     errors.append(f"Invalid schedule time: {run_time!r}; expected HH:MM")
 
     numeric_rules = (
+        ("settings.log_max_mb", settings.get("log_max_mb"), 0, 1024),
+        ("settings.log_backup_count", settings.get("log_backup_count"), 1, 365),
         (
             "settings.schedule_catch_up_max_hours",
             settings.get("schedule_catch_up_max_hours"),
@@ -619,6 +627,7 @@ def validate_config(config):
             3650,
         ),
         ("tmdb_cache.ttl_hours", config.get("tmdb_cache", {}).get("ttl_hours"), 0.1, 8760),
+        ("tmdb_cache.negative_ttl_hours", config.get("tmdb_cache", {}).get("negative_ttl_hours"), 0.1, 168),
         ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 1, 100000),
         ("tmdb_cache.max_mb", config.get("tmdb_cache", {}).get("max_mb"), 0, 102400),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),

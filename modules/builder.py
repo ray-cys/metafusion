@@ -5,6 +5,7 @@ from helper.concurrency import bounded_callables, bounded_map
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
 from helper.config import get_image_upgrade_days, mode_check
+from helper.diagnostics import record_kometa_metadata_audit
 from helper.identity import cache_key_for_meta, match_for_meta, metadata_key_for_meta
 from helper.io import atomic_replace_file, sha256_file
 from helper.plex import get_plex_country
@@ -1135,6 +1136,16 @@ async def _build_movie(
         merged_entry, diagnostics = merge_generated_metadata(
             existing_metadata, generated_entry, "movie"
         )
+        if mode_check(config, "kometa"):
+            record_kometa_metadata_audit(
+                config,
+                library=config.get("_library_name") or "Unknown library",
+                media_type="Movie",
+                title=full_title,
+                existing=existing_metadata,
+                generated=generated_entry,
+                diagnostics=diagnostics,
+            )
         changes = recursive_season_diff(existing_metadata, merged_entry)
         if changes:
             consolidated_metadata["metadata"][full_title] = merged_entry
@@ -2290,6 +2301,16 @@ async def _build_tv(
             authoritative_seasons=inventory,
             authoritative_episodes=inventory,
         )
+        if mode_check(config, "kometa"):
+            record_kometa_metadata_audit(
+                config,
+                library=config.get("_library_name") or "Unknown library",
+                media_type="TV Show",
+                title=full_title,
+                existing=existing_metadata,
+                generated=generated_entry,
+                diagnostics=diagnostics,
+            )
         changes = recursive_season_diff(existing_metadata, merged_entry)
         if changes:
             consolidated_metadata["metadata"][full_title] = merged_entry

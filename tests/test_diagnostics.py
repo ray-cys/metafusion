@@ -2,8 +2,10 @@ import sqlite3
 
 from helper.diagnostics import (
     _tmdb_cache_status,
+    record_kometa_metadata_audit,
     write_artwork_gap_report,
     write_destination_history_report,
+    write_metadata_audit_report,
     write_support_report,
 )
 
@@ -126,3 +128,66 @@ def test_destination_history_report_marks_events_without_deleting_paths(tmp_path
     assert old_path.exists()
     assert new_path.exists()
     assert write_destination_history_report(cache, base_dir=tmp_path) is None
+
+
+def test_metadata_audit_reports_state_and_actions_without_values(tmp_path):
+    config = {
+        "_execution": {"metadata_audit": True},
+        "_metadata_audit_records": [],
+    }
+    record_kometa_metadata_audit(
+        config,
+        library="Movies",
+        media_type="Movie",
+        title="Private Title (2020)",
+        existing={"summary": "old secret", "studio": "same"},
+        generated={
+            "summary": "new secret",
+            "studio": "same",
+            "tagline": "added secret",
+            "content_rating": "",
+        },
+        diagnostics={"deprecated_removed": 1},
+    )
+    report = write_metadata_audit_report(
+        config["_metadata_audit_records"],
+        [
+            {
+                "library": "Movies",
+                "media_type": "Movie",
+                "title": "Rejected (2022)",
+                "category": "identity_rejected",
+                "detail": "year mismatch",
+            }
+        ],
+        mode="kometa",
+        base_dir=tmp_path,
+    )
+    contents = report.read_text(encoding="utf-8")
+
+    assert "[different]" in contents
+    assert "proposed=update" in contents
+    assert "[missing]" in contents
+    assert "[source_missing]" in contents
+    assert "[unsupported]" in contents
+    assert "identity_rejected" in contents
+    assert "old secret" not in contents
+    assert "new secret" not in contents
+    assert "added secret" not in contents
+
+    second = write_metadata_audit_report(
+        config["_metadata_audit_records"],
+        mode="kometa",
+        base_dir=tmp_path,
+        retention=1,
+    )
+    assert second.exists()
+    assert not report.exists()
+    assert record_kometa_metadata_audit(
+        {"_execution": {}},
+        library="Movies",
+        media_type="Movie",
+        title="Ignored",
+        existing={},
+        generated={},
+    ) == 0

@@ -249,6 +249,7 @@ def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
         environ={
             "TMDB_CACHE_ENABLED": "true",
             "TMDB_CACHE_TTL_HOURS": "12",
+            "TMDB_CACHE_NEGATIVE_TTL_HOURS": "6",
             "TMDB_CACHE_MAX_ENTRIES": "3000",
             "TMDB_CACHE_MAX_MB": "128.5",
         },
@@ -257,6 +258,7 @@ def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
     assert config["tmdb_cache"] == {
         "enabled": True,
         "ttl_hours": 12.0,
+        "negative_ttl_hours": 6.0,
         "max_entries": 3000,
         "max_mb": 128.5,
     }
