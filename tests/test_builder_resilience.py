@@ -244,6 +244,44 @@ def test_different_tmdb_asset_is_observed_but_not_adopted(monkeypatch, tmp_path)
     assert "poster_checksum" not in cache_calls[-1][1]
 
 
+def test_asset_adoption_reports_disk_pressure_as_deferred(monkeypatch, tmp_path):
+    config = build_config(tmp_path)
+    config["assets"]["update_policy"] = "managed"
+    destination = tmp_path / "existing" / "poster.jpg"
+    destination.parent.mkdir()
+    destination.write_bytes(b"existing")
+    cache_calls = []
+
+    async def cache_write(*args, **kwargs):
+        cache_calls.append((args, kwargs))
+
+    monkeypatch.setattr(builder, "_asset_temp_path_or_defer", lambda *_args: None)
+    monkeypatch.setattr(builder, "meta_cache_async", cache_write)
+
+    adopted = asyncio.run(
+        builder.adopt_exact_tmdb_asset(
+            config,
+            movie_meta(),
+            "movie:plex:m1",
+            destination,
+            {"file_path": "/poster.jpg", "vote_average": 8},
+            object(),
+            protection_status="no_ownership_record",
+            media_type="movie",
+            log_media_type="Movie",
+            full_title="Example Movie (2020)",
+            tmdb_id="100",
+            title="Example Movie",
+            year=2020,
+            asset_type="poster",
+        )
+    )
+
+    assert adopted is None
+    assert destination.read_bytes() == b"existing"
+    assert cache_calls == []
+
+
 def test_cached_source_skip_requires_verified_managed_status(
     monkeypatch, tmp_path
 ):

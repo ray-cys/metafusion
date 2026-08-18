@@ -130,6 +130,8 @@ def main(argv=None):
     healthcheck = bool(command and command[0] == "--healthcheck")
     if healthcheck:
         command.pop(0)
+    elif command and command[0].startswith("-"):
+        command = ["python", "/app/metafusion.py", *command]
     if not command:
         print("MetaFusion startup error: no command was supplied", file=sys.stderr)
         return 64

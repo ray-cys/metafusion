@@ -3,7 +3,6 @@ import time
 from collections import Counter
 from contextvars import ContextVar
 
-
 _current_tracker = ContextVar("metafusion_performance_tracker", default=None)
 
 
@@ -81,7 +80,8 @@ def log_performance_summary(logger, tracker):
     logger.info(
         "[Performance] Total %.1fs; Plex inventory %.1fs; library processing %.1fs; "
         "items/min %.1f; TMDb requests %d; cache hits %d (%.1f%%); misses %d; "
-        "retries %d; rate limits %d (waited %.1fs).",
+        "coalesced %d; retries %d; rate limits %d (waited %.1fs); "
+        "circuit rejections %d.",
         data["elapsed_seconds"],
         durations.get("plex_inventory", 0.0),
         durations.get("library_processing", 0.0),
@@ -90,9 +90,11 @@ def log_performance_summary(logger, tracker):
         int(counters.get("tmdb_cache_hits", 0)),
         data["tmdb_cache_hit_percent"],
         int(counters.get("tmdb_cache_misses", 0)),
+        int(counters.get("tmdb_coalesced_waits", 0)),
         int(counters.get("tmdb_retries", 0)),
         int(counters.get("tmdb_rate_limits", 0)),
         float(counters.get("tmdb_rate_limit_wait_seconds", 0.0)),
+        int(counters.get("tmdb_circuit_rejections", 0)),
     )
     for seconds, library, rating_key in data["slow_items"]:
         logger.info(

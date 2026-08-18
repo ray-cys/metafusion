@@ -2,6 +2,8 @@ import logging
 
 from helper.logging import (
     PlexMetadataProgress,
+    _format_event_message,
+    get_meta_banner,
     log_builder_event,
     log_processing_event,
     metadata_action_summary,
@@ -143,3 +145,28 @@ def test_plex_progress_rate_limits_items_and_emits_heartbeat_and_final():
     assert "Movies: 5/50 checked (10.0%)" in logger.lines[2]
     assert "Movies: 50/50 checked (100.0%)" in logger.lines[3]
     assert "items changed: 2, API batches: 3, unchanged: 47, failed: 1" in logger.lines[3]
+
+
+def test_banner_supports_logger_and_console_and_malformed_events_are_safe(capsys):
+    class CaptureLogger:
+        def __init__(self):
+            self.lines = []
+            self.debug_lines = []
+
+        def info(self, line):
+            self.lines.append(line)
+
+        def debug(self, message, *args):
+            self.debug_lines.append(message % args)
+
+    logger = CaptureLogger()
+    get_meta_banner(logger)
+    assert len(logger.lines) == 3
+    assert "M E T A F U S I O N" in logger.lines[1]
+
+    get_meta_banner()
+    assert "M E T A F U S I O N" in capsys.readouterr().out
+
+    template = "Missing {required}"
+    assert _format_event_message(template, {}, logger, "Test") == template
+    assert "Unable to format log event" in logger.debug_lines[0]

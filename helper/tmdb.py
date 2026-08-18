@@ -1,7 +1,14 @@
-import asyncio, json, hashlib, re, unicodedata
+import asyncio
+import hashlib
+import json
+import re
+import unicodedata
+import weakref
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 from aiolimiter import AsyncLimiter
-from helper.concurrency import runtime_slot
+
+from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.config import CACHE_DIR
 from helper.logging import log_tmdb_event, redact_secrets
 from helper.performance import tracker_for
@@ -10,6 +17,8 @@ from helper.tmdb_cache import tmdb_response_cache
 _tmdb_limiter = None
 _tmdb_limiter_loop = None
 _CACHE_MISS = object()
+_NEGATIVE_STATUS_KEY = "__metafusion_negative_http_status__"
+_inflight_requests = weakref.WeakKeyDictionary()
 
 
 def get_tmdb_limiter():
@@ -27,7 +36,7 @@ def begin_tmdb_cache(config):
     tmdb_response_cache.configure(
         CACHE_DIR / "tmdb_cache.sqlite3",
         ttl_hours=cache_config.get("ttl_hours", 24),
-        max_entries=cache_config.get("max_entries", 5000),
+        max_entries=cache_config.get("max_entries", 0),
         max_mb=cache_config.get("max_mb", 0),
         enabled=cache_config.get("enabled", True),
         writable=not config.get("settings", {}).get("dry_run", False),
@@ -112,7 +121,7 @@ def _redact_url(url):
 async def tmdb_api_request(
     config, endpoint_or_url, params=None, retries=3, delay=2, backoff_factor=2, api_key=None,
     language=None, region=None, cache=True, raw=False, session=None,
-    max_response_bytes=None, include_locale=True, **kwargs,
+    max_response_bytes=None, include_locale=True, _coalesced_owner=False, **kwargs,
 ):
     performance = tracker_for(config)
     if endpoint_or_url.startswith("http"):
@@ -166,8 +175,61 @@ async def tmdb_api_request(
     if cached_response is not _CACHE_MISS:
         if performance:
             performance.increment("tmdb_cache_hits")
+        if (
+            isinstance(cached_response, dict)
+            and cached_response.get(_NEGATIVE_STATUS_KEY) == 404
+        ):
+            log_tmdb_event(
+                "tmdb_negative_cache_hit", url=logged_url, params=logged_query
+            )
+            return None
         log_tmdb_event("tmdb_cache_hit", url=logged_url, params=logged_query)
         return cached_response
+    option_hash = hashlib.sha256(
+        json.dumps(kwargs, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    request_identity = (
+        f"{cache_hash}:{int(bool(cache))}:{int(bool(raw))}:"
+        f"{max_response_bytes}:{option_hash}"
+    )
+    if not _coalesced_owner:
+        loop = asyncio.get_running_loop()
+        inflight = _inflight_requests.setdefault(loop, {})
+        existing = inflight.get(request_identity)
+        if existing is not None:
+            if performance:
+                performance.increment("tmdb_coalesced_waits")
+            log_tmdb_event("tmdb_request_coalesced", url=logged_url)
+            return await asyncio.shield(existing)
+        task = asyncio.create_task(
+            tmdb_api_request(
+                config,
+                endpoint_or_url,
+                params=dict(params or {}),
+                retries=retries,
+                delay=delay,
+                backoff_factor=backoff_factor,
+                api_key=api_key,
+                language=language,
+                region=region,
+                cache=cache,
+                raw=raw,
+                session=session,
+                max_response_bytes=max_response_bytes,
+                include_locale=include_locale,
+                _coalesced_owner=True,
+                **kwargs,
+            )
+        )
+        inflight[request_identity] = task
+
+        def clear_inflight(completed):
+            current = _inflight_requests.get(loop)
+            if current is not None and current.get(request_identity) is completed:
+                current.pop(request_identity, None)
+
+        task.add_done_callback(clear_inflight)
+        return await asyncio.shield(task)
     if cache and performance:
         performance.increment("tmdb_cache_misses")
 
@@ -179,7 +241,7 @@ async def tmdb_api_request(
             if performance:
                 performance.increment("tmdb_requests")
             async with get_tmdb_limiter():
-                async with runtime_slot(config, "tmdb"):
+                async with runtime_slot(config, "tmdb") as concurrency:
                     async with session.get(url, params=query, **kwargs) as response:
                         if response.status == 200:
                             if raw:
@@ -195,6 +257,10 @@ async def tmdb_api_request(
                                 60,
                                 max(0, int(response.headers.get("Retry-After", delay))),
                             )
+                            concurrency.failure(
+                                "rate_limit",
+                                cooldown=retry_after,
+                            )
                             log_tmdb_event("tmdb_rate_limited", retry_after=retry_after, query=logged_query)
                             if performance:
                                 performance.increment("tmdb_rate_limits")
@@ -203,16 +269,60 @@ async def tmdb_api_request(
                                 )
                             rate_limit_waited = True
                         else:
+                            if response.status >= 500:
+                                concurrency.failure("server_error")
+                            elif response.status in {401, 403}:
+                                concurrency.failure("authorization_error")
                             body = redact_secrets(await response.text(), *sensitive_values)
                             log_tmdb_event("tmdb_non_200", status=response.status, url=logged_url, query=logged_query, body=body[:500])
                             if response.status == 404:
-                                # A missing resource is permanent for this identifier;
-                                # retrying only delays recovery through other IDs.
+                                if cache:
+                                    negative_hours = max(
+                                        0.1,
+                                        float(
+                                            config.get("tmdb_cache", {}).get(
+                                                "negative_ttl_hours", 12.0
+                                            )
+                                        ),
+                                    )
+                                    if "/season/" in str(endpoint_or_url):
+                                        negative_hours = min(
+                                            negative_hours,
+                                            max(
+                                                0.1,
+                                                float(
+                                                    config.get("incremental", {}).get(
+                                                        "metadata_pending_recheck_hours",
+                                                        24.0,
+                                                    )
+                                                ),
+                                            ),
+                                        )
+                                    tmdb_response_cache.set(
+                                        cache_hash,
+                                        {_NEGATIVE_STATUS_KEY: 404},
+                                        ttl_seconds=negative_hours * 3600,
+                                    )
+                                    log_tmdb_event(
+                                        "tmdb_negative_cached",
+                                        url=logged_url,
+                                        ttl_hours=negative_hours,
+                                    )
+                                # Missing resources are retried after a short negative
+                                # TTL instead of on every item or caching them forever.
                                 return None
             if rate_limit_waited and attempt < retries:
                 if performance:
                     performance.increment("tmdb_retries")
                 await asyncio.sleep(retry_after)
+        except CircuitOpenError as e:
+            if performance:
+                performance.increment("tmdb_circuit_rejections")
+            log_tmdb_event(
+                "tmdb_circuit_open",
+                retry_after=e.retry_after,
+            )
+            return None
         except ResponseTooLargeError as e:
             log_tmdb_event(
                 "tmdb_response_too_large",

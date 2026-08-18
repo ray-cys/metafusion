@@ -2,8 +2,9 @@ import asyncio
 import copy
 import logging
 from datetime import datetime, timezone
-from PIL import Image
+
 import pytest
+from PIL import Image
 
 import metafusion
 from helper import tmdb as tmdb_module
@@ -192,6 +193,8 @@ def test_connector_preflight_reuses_connection_and_rejects_missing_library(
         "plex_version": "1.42",
         "libraries": ["Movies"],
         "available_count": 1,
+        "library_discovery": "explicit",
+        "path_advice": {"records": [], "suggestions": []},
     }
 
     monkeypatch.setattr(

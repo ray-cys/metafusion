@@ -1,8 +1,15 @@
-import asyncio, hashlib, uuid, re, datetime, os, tempfile
+import asyncio
+import datetime
+import hashlib
+import os
+import re
+import tempfile
+import uuid
 from io import BytesIO
 from pathlib import Path
-from helper.config import mode_check
+
 from helper.cache import load_cache
+from helper.config import mode_check
 from helper.io import atomic_write_bytes, sha256_file
 from helper.runtime import ensure_storage_available
 from helper.tmdb import tmdb_api_request
@@ -265,7 +272,9 @@ def stale_image(last_upgraded, days=30):
         return True
     try:
         last_dt = datetime.datetime.fromisoformat(str(last_upgraded).replace("Z", "+00:00"))
-        now = datetime.datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.datetime.now()
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.astimezone()
+        now = datetime.datetime.now(last_dt.tzinfo)
         return now - last_dt >= interval
     except (TypeError, ValueError):
         return True

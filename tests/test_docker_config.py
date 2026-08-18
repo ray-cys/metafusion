@@ -158,6 +158,18 @@ def test_ci_publishes_versioned_and_immutable_signed_images():
     assert "type=semver,pattern={{major}}" in workflow
     assert "type=sha,prefix=sha-,format=long" in workflow
     assert "cosign sign --yes" in workflow
+    assert "org.opencontainers.image.licenses=LicenseRef-All-Rights-Reserved" in workflow
+
+
+def test_ci_smoke_tests_each_published_platform_in_isolation():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    amd64 = 'docker run --rm --platform linux/amd64 "${image}" --version'
+    reset = 'docker image rm --force "${image}"'
+    arm64 = 'docker run --rm --platform linux/arm64 "${image}" --version'
+    assert workflow.index(amd64) < workflow.index(reset) < workflow.index(arm64)
 
 
 def test_deployment_docs_document_exact_image_pinning_and_rollback():

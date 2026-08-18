@@ -7,7 +7,6 @@ import yaml
 
 from helper.io import atomic_write_yaml
 
-
 EPISODE_BASIC_FIELDS = (
     "title",
     "sort_title",

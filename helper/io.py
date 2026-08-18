@@ -8,7 +8,6 @@ from stat import S_IMODE
 
 import yaml
 
-
 DEFAULT_FILE_MODE = 0o664
 
 

@@ -1,23 +1,42 @@
-import asyncio, copy, time, yaml
+import asyncio
+import copy
+import time
 from collections import Counter
 from pathlib import Path
+
+import yaml
+
 from helper.cache import (
     load_cache,
     meta_cache_async,
     reset_cache_scope,
     set_cache_scope,
 )
+from helper.concurrency import concurrency_ceiling, runtime_slot
 from helper.config import mode_check
-from helper.incremental import plan_items
+from helper.identity import (
+    cache_key_for_meta,
+    item_identity,
+    plex_identity_fingerprint,
+)
+from helper.incremental import child_inventory_fingerprint, plan_items
+from helper.io import sha256_file
 from helper.logging import (
     PlexMetadataProgress,
-    log_processing_event,
     log_library_summary,
+    log_processing_event,
 )
 from helper.performance import tracker_for
 from helper.plex import get_plex_metadata, plex_operation
-from helper.identity import cache_key_for_meta, item_identity
-from helper.io import sha256_file
+from helper.plex_metadata import apply_plex_metadata
+from helper.state_db import (
+    clear_item_retries,
+    load_due_item_retries,
+    load_identity_binding,
+    mark_items_started,
+    prune_plex_metadata_library,
+    record_item_failure,
+)
 from modules.builder import build_movie, build_tv
 from modules.kometa import (
     normalize_metadata_order,
@@ -25,8 +44,6 @@ from modules.kometa import (
     validate_metadata_document,
     write_kometa_metadata,
 )
-from helper.plex_metadata import apply_plex_metadata
-from helper.state_db import prune_plex_metadata_library
 
 
 class ItemProcessingError(RuntimeError):
@@ -67,15 +84,46 @@ def apply_cached_tmdb_recovery(meta, cache):
     source_id = entry.get("tmdb_recovery_source_id")
     replacement_id = entry.get("tmdb_id")
     plex_id = meta.get("tmdb_id")
+    recovery_fingerprint = entry.get("tmdb_recovery_identity_fingerprint")
+    current_fingerprint = plex_identity_fingerprint(meta)
     if (
         source_id is None
         or replacement_id is None
+        or not recovery_fingerprint
+        or recovery_fingerprint != current_fingerprint
         or str(source_id) != str(plex_id)
         or str(replacement_id) == str(plex_id)
     ):
         return False
     meta["plex_tmdb_id"] = str(plex_id)
     meta["tmdb_id"] = str(replacement_id)
+    return True
+
+
+def apply_learned_tmdb_identity(meta, *, touch=True):
+    """Reuse only a high-confidence binding whose provider GUIDs are unchanged."""
+    if not isinstance(meta, dict) or meta.get("ratingKey") is None:
+        return False
+    fingerprint = plex_identity_fingerprint(meta)
+    if not fingerprint:
+        return False
+    binding = load_identity_binding(
+        meta.get("server_id") or "unknown",
+        meta.get("library_uuid") or meta.get("library_name") or "unknown",
+        meta.get("ratingKey"),
+        fingerprint,
+        touch=touch,
+    )
+    if not binding:
+        return False
+    current = meta.get("tmdb_id")
+    learned = binding.get("tmdb_id")
+    if not learned or str(current or "") == str(learned):
+        return False
+    if current:
+        meta["plex_tmdb_id"] = str(current)
+    meta["tmdb_id"] = str(learned)
+    meta["identity_binding_reused"] = True
     return True
 
 
@@ -186,6 +234,8 @@ async def process_item(
     library_type = meta.get("library_type", "unknown")
 
     effective_flags = dict(feature_flags or {})
+    artwork_gaps = config.get("_artwork_gaps")
+    gap_start = len(artwork_gaps) if isinstance(artwork_gaps, list) else 0
     if work_reasons is not None:
         work_reasons = set(work_reasons)
         effective_flags["metadata_basic"] = bool(
@@ -231,6 +281,7 @@ async def process_item(
         )
         raise ItemProcessingError(f"Failed to process {failure_label}") from e
     failed_actions = []
+    deferred_actions = []
     if isinstance(stats, dict):
         failed_actions.extend(
             stats.get(name)
@@ -241,6 +292,16 @@ async def process_item(
             action
             for action in stats.get("season_poster_actions", {}).values()
             if action == "failed"
+        )
+        deferred_actions.extend(
+            stats.get(name)
+            for name in ("poster_action", "background_action")
+            if stats.get(name) == "deferred"
+        )
+        deferred_actions.extend(
+            action
+            for action in stats.get("season_poster_actions", {}).values()
+            if action == "deferred"
         )
     if not isinstance(stats, dict):
         raise ItemProcessingError(f"Builder returned no result for {full_title}")
@@ -284,7 +345,36 @@ async def process_item(
         )
     if plex_result.get("failures"):
         failed_actions.append("failed")
-    stats["_incremental_success"] = not failed_actions
+    if plex_result.get("deferred"):
+        deferred_actions.append("deferred")
+    stats["_incremental_success"] = not failed_actions and not deferred_actions
+    if deferred_actions:
+        stats["_retry_error"] = (
+            "Plex metadata writes deferred by the per-run safety limit"
+            if plex_result.get("deferred")
+            else "Artwork deferred because of disk pressure"
+        )
+    if failed_actions:
+        new_gaps = (
+            artwork_gaps[gap_start:] if isinstance(artwork_gaps, list) else []
+        )
+        permanent_gap = next(
+            (
+                gap
+                for gap in new_gaps
+                if gap.get("category") in {"identity_rejected", "path_invalid"}
+            ),
+            None,
+        )
+        if permanent_gap:
+            stats["_retry_failure_class"] = "permanent"
+            stats["_retry_error"] = permanent_gap.get("detail") or (
+                "Identity or output path requires user correction"
+            )
+        else:
+            stats["_retry_error"] = stats.get("_retry_error") or (
+                "Builder or Plex metadata action reported a recoverable failure"
+            )
     return stats
 
 plex_metadata_dict = {}
@@ -317,15 +407,22 @@ async def process_library(
     poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_missing = poster_failed = 0
     background_downloaded = background_upgraded = background_adopted = background_skipped = background_missing = background_failed = 0
     season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+    artwork_deferred = 0
 
     server = getattr(library_section, "_server", None)
+    server_id = getattr(server, "machineIdentifier", None) or "unknown"
+    library_uuid = (
+        getattr(library_section, "uuid", None)
+        or getattr(library_section, "key", None)
+        or library_name
+    )
+    persistent_recovery = (
+        not (feature_flags or {}).get("dry_run", False)
+        and server_id != "unknown"
+    )
     scope_token = set_cache_scope(
-        server_id=getattr(server, "machineIdentifier", None),
-        library_uuid=(
-            getattr(library_section, "uuid", None)
-            or getattr(library_section, "key", None)
-            or library_name
-        ),
+        server_id=server_id,
+        library_uuid=library_uuid,
         library_name=library_name,
     )
 
@@ -337,6 +434,11 @@ async def process_library(
                 config.get("runtime", {}),
                 description=f"List library {library_name}",
             )
+        due_retries = (
+            load_due_item_retries(server_id, library_uuid)
+            if persistent_recovery
+            else {}
+        )
         planned_items = plan_items(
             all_items,
             load_cache(),
@@ -345,34 +447,85 @@ async def process_library(
             rating_keys=rating_keys,
             config=config,
             feature_flags=feature_flags,
-            server_id=getattr(server, "machineIdentifier", None) or "unknown",
-            library_uuid=(
-                getattr(library_section, "uuid", None)
-                or getattr(library_section, "key", None)
-                or library_name
-            ),
+            server_id=server_id,
+            library_uuid=library_uuid,
+            retry_rating_keys=due_retries,
         )
         items = [planned.item for planned in planned_items]
         total_library_items = len(all_items)
         total_items = len(items)
+        if persistent_recovery and items:
+            started_items = []
+            for item in items:
+                updated_at = getattr(item, "updatedAt", None)
+                started_items.append(
+                    {
+                        "rating_key": getattr(item, "ratingKey", None),
+                        "library_name": library_name,
+                        "media_type": getattr(item, "type", None),
+                        "plex_updated_at": (
+                            updated_at.isoformat()
+                            if hasattr(updated_at, "isoformat")
+                            else (
+                                str(updated_at)
+                                if updated_at is not None
+                                else None
+                            )
+                        ),
+                    }
+                )
+            await asyncio.to_thread(
+                mark_items_started,
+                server_id,
+                library_uuid,
+                started_items,
+            )
         log_processing_event(
             "processing_library_items",
             library_name=library_name,
             total_items=total_items,
         )
         if explain_selection:
+            target_keys = {
+                str(value) for value in (rating_keys or []) if str(value).strip()
+            }
+            candidate_count = sum(
+                not target_keys
+                or str(getattr(item, "ratingKey", "")) in target_keys
+                for item in all_items
+            )
+            cause_counts = Counter(
+                cause
+                for planned in planned_items
+                for cause in planned.selection_causes
+            )
             for planned in planned_items:
                 log_processing_event(
                     "processing_selection_reason",
                     library_name=library_name,
                     rating_key=getattr(planned.item, "ratingKey", "unknown"),
                     title=getattr(planned.item, "title", "Unknown"),
-                    reasons=", ".join(sorted(planned.reasons)),
+                    causes=", ".join(sorted(planned.selection_causes)),
+                    work=", ".join(sorted(planned.reasons)),
                 )
+            log_processing_event(
+                "processing_selection_summary",
+                library_name=library_name,
+                selected=len(planned_items),
+                skipped=max(0, candidate_count - len(planned_items)),
+                causes=(
+                    ", ".join(
+                        f"{name}={count}"
+                        for name, count in sorted(cause_counts.items())
+                    )
+                    or "none"
+                ),
+            )
             return []
 
         preloaded_metadata = []
         metadata_errors = []
+        item_errors = []
         for item in items:
             try:
                 meta = await get_plex_metadata(
@@ -396,16 +549,60 @@ async def process_library(
                     "library_type": media_type,
                     "ratingKey": getattr(item, "ratingKey", None),
                 })
-                metadata_errors.append(f"{title} ({year}): {e}")
+                metadata_errors.append((item, e))
                 log_processing_event("processing_failed_metadata", title=title, year=year, media_type=media_type, error=str(e))
 
         if metadata_errors:
-            raise LibraryProcessingError(
-                "Plex metadata inventory was incomplete: " + "; ".join(metadata_errors)
+            if persistent_recovery:
+                for failed_item, failure in metadata_errors:
+                    rating_key = getattr(failed_item, "ratingKey", None)
+                    if rating_key is None:
+                        continue
+                    updated_at = getattr(failed_item, "updatedAt", None)
+                    updated_at = (
+                        updated_at.isoformat()
+                        if hasattr(updated_at, "isoformat")
+                        else (str(updated_at) if updated_at is not None else None)
+                    )
+                    await asyncio.to_thread(
+                        record_item_failure,
+                        server_id,
+                        library_uuid,
+                        rating_key,
+                        failure,
+                        library_name=library_name,
+                        media_type=getattr(failed_item, "type", None),
+                        plex_updated_at=updated_at,
+                    )
+            descriptions = [
+                f"{_item_failure_label(item)}: {_root_error_message(error)}"
+                for item, error in metadata_errors
+            ]
+            if (feature_flags or {}).get("cleanup", False):
+                raise LibraryProcessingError(
+                    "Plex metadata inventory was incomplete: "
+                    + "; ".join(descriptions)
+                )
+            failed_keys = {
+                str(getattr(item, "ratingKey", "")) for item, _error in metadata_errors
+            }
+            planned_items = [
+                planned
+                for planned in planned_items
+                if str(getattr(planned.item, "ratingKey", "")) not in failed_keys
+            ]
+            items = [planned.item for planned in planned_items]
+            item_errors.extend(
+                (_item_failure_label(item), error) for item, error in metadata_errors
             )
+            total_items = len(planned_items) + len(metadata_errors)
         cache = load_cache()
         for meta in preloaded_metadata:
             apply_cached_tmdb_recovery(meta, cache)
+            apply_learned_tmdb_identity(
+                meta,
+                touch=False,
+            )
         if feature_flags.get("cleanup", False):
             inventory_errors = cleanup_inventory_errors(
                 preloaded_metadata, feature_flags
@@ -533,6 +730,7 @@ async def process_library(
 
         existing_assets = set()
         all_stats = []
+        successful_retry_keys = set()
         pending_incremental = []
 
         async def process_and_collect(planned):
@@ -543,10 +741,19 @@ async def process_library(
             nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_missing, poster_failed
             nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_missing, background_failed
             nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_missing, season_poster_failed
+            nonlocal artwork_deferred
 
             item = planned.item
             item_metadata = {"metadata": {}}
             item_started = time.monotonic()
+            rating_key = getattr(item, "ratingKey", None)
+            plex_updated_at = getattr(item, "updatedAt", None)
+            plex_updated_at = (
+                plex_updated_at.isoformat()
+                if hasattr(plex_updated_at, "isoformat")
+                else (str(plex_updated_at) if plex_updated_at is not None else None)
+            )
+            writable_state = persistent_recovery
             try:
                 stats = await process_item(
                     plex_item=item, consolidated_metadata=item_metadata, config=config,
@@ -556,6 +763,33 @@ async def process_library(
                     incremental_fingerprint=incremental_fingerprint,
                     work_reasons=planned.reasons,
                 )
+            except asyncio.CancelledError:
+                if writable_state and rating_key is not None:
+                    await asyncio.to_thread(
+                        record_item_failure,
+                        server_id,
+                        library_uuid,
+                        rating_key,
+                        "Processing was interrupted before completion",
+                        library_name=library_name,
+                        media_type=getattr(item, "type", None),
+                        plex_updated_at=plex_updated_at,
+                        failure_class="transient",
+                    )
+                raise
+            except Exception as error:
+                if writable_state and rating_key is not None:
+                    await asyncio.to_thread(
+                        record_item_failure,
+                        server_id,
+                        library_uuid,
+                        rating_key,
+                        error,
+                        library_name=library_name,
+                        media_type=getattr(item, "type", None),
+                        plex_updated_at=plex_updated_at,
+                    )
+                raise
             finally:
                 performance = tracker_for(config)
                 if performance:
@@ -565,6 +799,26 @@ async def process_library(
                         time.monotonic() - item_started,
                     )
             if stats and isinstance(stats, dict):
+                # Third-party/test builders predating the private marker are
+                # successful unless they explicitly report a deferred action.
+                incremental_success = stats.pop("_incremental_success", True)
+                retry_error = stats.pop("_retry_error", None)
+                retry_failure_class = stats.pop("_retry_failure_class", None)
+                if writable_state and rating_key is not None:
+                    if retry_error:
+                        await asyncio.to_thread(
+                            record_item_failure,
+                            server_id,
+                            library_uuid,
+                            rating_key,
+                            retry_error,
+                            library_name=library_name,
+                            media_type=getattr(item, "type", None),
+                            plex_updated_at=plex_updated_at,
+                            failure_class=retry_failure_class,
+                        )
+                    elif incremental_success:
+                        successful_retry_keys.add(str(rating_key))
                 generated_entries = item_metadata.get("metadata", {})
                 if isinstance(generated_entries, dict):
                     consolidated_metadata.setdefault("metadata", {}).update(
@@ -572,7 +826,7 @@ async def process_library(
                     )
                 all_stats.append(stats)
                 if (
-                    stats.pop("_incremental_success", False)
+                    incremental_success
                     and not feature_flags.get("dry_run", False)
                 ):
                     pending_count = (
@@ -586,6 +840,7 @@ async def process_library(
                                 str(getattr(item, "ratingKey", ""))
                             ),
                             pending_count,
+                            child_inventory_fingerprint(item),
                         )
                     )
 
@@ -613,6 +868,8 @@ async def process_library(
                     poster_missing += 1
                 elif action == "failed":
                     poster_failed += 1
+                elif action == "deferred":
+                    artwork_deferred += 1
 
                 action = stats.get("background_action")
                 if action == "downloaded":
@@ -627,6 +884,8 @@ async def process_library(
                     background_missing += 1
                 elif action == "failed":
                     background_failed += 1
+                elif action == "deferred":
+                    artwork_deferred += 1
 
                 season_actions = stats.get("season_poster_actions", {})
                 for season_action in season_actions.values():
@@ -642,6 +901,8 @@ async def process_library(
                         season_poster_missing += 1
                     elif season_action == "failed":
                         season_poster_failed += 1
+                    elif season_action == "deferred":
+                        artwork_deferred += 1
 
                 if feature_flags["poster"]:
                     poster_size += stats.get("poster", {}).get("size", 0)
@@ -670,10 +931,7 @@ async def process_library(
             if library_item_counts is not None and library_name != "Unknown":
                 library_item_counts[library_name] = library_item_counts.get(library_name, 0) + 1
 
-        max_concurrency = max(
-            1,
-            int(config.get("runtime", {}).get("max_concurrency", 8)),
-        )
+        max_concurrency = concurrency_ceiling(config, "item")
         meta_by_rating_key = {
             str(meta.get("ratingKey")): meta
             for meta in preloaded_metadata
@@ -682,8 +940,7 @@ async def process_library(
         queue = asyncio.Queue()
         for planned in planned_items:
             queue.put_nowait(planned)
-        item_errors = []
-        processed_items = 0
+        processed_items = len(metadata_errors)
         plex_progress = None
         progress_task = None
         if (
@@ -725,7 +982,8 @@ async def process_library(
             while True:
                 planned = await queue.get()
                 try:
-                    await process_and_collect(planned)
+                    async with runtime_slot(config, "item"):
+                        await process_and_collect(planned)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -804,7 +1062,7 @@ async def process_library(
         elif mode_check(config, "kometa") and feature_flags["dry_run"]:
             log_processing_event("processing_metadata_dry_run", library_name=library_name)
 
-        for meta, metadata_pending_count in pending_incremental:
+        for meta, metadata_pending_count, plex_child_fingerprint in pending_incremental:
             if not meta:
                 continue
             media_type = (meta.get("library_type") or "unknown").lower()
@@ -819,8 +1077,17 @@ async def process_library(
                 update_timestamp=False,
                 rating_key=meta.get("ratingKey"),
                 plex_updated_at=meta.get("updatedAt"),
+                plex_child_fingerprint=plex_child_fingerprint,
                 config_fingerprint=incremental_fingerprint,
                 metadata_pending_count=metadata_pending_count,
+            )
+
+        if persistent_recovery and successful_retry_keys:
+            await asyncio.to_thread(
+                clear_item_retries,
+                server_id,
+                library_uuid,
+                successful_retry_keys,
             )
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]
@@ -839,6 +1106,7 @@ async def process_library(
             "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
             "incremental_skipped": total_library_items - total_items,
             "item_failures": len(item_errors),
+            "artwork_deferred": artwork_deferred,
         }
 
         log_library_summary(

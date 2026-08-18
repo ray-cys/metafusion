@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from helper import tmdb as tmdb_module
 from helper import logging as logging_module
 from helper import plex as plex_module
+from helper import tmdb as tmdb_module
 from helper.plex import get_plex_metadata
 from helper.runtime import JobAlreadyRunningError, JobRunLock, RuntimeStatus
 from modules.utils import get_best_background
@@ -715,6 +715,95 @@ def test_tmdb_not_found_is_not_retried(monkeypatch):
     assert result is None
     assert len(calls) == 1
     assert sleeps == []
+
+
+def test_tmdb_not_found_uses_short_negative_cache(monkeypatch, tmp_path):
+    calls = []
+
+    class Response:
+        status = 404
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"status_code":34}'
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            calls.append(True)
+            return Response()
+
+    class Limiter:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    cache = tmdb_module.tmdb_response_cache
+    cache.configure(tmp_path / "tmdb.sqlite3", ttl_hours=24)
+    monkeypatch.setattr(tmdb_module, "get_tmdb_limiter", lambda: Limiter())
+    config = {
+        "tmdb": {"api_key": "key"},
+        "tmdb_cache": {"negative_ttl_hours": 12},
+    }
+    try:
+        first = asyncio.run(
+            tmdb_module.tmdb_api_request(
+                config, "movie/1306363", retries=3, session=Session()
+            )
+        )
+        second = asyncio.run(
+            tmdb_module.tmdb_api_request(
+                config, "movie/1306363", retries=3, session=Session()
+            )
+        )
+    finally:
+        cache.reset_memory()
+
+    assert first is None
+    assert second is None
+    assert len(calls) == 1
+
+
+def test_combined_log_rotation_enforces_size_and_backup_count(tmp_path):
+    log_file = tmp_path / "metafusion.log"
+    handler = logging_module.SizeAndTimeRotatingFileHandler(
+        log_file, max_bytes=80, backup_count=2
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger = logging.getLogger("metafusion-rotation-test")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        for index in range(5):
+            logger.info("entry-%d-%s", index, "x" * 70)
+        handler.next_rollover_at = 0
+        logger.info("daily-boundary")
+    finally:
+        handler.close()
+        logger.handlers.clear()
+
+    assert log_file.exists()
+    assert len(list(tmp_path.glob("metafusion.log.*"))) == 2
+
+    unlimited = logging_module.SizeAndTimeRotatingFileHandler(
+        tmp_path / "unlimited.log", max_bytes=0, backup_count=1
+    )
+    record = logging.LogRecord("test", logging.INFO, __file__, 1, "line", (), None)
+    try:
+        assert unlimited.shouldRollover(record) is False
+        unlimited.next_rollover_at = 0
+        assert unlimited.shouldRollover(record) is True
+    finally:
+        unlimited.close()
 
 
 async def _record_sleep(calls, seconds):

@@ -1,0 +1,39 @@
+name: GHCR retention
+
+on:
+  schedule:
+    - cron: "17 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report eligible manifests without deleting them
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-retention
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Remove old unreferenced manifests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_RETENTION_DAYS: "30"
+          GHCR_KEEP_UNTAGGED: "50"
+        run: |
+          arguments=()
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            arguments+=(--dry-run)
+          fi
+          python .github/scripts/cleanup_ghcr.py "${arguments[@]}"

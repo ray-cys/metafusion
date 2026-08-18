@@ -23,6 +23,38 @@ env:
 
 
 jobs:
+  release-guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository and tags
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag origin and format
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+(\.[0-9]+)*)?$ ]]; then
+            echo "Unsupported release tag: ${tag}" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-list -n 1 "${tag}")"
+          git merge-base --is-ancestor "${tag_commit}" origin/main || {
+            echo "Release tags must reference a commit contained in main." >&2
+            exit 1
+          }
+          duplicate_count="$(git tag --list | awk '{print tolower($0)}' | sort | uniq -d | wc -l | tr -d ' ')"
+          test "${duplicate_count}" = "0" || {
+            echo "Case-insensitive duplicate release tags were found." >&2
+            exit 1
+          }
+
   test:
     runs-on: ubuntu-latest
     permissions:
@@ -44,13 +76,31 @@ jobs:
         run: python -m pip install --require-hashes -r requirements-dev.lock
 
       - name: Run static checks
-        run: ruff check --select F,E9 .
+        run: |
+          ruff check --select F,E9,I,DTZ,S110,S112,TRY004 .
+          python tools/generate_config_surfaces.py --check
 
       - name: Run tests
-        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=80
+        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=85
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
+
+  kometa-contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate representative output with pinned Kometa 2.4.8
+        run: >-
+          docker run --rm
+          --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro"
+          kometateam/kometa@sha256:c58f6d4af511613f218b6dafbfc84078af4e5a6089790c1fdba58fd7c5dad70a
+          --config /contract/metadata.yml
+          --validate-file /contract/metadata.yml
 
   security:
     needs: test
@@ -141,7 +191,7 @@ jobs:
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/develop' ||
        startsWith(github.ref, 'refs/tags/v'))
-    needs: [test, security]
+    needs: [release-guard, test, kometa-contract, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -197,6 +247,8 @@ jobs:
             type=semver,pattern={{major}}
             type=sha,prefix=sha-,format=long
             type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.licenses=LicenseRef-All-Rights-Reserved
       
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
@@ -211,6 +263,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          sbom: true
+          provenance: mode=max
           build-args: |
             METAFUSION_VERSION=${{ github.ref_name }}
             METAFUSION_COMMIT=${{ github.sha }}
@@ -229,3 +283,49 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+      - name: Smoke test published AMD64 and ARM64 manifests
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          docker run --rm --platform linux/amd64 "${image}" --version
+          # Docker cannot keep two platform-specific images under the same
+          # manifest-list digest in one local image store. Remove the first
+          # platform before pulling and running the second one.
+          docker image rm --force "${image}"
+          docker run --rm --platform linux/arm64 "${image}" --version
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release ${tag} already exists."
+            exit 0
+          fi
+          if [[ "${tag}" == *-rc.* ]]; then
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --generate-notes \
+              --prerelease \
+              --title "${tag}"
+          else
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --generate-notes \
+              --latest \
+              --title "${tag}"
+          fi

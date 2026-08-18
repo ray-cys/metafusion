@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -237,13 +238,18 @@ def test_cached_tmdb_recovery_is_scoped_to_same_plex_source_id():
         "title": "Movie 1",
         "year": 2020,
         "tmdb_id": "100",
+        "plex_provider_tmdb_id": "100",
+        "imdb_id": "tt0000100",
     }
+    fingerprint = processing.plex_identity_fingerprint(meta)
     cache = {
         "movie:plex:1": {
             "tmdb_id": "101",
             "tmdb_recovery_source_id": "100",
+            "tmdb_recovery_identity_fingerprint": fingerprint,
         }
     }
+    original_meta = dict(meta)
 
     assert processing.apply_cached_tmdb_recovery(meta, cache) is True
     assert meta["plex_tmdb_id"] == "100"
@@ -252,6 +258,10 @@ def test_cached_tmdb_recovery_is_scoped_to_same_plex_source_id():
     corrected_by_plex = {**meta, "tmdb_id": "102"}
     assert processing.apply_cached_tmdb_recovery(corrected_by_plex, cache) is False
     assert corrected_by_plex["tmdb_id"] == "102"
+
+    changed_guid = {**original_meta, "imdb_id": "tt0000200"}
+    assert processing.apply_cached_tmdb_recovery(changed_guid, cache) is False
+    assert changed_guid["tmdb_id"] == "100"
 
 
 def test_ambiguous_blank_editions_fail_safely(monkeypatch, tmp_path):
@@ -447,6 +457,9 @@ def test_successful_metadata_run_persists_pending_episode_marker(
         year = 2020
         ratingKey = "show-1"
         updatedAt = "updated"
+        childCount = 1
+        seasonCount = 1
+        leafCount = 2
 
     async def fake_metadata(_item, **_kwargs):
         return {
@@ -487,3 +500,127 @@ def test_successful_metadata_run_persists_pending_episode_marker(
     )
 
     assert marker_calls[-1][1]["metadata_pending_count"] == 1
+    assert marker_calls[-1][1]["plex_child_fingerprint"] == (
+        processing.child_inventory_fingerprint(Show())
+    )
+
+
+def test_explain_selection_reports_causes_without_loading_metadata(
+    monkeypatch, tmp_path, caplog
+):
+    items = [
+        SimpleNamespace(ratingKey="1", title="One"),
+        SimpleNamespace(ratingKey="2", title="Two"),
+        SimpleNamespace(ratingKey="3", title="Three"),
+    ]
+    planned = [
+        SimpleNamespace(
+            item=items[0], reasons={"metadata", "poster"}, selection_causes={"new"}
+        ),
+        SimpleNamespace(
+            item=items[1], reasons={"season"}, selection_causes={"due", "new"}
+        ),
+    ]
+    monkeypatch.setattr(processing, "plan_items", lambda *_args, **_kwargs: planned)
+    monkeypatch.setattr(
+        processing,
+        "get_plex_metadata",
+        lambda *_args, **_kwargs: pytest.fail("explain must not load item metadata"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            processing.process_library(
+                FakeSection(items),
+                config(tmp_path),
+                feature_flags=feature_flags(),
+                explain_selection=True,
+                rating_keys=["1", "2", "3"],
+            )
+        )
+
+    assert result == []
+    assert "new=2" in caplog.text
+    assert "due=1" in caplog.text
+    assert "selected=2" in caplog.text
+
+
+def test_library_metadata_inventory_failure_is_aggregated_without_cleanup(
+    monkeypatch, tmp_path
+):
+    item = SimpleNamespace(
+        title="Broken", year=2020, ratingKey="9", type="movie", updatedAt="now"
+    )
+
+    async def fail_metadata(*_args, **_kwargs):
+        try:
+            raise OSError("Plex transport failed")
+        except OSError as error:
+            raise RuntimeError("metadata wrapper") from error
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fail_metadata)
+
+    with pytest.raises(processing.LibraryProcessingError) as caught:
+        asyncio.run(
+            processing.process_library(
+                FakeSection([item]),
+                config(tmp_path),
+                feature_flags=feature_flags(),
+            )
+        )
+
+    assert "Plex transport failed" in str(caught.value)
+    assert "Broken (2020) [rating key 9]" in str(caught.value)
+
+
+def test_learned_identity_reuses_only_changed_high_confidence_binding(monkeypatch):
+    meta = {
+        "server_id": "server",
+        "library_uuid": "library",
+        "ratingKey": "1",
+        "title": "Example",
+        "year": 2020,
+        "tmdb_id": "10",
+        "imdb_id": "tt0010",
+    }
+    monkeypatch.setattr(
+        processing,
+        "load_identity_binding",
+        lambda *_args, **_kwargs: {"tmdb_id": "11"},
+    )
+    assert processing.apply_learned_tmdb_identity(meta, touch=False) is True
+    assert meta["plex_tmdb_id"] == "10"
+    assert meta["tmdb_id"] == "11"
+    assert meta["identity_binding_reused"] is True
+
+    assert processing.apply_learned_tmdb_identity(None) is False
+    monkeypatch.setattr(processing, "plex_identity_fingerprint", lambda _meta: "")
+    assert processing.apply_learned_tmdb_identity({"ratingKey": "1"}) is False
+
+
+def test_find_ambiguous_editions_groups_only_duplicate_movie_editions():
+    metadata = [
+        {"library_type": "show", "title": "Same", "year": 2020},
+        {
+            "library_type": "movie",
+            "title": "Same",
+            "year": 2020,
+            "edition_title": None,
+        },
+        {
+            "library_type": "movie",
+            "title": "Same",
+            "year": 2020,
+            "edition_title": None,
+        },
+        {
+            "library_type": "movie",
+            "title": "Same",
+            "year": 2020,
+            "edition_title": "Director's Cut",
+        },
+    ]
+
+    assert processing.find_ambiguous_editions(metadata) == [
+        "Same (2020): duplicate editions blank"
+    ]

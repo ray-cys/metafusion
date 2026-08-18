@@ -1,6 +1,6 @@
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -9,9 +9,13 @@ from helper.state_db import (
     STATE_DATABASE,
     load_global_full_scan,
     load_scan_states,
-    mark_scan_complete as persist_scan_complete,
-    mark_scan_started as persist_scan_started,
     mark_global_full_scan,
+)
+from helper.state_db import (
+    mark_scan_complete as persist_scan_complete,
+)
+from helper.state_db import (
+    mark_scan_started as persist_scan_started,
 )
 
 
@@ -21,6 +25,7 @@ class PlannedItem:
 
     item: object
     reasons: frozenset[str]
+    selection_causes: frozenset[str] = field(default_factory=frozenset)
 
 
 def utc_now():
@@ -34,6 +39,38 @@ def item_updated_at(item):
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat()
     return None if value is None else str(value)
+
+
+def child_inventory_fingerprint(item):
+    """Fingerprint Plex's show-level season and episode inventory counters."""
+    if isinstance(item, dict):
+        media_type = item.get("type") or item.get("library_type")
+        get_value = item.get
+    else:
+        media_type = getattr(item, "type", None)
+
+        def get_value(name):
+            return getattr(item, name, None)
+    if str(media_type or "").lower() not in {"show", "shows", "tv"}:
+        return None
+
+    counters = {}
+    for source, target in (
+        ("childCount", "children"),
+        ("seasonCount", "seasons"),
+        ("leafCount", "episodes"),
+    ):
+        value = get_value(source)
+        if value is None:
+            continue
+        try:
+            counters[target] = int(value)
+        except (TypeError, ValueError):
+            counters[target] = str(value)
+    if not counters:
+        return None
+    encoded = json.dumps(counters, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def config_fingerprint(config):
@@ -234,8 +271,49 @@ def timestamp_due(value, days, now=None):
     return now - last_value >= timedelta(days=interval_days)
 
 
+def adaptive_artwork_days(cached, asset_type, configured_days):
+    """Return an automatic recheck interval from durable artwork observations."""
+    try:
+        base_days = float(configured_days)
+    except (TypeError, ValueError):
+        return configured_days
+    if base_days <= 0 or not isinstance(cached, dict):
+        return base_days
+    missing_checks = max(
+        0, int(cached.get(f"{asset_type}_missing_checks") or 0)
+    )
+    if missing_checks:
+        schedule = (1.0, 3.0, 7.0, 14.0, 30.0, 60.0)
+        return min(base_days, schedule[min(missing_checks - 1, len(schedule) - 1)])
+    unchanged_checks = max(
+        0, int(cached.get(f"{asset_type}_unchanged_checks") or 0)
+    )
+    return min(max(base_days, 180.0), base_days * (2 ** min(3, unchanged_checks)))
+
+
 def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=None):
     """Return the artwork operations due for an otherwise unchanged item."""
+    causes = due_selection_causes(
+        cached,
+        media_type,
+        config,
+        feature_flags=feature_flags,
+        now=now,
+    )
+    reasons = set()
+    if causes & {"metadata_pending_recheck", "plex_metadata_recheck"}:
+        reasons.add("metadata")
+    if "poster_refresh_due" in causes:
+        reasons.add("poster")
+    if "background_refresh_due" in causes:
+        reasons.add("background")
+    if "season_refresh_due" in causes:
+        reasons.add("season")
+    return reasons
+
+
+def due_selection_causes(cached, media_type, config, feature_flags=None, now=None):
+    """Return exact time-based causes for selecting an unchanged item."""
     if not isinstance(cached, dict) or not config:
         return set()
     assets = config.get("assets", {})
@@ -257,7 +335,7 @@ def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=No
     else:
         return set()
 
-    reasons = set()
+    causes = set()
     try:
         pending_count = int(cached.get("metadata_pending_count") or 0)
     except (TypeError, ValueError):
@@ -283,34 +361,36 @@ def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=No
             timedelta(hours=recheck_hours),
             check_time,
         ):
-            reasons.add("metadata")
+            causes.add("metadata_pending_recheck")
     if flags.get("plex_metadata", False) and timestamp_due(
         cached.get("plex_metadata_last_checked"),
         config.get("plex_metadata", {}).get("recheck_days", 30),
         now=now,
     ):
-        reasons.add("metadata")
+        causes.add("plex_metadata_recheck")
     if flags.get("poster", False) and timestamp_due(
         cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
-        days,
+        adaptive_artwork_days(cached, "poster", days),
         now=now,
     ):
-        reasons.add("poster")
+        causes.add("poster_refresh_due")
     if flags.get("background", False) and timestamp_due(
         cached.get("background_last_checked")
         or cached.get("background_last_upgraded"),
-        days,
+        adaptive_artwork_days(cached, "background", days),
         now=now,
     ):
-        reasons.add("background")
+        causes.add("background_refresh_due")
     if normalized_type == "tv" and flags.get("season", False):
         if timestamp_due(
             cached.get("season_last_checked"),
-            get_image_upgrade_days(config, "season"),
+            adaptive_artwork_days(
+                cached, "season", get_image_upgrade_days(config, "season")
+            ),
             now=now,
         ):
-            reasons.add("season")
-    return reasons
+            causes.add("season_refresh_due")
+    return causes
 
 
 def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
@@ -361,15 +441,20 @@ def plan_items(
     now=None,
     server_id=None,
     library_uuid=None,
+    retry_rating_keys=None,
 ):
     """Plan selected items without losing which operations made them eligible."""
     target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
+    retry_keys = {
+        str(value) for value in (retry_rating_keys or []) if str(value).strip()
+    }
     candidates = [
         item
         for item in items
         if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
     ]
     if full_scan or target_keys:
+        selection_cause = "targeted_rating_key" if target_keys else "full_scan"
         return [
             PlannedItem(
                 item,
@@ -378,6 +463,7 @@ def plan_items(
                         getattr(item, "type", None), feature_flags=feature_flags
                     )
                 ),
+                frozenset({selection_cause}),
             )
             for item in candidates
         ]
@@ -402,18 +488,41 @@ def plan_items(
     for item in candidates:
         rating_key = str(getattr(item, "ratingKey", ""))
         updated_at = item_updated_at(item)
+        child_fingerprint = child_inventory_fingerprint(item)
         cached = cache_by_rating_key.get(rating_key)
-        changed = (
-            not cached
-            or updated_at is None
-            or cached.get("plex_updated_at") != updated_at
-            or cached.get("config_fingerprint") != fingerprint
-        )
-        if changed:
+        selection_causes = set()
+        if rating_key in retry_keys:
+            selection_causes.add("deferred_retry_due")
+        if not cached:
+            selection_causes.add("new_rating_key")
+        else:
+            if updated_at is None:
+                selection_causes.add("missing_plex_update_marker")
+            elif cached.get("plex_updated_at") != updated_at:
+                selection_causes.add("plex_updated_at_changed")
+            if cached.get("config_fingerprint") != fingerprint:
+                selection_causes.add("configuration_changed")
+            if (
+                child_fingerprint is not None
+                and cached.get("plex_child_fingerprint") != child_fingerprint
+            ):
+                selection_causes.add(
+                    "tv_child_inventory_baseline"
+                    if not cached.get("plex_child_fingerprint")
+                    else "tv_child_inventory_changed"
+                )
+        if selection_causes:
             reasons = enabled_work_reasons(
                 getattr(item, "type", None), feature_flags=feature_flags
             )
         else:
+            selection_causes = due_selection_causes(
+                cached,
+                getattr(item, "type", None),
+                config,
+                feature_flags=feature_flags,
+                now=now,
+            )
             reasons = image_upgrade_reasons(
                 cached,
                 getattr(item, "type", None),
@@ -422,7 +531,13 @@ def plan_items(
                 now=now,
             )
         if reasons:
-            planned.append(PlannedItem(item, frozenset(reasons)))
+            planned.append(
+                PlannedItem(
+                    item,
+                    frozenset(reasons),
+                    frozenset(selection_causes),
+                )
+            )
     return planned
 
 
@@ -437,6 +552,7 @@ def select_items(
     now=None,
     server_id=None,
     library_uuid=None,
+    retry_rating_keys=None,
 ):
     return [
         planned.item
@@ -451,5 +567,6 @@ def select_items(
             now=now,
             server_id=server_id,
             library_uuid=library_uuid,
+            retry_rating_keys=retry_rating_keys,
         )
     ]

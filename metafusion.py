@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import os
-import schedule
+import platform
 import signal
 import sys
 import threading
@@ -13,10 +13,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
+import schedule
 
 from helper.asset_registry import AssetDestinationRegistry
 from helper.build_info import build_info
 from helper.cache import begin_cache_session, flush_cache, load_cache
+from helper.concurrency import (
+    begin_adaptive_concurrency,
+    concurrency_ceiling,
+    finish_adaptive_concurrency,
+)
 from helper.config import (
     BASE_CONFIG_DIR,
     ConfigError,
@@ -28,17 +34,19 @@ from helper.config import (
     mode_check,
     validate_config,
 )
+from helper.diagnostics import (
+    write_artwork_gap_report,
+    write_asset_audit_report,
+    write_destination_history_report,
+    write_metadata_audit_report,
+    write_release_qualification_report,
+    write_support_report,
+)
 from helper.incremental import (
     config_fingerprint,
     library_full_scan_decisions,
     mark_library_scan_complete,
     mark_library_scan_started,
-)
-from helper.diagnostics import (
-    write_asset_audit_report,
-    write_artwork_gap_report,
-    write_destination_history_report,
-    write_support_report,
 )
 from helper.logging import (
     check_sys_requirements,
@@ -49,8 +57,16 @@ from helper.logging import (
     log_main_event,
     redact_secrets,
 )
+from helper.performance import (
+    PerformanceTracker,
+    begin_performance_tracking,
+    log_performance_summary,
+    reset_performance_tracking,
+    tracker_for,
+)
 from helper.plex import (
     _plex_cache,
+    collect_plex_path_samples,
     connect_plex_library,
     connect_plex_server,
     get_plex_metadata,
@@ -61,13 +77,7 @@ from helper.plex_metadata import (
     finish_plex_metadata_run,
     restore_plex_metadata,
 )
-from helper.performance import (
-    PerformanceTracker,
-    begin_performance_tracking,
-    log_performance_summary,
-    reset_performance_tracking,
-    tracker_for,
-)
+from helper.plex_paths import advise_path_mappings
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
@@ -75,7 +85,18 @@ from helper.runtime import (
     validate_preflight_paths,
     validate_runtime_paths,
 )
-from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
+from helper.state_db import (
+    SCHEMA_VERSION as STATE_SCHEMA_VERSION,
+)
+from helper.state_db import (
+    STATE_DATABASE,
+    StateDatabaseError,
+    maintain_state_database,
+    missing_library_inventory,
+    recent_job_runs,
+    reconcile_library_inventory,
+    retry_queue_summary,
+)
 from helper.tmdb import (
     begin_tmdb_cache,
     flush_tmdb_cache,
@@ -83,8 +104,7 @@ from helper.tmdb import (
     tmdb_response_cache,
 )
 from modules.cleanup import CleanupResult, cleanup_title_orphans
-from modules.processing import process_library, plex_metadata_dict
-
+from modules.processing import plex_metadata_dict, process_library
 
 shutdown_requested = threading.Event()
 shutdown_complete = threading.Event()
@@ -93,8 +113,19 @@ _active_task = None
 _shutdown_timeout = 15.0
 
 
+def cli_version():
+    current = build_info()
+    return (
+        f"MetaFusion {current['version']} ({current['commit']}); "
+        f"Python {platform.python_version()}; architecture {platform.machine()}; "
+        f"state schema {STATE_SCHEMA_VERSION}; "
+        f"TMDb cache schema {tmdb_response_cache.SCHEMA_VERSION}"
+    )
+
+
 def parse_cli_args(argv=None):
     parser = argparse.ArgumentParser(description="MetaFusion CLI Command Overrides")
+    parser.add_argument("--version", action="version", version=cli_version())
     parser.add_argument("--metafusion_run", action="store_true", help="Run MetaFusion job")
     parser.add_argument("--schedule", action="store_true", help="Enable schedule")
     parser.add_argument("--run_times", type=str, help="Comma-separated run times (e.g. 06:00,18:30)")
@@ -138,9 +169,19 @@ def parse_cli_args(argv=None):
         help="Check Plex, TMDb, libraries, mappings, and storage without processing",
     )
     parser.add_argument(
+        "--release-check",
+        action="store_true",
+        help="Run read-only release qualification and write a redacted report",
+    )
+    parser.add_argument(
         "--asset-audit",
         action="store_true",
         help="Evaluate every enabled artwork destination and write a report only",
+    )
+    parser.add_argument(
+        "--metadata-audit",
+        action="store_true",
+        help="Compare TMDb metadata with the selected output without writing it",
     )
     parser.add_argument(
         "--library",
@@ -219,6 +260,16 @@ def override_config_with_cli(config, args):
         config["settings"]["dry_run"] = True
         config["metadata"].update({"run_basic": False, "run_enhanced": False})
         config["cleanup"]["run_cleanup"] = False
+    if args.metadata_audit:
+        config["metafusion_run"] = True
+        config["settings"]["dry_run"] = True
+        config["metadata"]["run_basic"] = True
+        config["assets"].update(
+            {"run_poster": False, "run_season": False, "run_background": False}
+        )
+        config["cleanup"]["run_cleanup"] = False
+        if mode_check(config, "plex"):
+            config["plex_metadata"]["enabled"] = True
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -239,10 +290,11 @@ def override_config_with_cli(config, args):
     execution = {
         "rating_keys": rating_keys,
         "targeted": bool(libraries or rating_keys),
-        "full_scan": bool(args.full_scan or args.asset_audit),
+        "full_scan": bool(args.full_scan or args.asset_audit or args.metadata_audit),
         "metadata_only": bool(args.metadata_only),
         "asset_only": bool(args.asset_only or args.asset_audit),
         "asset_audit": bool(args.asset_audit),
+        "metadata_audit": bool(args.metadata_audit),
         "explain_selection": bool(args.explain_selection),
     }
     if maintenance_action:
@@ -268,7 +320,9 @@ async def preflight_connectors(config, session, require_tmdb=True):
         return_exceptions=True,
     )
     if isinstance(plex, Exception):
-        raise RuntimeError("Plex connector preflight failed") from plex
+        raise RuntimeError(  # noqa: TRY004 -- connector failure, not bad input type
+            "Plex connector preflight failed"
+        ) from plex
     if isinstance(tmdb_result, Exception) or not tmdb_result:
         if isinstance(tmdb_result, Exception):
             raise RuntimeError("TMDb connector preflight failed") from tmdb_result
@@ -278,7 +332,7 @@ async def preflight_connectors(config, session, require_tmdb=True):
 
 async def connector_preflight(config):
     runtime = config.get("runtime", {})
-    maximum = max(1, int(runtime.get("max_concurrency", 8)))
+    maximum = concurrency_ceiling(config, "network")
     timeout = aiohttp.ClientTimeout(
         total=max(1.0, float(runtime.get("request_timeout", 30.0))),
         connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
@@ -300,10 +354,20 @@ async def connector_preflight(config):
         raise RuntimeError(
             "Configured Plex libraries were not found: " + ", ".join(missing)
         )
+    path_samples = await asyncio.to_thread(collect_plex_path_samples, sections)
+    path_advice = await asyncio.to_thread(
+        advise_path_mappings,
+        path_samples,
+        config.get("plex", {}).get("path_mappings", []),
+    )
     return {
         "plex_version": str(getattr(plex, "version", "unknown")),
         "libraries": [section.title for section in sections],
         "available_count": len(available),
+        "library_discovery": (
+            "auto" if config.get("_library_discovery_auto", False) else "explicit"
+        ),
+        "path_advice": path_advice,
     }
 
 
@@ -367,7 +431,9 @@ def missed_schedule_due(run_times, recent_runs, max_hours=24, now=None):
     candidates = []
     for run_time in run_times or []:
         try:
-            parsed = datetime.strptime(str(run_time), "%H:%M").time()
+            parsed = datetime.strptime(  # noqa: DTZ007 -- local scheduler wall clock
+                str(run_time), "%H:%M"
+            ).time()
         except (TypeError, ValueError):
             continue
         for days_ago in (0, 1):
@@ -412,14 +478,15 @@ async def metafusion_main(config, logger):
         )
         check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
-            "main_started", start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "main_started",
+            start_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
         get_disabled_features(config, logger)
         feature_flags = get_feature_flags(config)
-        start_time = datetime.now()
+        start_time = datetime.now().astimezone()
         library_item_counts = {}
         runtime_config = config.get("runtime", {})
-        max_concurrency = max(1, int(runtime_config.get("max_concurrency", 8)))
+        max_concurrency = concurrency_ceiling(config, "network")
         timeout = aiohttp.ClientTimeout(
             total=max(1.0, float(runtime_config.get("request_timeout", 30.0))),
             connect=max(1.0, float(runtime_config.get("connect_timeout", 10.0))),
@@ -462,6 +529,35 @@ async def metafusion_main(config, logger):
             cleanup_skip_reason = None
             all_full_scan = False
 
+            missing_discovered_libraries = []
+            if config.get("_library_discovery_auto", False):
+                eligible_libraries = [
+                    library
+                    for library in all_libraries
+                    if normalize_library_type(library.get("type")) in {"movie", "tv"}
+                ]
+                inventory_function = (
+                    missing_library_inventory
+                    if feature_flags.get("dry_run", False)
+                    else reconcile_library_inventory
+                )
+                missing_discovered_libraries = await asyncio.to_thread(
+                    inventory_function,
+                    getattr(plex, "machineIdentifier", None) or "unknown",
+                    eligible_libraries,
+                )
+                if missing_discovered_libraries:
+                    logger.warning(
+                        "[Plex] Previously discovered libraries are unavailable; "
+                        "processing continues but cleanup is disabled: %s",
+                        ", ".join(
+                            sorted(
+                                library.get("library_name") or library.get("library_uuid")
+                                for library in missing_discovered_libraries
+                            )
+                        ),
+                    )
+
             detected_names = {library["title"] for library in all_libraries}
             missing_selected = set(selected_libraries) - detected_names
             if missing_selected:
@@ -499,6 +595,13 @@ async def metafusion_main(config, logger):
                         "targeted run; full reconciliation requires every configured "
                         "library"
                     )
+                    run_feature_flags["cleanup"] = False
+                elif missing_discovered_libraries:
+                    if feature_flags.get("cleanup", False):
+                        cleanup_skip_reason = (
+                            "previously discovered Plex library unavailable; cleanup "
+                            "requires a complete stable inventory"
+                        )
                     run_feature_flags["cleanup"] = False
                 elif not all_full_scan:
                     if feature_flags.get("cleanup", False):
@@ -619,6 +722,9 @@ async def metafusion_main(config, logger):
                         library_config["_asset_audit_records"] = config.setdefault(
                             "_asset_audit_records", []
                         )
+                        library_config["_metadata_audit_records"] = config.setdefault(
+                            "_metadata_audit_records", []
+                        )
                         scope = next(
                             candidate
                             for candidate in scan_scopes
@@ -729,7 +835,7 @@ async def metafusion_main(config, logger):
                     "cleanup_skipped_run_scope", reason=cleanup_skip_reason
                 )
 
-            elapsed_time = (datetime.now() - start_time).total_seconds()
+            elapsed_time = (datetime.now().astimezone() - start_time).total_seconds()
             log_final_summary(
                 logger,
                 elapsed_time,
@@ -791,6 +897,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 runtime_status.run_started()
                 runtime_status.run_finished(False, error=error)
             return False
+    config["_metadata_audit_records"] = []
     try:
         begin_cache_session(
             writable=not config.get("settings", {}).get("dry_run", False)
@@ -816,9 +923,14 @@ def run_metafusion_job(config, logger, runtime_status=None):
         _active_loop = asyncio.get_running_loop()
         _active_task = asyncio.current_task()
         performance_token = begin_performance_tracking(performance_tracker)
+        concurrency_controller, concurrency_token = begin_adaptive_concurrency(config)
         try:
             await metafusion_main(config, logger)
         finally:
+            finish_adaptive_concurrency(
+                concurrency_controller,
+                concurrency_token,
+            )
             reset_performance_tracking(performance_token)
 
     try:
@@ -884,8 +996,43 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     success = False
                     error = f"Failed to write asset audit report: {caught}"
                     logger.error("[Diagnostics] %s", error)
+            if config.get("_execution", {}).get("metadata_audit", False):
+                try:
+                    metadata_audit_report = write_metadata_audit_report(
+                        config.get("_metadata_audit_records"),
+                        config.get("_artwork_gaps"),
+                        mode=config.get("settings", {}).get("mode", "unknown"),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    logger.info(
+                        "[Diagnostics] Metadata audit report saved to %s",
+                        metadata_audit_report,
+                    )
+                except OSError as caught:
+                    success = False
+                    error = f"Failed to write metadata audit report: {caught}"
+                    logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
+            if not config.get("settings", {}).get("dry_run", False):
+                try:
+                    tmdb_maintenance = tmdb_response_cache.maintain()
+                    state_maintenance = maintain_state_database()
+                    retry_summary = retry_queue_summary()
+                    logger.info(
+                        "[Maintenance] SQLite optimization complete; state "
+                        "checkpoint=%s, TMDb checkpoint=%s, retry queue=%s.",
+                        state_maintenance.get("checkpointed", False),
+                        tmdb_maintenance.get("checkpointed", False),
+                        retry_summary or "empty",
+                    )
+                except Exception as maintenance_error:
+                    logger.warning(
+                        "[Maintenance] Deferred optional SQLite maintenance: %s",
+                        maintenance_error,
+                    )
         except Exception as caught:
             success = False
             error = f"Failed to flush persistent cache: {caught}"
@@ -913,6 +1060,12 @@ def main(argv=None):
     args = parse_cli_args(argv)
     if args.metadata_only and (args.asset_only or args.asset_audit):
         print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
+        return 2
+    if args.metadata_audit and (args.asset_only or args.asset_audit):
+        print(
+            "Configuration error: --metadata-audit cannot be combined with artwork audits",
+            file=sys.stderr,
+        )
         return 2
     if args.plex_metadata_restore and args.plex_metadata_unlock:
         print(
@@ -942,12 +1095,21 @@ def main(argv=None):
             recent_runs = []
         if recent_runs:
             status["recent_jobs"] = recent_runs
+        try:
+            status["retry_queue"] = retry_queue_summary(path=STATE_DATABASE)
+        except StateDatabaseError as state_error:
+            status["retry_queue_error"] = str(state_error)
         print(json.dumps(status, indent=2, sort_keys=True))
         return 0
     try:
         config, sources = load_config_file(
             create_if_missing=not (
-                args.dry_run or args.doctor or args.preflight or args.asset_audit
+                args.dry_run
+                or args.doctor
+                or args.preflight
+                or args.asset_audit
+                or args.metadata_audit
+                or args.release_check
             ),
             return_sources=True,
         )
@@ -997,6 +1159,22 @@ def main(argv=None):
         for error in validation_errors:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    if args.release_check:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            result = asyncio.run(connector_preflight(config))
+            report, passed = write_release_qualification_report(config, result)
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Release qualification failed: {message}", file=sys.stderr)
+            return 1
+        print(f"Release qualification {'passed' if passed else 'failed'}.")
+        print(f"Report saved to {report}")
+        return 0 if passed else 1
     if args.preflight:
         try:
             validate_preflight_paths(config, BASE_CONFIG_DIR)
@@ -1013,7 +1191,30 @@ def main(argv=None):
         print(f"Plex version: {result['plex_version']}")
         print(f"Configured libraries: {', '.join(result['libraries'])}")
         print(f"Available Plex libraries: {result['available_count']}")
-        print("TMDb authentication, mappings, and storage checks passed.")
+        print(f"Library selection: {result.get('library_discovery', 'explicit')}")
+        path_advice = result.get("path_advice", {})
+        suggestions = path_advice.get("suggestions", [])
+        unresolved = sum(
+            record.get("status") == "unresolved"
+            for record in path_advice.get("records", [])
+        )
+        if suggestions:
+            print(
+                "Suggested PLEX_PATH_MAPPINGS: " + ";".join(suggestions)
+            )
+        elif path_advice.get("records") and not unresolved:
+            print("Plex media paths are visible inside the container.")
+        elif unresolved:
+            print(
+                f"Plex path mapping needs attention for {unresolved} sample(s)."
+            )
+        if unresolved:
+            print(
+                "TMDb authentication and storage checks passed; "
+                "resolve the Plex path mapping advice above before processing."
+            )
+        else:
+            print("TMDb authentication, mappings, and storage checks passed.")
         return 0
     _shutdown_timeout = max(
         1.0,
@@ -1052,7 +1253,9 @@ def main(argv=None):
             if not shutdown_requested.is_set():
                 log_main_event(
                     "main_force_run",
-                    start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    start_time=datetime.now()
+                    .astimezone()
+                    .strftime("%Y-%m-%d %H:%M:%S"),
                     logger=logger,
                 )
                 if not run_metafusion_job(config, logger, runtime_status):

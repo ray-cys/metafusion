@@ -1,15 +1,27 @@
+import copy
 from pathlib import Path
 
+import pytest
 import yaml
 
+from helper import config as config_module
 from helper.config import (
     DEFAULT_CONFIG,
+    ConfigError,
+    apply_secret_file_overrides,
     config_for_library,
+    config_source_report,
+    get_disabled_features,
     get_image_upgrade_days,
     load_config_file,
+    safe_bool,
+    safe_float,
+    safe_int,
+    safe_json_mapping,
+    safe_list,
+    safe_path_mappings,
     validate_config,
 )
-
 
 TEMPLATE_FILE = Path(__file__).parents[1] / "config_template.yml"
 
@@ -249,6 +261,7 @@ def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
         environ={
             "TMDB_CACHE_ENABLED": "true",
             "TMDB_CACHE_TTL_HOURS": "12",
+            "TMDB_CACHE_NEGATIVE_TTL_HOURS": "6",
             "TMDB_CACHE_MAX_ENTRIES": "3000",
             "TMDB_CACHE_MAX_MB": "128.5",
         },
@@ -257,6 +270,7 @@ def test_tmdb_cache_limits_support_environment_overrides(tmp_path):
     assert config["tmdb_cache"] == {
         "enabled": True,
         "ttl_hours": 12.0,
+        "negative_ttl_hours": 6.0,
         "max_entries": 3000,
         "max_mb": 128.5,
     }
@@ -324,3 +338,324 @@ def test_library_artwork_overrides_inherit_global_configuration():
 def test_library_override_validation_rejects_unsupported_features():
     config = {**DEFAULT_CONFIG, "library_overrides": {"Anime": {"cleanup": True}}}
     assert any("unsupported keys" in error for error in validate_config(config))
+
+
+def test_safe_converters_reject_invalid_values_without_sharing_defaults(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        config_module,
+        "log_config_event",
+        lambda event, **kwargs: events.append((event, kwargs)),
+    )
+    default = ["default"]
+
+    assert safe_int("bad", 3, key="COUNT") == 3
+    assert safe_float(None, 2.5, key="RATIO") == 2.5
+    assert safe_bool(True, False) is True
+    assert safe_bool("maybe", False, key="FLAG") is False
+    assert safe_list([" one ", ""], default) == ["one"]
+    assert safe_list(10, default, key="LIST") == default
+    assert safe_list(10, default) is not default
+    assert safe_path_mappings([" /a=>/b "], []) == ["/a=>/b"]
+    assert safe_path_mappings(10, default, key="MAPPINGS") == default
+    assert safe_json_mapping({"one": 1}, {}) == {"one": 1}
+    assert safe_json_mapping('{"two": 2}', {}) == {"two": 2}
+    assert safe_json_mapping("[]", {"fallback": True}, key="JSON") == {
+        "fallback": True
+    }
+    assert len(events) == 6
+
+
+def test_configuration_schema_loader_rejects_missing_and_unsupported_schema(
+    monkeypatch, tmp_path
+):
+    missing = tmp_path / "missing.yml"
+    monkeypatch.setattr(config_module, "CONFIG_SCHEMA_FILE", missing)
+    with pytest.raises(ConfigError, match="Unable to load configuration schema"):
+        config_module._load_config_schema()
+
+    invalid = tmp_path / "schema.yml"
+    invalid.write_text("schema_version: 2\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "CONFIG_SCHEMA_FILE", invalid)
+    with pytest.raises(ConfigError, match="Unsupported or invalid"):
+        config_module._load_config_schema()
+
+
+def test_feature_reporting_library_override_and_invalid_upgrade_interval(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        config_module,
+        "log_config_event",
+        lambda event, **kwargs: events.append((event, kwargs.get("feature"))),
+    )
+    get_disabled_features(
+        {
+            "metadata": {"run_basic": True},
+            "assets": {"run_poster": False},
+            "cleanup": {},
+        },
+        None,
+    )
+    assert ("feature_enabled", "Metadata Extraction") in events
+    assert ("feature_disabled", "Cleanup Libraries") in events
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["library_overrides"] = {
+        "Movies": {
+            "plex_metadata": {"enabled": True, "policy": "managed"},
+        }
+    }
+    effective = config_for_library(config, "Movies")
+    assert effective["plex_metadata"]["enabled"] is True
+    assert effective["plex_metadata"]["policy"] == "managed"
+    config["image_upgrades"]["movie_days"] = "invalid"
+    assert get_image_upgrade_days(config, "movie") == 30.0
+
+
+def test_secret_files_handle_priority_empty_and_unreadable_values(tmp_path):
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    token_file = tmp_path / "plex-token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    sources = {}
+    apply_secret_file_overrides(
+        config,
+        environ={"PLEX_TOKEN_FILE": str(token_file)},
+        sources=sources,
+    )
+    assert config["plex"]["token"] == "file-token"
+    assert sources[("plex", "token")] == "PLEX_TOKEN_FILE"
+
+    config["plex"]["token"] = "unchanged"
+    apply_secret_file_overrides(
+        config,
+        environ={"PLEX_TOKEN": "direct", "PLEX_TOKEN_FILE": str(token_file)},
+    )
+    assert config["plex"]["token"] == "unchanged"
+
+    empty = tmp_path / "empty"
+    empty.write_text("\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="is empty"):
+        apply_secret_file_overrides(
+            copy.deepcopy(DEFAULT_CONFIG),
+            environ={"TMDB_API_KEY_FILE": str(empty)},
+        )
+    with pytest.raises(ConfigError, match="Unable to read"):
+        apply_secret_file_overrides(
+            copy.deepcopy(DEFAULT_CONFIG),
+            environ={"TMDB_API_KEY_FILE": str(tmp_path / "absent")},
+        )
+
+
+def test_validation_reports_malformed_configuration_surface():
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["settings"].update(
+        {
+            "mode": "invalid",
+            "path": "",
+            "schedule": True,
+            "run_times": ["25:99"],
+            "log_max_mb": "large",
+            "log_backup_count": 0,
+        }
+    )
+    config["plex"].update(
+        {
+            "url": "http://user:pass@plex:32400",
+            "token": "PLEX_TOKEN",
+            "path_mappings": "not-a-list",
+        }
+    )
+    config["tmdb"]["api_key"] = "TMDB_API_KEY"
+    config["kometa"]["tag_policy"] = "replace"
+    config["plex_libraries"] = ["auto", "Movies"]
+    config["plex_metadata"].update(
+        {
+            "enabled": True,
+            "policy": "invalid",
+            "fields": ["unsupported"],
+            "max_writes_per_run": "many",
+        }
+    )
+    config["runtime"].update(
+        {"request_timeout": 1, "connect_timeout": 10, "max_image_mb": -1}
+    )
+    config["incremental"]["full_scan_interval_hours"] = "often"
+    config["image_upgrades"].update(
+        {"default_days": 4000, "movie_days": "soon", "series_days": -1}
+    )
+    config["library_overrides"] = {
+        "BadValue": "not-a-mapping",
+        "BadImages": {"image_upgrades": "not-a-mapping"},
+        "Movies": {
+            "image_upgrades": {
+                "unknown": 1,
+                "movie_days": "soon",
+                "season_days": 4001,
+            },
+            "plex_metadata": {
+                "enabled": True,
+                "policy": "overwrite",
+                "allow_overwrite": False,
+                "fields": "summary",
+                "recheck_days": "often",
+                "max_writes_per_run": 0,
+                "report_retention": 1001,
+                "unknown": True,
+            },
+        },
+    }
+    config["assets"].update(
+        {
+            "update_policy": "replace",
+            "run_poster": False,
+            "run_season": False,
+            "run_background": False,
+        }
+    )
+    config["metadata"].update({"run_basic": False, "run_enhanced": True})
+    config["cleanup"]["run_cleanup"] = False
+    config["poster_set"].update({"min_width": 0, "max_height": "large"})
+
+    errors = validate_config(config)
+    joined = "\n".join(errors)
+
+    for expected in (
+        "settings.mode",
+        "kometa.tag_policy",
+        "plex.path_mappings",
+        "embedded credentials",
+        "Plex token",
+        "TMDb API key",
+        "auto cannot be combined",
+        "Invalid schedule time",
+        "settings.log_max_mb must be numeric",
+        "runtime.max_image_mb must be between",
+        "image_upgrades.movie_days must be numeric",
+        "library_overrides.BadValue must be a mapping",
+        "image_upgrades must be a mapping",
+        "plex_metadata.allow_overwrite",
+        "plex_metadata.fields must be a list",
+        "assets.update_policy",
+        "metadata.run_basic",
+        "poster_set.min_width",
+        "poster_set height limits",
+    ):
+        assert expected in joined
+
+
+def test_config_source_report_redacts_secret_values():
+    config = {"plex": {"token": "secret"}, "tmdb": {"api_key": ""}, "plain": 1}
+    report = config_source_report(
+        config,
+        {("plex", "token"): "PLEX_TOKEN", ("tmdb", "api_key"): "default"},
+    )
+
+    assert "plex.token: set (PLEX_TOKEN)" in report
+    assert "tmdb.api_key: missing (default)" in report
+    assert all("secret" not in line for line in report)
+
+
+def test_additional_validation_shapes_cover_mutually_exclusive_errors():
+    base = copy.deepcopy(DEFAULT_CONFIG)
+    base["settings"].update(
+        {"mode": "kometa", "path": "", "schedule": True, "run_times": []}
+    )
+    base["plex"].update(
+        {"url": "not-a-url", "path_mappings": ["not-a-mapping"]}
+    )
+    base["plex_libraries"] = "Movies"
+    base["plex_metadata"]["fields"] = "summary"
+    errors = "\n".join(validate_config(base))
+    assert "settings.path is required" in errors
+    assert "plex_metadata.fields must be a list" in errors
+    assert "plex.url must be a complete" in errors
+    assert "plex_libraries must be a list" in errors
+    assert "settings.run_times must contain" in errors
+    assert "path mapping" in errors.lower()
+
+    non_mapping = copy.deepcopy(DEFAULT_CONFIG)
+    non_mapping["library_overrides"] = []
+    assert any("library_overrides must be a mapping" in error for error in validate_config(non_mapping))
+
+    override_types = copy.deepcopy(DEFAULT_CONFIG)
+    override_types["library_overrides"] = {
+        "Movies": {
+            "image_upgrades": {"movie_days": None},
+            "plex_metadata": "invalid",
+        }
+    }
+    assert any("plex_metadata must be a mapping" in error for error in validate_config(override_types))
+
+    override_values = copy.deepcopy(DEFAULT_CONFIG)
+    override_values["runtime"]["request_timeout"] = "invalid"
+    override_values["library_overrides"] = {
+        "Movies": {
+            "plex_metadata": {
+                "policy": "invalid",
+                "fields": ["unsupported"],
+            }
+        }
+    }
+    errors = "\n".join(validate_config(override_values))
+    assert "policy must be fill_missing" in errors
+    assert "contains unsupported fields" in errors
+
+
+def test_unknown_key_reporting_and_private_source_entries(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        config_module,
+        "log_config_event",
+        lambda event, **kwargs: events.append((event, kwargs)),
+    )
+    config_module.warn_unknown_keys(
+        {"settings": {"unknown": True}}, {"settings": {"mode": "kometa"}}
+    )
+    assert events == [("unknown_key", {"key": "settings.unknown"})]
+    assert safe_path_mappings("/host=>/media;/tv=>/shows", []) == [
+        "/host=>/media",
+        "/tv=>/shows",
+    ]
+    report = config_source_report({"_private": "hidden", "public": True}, {})
+    assert report == ["public: True (default)"]
+
+
+def test_config_loading_handles_missing_template_invalid_root_and_read_error(
+    monkeypatch, tmp_path
+):
+    config_file = tmp_path / "missing" / "config.yml"
+    config = load_config_file(
+        config_file=config_file,
+        template_file=tmp_path / "missing-template.yml",
+        environ={},
+    )
+    assert not config_file.exists()
+    assert config == DEFAULT_CONFIG
+
+    invalid = tmp_path / "invalid.yml"
+    invalid.write_text("- not\n- a mapping\n", encoding="utf-8")
+    config = load_config_file(
+        config_file=invalid,
+        template_file=TEMPLATE_FILE,
+        environ={},
+    )
+    assert any("Unable to parse" in error for error in config["_config_errors"])
+
+    unreadable = tmp_path / "unreadable.yml"
+    unreadable.write_text("settings: {}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(ConfigError, match="Unable to read configuration file"):
+        load_config_file(
+            config_file=unreadable,
+            template_file=TEMPLATE_FILE,
+            environ={},
+        )
+
+
+def test_json_environment_validation_accepts_mapping_and_secret_files_are_optional():
+    assert config_module._valid_env_conversion(safe_json_mapping, {"key": "value"})
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    assert apply_secret_file_overrides(config, environ={}) is config

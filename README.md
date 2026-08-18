@@ -10,8 +10,14 @@ scanner or metadata agent, and it never modifies video or audio files.
 - Generates Kometa YAML and assets, or writes Plex-compatible local artwork.
 - Can optionally fill selected Plex metadata fields through the Plex API.
 - Skips unchanged items between periodic reconciliation scans.
-- Rechecks movie, series, and season artwork on separate schedules.
+- Adapts movie, series, and season artwork rechecks from saved results.
 - Preserves manual artwork through ownership and checksum safeguards.
+- Adapts Plex, TMDb, artwork, and item concurrency to container resources and
+  provider health.
+- Retries transient item failures durably after restarts and parks persistent
+  failures without blocking healthy items.
+- Discovers Plex movie/show libraries automatically unless an explicit list is
+  supplied.
 - Validates provider identities and mapped storage before destructive or write operations.
 - Handles multiple movie editions when Plex edition names are unique.
 - Runs once or as a long-running Docker scheduler on AMD64 and ARM64.
@@ -26,10 +32,12 @@ Choose the guide for your platform:
 - [Policy behavior and safety rules](docs/policies.md)
 - [Scheduling, maintenance, state, and troubleshooting](docs/operations.md)
 - [Development and release testing](docs/release-testing.md)
+- [Support and version policy](SUPPORT.md)
 
-Required connections are a reachable Plex server, Plex token, TMDb API key,
-and exact Plex library names. Kometa mode also needs a writable Kometa output
-path. Plex artwork mode needs writable media mappings.
+Required connections are a reachable Plex server, Plex token, and TMDb API
+key. `PLEX_LIBRARIES=auto` discovers every supported movie/show library;
+provide exact names to limit the scope. Kometa mode also needs a writable
+Kometa output path. Plex artwork mode needs writable media mappings.
 
 ## Choose an operation mode
 
@@ -91,7 +99,7 @@ These values identify the connection, libraries, and output workflow:
 RUN_MODE=kometa                  # or plex
 PLEX_URL=http://plex:32400
 PLEX_TOKEN=your-token
-PLEX_LIBRARIES=Movies,TV Shows
+PLEX_LIBRARIES=auto              # or exact comma-separated names
 TMDB_API_KEY=your-key
 ```
 
@@ -209,6 +217,11 @@ scheduled slot after a restart. Scheduling is based on saved timestamps, not
 container uptime.
 
 `INCREMENTAL=True` skips successfully processed unchanged items.
+TV child-count fingerprints also select a show when Plex adds a season or
+episode without changing the parent show's update timestamp.
+Interrupted and transiently failed items are retained in the durable retry
+queue and reconsidered after bounded exponential delays. A Plex update marker
+change clears a parked failure and gives the item a fresh attempt.
 `FULL_SCAN_INTERVAL_HOURS` controls the maximum time between complete
 reconciliation scans. Artwork refresh intervals independently make unchanged
 items eligible for reconsideration:
@@ -219,9 +232,13 @@ SERIES_IMAGE_UPGRADE_DAYS=15
 SEASON_IMAGE_UPGRADE_DAYS=15
 ```
 
-These intervals use saved upgrade timestamps, not filesystem modification
-times. `0` disables timed rechecks for that media type. The artwork update
-policy still decides whether an existing file may be replaced.
+These values are adaptive base intervals and use saved observations, not
+filesystem modification times. Missing candidates are retried after 1, 3, 7,
+14, 30, then 60 days, bounded by the configured base. Repeatedly unchanged
+candidates back off to 180 days, or retain a longer explicitly configured
+base. A changed candidate resets the backoff. `0` disables timed rechecks for
+that media type. The artwork update policy still decides whether an existing
+file may be replaced.
 
 See [Scheduling and operations](docs/operations.md) for one-shot runs,
 targeted repairs, catch-up behavior, health checks, and diagnostics.
@@ -264,10 +281,14 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
 ```
 
-The TMDb response cache is disposable. Durable inventory, scan, job, and
-artwork-ownership state remains isolated in `meta_db.sqlite3`. The live
-heartbeat is stored in `/tmp/metafusion-status.json` to avoid persistent writes
-every 30 seconds. Back up SQLite files while MetaFusion is stopped.
+The TMDb response cache is disposable and automatically sized, pruned, and
+quarantined if corrupt. Durable inventory, scan, job, retry, learned identity,
+library-discovery, and artwork-ownership state remains isolated in
+`meta_db.sqlite3`. SQLite optimization and bounded WAL checkpoints run after
+jobs. Before a schema upgrade, MetaFusion retains two versioned database
+backups. The live heartbeat is stored in `/tmp/metafusion-status.json` to avoid
+persistent writes every 30 seconds. Back up SQLite files while MetaFusion is
+stopped.
 
 ## Docker image tags and rollback
 
@@ -293,6 +314,7 @@ Useful commands inside the container are:
 python metafusion.py --doctor
 python metafusion.py --preflight
 python metafusion.py --asset-audit
+python metafusion.py --metadata-audit
 python metafusion.py --status
 python metafusion.py --support-report
 ```
@@ -307,6 +329,11 @@ inspection output, tokens, API keys, or unredacted host paths. For operational
 checks and common symptoms, see
 [Scheduling, maintenance, state, and troubleshooting](docs/operations.md).
 
+`--metadata-audit` performs a full read-only TMDb comparison. It reports
+missing, different, unchanged, locked, policy-excluded, unsupported, and
+identity-rejected metadata plus the proposed action, without writing metadata,
+artwork, cache state, or ownership records.
+
 ## References
 
 - [Kometa metadata files](https://kometa.wiki/en/latest/files/metadata/)
@@ -314,3 +341,16 @@ checks and common symptoms, see
 - [Plex local TV artwork names](https://support.plex.tv/articles/200220717-local-media-assets-tv-shows/)
 - [Python-PlexAPI edit and lock methods](https://python-plexapi.readthedocs.io/en/latest/modules/mixins.html)
 - [TMDb API documentation](https://developer.themoviedb.org/docs)
+
+## TMDb attribution
+
+<a href="https://www.themoviedb.org"><img src="asset/tmdb_logo.svg" alt="TMDB" width="220"></a>
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+The logo is an unmodified [approved TMDB mark](https://www.themoviedb.org/about/logos-attribution)
+and remains the property of TMDB.
+
+## Copyright
+
+Copyright (c) 2026 ray-cys. All rights reserved. MetaFusion is publicly
+viewable source, but no open-source licence is granted. See [COPYRIGHT](COPYRIGHT).

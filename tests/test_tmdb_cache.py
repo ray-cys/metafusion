@@ -21,7 +21,7 @@ def test_sqlite_tmdb_cache_round_trips_compresses_and_expires(monkeypatch, tmp_p
     assert not path.with_name(f"{path.name}.bak").exists()
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
-        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
         stored_bytes = connection.execute(
             "SELECT stored_bytes FROM tmdb_cache WHERE cache_key = 'movie/1'"
@@ -42,6 +42,25 @@ def test_sqlite_tmdb_cache_round_trips_compresses_and_expires(monkeypatch, tmp_p
     expired.configure(path, ttl_hours=1, max_entries=10)
     assert "movie/1" not in expired
     assert expired.flush() is True
+
+
+def test_per_entry_ttl_is_capped_by_default_and_expires_independently(
+    monkeypatch, tmp_path
+):
+    clock = [1000.0]
+    monkeypatch.setattr(cache_module.time, "time", lambda: clock[0])
+    cache = PersistentTTLCache()
+    cache.configure(tmp_path / "tmdb.sqlite3", ttl_hours=24)
+    cache.set("negative", {"status": 404}, ttl_seconds=3600)
+    cache.set("capped", {"status": 404}, ttl_seconds=48 * 3600)
+    cache.flush()
+
+    clock[0] += 3601
+    assert "negative" not in cache
+    assert cache["capped"] == {"status": 404}
+
+    clock[0] += 23 * 3600
+    assert "capped" not in cache
 
 
 def test_tmdb_cache_is_entry_bounded_and_ignores_non_json_values(monkeypatch, tmp_path):
@@ -154,6 +173,7 @@ def test_corrupt_tmdb_database_is_rebuilt_without_blocking_jobs(tmp_path):
     assert cache.flush() is True
     assert cache["movie/1"] == {"id": 1}
     assert path.read_bytes().startswith(b"SQLite format 3\x00")
+    assert list(tmp_path.glob("tmdb.sqlite3.corrupt-*"))
 
 
 def test_corrupt_read_only_tmdb_database_is_left_untouched(tmp_path):
@@ -220,7 +240,8 @@ def test_single_cache_update_does_not_create_a_full_file_copy(tmp_path):
     page_count_after = cache._connection.execute("PRAGMA page_count").fetchone()[0]
 
     assert page_count_after <= page_count_before + 2
-    assert sorted(item.name for item in tmp_path.iterdir()) == ["tmdb.sqlite3"]
+    assert not list(tmp_path.glob("*.bak"))
+    assert not list(tmp_path.glob("*.corrupt-*"))
 
 
 def test_flush_failure_rolls_back_cache_changes(tmp_path):

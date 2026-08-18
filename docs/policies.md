@@ -98,11 +98,14 @@ upgrade engine still decides whether to write:
   would be lower than the saved/current artwork comparison.
 - A rejected or failed candidate leaves the existing file intact.
 
-Artwork age is the saved successful-upgrade timestamp, not the file's mtime.
-`MOVIE_IMAGE_UPGRADE_DAYS`, `SERIES_IMAGE_UPGRADE_DAYS`, and
-`SEASON_IMAGE_UPGRADE_DAYS` determine when unchanged items are reconsidered.
-Setting an interval to `0` disables timed rechecks for that type. Changed items
-and full scans can still install missing or objectively better artwork.
+Artwork age and candidate observations are saved in SQLite, not derived from
+the file's mtime. `MOVIE_IMAGE_UPGRADE_DAYS`, `SERIES_IMAGE_UPGRADE_DAYS`, and
+`SEASON_IMAGE_UPGRADE_DAYS` are adaptive base intervals. Missing candidates
+retry sooner; repeatedly unchanged candidates back off to 180 days; a longer
+explicit base remains respected. A changed candidate resets the backoff.
+Setting an interval to `0` disables
+timed rechecks for that type. Changed items and full scans can still install
+missing or objectively better artwork.
 
 ### Canonical ownership and collisions
 
@@ -272,6 +275,12 @@ Cleanup is opt-in and defaults to disabled. Before enabling it:
 3. Run a complete reconciliation with `DRY_RUN=True`.
 4. Inspect every proposed removal before using `DRY_RUN=False`.
 
+When `PLEX_LIBRARIES=auto`, MetaFusion records the discovered library UUIDs. If
+a previously discovered library is absent from a later inventory, it is
+reported and excluded from cleanup rather than interpreted as deletion. Exact
+library overrides remain available when an operator intentionally wants a
+smaller scope.
+
 For a one-time complete cleanup preview:
 
 ```text
@@ -320,6 +329,12 @@ the TMDb release year and the result came from a Plex external ID. Title-search
 results do not receive this exception, and ordinary unexplained year mismatches
 remain rejected. Trusted external-ID aliases are recorded at `INFO`; ambiguous
 or rejected identities remain `WARNING` or `ERROR`.
+
+High-confidence Plex-to-TMDb resolutions are learned in durable state. The
+binding key uses the Plex server, library UUID, rating key, media type, and
+provider-ID fingerprint, so harmless localized title changes do not repeat
+recovery work. A Plex provider GUID change invalidates the binding and forces
+normal validation again; ambiguous searches are never learned.
 
 `TMDB_TITLE_SEARCH_FALLBACK=True` permits exact normalized title/year search
 only when Plex exposes no usable external ID. Ambiguous results are rejected.

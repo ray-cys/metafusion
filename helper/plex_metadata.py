@@ -49,6 +49,10 @@ def _missing_tags(current, desired):
 class PlexMetadataReporter:
     def __init__(self, config):
         settings = config.get("plex_metadata", {})
+        self.audit_mode = bool(
+            config.get("_execution", {}).get("metadata_audit", False)
+        )
+        self.audit_records = config.setdefault("_metadata_audit_records", [])
         override_settings = [
             override.get("plex_metadata", {})
             for override in config.get("library_overrides", {}).values()
@@ -56,7 +60,8 @@ class PlexMetadataReporter:
             and isinstance(override.get("plex_metadata", {}), dict)
         ]
         self.enabled = mode_check(config, "plex") and (
-            settings.get("enabled", False)
+            self.audit_mode
+            or settings.get("enabled", False)
             or any(override.get("enabled", False) for override in override_settings)
         ) and not config.get("_execution", {}).get("asset_audit", False)
         self.dry_run = config.get("settings", {}).get("dry_run", False)
@@ -81,7 +86,33 @@ class PlexMetadataReporter:
     def record(self, library, title, child_key, field, action, detail=""):
         with self._lock:
             self.counts[action] += 1
-            if action in {"unchanged", "source_missing"}:
+            if self.audit_mode:
+                proposed = {
+                    "would_fill": "add/update",
+                    "would_remove": "remove",
+                    "locked_skipped": "preserve_locked",
+                    "existing_skipped": "preserve_existing",
+                    "source_missing": "none",
+                    "unchanged": "none",
+                    "conflict": "preserve_conflict",
+                    "policy_excluded": "none",
+                    "failed": "none",
+                }.get(action, action)
+                self.audit_records.append(
+                    {
+                        "library": str(library),
+                        "media_type": "Plex item",
+                        "title": str(title),
+                        "child": str(child_key or "item"),
+                        "field": str(field),
+                        "state": str(action),
+                        "policy": self.policy,
+                        "proposed_action": proposed,
+                        "detail": str(detail or ""),
+                        "target": "Plex API",
+                    }
+                )
+            if action in {"unchanged", "source_missing"} and not self.audit_mode:
                 return
             if len(self.entries) >= self.max_details:
                 self.counts["details_omitted"] += 1
@@ -119,6 +150,8 @@ class PlexMetadataReporter:
 
     def write(self, base_dir=None):
         if not self.enabled:
+            return None
+        if self.audit_mode:
             return None
         report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
@@ -313,6 +346,9 @@ def _apply_object(
 
     for field, desired_raw in candidate.get("fields", {}).items():
         if not _field_enabled(field, settings):
+            reporter.record(
+                library, title, child_key, field, "policy_excluded"
+            )
             continue
         desired = _clean_scalar(desired_raw)
         current = _clean_scalar(getattr(obj, field, ""))
@@ -376,6 +412,9 @@ def _apply_object(
 
     for field, desired_raw in candidate.get("tags", {}).items():
         if not _field_enabled(field, settings):
+            reporter.record(
+                library, title, child_key, field, "policy_excluded"
+            )
             continue
         desired = _clean_tags(desired_raw)
         attribute = TAG_ATTRIBUTES.get(field, f"{field}s")
@@ -558,6 +597,7 @@ def _rollback_untracked_write(obj, records):
 
 
 def _apply_candidate(item, candidate, config, meta, reporter):
+    write_limit_before = reporter.counts.get("write_limit", 0)
     settings = config.get("plex_metadata", {})
     identity = {
         "server_id": meta.get("server_id") or "unknown",
@@ -662,7 +702,13 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 "failed",
                 type(error).__name__,
             )
-    return {"writes": writes, "failures": failures}
+    result = {"writes": writes, "failures": failures}
+    deferred = max(
+        0, reporter.counts.get("write_limit", 0) - write_limit_before
+    )
+    if deferred:
+        result["deferred"] = deferred
+    return result
 
 
 async def apply_plex_metadata(item, candidate, config, meta):
@@ -679,10 +725,12 @@ async def apply_plex_metadata(item, candidate, config, meta):
     result = {"writes": 0, "failures": 0}
     title = meta.get("title") or getattr(item, "title", "Unknown")
     for attempt in range(1, retries + 1):
-        async with runtime_slot(config, "plex"):
+        async with runtime_slot(config, "plex") as concurrency:
             result = await asyncio.to_thread(
                 _apply_candidate, item, candidate, config, meta, reporter
             )
+            if result.get("failures"):
+                concurrency.failure("operation_failure")
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             if total_writes:
@@ -703,7 +751,10 @@ async def apply_plex_metadata(item, candidate, config, meta):
                     "[Plex Metadata] No API metadata changes required for %s.",
                     title,
                 )
-            return {"writes": total_writes, "failures": 0}
+            response = {"writes": total_writes, "failures": 0}
+            if result.get("deferred", 0):
+                response["deferred"] = result["deferred"]
+            return response
         if attempt < retries and delay:
             await asyncio.sleep(delay * attempt)
     logging.getLogger(__name__).error(
@@ -711,7 +762,13 @@ async def apply_plex_metadata(item, candidate, config, meta):
         title,
         retries,
     )
-    return {"writes": total_writes, "failures": result.get("failures", 0)}
+    response = {
+        "writes": total_writes,
+        "failures": result.get("failures", 0),
+    }
+    if result.get("deferred", 0):
+        response["deferred"] = result["deferred"]
+    return response
 
 
 def _existing_children(item):
@@ -943,10 +1000,12 @@ async def restore_plex_metadata(item, config, meta, unlock_only=False):
     total_writes = 0
     result = {"writes": 0, "failures": 0}
     for attempt in range(1, retries + 1):
-        async with runtime_slot(config, "plex"):
+        async with runtime_slot(config, "plex") as concurrency:
             result = await asyncio.to_thread(
                 _restore_candidate, item, config, meta, reporter, unlock_only
             )
+            if result.get("failures"):
+                concurrency.failure("operation_failure")
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             return {"writes": total_writes, "failures": 0}

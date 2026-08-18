@@ -1,6 +1,14 @@
-import os, sys, platform, psutil, logging, textwrap, requests, datetime, time
-from logging.handlers import TimedRotatingFileHandler
+import datetime
+import logging
+import os
+import platform
+import sys
+import textwrap
+import time
 from pathlib import Path
+
+import psutil
+import requests
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
@@ -10,12 +18,90 @@ MIN_CPU_CORES = 4
 MIN_RAM_GB = 4
 
 
+class SizeAndTimeRotatingFileHandler(logging.FileHandler):
+    """Rotate at local midnight or before the active log exceeds its size cap."""
+
+    def __init__(self, filename, max_bytes, backup_count, encoding="utf-8"):
+        self.max_bytes = max(0, int(max_bytes))
+        self.backup_count = max(1, int(backup_count))
+        super().__init__(filename, encoding=encoding)
+        self.next_rollover_at = self._next_midnight()
+
+    @staticmethod
+    def _next_midnight(now=None):
+        current = now or datetime.datetime.now().astimezone()
+        tomorrow = current.date() + datetime.timedelta(days=1)
+        return datetime.datetime.combine(
+            tomorrow, datetime.time.min, tzinfo=current.tzinfo
+        ).timestamp()
+
+    def shouldRollover(self, record):
+        if time.time() >= self.next_rollover_at:
+            return True
+        if not self.max_bytes:
+            return False
+        message_bytes = len(
+            (self.format(record) + "\n").encode(self.encoding or "utf-8")
+        )
+        try:
+            current_bytes = os.path.getsize(self.baseFilename)
+        except OSError:
+            current_bytes = 0
+        return current_bytes + message_bytes > self.max_bytes
+
+    def doRollover(self):
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        source = Path(self.baseFilename)
+        if source.exists() and source.stat().st_size:
+            suffix = datetime.datetime.now().astimezone().strftime(
+                "%Y-%m-%d_%H-%M-%S"
+            )
+            destination = source.with_name(f"{source.name}.{suffix}")
+            sequence = 1
+            while destination.exists():
+                destination = source.with_name(
+                    f"{source.name}.{suffix}.{sequence:03d}"
+                )
+                sequence += 1
+            os.replace(source, destination)
+        backups = sorted(
+            source.parent.glob(f"{source.name}.*"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for expired in backups[self.backup_count :]:
+            try:
+                expired.unlink()
+            except OSError:
+                pass
+        self.stream = self._open()
+        self.next_rollover_at = self._next_midnight()
+
+    def emit(self, record):
+        try:
+            if self.shouldRollover(record):
+                self.doRollover()
+        except OSError:
+            self.handleError(record)
+        super().emit(record)
+
+
 def redact_secrets(value, *secrets):
     redacted = str(value)
     for secret in secrets:
         if secret:
             redacted = redacted.replace(str(secret), "***")
     return redacted
+
+
+def _format_event_message(template, values, logger, namespace):
+    try:
+        return template.format(**values)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+        logger.debug("[%s] Unable to format log event: %s", namespace, error)
+        return template
 
 
 class SecretRedactionFilter(logging.Filter):
@@ -55,8 +141,14 @@ def get_setup_logging(config):
 
     if not dry_run:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = TimedRotatingFileHandler(
-            log_file, when="midnight", interval=1, backupCount=7, encoding="utf-8"
+        file_handler = SizeAndTimeRotatingFileHandler(
+            log_file,
+            max_bytes=max(
+                0,
+                int(float(config["settings"].get("log_max_mb", 10)) * 1024 * 1024),
+            ),
+            backup_count=config["settings"].get("log_backup_count", 14),
+            encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(log_level)
@@ -209,10 +301,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_job_already_running": "warning",
     }
     msg = messages.get(event, "[MetaFusion] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "MetaFusion")
     level = levels.get(event, "info")
     if event == "main_scheduled_run":
         print(msg)
@@ -253,10 +342,7 @@ def log_config_event(event, logger=None, **kwargs):
         "config_loaded": "debug",
     }
     msg = messages.get(event, "[Config] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Configuration")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -284,10 +370,7 @@ def log_cache_event(event, logger=None, **kwargs):
         "cache_updated": "debug",
     }
     msg = messages.get(event, "[Cache] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Cache")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -314,7 +397,10 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_failed_extract_show_path": "[Plex] Failed to extract show path for {title} ({year}): {error}",
         "plex_failed_extract_seasons_episodes": "[Plex] Failed to extract seasons/episodes for {title} ({year}): {error}",
         "plex_operation_failed": "[Plex] {description} failed (attempt {attempt}/{retries}): {error}",
+        "plex_circuit_open": "[Plex] {description} skipped while the provider circuit cools down ({retry_after:.1f}s remaining).",
         "plex_critical_metadata_missing": "[Plex] Critical metadata missing for item [ratingKey={item_key}]: {missing_critical}. Extracted: {result}",
+        "plex_path_sample_library_failed": "[Plex] Unable to sample paths from library {library_name}: {error}",
+        "plex_path_sample_item_failed": "[Plex] Unable to sample a media path for {title}: {error}",
     }
     levels = {
         "plex_connected": "info",
@@ -330,13 +416,13 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_failed_extract_show_path": "warning",
         "plex_failed_extract_seasons_episodes": "warning",
         "plex_operation_failed": "warning",
+        "plex_circuit_open": "warning",
         "plex_critical_metadata_missing": "warning",
+        "plex_path_sample_library_failed": "warning",
+        "plex_path_sample_item_failed": "warning",
     }
     msg = messages.get(event, "[Plex] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Plex")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -352,6 +438,10 @@ def log_tmdb_event(event, logger=None, **kwargs):
     messages = {
         "tmdb_no_api_key": "[TMDb] No API key found in config: {tmdb_config}",
         "tmdb_cache_hit": "[TMDb] Returning cached response for {url} params: {params}",
+        "tmdb_negative_cache_hit": "[TMDb] Skipping recently missing resource {url}; cached HTTP 404 is still valid.",
+        "tmdb_negative_cached": "[TMDb] Cached HTTP 404 for {url} for {ttl_hours:g} hour(s).",
+        "tmdb_request_coalesced": "[TMDb] Reusing the in-flight request for {url}.",
+        "tmdb_circuit_open": "[TMDb] Provider circuit is open; preserving existing data and retrying after the cooldown ({retry_after:.1f}s remaining).",
         "tmdb_request": "[TMDb] Requesting {url} with params: {query} (Attempt {attempt}/{retries})",
         "tmdb_success": "[TMDb] Successful response for {url} (Attempt {attempt})",
         "tmdb_rate_limited": "[TMDb] Rate limited (HTTP 429). Sleeping {retry_after}s before retry... Params: {query}",
@@ -366,6 +456,10 @@ def log_tmdb_event(event, logger=None, **kwargs):
     levels = {
         "tmdb_no_api_key": "error",
         "tmdb_cache_hit": "debug",
+        "tmdb_negative_cache_hit": "debug",
+        "tmdb_negative_cached": "debug",
+        "tmdb_request_coalesced": "debug",
+        "tmdb_circuit_open": "debug",
         "tmdb_request": "debug",
         "tmdb_success": "debug",
         "tmdb_rate_limited": "warning",
@@ -378,10 +472,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_cache_degraded": "warning",
     }
     msg = messages.get(event, "[TMDb] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "TMDb")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -406,7 +497,8 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_failed_write_metadata": "[Processing] Failed to write YAML: {error}",
         "processing_metadata_dry_run": "[Dry Run] Metadata for {library_name} generated but not saved.",
         "processing_failed_library": "[Processing] Failed to process library '{library_name}': {error}",
-        "processing_selection_reason": "[Processing] Selected {title} (rating key {rating_key}) from {library_name}: {reasons}",
+        "processing_selection_reason": "[Processing] Selected {title} (rating key {rating_key}) from {library_name}: cause={causes}; work={work}",
+        "processing_selection_summary": "[Processing] Selection summary for {library_name}: selected={selected}, unchanged/not due={skipped}, causes: {causes}",
         "processing_ambiguous_editions": "[Processing] Unsafe duplicate editions in '{library_name}': {description}",
         "processing_ambiguous_editions_allowed": "[Processing] Ambiguous editions allowed in '{library_name}': {description}",
     }
@@ -423,14 +515,12 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_metadata_dry_run": "info",
         "processing_failed_library": "error",
         "processing_selection_reason": "info",
+        "processing_selection_summary": "info",
         "processing_ambiguous_editions": "error",
         "processing_ambiguous_editions_allowed": "warning",
     }
     msg = messages.get(event, "[Processing] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Processing")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -589,10 +679,7 @@ def log_builder_event(event, logger=None, **kwargs):
         kwargs["reason"] = reason
         
     msg = messages.get(event, "[Builder] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Builder")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -703,10 +790,7 @@ def log_cleanup_event(event, logger=None, **kwargs):
         kwargs["summary"] = "\n[Cleanup] ".join(summary_lines)
     
     msg = messages.get(event, "[Cleanup] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Cleanup")
     level = levels.get(event, "info")
     if event == "cleanup_consolidated_removed" and "removed_summary" in kwargs:
         for line in msg.splitlines():
@@ -969,7 +1053,7 @@ def log_final_summary(
         border
     ]
     minutes, seconds = divmod(int(elapsed_time), 60)
-    run_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     lines.extend(box_line(f"Executed on {run_date} in {minutes} mins {seconds} secs.", box_width))
     processed_libraries = [lib["title"] for lib in libraries if lib["title"] in selected_libraries]
     skipped_libraries = [lib["title"] for lib in libraries if lib["title"] not in selected_libraries]

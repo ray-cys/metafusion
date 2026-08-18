@@ -4,6 +4,11 @@ MetaFusion supports environment variables, secret files, and
 `/config/config.yml`. The supplied Docker Compose and Unraid templates expose
 the same application settings.
 
+The exhaustive [generated configuration table](configuration.generated.md),
+`.env.example`, `config_template.yml`, Docker Compose environment block, and
+Unraid variables are generated from the canonical `config_schema.yml` file.
+Maintainers update the schema and run `python tools/generate_config_surfaces.py`.
+
 ## Configuration priority
 
 Values are merged in this order, with later sources taking priority:
@@ -34,7 +39,7 @@ effective configuration without contacting Plex or TMDb.
 | `PLEX_URL` | placeholder | Complete Plex server URL, including port. |
 | `PLEX_TOKEN` | required | Plex authentication token. |
 | `PLEX_TOKEN_FILE` | unset | Mounted file containing the Plex token; a non-empty direct token wins. |
-| `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
+| `PLEX_LIBRARIES` | `auto` | `auto` discovers every supported movie/show library; comma-separated exact names limit the scope. Do not combine `auto` and explicit names. |
 | `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations for Plex-mode artwork. Docker mappings are still required. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | Mounted file containing the TMDb key; a non-empty direct key wins. |
@@ -65,6 +70,8 @@ Docker or Unraid administrators when supplied as environment variables.
 | `TZ` | `UTC` | Timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate without normal writes/deletions. A direct Plex metadata dry-run still writes a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
+| `LOG_MAX_MB` | `10` | Rotate the active log before it exceeds this many MiB; `0` disables only size rotation. |
+| `LOG_BACKUP_COUNT` | `14` | Number of daily/size-rotated log files retained. |
 | `RUN_BASIC` | `True` | Generate core Kometa fields or enable core direct Plex fields after Plex API opt-in. |
 | `RUN_ENHANCED` | `True` | Add supported director/writer/producer fields. Requires `RUN_BASIC=True`; cast remains with Plex's provider. |
 | `RUN_POSTER` | `True` | Generate movie and show posters. |
@@ -102,7 +109,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAX_CONCURRENCY` | `8` | Global ceiling for media workers and nested TMDb/artwork work; Plex API calls are additionally capped at four. |
+| `MAX_CONCURRENCY` | `0` | `0` enables cgroup-aware adaptive tuning. A positive value is an optional hard ceiling; Plex, TMDb, nested artwork, and item lanes retain their lower internal safety caps. |
 | `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds; must not exceed `REQUEST_TIMEOUT`. |
 | `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |
@@ -112,9 +119,13 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 | `STOP_GRACE_PERIOD` | `20s` | Docker Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size in MiB. |
 | `VALIDATE_MEDIA_MOUNTS` | `True` | Validate configured Plex-mode mapping destinations before artwork processing. |
-| `MIN_FREE_SPACE_MB` | `256` | Minimum free space required on runtime and artwork destinations before writes. |
+| `MIN_FREE_SPACE_MB` | `256` | Explicit free-space floor. MetaFusion also applies a storage-aware automatic floor of 1% of the volume, bounded between 256 MiB and 2 GiB. |
 | `PUID` | `10001` | Runtime user ID; use `99` on standard Unraid. |
 | `PGID` | `10001` | Runtime group ID; use `100` on standard Unraid. |
+
+Existing installations that explicitly saved `MAX_CONCURRENCY=8` remain
+adaptive but cannot grow past eight. Change the value to `0`, or remove the
+environment variable, to use the complete automatic range.
 
 Do not use Compose `user:` or Docker `--user`; those options bypass
 `PUID`/`PGID` startup handling.
@@ -126,14 +137,15 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `INCREMENTAL` | `True` | Skip successfully processed unchanged items. |
 | `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between complete reconciliation scans. |
 | `METADATA_PENDING_RECHECK_HOURS` | `24` | Recheck interval for Plex episodes whose TMDb metadata is not published yet. |
-| `IMAGE_UPGRADE_DAYS` | `30` | Default minimum age before unchanged artwork is reconsidered; `0` disables timed rechecks. |
-| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background interval. |
-| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background interval. |
-| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster interval. |
+| `IMAGE_UPGRADE_DAYS` | `30` | Default adaptive base interval; `0` disables timed rechecks. |
+| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
+| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
+| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster adaptive base interval. |
 | `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
-| `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
-| `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables the byte cap. |
+| `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for HTTP 404 results; 429 and 5xx responses are never cached. |
+| `TMDB_CACHE_MAX_ENTRIES` | `0` | Maximum persisted responses; `0` chooses a storage-aware automatic limit. |
+| `TMDB_CACHE_MAX_MB` | `0` | Compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `DESTINATION_HISTORY_REPORT_RETENTION` | `10` | Artwork destination-change reports retained under `/config/reports`. |
@@ -141,8 +153,10 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 
-Artwork age comes from saved MetaFusion upgrade timestamps, not filesystem
-mtime. Decimal day values are accepted (`0.5` is 12 hours). A due interval
+Artwork age comes from saved MetaFusion observations, not filesystem mtime.
+Decimal day values are accepted (`0.5` is 12 hours). Missing artwork is
+rechecked sooner and stable unchanged candidates back off automatically; these
+settings are the bases and optional bounds for that behavior. A due interval
 makes an item eligible for evaluation; `ASSET_UPDATE_POLICY` and quality rules
 still determine whether an existing file can be replaced.
 

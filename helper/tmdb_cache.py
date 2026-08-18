@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import time
 import zlib
@@ -18,8 +19,9 @@ class PersistentTTLCache(MutableMapping):
     def __init__(self):
         self.path = None
         self.ttl_seconds = 24 * 3600
-        self.max_entries = 5000
+        self.max_entries = 0
         self.max_bytes = 0
+        self.automatic_limits = True
         self.enabled = True
         self.writable = True
         self._connection = None
@@ -41,7 +43,7 @@ class PersistentTTLCache(MutableMapping):
         self,
         path,
         ttl_hours=24,
-        max_entries=5000,
+        max_entries=0,
         max_mb=0,
         enabled=True,
         writable=True,
@@ -49,8 +51,12 @@ class PersistentTTLCache(MutableMapping):
         self.reset_memory()
         self.path = Path(path)
         self.ttl_seconds = max(1.0, float(ttl_hours) * 3600)
-        self.max_entries = max(1, int(max_entries))
-        self.max_bytes = max(0, int(float(max_mb) * 1024 * 1024))
+        configured_entries = max(0, int(max_entries))
+        configured_bytes = max(0, int(float(max_mb) * 1024 * 1024))
+        self.max_entries, self.max_bytes = self._effective_limits(
+            configured_entries, configured_bytes
+        )
+        self.automatic_limits = not configured_entries or not configured_bytes
         self.enabled = bool(enabled)
         self.writable = bool(writable)
         if not self.enabled:
@@ -77,6 +83,25 @@ class PersistentTTLCache(MutableMapping):
                 self._trim_database()
             except sqlite3.Error as error:
                 self._handle_database_error(error)
+
+    def _effective_limits(self, configured_entries, configured_bytes):
+        parent = self.path.parent
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
+        try:
+            free_bytes = shutil.disk_usage(parent).free
+        except OSError:
+            free_bytes = 4 * 1024 ** 3
+        automatic_bytes = min(
+            1024 * 1024 ** 2,
+            max(64 * 1024 ** 2, int(free_bytes * 0.02)),
+        )
+        byte_limit = configured_bytes or automatic_bytes
+        automatic_entries = max(
+            5000,
+            min(100000, int(byte_limit / (32 * 1024))),
+        )
+        return configured_entries or automatic_entries, byte_limit
 
     @staticmethod
     def _is_corruption_error(error):
@@ -107,9 +132,11 @@ class PersistentTTLCache(MutableMapping):
 
         self._connection = connection
         if self.writable:
-            connection.execute("PRAGMA journal_mode = DELETE")
-            connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+            if not existed:
+                connection.execute("VACUUM")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             current_version = connection.execute("PRAGMA user_version").fetchone()[0]
             if current_version not in (0, self.SCHEMA_VERSION):
                 raise sqlite3.DatabaseError(
@@ -162,13 +189,26 @@ class PersistentTTLCache(MutableMapping):
 
     def _recover_database(self):
         self._close_database()
+        timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         for candidate in self._database_files():
             try:
-                candidate.unlink()
+                target = Path(f"{candidate}.corrupt-{timestamp}")
+                candidate.replace(target)
             except FileNotFoundError:
                 pass
             except OSError:
                 return
+        if self.path is not None:
+            old_sets = sorted(
+                self.path.parent.glob(f"{self.path.name}*.corrupt-*"),
+                key=lambda candidate: candidate.stat().st_mtime,
+                reverse=True,
+            )
+            for expired in old_sets[4:]:
+                try:
+                    expired.unlink()
+                except OSError:
+                    pass
         try:
             self._open_database()
         except (OSError, sqlite3.Error):
@@ -304,9 +344,11 @@ class PersistentTTLCache(MutableMapping):
             self._memory_touched.pop(oldest, None)
             self._evictions += 1
 
-    def _store_memory(self, key, value, now):
+    def _store_memory(self, key, value, now, ttl_seconds=None):
         self._memory[key] = value
-        self._memory_expires[key] = now + self.ttl_seconds
+        self._memory_expires[key] = now + (
+            self.ttl_seconds if ttl_seconds is None else max(1.0, float(ttl_seconds))
+        )
         self._memory_touched[key] = now
         self._trim_memory()
 
@@ -401,6 +443,10 @@ class PersistentTTLCache(MutableMapping):
             return False
 
     def __setitem__(self, key, value):
+        self.set(key, value)
+
+    def set(self, key, value, ttl_seconds=None):
+        """Store a value with the default TTL or a shorter per-entry TTL."""
         if not self.enabled:
             return
         try:
@@ -408,8 +454,13 @@ class PersistentTTLCache(MutableMapping):
         except (TypeError, ValueError, OverflowError, RecursionError):
             return
         now = time.time()
+        effective_ttl = (
+            self.ttl_seconds
+            if ttl_seconds is None
+            else max(1.0, min(self.ttl_seconds, float(ttl_seconds)))
+        )
         if self._connection is None or not self.writable:
-            self._store_memory(key, value, now)
+            self._store_memory(key, value, now, effective_ttl)
             return
 
         try:
@@ -427,11 +478,11 @@ class PersistentTTLCache(MutableMapping):
                     touched_at = excluded.touched_at,
                     stored_bytes = excluded.stored_bytes
                 """,
-                (key, encoded, now + self.ttl_seconds, now, len(encoded)),
+                (key, encoded, now + effective_ttl, now, len(encoded)),
             )
         except sqlite3.Error as error:
             self._handle_database_error(error)
-            self._store_memory(key, value, now)
+            self._store_memory(key, value, now, effective_ttl)
             return
         if existing is None:
             self._entry_count += 1
@@ -444,7 +495,7 @@ class PersistentTTLCache(MutableMapping):
             self._trim_database()
         except sqlite3.Error as error:
             self._handle_database_error(error)
-            self._store_memory(key, value, now)
+            self._store_memory(key, value, now, effective_ttl)
 
     def __delitem__(self, key):
         if key in self._memory:
@@ -562,6 +613,9 @@ class PersistentTTLCache(MutableMapping):
             "disk_bytes": disk_bytes,
             "stored_mib": self._stored_bytes / (1024 * 1024),
             "disk_mib": disk_bytes / (1024 * 1024),
+            "max_entries": self.max_entries,
+            "max_mib": self.max_bytes / (1024 * 1024),
+            "automatic_limits": self.automatic_limits,
             "health": health,
             "last_error": self._last_error,
         }
@@ -606,9 +660,84 @@ class PersistentTTLCache(MutableMapping):
             self._dirty = False
             try:
                 self._refresh_totals()
-            except sqlite3.Error as error:
-                self._handle_database_error(error)
+            except sqlite3.Error as refresh_error:
+                self._handle_database_error(refresh_error)
             return False
+
+    def relieve_space(self, destination, required_free_bytes):
+        """Prune only disposable LRU rows when cache and destination share a disk."""
+        if self._connection is None or not self.writable or self.path is None:
+            return 0
+        try:
+            if self.path.parent.stat().st_dev != Path(destination).stat().st_dev:
+                return 0
+        except OSError:
+            return 0
+        removed = 0
+        try:
+            removed += self._delete_expired(time.time())
+
+            def reclaim_pages():
+                if not self.flush() or self._connection is None:
+                    return False
+                # DELETE makes pages reusable inside SQLite; incremental vacuum
+                # plus a WAL checkpoint returns them to the filesystem when
+                # disk pressure requires real free space immediately.
+                self._connection.execute("PRAGMA incremental_vacuum(250)")
+                self._connection.commit()
+                self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                return True
+
+            if removed and not reclaim_pages():
+                return removed
+            while (
+                shutil.disk_usage(destination).free < int(required_free_bytes)
+                and self._entry_count > 0
+            ):
+                rows = self._connection.execute(
+                    "SELECT cache_key, stored_bytes FROM tmdb_cache "
+                    "ORDER BY touched_at ASC LIMIT 250"
+                ).fetchall()
+                if not rows:
+                    break
+                self._connection.executemany(
+                    "DELETE FROM tmdb_cache WHERE cache_key = ?",
+                    ((row[0],) for row in rows),
+                )
+                removed += len(rows)
+                self._entry_count -= len(rows)
+                self._stored_bytes -= sum(int(row[1]) for row in rows)
+                self._evictions += len(rows)
+                self._dirty = True
+                if not reclaim_pages():
+                    break
+            return removed
+        except (OSError, sqlite3.Error):
+            return removed
+
+    def maintain(self, wal_threshold_mb=8):
+        """Run bounded optimization and checkpoint work after a completed job."""
+        result = {"optimized": False, "checkpointed": False, "wal_bytes": 0}
+        if self._connection is None or not self.writable:
+            return result
+        self.flush()
+        try:
+            self._connection.execute("PRAGMA optimize")
+            result["optimized"] = True
+            wal_path = Path(f"{self.path}-wal")
+            try:
+                result["wal_bytes"] = wal_path.stat().st_size
+            except OSError:
+                result["wal_bytes"] = 0
+            if result["wal_bytes"] >= max(1, int(wal_threshold_mb)) * 1024 * 1024:
+                row = self._connection.execute(
+                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                ).fetchone()
+                result["checkpointed"] = bool(row is not None and int(row[0]) == 0)
+            return result
+        except sqlite3.Error as error:
+            self._handle_database_error(error)
+            return result
 
 
 tmdb_response_cache = PersistentTTLCache()

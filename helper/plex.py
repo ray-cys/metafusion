@@ -6,8 +6,7 @@ from pathlib import Path
 
 from plexapi.server import PlexServer
 
-from helper.concurrency import runtime_slot
-
+from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.logging import log_plex_event, redact_secrets
 from helper.plex_paths import translate_plex_path
 
@@ -388,8 +387,14 @@ def connect_plex_server(config):
 
 
 def connect_plex_library(config, selected_libraries=None, plex=None):
-    if not selected_libraries:
-        selected_libraries = config.get("plex_libraries") or ["Movies", "TV Shows"]
+    if selected_libraries is None:
+        selected_libraries = config.get("plex_libraries") or []
+    selected_libraries = [
+        str(value).strip() for value in selected_libraries if str(value).strip()
+    ]
+    automatic = not selected_libraries or any(
+        value.casefold() == "auto" for value in selected_libraries
+    )
     plex = connect_plex_server(config) if plex is None else plex
     runtime = config.get("runtime", {})
     retries = max(1, int(runtime.get("plex_retries", 3)))
@@ -410,15 +415,50 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     else:
         raise RuntimeError("Unable to retrieve Plex libraries") from last_error
 
-    libraries = [{"title": section.title, "type": section.TYPE} for section in sections]
+    libraries = [
+        {
+            "title": section.title,
+            "type": getattr(section, "TYPE", None)
+            or getattr(section, "type", None)
+            or "unknown",
+            "uuid": getattr(section, "uuid", None)
+            or getattr(section, "key", None)
+            or section.title,
+        }
+        for section in sections
+    ]
     all_libraries = libraries.copy()
     detected_names = [lib["title"] for lib in libraries]
+
+    if automatic:
+        selected_libraries = [
+            library["title"]
+            for library in libraries
+            if str(library.get("type") or "").casefold()
+            in {"movie", "movies", "show", "shows", "tv"}
+        ]
+    else:
+        unsupported = sorted(
+            library["title"]
+            for library in libraries
+            if library["title"] in selected_libraries
+            and str(library.get("type") or "").casefold()
+            not in {"movie", "movies", "show", "shows", "tv"}
+        )
+        if unsupported:
+            raise RuntimeError(
+                "Configured Plex libraries use unsupported types: "
+                + ", ".join(unsupported)
+            )
+    config["_library_discovery_auto"] = automatic
 
     filtered_sections = []
     filtered_libraries = []
     skipped_libraries = []
     for section, lib in zip(sections, libraries):
-        if lib['title'] in selected_libraries:
+        if lib['title'] in selected_libraries and str(
+            lib.get("type") or ""
+        ).casefold() in {"movie", "movies", "show", "shows", "tv"}:
             filtered_sections.append(section)
             filtered_libraries.append(lib)
         else:
@@ -433,8 +473,42 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     )
     if not sections:
         log_plex_event("plex_no_libraries_found")
+        if automatic:
+            raise RuntimeError("No supported Plex movie or show libraries were found")
 
     return sections, selected_libraries, all_libraries
+
+
+def collect_plex_path_samples(sections, max_items_per_library=2):
+    """Collect a bounded Plex path sample for preflight mapping advice."""
+    samples = []
+    for section in sections or []:
+        try:
+            items = list(section.search(maxresults=max_items_per_library))
+        except Exception as error:
+            log_plex_event(
+                "plex_path_sample_library_failed",
+                library_name=getattr(section, "title", "unknown"),
+                error=error,
+            )
+            continue
+        for item in items[:max_items_per_library]:
+            for location in getattr(item, "locations", None) or []:
+                if location:
+                    samples.append(str(location))
+            if hasattr(item, "iterParts"):
+                try:
+                    for part in list(item.iterParts())[:2]:
+                        if getattr(part, "file", None):
+                            samples.append(str(part.file))
+                except Exception as error:
+                    log_plex_event(
+                        "plex_path_sample_item_failed",
+                        title=getattr(item, "title", "unknown"),
+                        error=error,
+                    )
+                    continue
+    return sorted(set(samples))
 
 _plex_cache = {}
 
@@ -449,6 +523,15 @@ async def plex_operation(operation, runtime=None, description="Plex operation"):
         try:
             async with runtime_slot({"runtime": runtime}, "plex"):
                 return await asyncio.to_thread(operation)
+        except CircuitOpenError as error:
+            log_plex_event(
+                "plex_circuit_open",
+                description=description,
+                retry_after=error.retry_after,
+            )
+            raise RuntimeError(
+                f"{description} skipped while the Plex circuit is cooling down"
+            ) from error
         except Exception as error:
             last_error = error
             log_plex_event(
@@ -654,6 +737,7 @@ async def get_plex_metadata(
             )
         ),
         "edition_title": edition_title,
+        "plex_provider_tmdb_id": tmdb_id,
         "tmdb_id": tmdb_id,
         "imdb_id": imdb_id,
         "tvdb_id": tvdb_id,
