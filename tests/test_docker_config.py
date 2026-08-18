@@ -182,7 +182,7 @@ def test_registry_publication_is_serialized_and_verified():
         encoding="utf-8"
     )
 
-    assert "group: metafusion-registry-publish" in workflow
+    assert "'metafusion-registry-publish'" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "Verify published aliases, signature, SBOM, and provenance" in workflow
     assert "resolved_digest" in workflow
@@ -190,6 +190,17 @@ def test_registry_publication_is_serialized_and_verified():
     assert "--certificate-identity" in workflow
     assert "{{json .SBOM}}" in workflow
     assert "{{json .Provenance}}" in workflow
+
+
+def test_pull_requests_build_both_architectures_without_publishing():
+    workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "github.event_name == 'pull_request' ||" in workflow
+    assert "platforms: linux/amd64,linux/arm64" in workflow
+    assert "push: ${{ github.event_name != 'pull_request' }}" in workflow
+    assert workflow.count("github.event_name != 'pull_request'") >= 6
 
 
 def test_ci_smoke_tests_each_published_platform_in_isolation():

@@ -194,14 +194,15 @@ jobs:
 
   build:
     if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/develop' ||
-       startsWith(github.ref, 'refs/tags/v'))
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/develop' ||
+        startsWith(github.ref, 'refs/tags/v')))
     needs: [release-guard, test, kometa-contract, security]
     runs-on: ubuntu-latest
     concurrency:
-      group: metafusion-registry-publish
+      group: ${{ github.event_name == 'pull_request' && format('metafusion-pr-build-{0}', github.event.pull_request.number) || 'metafusion-registry-publish' }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -293,6 +294,7 @@ jobs:
         run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
       - name: Smoke test published AMD64 and ARM64 manifests
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
@@ -308,6 +310,7 @@ jobs:
           [[ "${arm64_version}" == *"MetaFusion ${GITHUB_REF_NAME} (${GITHUB_SHA})"* ]]
 
       - name: Verify published aliases, signature, SBOM, and provenance
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}

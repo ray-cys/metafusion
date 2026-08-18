@@ -8,7 +8,7 @@ not publish container images.
 
 | Git ref | Tests and security image scan | Published image |
 | --- | --- | --- |
-| Pull request | Yes | None |
+| Pull request | Yes, including a non-publishing multi-architecture build | None |
 | Local feature or phase branch | Run locally before integration | None; local branches are not pushed |
 | `develop` | Yes | `develop` and immutable `sha-<commit>` |
 | `main` | Yes | `main` and immutable `sha-<commit>` |
@@ -32,6 +32,11 @@ AMD64/ARM64 manifests before a tag workflow creates a GitHub Release. Tag
 releases use generated notes from `.github/release.yml`; RC tags are marked
 pre-release and stable tags become both the latest GitHub Release and the only
 workflow allowed to move the container image's `latest` alias.
+
+Pull requests build both supported image architectures without registry login,
+publication, signing, or post-publication verification. This makes the image
+build safe to require in branch protection while ensuring pull requests never
+create package versions.
 
 The separate weekly GHCR retention workflow resolves every tagged or otherwise
 retained multi-arch manifest before deleting anything. Release, branch, SHA,
