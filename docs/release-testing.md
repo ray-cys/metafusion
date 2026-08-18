@@ -11,8 +11,9 @@ not publish container images.
 | Pull request | Yes | None |
 | Local feature or phase branch | Run locally before integration | None; local branches are not pushed |
 | `develop` | Yes | `develop` and immutable `sha-<commit>` |
-| `main` | Yes | `main`, `latest`, and immutable `sha-<commit>` |
-| `vX.Y.Z` or release-candidate tag | Yes | Immutable semantic-version tags and `sha-<commit>` |
+| `main` | Yes | `main` and immutable `sha-<commit>` |
+| Release-candidate tag | Yes | Exact RC tag and `sha-<commit>`; never `latest` |
+| Stable `vX.Y.Z` tag | Yes | Semantic-version tags, `latest`, and `sha-<commit>` from one manifest |
 
 Dependencies and GitHub Actions are opened against `develop`. Python 3.10 and
 3.13 remain the supported test matrix for the first stable release; a base
@@ -20,14 +21,17 @@ Python upgrade is a separate compatibility change, not an automatic merge.
 
 CI also validates representative generated YAML with the official Kometa
 2.4.8 container pinned by digest. Release-tag guards accept supported semantic
-or RC `v…` tags only when their commit is already contained in `main`; the tag
+or RC `v…` tags only when their commit is the exact current `main` HEAD; the tag
 workflow's own test and security jobs must then pass before an image publishes.
 
 Published images include SBOM and maximum-mode build-provenance attestations.
-CI smoke-tests the published AMD64 and ARM64 manifests through QEMU before a
-tag workflow creates a GitHub Release. Tag releases use generated notes from
-`.github/release.yml`; RC tags are marked pre-release and stable tags become
-the latest GitHub Release.
+Registry publication is serialized so overlapping branch and tag workflows
+cannot write image aliases concurrently. CI verifies every published alias,
+the keyless cosign signature, SBOM, provenance, embedded commit, and published
+AMD64/ARM64 manifests before a tag workflow creates a GitHub Release. Tag
+releases use generated notes from `.github/release.yml`; RC tags are marked
+pre-release and stable tags become both the latest GitHub Release and the only
+workflow allowed to move the container image's `latest` alias.
 
 The separate weekly GHCR retention workflow resolves every tagged or otherwise
 retained multi-arch manifest before deleting anything. Release, branch, SHA,
@@ -51,8 +55,11 @@ Before promoting `develop` to `main`:
 7. Scheduler restart/catch-up and graceful stop complete on Unraid.
 8. `/config` SQLite state and any Kometa output are backed up while the
    container is stopped.
-9. The exact commit is soaked on `develop`; release tags are created only from
-   the matching `main` commit.
+9. The exact commit is soaked on `develop`, promoted unchanged to `main`, and
+   the `main` workflow is allowed to finish before creating the release tag.
+10. The release tag is created only from the current `main` HEAD. For a stable
+    release, confirm `latest`, the exact version, and `sha-<commit>` resolve to
+    the manifest verified by the tag workflow.
 
 The Phase 16 synthetic inventory test models 2,000 movies, 300 shows, 1,000
 seasons, and 8,000 episodes. It is a deterministic regression fixture, not a
