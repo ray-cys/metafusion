@@ -9,9 +9,13 @@ from helper.state_db import (
     STATE_DATABASE,
     load_global_full_scan,
     load_scan_states,
-    mark_scan_complete as persist_scan_complete,
-    mark_scan_started as persist_scan_started,
     mark_global_full_scan,
+)
+from helper.state_db import (
+    mark_scan_complete as persist_scan_complete,
+)
+from helper.state_db import (
+    mark_scan_started as persist_scan_started,
 )
 
 

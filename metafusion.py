@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import os
-import schedule
+import platform
 import signal
 import sys
 import threading
@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
+import schedule
 
 from helper.asset_registry import AssetDestinationRegistry
 from helper.build_info import build_info
@@ -33,18 +34,19 @@ from helper.config import (
     mode_check,
     validate_config,
 )
+from helper.diagnostics import (
+    write_artwork_gap_report,
+    write_asset_audit_report,
+    write_destination_history_report,
+    write_metadata_audit_report,
+    write_release_qualification_report,
+    write_support_report,
+)
 from helper.incremental import (
     config_fingerprint,
     library_full_scan_decisions,
     mark_library_scan_complete,
     mark_library_scan_started,
-)
-from helper.diagnostics import (
-    write_asset_audit_report,
-    write_artwork_gap_report,
-    write_destination_history_report,
-    write_metadata_audit_report,
-    write_support_report,
 )
 from helper.logging import (
     check_sys_requirements,
@@ -55,6 +57,13 @@ from helper.logging import (
     log_main_event,
     redact_secrets,
 )
+from helper.performance import (
+    PerformanceTracker,
+    begin_performance_tracking,
+    log_performance_summary,
+    reset_performance_tracking,
+    tracker_for,
+)
 from helper.plex import (
     _plex_cache,
     collect_plex_path_samples,
@@ -63,25 +72,21 @@ from helper.plex import (
     get_plex_metadata,
     plex_operation,
 )
-from helper.plex_paths import advise_path_mappings
 from helper.plex_metadata import (
     begin_plex_metadata_run,
     finish_plex_metadata_run,
     restore_plex_metadata,
 )
-from helper.performance import (
-    PerformanceTracker,
-    begin_performance_tracking,
-    log_performance_summary,
-    reset_performance_tracking,
-    tracker_for,
-)
+from helper.plex_paths import advise_path_mappings
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
     RuntimeStatus,
     validate_preflight_paths,
     validate_runtime_paths,
+)
+from helper.state_db import (
+    SCHEMA_VERSION as STATE_SCHEMA_VERSION,
 )
 from helper.state_db import (
     STATE_DATABASE,
@@ -99,8 +104,7 @@ from helper.tmdb import (
     tmdb_response_cache,
 )
 from modules.cleanup import CleanupResult, cleanup_title_orphans
-from modules.processing import process_library, plex_metadata_dict
-
+from modules.processing import plex_metadata_dict, process_library
 
 shutdown_requested = threading.Event()
 shutdown_complete = threading.Event()
@@ -109,8 +113,19 @@ _active_task = None
 _shutdown_timeout = 15.0
 
 
+def cli_version():
+    current = build_info()
+    return (
+        f"MetaFusion {current['version']} ({current['commit']}); "
+        f"Python {platform.python_version()}; architecture {platform.machine()}; "
+        f"state schema {STATE_SCHEMA_VERSION}; "
+        f"TMDb cache schema {tmdb_response_cache.SCHEMA_VERSION}"
+    )
+
+
 def parse_cli_args(argv=None):
     parser = argparse.ArgumentParser(description="MetaFusion CLI Command Overrides")
+    parser.add_argument("--version", action="version", version=cli_version())
     parser.add_argument("--metafusion_run", action="store_true", help="Run MetaFusion job")
     parser.add_argument("--schedule", action="store_true", help="Enable schedule")
     parser.add_argument("--run_times", type=str, help="Comma-separated run times (e.g. 06:00,18:30)")
@@ -152,6 +167,11 @@ def parse_cli_args(argv=None):
         "--preflight",
         action="store_true",
         help="Check Plex, TMDb, libraries, mappings, and storage without processing",
+    )
+    parser.add_argument(
+        "--release-check",
+        action="store_true",
+        help="Run read-only release qualification and write a redacted report",
     )
     parser.add_argument(
         "--asset-audit",
@@ -300,7 +320,9 @@ async def preflight_connectors(config, session, require_tmdb=True):
         return_exceptions=True,
     )
     if isinstance(plex, Exception):
-        raise RuntimeError("Plex connector preflight failed") from plex
+        raise RuntimeError(  # noqa: TRY004 -- connector failure, not bad input type
+            "Plex connector preflight failed"
+        ) from plex
     if isinstance(tmdb_result, Exception) or not tmdb_result:
         if isinstance(tmdb_result, Exception):
             raise RuntimeError("TMDb connector preflight failed") from tmdb_result
@@ -409,7 +431,9 @@ def missed_schedule_due(run_times, recent_runs, max_hours=24, now=None):
     candidates = []
     for run_time in run_times or []:
         try:
-            parsed = datetime.strptime(str(run_time), "%H:%M").time()
+            parsed = datetime.strptime(  # noqa: DTZ007 -- local scheduler wall clock
+                str(run_time), "%H:%M"
+            ).time()
         except (TypeError, ValueError):
             continue
         for days_ago in (0, 1):
@@ -454,11 +478,12 @@ async def metafusion_main(config, logger):
         )
         check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
-            "main_started", start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "main_started",
+            start_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
         get_disabled_features(config, logger)
         feature_flags = get_feature_flags(config)
-        start_time = datetime.now()
+        start_time = datetime.now().astimezone()
         library_item_counts = {}
         runtime_config = config.get("runtime", {})
         max_concurrency = concurrency_ceiling(config, "network")
@@ -810,7 +835,7 @@ async def metafusion_main(config, logger):
                     "cleanup_skipped_run_scope", reason=cleanup_skip_reason
                 )
 
-            elapsed_time = (datetime.now() - start_time).total_seconds()
+            elapsed_time = (datetime.now().astimezone() - start_time).total_seconds()
             log_final_summary(
                 logger,
                 elapsed_time,
@@ -1084,6 +1109,7 @@ def main(argv=None):
                 or args.preflight
                 or args.asset_audit
                 or args.metadata_audit
+                or args.release_check
             ),
             return_sources=True,
         )
@@ -1133,6 +1159,22 @@ def main(argv=None):
         for error in validation_errors:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    if args.release_check:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            result = asyncio.run(connector_preflight(config))
+            report, passed = write_release_qualification_report(config, result)
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Release qualification failed: {message}", file=sys.stderr)
+            return 1
+        print(f"Release qualification {'passed' if passed else 'failed'}.")
+        print(f"Report saved to {report}")
+        return 0 if passed else 1
     if args.preflight:
         try:
             validate_preflight_paths(config, BASE_CONFIG_DIR)
@@ -1211,7 +1253,9 @@ def main(argv=None):
             if not shutdown_requested.is_set():
                 log_main_event(
                     "main_force_run",
-                    start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    start_time=datetime.now()
+                    .astimezone()
+                    .strftime("%Y-%m-%d %H:%M:%S"),
                     logger=logger,
                 )
                 if not run_metafusion_job(config, logger, runtime_status):

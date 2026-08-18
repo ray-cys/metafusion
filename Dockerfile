@@ -5,6 +5,9 @@ ARG METAFUSION_COMMIT=unknown
 
 LABEL org.opencontainers.image.source="https://github.com/ray-cys/metafusion" \
       org.opencontainers.image.description="Metadata and asset generator for Plex and Kometa" \
+      org.opencontainers.image.url="https://github.com/ray-cys/metafusion" \
+      org.opencontainers.image.documentation="https://github.com/ray-cys/metafusion#readme" \
+      org.opencontainers.image.licenses="LicenseRef-All-Rights-Reserved" \
       org.opencontainers.image.version="${METAFUSION_VERSION}" \
       org.opencontainers.image.revision="${METAFUSION_COMMIT}"
 

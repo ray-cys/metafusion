@@ -1,5 +1,14 @@
-import os, sys, platform, psutil, logging, textwrap, requests, datetime, time
+import datetime
+import logging
+import os
+import platform
+import sys
+import textwrap
+import time
 from pathlib import Path
+
+import psutil
+import requests
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
@@ -85,6 +94,14 @@ def redact_secrets(value, *secrets):
         if secret:
             redacted = redacted.replace(str(secret), "***")
     return redacted
+
+
+def _format_event_message(template, values, logger, namespace):
+    try:
+        return template.format(**values)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+        logger.debug("[%s] Unable to format log event: %s", namespace, error)
+        return template
 
 
 class SecretRedactionFilter(logging.Filter):
@@ -284,10 +301,7 @@ def log_main_event(event, logger=None, **kwargs):
         "main_job_already_running": "warning",
     }
     msg = messages.get(event, "[MetaFusion] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "MetaFusion")
     level = levels.get(event, "info")
     if event == "main_scheduled_run":
         print(msg)
@@ -328,10 +342,7 @@ def log_config_event(event, logger=None, **kwargs):
         "config_loaded": "debug",
     }
     msg = messages.get(event, "[Config] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Configuration")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -359,10 +370,7 @@ def log_cache_event(event, logger=None, **kwargs):
         "cache_updated": "debug",
     }
     msg = messages.get(event, "[Cache] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Cache")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -391,6 +399,8 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_operation_failed": "[Plex] {description} failed (attempt {attempt}/{retries}): {error}",
         "plex_circuit_open": "[Plex] {description} skipped while the provider circuit cools down ({retry_after:.1f}s remaining).",
         "plex_critical_metadata_missing": "[Plex] Critical metadata missing for item [ratingKey={item_key}]: {missing_critical}. Extracted: {result}",
+        "plex_path_sample_library_failed": "[Plex] Unable to sample paths from library {library_name}: {error}",
+        "plex_path_sample_item_failed": "[Plex] Unable to sample a media path for {title}: {error}",
     }
     levels = {
         "plex_connected": "info",
@@ -408,12 +418,11 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_operation_failed": "warning",
         "plex_circuit_open": "warning",
         "plex_critical_metadata_missing": "warning",
+        "plex_path_sample_library_failed": "warning",
+        "plex_path_sample_item_failed": "warning",
     }
     msg = messages.get(event, "[Plex] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Plex")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -463,10 +472,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_cache_degraded": "warning",
     }
     msg = messages.get(event, "[TMDb] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "TMDb")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -514,10 +520,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_ambiguous_editions_allowed": "warning",
     }
     msg = messages.get(event, "[Processing] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Processing")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -676,10 +679,7 @@ def log_builder_event(event, logger=None, **kwargs):
         kwargs["reason"] = reason
         
     msg = messages.get(event, "[Builder] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Builder")
     level = levels.get(event, "info")
     if level == "info":
         logger.info(msg)
@@ -790,10 +790,7 @@ def log_cleanup_event(event, logger=None, **kwargs):
         kwargs["summary"] = "\n[Cleanup] ".join(summary_lines)
     
     msg = messages.get(event, "[Cleanup] Unknown event")
-    try:
-        msg = msg.format(**kwargs)
-    except Exception:
-        pass
+    msg = _format_event_message(msg, kwargs, logger, "Cleanup")
     level = levels.get(event, "info")
     if event == "cleanup_consolidated_removed" and "removed_summary" in kwargs:
         for line in msg.splitlines():
@@ -1056,7 +1053,7 @@ def log_final_summary(
         border
     ]
     minutes, seconds = divmod(int(elapsed_time), 60)
-    run_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     lines.extend(box_line(f"Executed on {run_date} in {minutes} mins {seconds} secs.", box_width))
     processed_libraries = [lib["title"] for lib in libraries if lib["title"] in selected_libraries]
     skipped_libraries = [lib["title"] for lib in libraries if lib["title"] not in selected_libraries]

@@ -32,6 +32,7 @@ Choose the guide for your platform:
 - [Policy behavior and safety rules](docs/policies.md)
 - [Scheduling, maintenance, state, and troubleshooting](docs/operations.md)
 - [Development and release testing](docs/release-testing.md)
+- [Support and version policy](SUPPORT.md)
 
 Required connections are a reachable Plex server, Plex token, and TMDb API
 key. `PLEX_LIBRARIES=auto` discovers every supported movie/show library;
@@ -340,3 +341,16 @@ artwork, cache state, or ownership records.
 - [Plex local TV artwork names](https://support.plex.tv/articles/200220717-local-media-assets-tv-shows/)
 - [Python-PlexAPI edit and lock methods](https://python-plexapi.readthedocs.io/en/latest/modules/mixins.html)
 - [TMDb API documentation](https://developer.themoviedb.org/docs)
+
+## TMDb attribution
+
+<a href="https://www.themoviedb.org"><img src="asset/tmdb_logo.svg" alt="TMDB" width="220"></a>
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+The logo is an unmodified [approved TMDB mark](https://www.themoviedb.org/about/logos-attribution)
+and remains the property of TMDB.
+
+## Copyright
+
+Copyright (c) 2026 ray-cys. All rights reserved. MetaFusion is publicly
+viewable source, but no open-source licence is granted. See [COPYRIGHT](COPYRIGHT).

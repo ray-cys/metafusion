@@ -76,10 +76,12 @@ jobs:
         run: python -m pip install --require-hashes -r requirements-dev.lock
 
       - name: Run static checks
-        run: ruff check --select F,E9 .
+        run: |
+          ruff check --select F,E9,I,DTZ,S110,S112,TRY004 .
+          python tools/generate_config_surfaces.py --check
 
       - name: Run tests
-        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=80
+        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=85
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
@@ -259,6 +261,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          sbom: true
+          provenance: mode=max
           build-args: |
             METAFUSION_VERSION=${{ github.ref_name }}
             METAFUSION_COMMIT=${{ github.sha }}
@@ -277,3 +281,45 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+      - name: Smoke test published AMD64 and ARM64 manifests
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          docker run --rm --platform linux/amd64 "${image}" --version
+          docker run --rm --platform linux/arm64 "${image}" --version
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release ${tag} already exists."
+            exit 0
+          fi
+          if [[ "${tag}" == *-rc.* ]]; then
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --generate-notes \
+              --prerelease \
+              --title "${tag}"
+          else
+            gh release create "${tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --generate-notes \
+              --latest \
+              --title "${tag}"
+          fi

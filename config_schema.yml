@@ -1,0 +1,1996 @@
+schema_version: 1
+defaults:
+  metafusion_run: false
+  settings:
+    schedule: true
+    run_on_start: false
+    schedule_catch_up: true
+    schedule_catch_up_max_hours: 24.0
+    run_times:
+    - 06:00
+    - '18:30'
+    dry_run: false
+    log_level: INFO
+    log_max_mb: 10.0
+    log_backup_count: 14
+    mode: kometa
+    path: /kometa/
+  plex:
+    url: http://10.0.0.1:32400
+    token: PLEX_TOKEN
+    path_mappings: []
+  plex_libraries:
+  - auto
+  tmdb:
+    api_key: TMDB_API_KEY
+    language: en-US
+    fallback:
+    - zh
+    - ja
+    region: US
+    artwork_allow_any_language: true
+    title_search_fallback: false
+    episode_group_fallback: true
+    split_series_show_policy: preserve
+    split_series_mappings: {}
+    episode_overrides: {}
+  metadata:
+    run_basic: true
+    run_enhanced: true
+  kometa:
+    tag_policy: append
+  plex_metadata:
+    enabled: false
+    policy: fill_missing
+    lock_writes: false
+    lock_merged_tags: false
+    allow_overwrite: false
+    recheck_days: 30.0
+    max_writes_per_run: 100
+    report_retention: 10
+    fields: []
+  assets:
+    run_poster: true
+    run_season: true
+    run_background: false
+    update_policy: managed
+  cleanup:
+    run_cleanup: false
+  runtime:
+    max_concurrency: 0
+    request_timeout: 30.0
+    connect_timeout: 10.0
+    plex_timeout: 10.0
+    plex_retries: 3
+    plex_retry_delay: 1.0
+    shutdown_timeout: 15.0
+    max_image_mb: 25
+    validate_media_mounts: true
+    min_free_space_mb: 256
+  incremental:
+    enabled: true
+    full_scan_interval_hours: 168.0
+    metadata_pending_recheck_hours: 24.0
+  image_upgrades:
+    default_days: 30.0
+    movie_days: null
+    series_days: null
+    season_days: null
+  library_overrides: {}
+  tmdb_cache:
+    enabled: true
+    ttl_hours: 24.0
+    negative_ttl_hours: 12.0
+    max_entries: 0
+    max_mb: 0.0
+  output:
+    validate_schema: true
+    backup_count: 3
+    destination_history_report_retention: 10
+  safety:
+    allow_ambiguous_editions: false
+  poster_set:
+    max_width: 2000
+    max_height: 3000
+    min_width: 1000
+    min_height: 1500
+    prefer_vote: 5.0
+    vote_relaxed: 3.5
+    vote_threshold: 5.0
+  season_set:
+    max_width: 2000
+    max_height: 3000
+    min_width: 1000
+    min_height: 1500
+    prefer_vote: 5.0
+    vote_relaxed: 0.5
+    vote_threshold: 3.0
+  background_set:
+    max_width: 3840
+    max_height: 2160
+    min_width: 1920
+    min_height: 1080
+    prefer_vote: 5.0
+    vote_relaxed: 3.5
+    vote_threshold: 5.0
+settings:
+- name: TZ
+  section: Identity, connection, and TMDb
+  description: Timezone used by RUN_TIMES, for example Asia/Singapore.
+  env_example: UTC
+  env_order: 0
+  compose: ${TZ:-UTC}
+  compose_order: 4
+  unraid:
+    name: Timezone
+    default: UTC
+    display: always
+    required: false
+    mask: false
+    value: UTC
+    order: 8
+- name: PUID
+  section: Identity, connection, and TMDb
+  description: Unraid nobody user ID. Keep 99 unless your output paths use a different owner.
+  env_example: '10001'
+  env_order: 1
+  compose: ${PUID:-10001}
+  compose_order: 1
+  unraid:
+    name: Runtime User ID
+    default: '99'
+    display: always
+    required: false
+    mask: false
+    value: '99'
+    order: 6
+- name: PGID
+  section: Identity, connection, and TMDb
+  description: Unraid users group ID. Keep 100 unless your output paths use a different group.
+  env_example: '10001'
+  env_order: 2
+  compose: ${PGID:-10001}
+  compose_order: 2
+  unraid:
+    name: Runtime Group ID
+    default: '100'
+    display: always
+    required: false
+    mask: false
+    value: '100'
+    order: 7
+- name: METAFUSION_IMAGE
+  section: Container paths and lifecycle
+  description: Docker image tag or digest used by Compose.
+  env_example: ghcr.io/ray-cys/metafusion:main
+  env_order: 3
+- name: PLEX_URL
+  section: Connections and mode
+  description: Required complete Plex server URL, for example http://192.168.1.10:32400.
+  path:
+  - plex
+  - url
+  converter: string
+  env_example: http://10.0.0.1:32400
+  env_order: 4
+  compose: ${PLEX_URL-}
+  compose_order: 5
+  unraid:
+    name: Plex URL
+    default: ''
+    display: always
+    required: true
+    mask: false
+    value: ''
+    order: 1
+- name: PLEX_TOKEN
+  section: Connections and mode
+  description: Required Plex authentication token. It is masked in the Unraid form and redacted from MetaFusion logs.
+  path:
+  - plex
+  - token
+  converter: string
+  env_example: replace-with-plex-token
+  env_order: 5
+  compose: ${PLEX_TOKEN-}
+  compose_order: 6
+  unraid:
+    name: Plex Token
+    default: ''
+    display: always
+    required: true
+    mask: true
+    value: ''
+    order: 2
+- name: PLEX_TOKEN_FILE
+  section: Identity, connection, and TMDb
+  description: Optional mounted secret-file path. PLEX_TOKEN takes priority when both are set.
+  secret_file:
+    path:
+    - plex
+    - token
+    direct_env: PLEX_TOKEN
+  env_example: ''
+  env_order: 6
+  compose: ${PLEX_TOKEN_FILE-}
+  compose_order: 7
+  unraid:
+    name: Plex Token File
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 10
+- name: PLEX_LIBRARIES
+  section: Connections and mode
+  description: Use auto to discover every movie/show library, or provide comma-separated exact names to limit scope.
+  path:
+  - plex_libraries
+  converter: safe_list
+  env_example: auto
+  env_order: 7
+  compose: ${PLEX_LIBRARIES-}
+  compose_order: 8
+  unraid:
+    name: Plex Libraries
+    default: auto
+    display: always
+    required: true
+    mask: false
+    value: auto
+    order: 3
+- name: PLEX_PATH_MAPPINGS
+  section: Connections and mode
+  description: Optional semicolon-separated Plex-to-container translations such as /volume1/media=>/media. Matching Docker
+    path mappings are still required.
+  path:
+  - plex
+  - path_mappings
+  converter: safe_path_mappings
+  env_example: ''
+  env_order: 8
+  compose: ${PLEX_PATH_MAPPINGS-}
+  compose_order: 9
+  unraid:
+    name: Plex Path Mappings
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 4
+- name: TMDB_API_KEY
+  section: Connections and mode
+  description: Required TMDb API key. It is masked in the Unraid form and redacted from MetaFusion logs.
+  path:
+  - tmdb
+  - api_key
+  converter: string
+  env_example: replace-with-tmdb-api-key
+  env_order: 9
+  compose: ${TMDB_API_KEY-}
+  compose_order: 10
+  unraid:
+    name: TMDb API Key
+    default: ''
+    display: always
+    required: true
+    mask: true
+    value: ''
+    order: 5
+- name: TMDB_API_KEY_FILE
+  section: Identity, connection, and TMDb
+  description: Optional mounted secret-file path. TMDB_API_KEY takes priority when both are set.
+  secret_file:
+    path:
+    - tmdb
+    - api_key
+    direct_env: TMDB_API_KEY
+  env_example: ''
+  env_order: 10
+  compose: ${TMDB_API_KEY_FILE-}
+  compose_order: 11
+  unraid:
+    name: TMDb API Key File
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 11
+- name: TMDB_LANGUAGE
+  section: Identity, connection, and TMDb
+  description: Metadata language and primary artwork language.
+  path:
+  - tmdb
+  - language
+  converter: string
+  env_example: en-US
+  env_order: 11
+  compose: ${TMDB_LANGUAGE-}
+  compose_order: 12
+  unraid:
+    name: TMDb Metadata Language
+    default: en-US
+    display: advanced
+    required: false
+    mask: false
+    value: en-US
+    order: 12
+- name: TMDB_LANGUAGE_FALLBACK
+  section: Identity, connection, and TMDb
+  description: Comma-separated artwork-only fallback languages. Metadata text still uses TMDB_LANGUAGE.
+  path:
+  - tmdb
+  - fallback
+  converter: safe_list
+  env_example: zh,ja
+  env_order: 12
+  compose: ${TMDB_LANGUAGE_FALLBACK-}
+  compose_order: 14
+  unraid:
+    name: TMDb Artwork Fallbacks
+    default: zh,ja
+    display: advanced
+    required: false
+    mask: false
+    value: zh,ja
+    order: 13
+- name: TMDB_REGION
+  section: Identity, connection, and TMDb
+  description: Release and certification region used for metadata.
+  path:
+  - tmdb
+  - region
+  converter: string
+  env_example: US
+  env_order: 13
+  compose: ${TMDB_REGION-}
+  compose_order: 13
+  unraid:
+    name: TMDb Region
+    default: US
+    display: advanced
+    required: false
+    mask: false
+    value: US
+    order: 14
+- name: ARTWORK_ALLOW_ANY_LANGUAGE
+  section: Identity, connection, and TMDb
+  description: When preferred languages have no usable artwork, make one unfiltered TMDb image request.
+  path:
+  - tmdb
+  - artwork_allow_any_language
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 14
+  compose: ${ARTWORK_ALLOW_ANY_LANGUAGE-}
+  compose_order: 15
+  unraid:
+    name: Allow Any Artwork Language
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 15
+- name: TMDB_TITLE_SEARCH_FALLBACK
+  section: Identity, connection, and TMDb
+  description: Use conservative exact-title and year search only when Plex provides no usable external ID.
+  path:
+  - tmdb
+  - title_search_fallback
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 15
+  compose: ${TMDB_TITLE_SEARCH_FALLBACK-}
+  compose_order: 16
+  unraid:
+    name: TMDb Title Search Fallback
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 16
+- name: TMDB_EPISODE_GROUP_FALLBACK
+  section: Identity, connection, and TMDb
+  description: Use alternate TMDb episode ordering only when one group uniquely covers the Plex inventory.
+  path:
+  - tmdb
+  - episode_group_fallback
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 16
+  compose: ${TMDB_EPISODE_GROUP_FALLBACK-}
+  compose_order: 17
+  unraid:
+    name: TMDb Episode Group Fallback
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 17
+- name: TMDB_SPLIT_SERIES_SHOW_POLICY
+  section: Identity, connection, and TMDb
+  description: For mapped split series, preserve keeps Plex top-level show metadata and artwork; primary uses the primary
+    TMDb show.
+  path:
+  - tmdb
+  - split_series_show_policy
+  converter: string
+  env_example: preserve
+  env_order: 17
+  compose: ${TMDB_SPLIT_SERIES_SHOW_POLICY-}
+  compose_order: 18
+  unraid:
+    name: Split-Series Show Policy
+    default: preserve|primary
+    display: advanced
+    required: false
+    mask: false
+    value: preserve
+    order: 18
+- name: TMDB_SPLIT_SERIES_MAPPINGS
+  section: Identity, connection, and TMDb
+  description: Advanced JSON provider mapping keyed by tmdb:, tvdb:, or imdb:. Leave {} unless documenting a verified anthology
+    mapping.
+  path:
+  - tmdb
+  - split_series_mappings
+  converter: safe_json_mapping
+  env_example: '{}'
+  env_order: 18
+  compose: ${TMDB_SPLIT_SERIES_MAPPINGS-}
+  compose_order: 19
+  unraid:
+    name: Split-Series Mappings JSON
+    default: '{}'
+    display: advanced
+    required: false
+    mask: false
+    value: '{}'
+    order: 19
+- name: TMDB_EPISODE_OVERRIDES
+  section: Identity, connection, and TMDb
+  description: Advanced JSON Plex-to-TMDb episode-number exceptions keyed by provider ID. Leave {} unless a verified numbering
+    correction is required.
+  path:
+  - tmdb
+  - episode_overrides
+  converter: safe_json_mapping
+  env_example: '{}'
+  env_order: 19
+  compose: ${TMDB_EPISODE_OVERRIDES-}
+  compose_order: 20
+  unraid:
+    name: Episode Overrides JSON
+    default: '{}'
+    display: advanced
+    required: false
+    mask: false
+    value: '{}'
+    order: 20
+- name: CONFIG_PATH
+  section: Container paths and lifecycle
+  description: Host path mounted at /config by Compose.
+  env_example: ./config
+  env_order: 20
+- name: KOMETA_HOST_PATH
+  section: Container paths and lifecycle
+  description: Host path mounted at /kometa by Compose.
+  env_example: ./kometa
+  env_order: 21
+- name: KOMETA_PATH
+  section: Identity, connection, and TMDb
+  description: Container output root used in Kometa mode. Keep aligned with the /kometa path mapping.
+  path:
+  - settings
+  - path
+  converter: string
+  env_example: /kometa
+  env_order: 22
+  compose: ${KOMETA_PATH-}
+  compose_order: 3
+  unraid:
+    name: Kometa Container Path
+    default: /kometa
+    display: advanced
+    required: false
+    mask: false
+    value: /kometa
+    order: 9
+- name: RUN_MODE
+  section: Connections and mode
+  description: Required output mode. kometa writes Kometa YAML and assets; plex writes artwork beside media and does not create
+    Kometa YAML.
+  path:
+  - settings
+  - mode
+  converter: string
+  env_example: kometa
+  env_order: 23
+  compose: ${RUN_MODE-}
+  compose_order: 21
+  unraid:
+    name: Output Mode
+    default: kometa|plex
+    display: always
+    required: true
+    mask: false
+    value: kometa
+    order: 0
+- name: METAFUSION_RUN
+  section: Scheduling and processing
+  description: Run once instead of remaining in scheduler mode. Normally keep False for an Unraid service.
+  path:
+  - metafusion_run
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 24
+  compose: ${METAFUSION_RUN-}
+  compose_order: 22
+  unraid:
+    name: Run Once on Container Start
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 21
+- name: RUN_SCHEDULE
+  section: Scheduling and processing
+  description: Keep the container running and execute at RUN_TIMES.
+  path:
+  - settings
+  - schedule
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 25
+  compose: ${RUN_SCHEDULE-}
+  compose_order: 24
+  unraid:
+    name: Enable Scheduler
+    default: True|False
+    display: always
+    required: false
+    mask: false
+    value: 'True'
+    order: 22
+- name: RUN_ON_START
+  section: Scheduling and processing
+  description: Run one job immediately after scheduler startup, then continue normally.
+  path:
+  - settings
+  - run_on_start
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 26
+  compose: ${RUN_ON_START-}
+  compose_order: 25
+  unraid:
+    name: Run When Scheduler Starts
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 23
+- name: SCHEDULE_CATCH_UP
+  section: Scheduling and processing
+  description: After a restart, run the latest missed scheduled slot when it is within the catch-up window.
+  path:
+  - settings
+  - schedule_catch_up
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 27
+  compose: ${SCHEDULE_CATCH_UP-}
+  compose_order: 26
+  unraid:
+    name: Catch Up Missed Schedule
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 24
+- name: SCHEDULE_CATCH_UP_MAX_HOURS
+  section: Scheduling and processing
+  description: Maximum age of a missed schedule that may run after startup.
+  path:
+  - settings
+  - schedule_catch_up_max_hours
+  converter: safe_float
+  env_example: '24'
+  env_order: 28
+  compose: ${SCHEDULE_CATCH_UP_MAX_HOURS-}
+  compose_order: 27
+  unraid:
+    name: Schedule Catch-Up Window Hours
+    default: '24'
+    display: advanced
+    required: false
+    mask: false
+    value: '24'
+    order: 25
+- name: RUN_TIMES
+  section: Scheduling and processing
+  description: Comma-separated daily HH:MM times interpreted using TZ.
+  path:
+  - settings
+  - run_times
+  converter: safe_list
+  env_example: 06:00,18:30
+  env_order: 29
+  compose: ${RUN_TIMES-}
+  compose_order: 28
+  unraid:
+    name: Scheduled Run Times
+    default: 06:00,18:30
+    display: always
+    required: false
+    mask: false
+    value: 06:00,18:30
+    order: 26
+- name: DRY_RUN
+  section: Scheduling and processing
+  description: Calculate and log without writing generated data or deleting files.
+  path:
+  - settings
+  - dry_run
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 30
+  compose: ${DRY_RUN-}
+  compose_order: 23
+  unraid:
+    name: Dry Run
+    default: False|True
+    display: always
+    required: false
+    mask: false
+    value: 'False'
+    order: 27
+- name: LOG_LEVEL
+  section: Scheduling and processing
+  description: Application logging verbosity.
+  path:
+  - settings
+  - log_level
+  converter: string
+  env_example: INFO
+  env_order: 31
+  compose: ${LOG_LEVEL-}
+  compose_order: 29
+  unraid:
+    name: Log Level
+    default: INFO|DEBUG|WARNING|ERROR|CRITICAL
+    display: advanced
+    required: false
+    mask: false
+    value: INFO
+    order: 28
+- name: LOG_MAX_MB
+  section: Scheduling and processing
+  description: Rotate the active log at this size as well as daily. Set 0 to disable only size rotation.
+  path:
+  - settings
+  - log_max_mb
+  converter: safe_float
+  env_example: '10'
+  env_order: 32
+  compose: ${LOG_MAX_MB-}
+  compose_order: 30
+  unraid:
+    name: Log Maximum MiB
+    default: '10'
+    display: advanced
+    required: false
+    mask: false
+    value: '10'
+    order: 29
+- name: LOG_BACKUP_COUNT
+  section: Scheduling and processing
+  description: Number of daily or size-rotated log files retained.
+  path:
+  - settings
+  - log_backup_count
+  converter: safe_int
+  env_example: '14'
+  env_order: 33
+  compose: ${LOG_BACKUP_COUNT-}
+  compose_order: 31
+  unraid:
+    name: Log Backup Count
+    default: '14'
+    display: advanced
+    required: false
+    mask: false
+    value: '14'
+    order: 30
+- name: RUN_BASIC
+  section: Scheduling and processing
+  description: Generate core metadata. Enhanced metadata requires this option.
+  path:
+  - metadata
+  - run_basic
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 34
+  compose: ${RUN_BASIC-}
+  compose_order: 32
+  unraid:
+    name: Generate Basic Metadata
+    default: True|False
+    display: always
+    required: false
+    mask: false
+    value: 'True'
+    order: 31
+- name: RUN_ENHANCED
+  section: Scheduling and processing
+  description: Generate Kometa-supported director, writer, and producer metadata. Cast remains managed by Plex's online provider.
+  path:
+  - metadata
+  - run_enhanced
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 35
+  compose: ${RUN_ENHANCED-}
+  compose_order: 33
+  unraid:
+    name: Generate Enhanced Metadata
+    default: True|False
+    display: always
+    required: false
+    mask: false
+    value: 'True'
+    order: 32
+- name: KOMETA_TAG_POLICY
+  section: Scheduling and processing
+  description: Kometa mode tag behavior. append preserves provider and user tags; sync makes supported tags match TMDb.
+  path:
+  - kometa
+  - tag_policy
+  converter: string
+  env_example: append
+  env_order: 36
+  compose: ${KOMETA_TAG_POLICY-}
+  compose_order: 34
+  unraid:
+    name: Kometa Tag Policy
+    default: append|sync
+    display: advanced
+    required: false
+    mask: false
+    value: append
+    order: 33
+- name: PLEX_METADATA_UPDATES
+  section: Scheduling and processing
+  description: Plex mode only. Opt in to direct metadata edits through the Plex API. Test with Dry Run first.
+  path:
+  - plex_metadata
+  - enabled
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 37
+  compose: ${PLEX_METADATA_UPDATES-}
+  compose_order: 35
+  unraid:
+    name: Direct Plex Metadata Updates
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 34
+- name: PLEX_METADATA_POLICY
+  section: Scheduling and processing
+  description: fill_missing is safest; managed updates only MetaFusion-owned values; overwrite exactly syncs selected fields
+    and requires explicit acknowledgement.
+  path:
+  - plex_metadata
+  - policy
+  converter: string
+  env_example: fill_missing
+  env_order: 38
+  compose: ${PLEX_METADATA_POLICY-}
+  compose_order: 36
+  unraid:
+    name: Plex Metadata Policy
+    default: fill_missing|managed|overwrite
+    display: advanced
+    required: false
+    mask: false
+    value: fill_missing
+    order: 35
+- name: PLEX_METADATA_LOCK_WRITES
+  section: Scheduling and processing
+  description: Lock scalar fields written by MetaFusion. Leave False unless provider refreshes overwrite them.
+  path:
+  - plex_metadata
+  - lock_writes
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 39
+  compose: ${PLEX_METADATA_LOCK_WRITES-}
+  compose_order: 37
+  unraid:
+    name: Lock Plex Scalar Writes
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 36
+- name: PLEX_METADATA_LOCK_MERGED_TAGS
+  section: Scheduling and processing
+  description: Lock a complete merged tag field after MetaFusion adds tags. Use cautiously because the lock affects tags from
+    every source.
+  path:
+  - plex_metadata
+  - lock_merged_tags
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 40
+  compose: ${PLEX_METADATA_LOCK_MERGED_TAGS-}
+  compose_order: 38
+  unraid:
+    name: Lock Merged Plex Tags
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 37
+- name: PLEX_METADATA_ALLOW_OVERWRITE
+  section: Scheduling and processing
+  description: Required safety acknowledgement before overwrite policy can start.
+  path:
+  - plex_metadata
+  - allow_overwrite
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 41
+  compose: ${PLEX_METADATA_ALLOW_OVERWRITE-}
+  compose_order: 39
+  unraid:
+    name: Allow Plex Overwrite
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 38
+- name: PLEX_METADATA_RECHECK_DAYS
+  section: Scheduling and processing
+  description: Minimum interval before unchanged Plex metadata is compared with TMDb again.
+  path:
+  - plex_metadata
+  - recheck_days
+  converter: safe_float
+  env_example: '30'
+  env_order: 42
+  compose: ${PLEX_METADATA_RECHECK_DAYS-}
+  compose_order: 40
+  unraid:
+    name: Plex Metadata Recheck Days
+    default: '30'
+    display: advanced
+    required: false
+    mask: false
+    value: '30'
+    order: 39
+- name: PLEX_METADATA_MAX_WRITES_PER_RUN
+  section: Scheduling and processing
+  description: Maximum Plex items or child objects written in one job.
+  path:
+  - plex_metadata
+  - max_writes_per_run
+  converter: safe_int
+  env_example: '100'
+  env_order: 43
+  compose: ${PLEX_METADATA_MAX_WRITES_PER_RUN-}
+  compose_order: 41
+  unraid:
+    name: Plex Metadata Write Limit
+    default: '100'
+    display: advanced
+    required: false
+    mask: false
+    value: '100'
+    order: 40
+- name: PLEX_METADATA_REPORT_RETENTION
+  section: Scheduling and processing
+  description: Number of text audit reports retained under /config/reports.
+  path:
+  - plex_metadata
+  - report_retention
+  converter: safe_int
+  env_example: '10'
+  env_order: 44
+  compose: ${PLEX_METADATA_REPORT_RETENTION-}
+  compose_order: 42
+  unraid:
+    name: Plex Metadata Report Retention
+    default: '10'
+    display: advanced
+    required: false
+    mask: false
+    value: '10'
+    order: 41
+- name: PLEX_METADATA_FIELDS
+  section: Scheduling and processing
+  description: Optional comma-separated supported field allowlist. Blank enables all safe supported fields.
+  path:
+  - plex_metadata
+  - fields
+  converter: safe_list
+  env_example: ''
+  env_order: 45
+  compose: ${PLEX_METADATA_FIELDS-}
+  compose_order: 43
+  unraid:
+    name: Plex Metadata Fields
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 42
+- name: RUN_POSTER
+  section: Scheduling and processing
+  description: Manage movie and show posters.
+  path:
+  - assets
+  - run_poster
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 46
+  compose: ${RUN_POSTER-}
+  compose_order: 44
+  unraid:
+    name: Manage Posters
+    default: True|False
+    display: always
+    required: false
+    mask: false
+    value: 'True'
+    order: 43
+- name: RUN_SEASON
+  section: Scheduling and processing
+  description: Manage season posters, including Specials.
+  path:
+  - assets
+  - run_season
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 47
+  compose: ${RUN_SEASON-}
+  compose_order: 45
+  unraid:
+    name: Manage Season Posters
+    default: True|False
+    display: always
+    required: false
+    mask: false
+    value: 'True'
+    order: 44
+- name: RUN_BACKGROUND
+  section: Scheduling and processing
+  description: Manage movie and show background artwork.
+  path:
+  - assets
+  - run_background
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 48
+  compose: ${RUN_BACKGROUND-}
+  compose_order: 46
+  unraid:
+    name: Manage Backgrounds
+    default: False|True
+    display: always
+    required: false
+    mask: false
+    value: 'False'
+    order: 45
+- name: ASSET_UPDATE_POLICY
+  section: Scheduling and processing
+  description: managed replaces only unmodified MetaFusion-owned files; fill_missing never replaces existing artwork; overwrite
+    permits replacing any existing artwork.
+  path:
+  - assets
+  - update_policy
+  converter: string
+  env_example: managed
+  env_order: 49
+  compose: ${ASSET_UPDATE_POLICY-}
+  compose_order: 47
+  unraid:
+    name: Artwork Update Policy
+    default: managed|fill_missing|overwrite
+    display: advanced
+    required: false
+    mask: false
+    value: managed
+    order: 46
+- name: RUN_CLEANUP
+  section: Scheduling and processing
+  description: Enable guarded orphan cleanup. Run with DRY_RUN first and verify every library name.
+  path:
+  - cleanup
+  - run_cleanup
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 50
+  compose: ${RUN_CLEANUP-}
+  compose_order: 48
+  unraid:
+    name: Guarded Cleanup
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 47
+- name: MAX_CONCURRENCY
+  section: Runtime, incremental, cache, and output
+  description: Keep 0 for cgroup-aware automatic tuning. A positive value is an optional maximum for troubleshooting constrained
+    systems.
+  path:
+  - runtime
+  - max_concurrency
+  converter: safe_int
+  env_example: '0'
+  env_order: 51
+  compose: ${MAX_CONCURRENCY-}
+  compose_order: 49
+  unraid:
+    name: Concurrency Safety Ceiling
+    default: '0'
+    display: advanced
+    required: false
+    mask: false
+    value: '0'
+    order: 48
+- name: REQUEST_TIMEOUT
+  section: Runtime, incremental, cache, and output
+  description: Total TMDb and image request timeout in seconds.
+  path:
+  - runtime
+  - request_timeout
+  converter: safe_float
+  env_example: '30'
+  env_order: 52
+  compose: ${REQUEST_TIMEOUT-}
+  compose_order: 50
+  unraid:
+    name: Request Timeout
+    default: '30'
+    display: advanced
+    required: false
+    mask: false
+    value: '30'
+    order: 49
+- name: CONNECT_TIMEOUT
+  section: Runtime, incremental, cache, and output
+  description: HTTP connection timeout in seconds.
+  path:
+  - runtime
+  - connect_timeout
+  converter: safe_float
+  env_example: '10'
+  env_order: 53
+  compose: ${CONNECT_TIMEOUT-}
+  compose_order: 51
+  unraid:
+    name: Connect Timeout
+    default: '10'
+    display: advanced
+    required: false
+    mask: false
+    value: '10'
+    order: 50
+- name: PLEX_TIMEOUT
+  section: Runtime, incremental, cache, and output
+  description: Timeout for each blocking Plex request in seconds.
+  path:
+  - runtime
+  - plex_timeout
+  converter: safe_float
+  env_example: '10'
+  env_order: 54
+  compose: ${PLEX_TIMEOUT-}
+  compose_order: 52
+  unraid:
+    name: Plex Request Timeout
+    default: '10'
+    display: advanced
+    required: false
+    mask: false
+    value: '10'
+    order: 51
+- name: PLEX_RETRIES
+  section: Runtime, incremental, cache, and output
+  description: Plex startup connection attempts.
+  path:
+  - runtime
+  - plex_retries
+  converter: safe_int
+  env_example: '3'
+  env_order: 55
+  compose: ${PLEX_RETRIES-}
+  compose_order: 53
+  unraid:
+    name: Plex Retries
+    default: '3'
+    display: advanced
+    required: false
+    mask: false
+    value: '3'
+    order: 52
+- name: PLEX_RETRY_DELAY
+  section: Runtime, incremental, cache, and output
+  description: Base delay between Plex connection retries in seconds.
+  path:
+  - runtime
+  - plex_retry_delay
+  converter: safe_float
+  env_example: '1'
+  env_order: 56
+  compose: ${PLEX_RETRY_DELAY-}
+  compose_order: 54
+  unraid:
+    name: Plex Retry Delay
+    default: '1'
+    display: advanced
+    required: false
+    mask: false
+    value: '1'
+    order: 53
+- name: SHUTDOWN_TIMEOUT
+  section: Runtime, incremental, cache, and output
+  description: Internal graceful shutdown deadline in seconds. Keep below the Docker stop timeout.
+  path:
+  - runtime
+  - shutdown_timeout
+  converter: safe_float
+  env_example: '15'
+  env_order: 57
+  compose: ${SHUTDOWN_TIMEOUT-}
+  compose_order: 55
+  unraid:
+    name: Shutdown Timeout
+    default: '15'
+    display: advanced
+    required: false
+    mask: false
+    value: '15'
+    order: 54
+- name: STOP_GRACE_PERIOD
+  section: Container paths and lifecycle
+  description: Docker graceful-stop deadline.
+  env_example: 20s
+  env_order: 58
+- name: HEALTH_FAIL_ON_JOB_ERROR
+  section: Runtime, incremental, cache, and output
+  description: Mark the container unhealthy when the latest job failed.
+  env_example: 'False'
+  env_order: 59
+  compose: ${HEALTH_FAIL_ON_JOB_ERROR:-False}
+  compose_order: 76
+  unraid:
+    name: Fail Healthcheck After Job Error
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 74
+- name: HEALTH_MAX_HEARTBEAT_AGE
+  section: Runtime, incremental, cache, and output
+  description: Maximum scheduler heartbeat age in seconds.
+  env_example: '120'
+  env_order: 60
+  compose: ${HEALTH_MAX_HEARTBEAT_AGE:-120}
+  compose_order: 77
+  unraid:
+    name: Health Heartbeat Maximum Age
+    default: '120'
+    display: advanced
+    required: false
+    mask: false
+    value: '120'
+    order: 75
+- name: MAX_IMAGE_MB
+  section: Runtime, incremental, cache, and output
+  description: Maximum accepted artwork download size in MiB.
+  path:
+  - runtime
+  - max_image_mb
+  converter: safe_int
+  env_example: '25'
+  env_order: 61
+  compose: ${MAX_IMAGE_MB-}
+  compose_order: 56
+  unraid:
+    name: Maximum Image Size
+    default: '25'
+    display: advanced
+    required: false
+    mask: false
+    value: '25'
+    order: 55
+- name: VALIDATE_MEDIA_MOUNTS
+  section: Runtime, incremental, cache, and output
+  description: Fail before artwork writes when configured Plex mapping destinations are absent, read-only, or unavailable.
+  path:
+  - runtime
+  - validate_media_mounts
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 62
+  compose: ${VALIDATE_MEDIA_MOUNTS-}
+  compose_order: 57
+  unraid:
+    name: Validate Plex Media Mounts
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 56
+- name: MIN_FREE_SPACE_MB
+  section: Runtime, incremental, cache, and output
+  description: Minimum free space required on runtime and artwork destinations before a write.
+  path:
+  - runtime
+  - min_free_space_mb
+  converter: safe_int
+  env_example: '256'
+  env_order: 63
+  compose: ${MIN_FREE_SPACE_MB-}
+  compose_order: 58
+  unraid:
+    name: Minimum Free Space MiB
+    default: '256'
+    display: advanced
+    required: false
+    mask: false
+    value: '256'
+    order: 57
+- name: ALLOW_AMBIGUOUS_EDITIONS
+  section: Runtime, incremental, cache, and output
+  description: Allow unsafe duplicate edition matching. Leave False unless explicitly accepting the risk.
+  path:
+  - safety
+  - allow_ambiguous_editions
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 64
+  compose: ${ALLOW_AMBIGUOUS_EDITIONS-}
+  compose_order: 59
+  unraid:
+    name: Allow Ambiguous Editions
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 73
+- name: INCREMENTAL
+  section: Runtime, incremental, cache, and output
+  description: Skip successfully processed unchanged items.
+  path:
+  - incremental
+  - enabled
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 65
+  compose: ${INCREMENTAL-}
+  compose_order: 60
+  unraid:
+    name: Incremental Processing
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 58
+- name: FULL_SCAN_INTERVAL_HOURS
+  section: Runtime, incremental, cache, and output
+  description: Maximum interval between complete reconciliation scans.
+  path:
+  - incremental
+  - full_scan_interval_hours
+  converter: safe_float
+  env_example: '168'
+  env_order: 66
+  compose: ${FULL_SCAN_INTERVAL_HOURS-}
+  compose_order: 61
+  unraid:
+    name: Full Scan Interval Hours
+    default: '168'
+    display: advanced
+    required: false
+    mask: false
+    value: '168'
+    order: 59
+- name: METADATA_PENDING_RECHECK_HOURS
+  section: Runtime, incremental, cache, and output
+  description: Short recheck interval for Plex episodes that exist before TMDb publishes their metadata.
+  path:
+  - incremental
+  - metadata_pending_recheck_hours
+  converter: safe_float
+  env_example: '24'
+  env_order: 67
+  compose: ${METADATA_PENDING_RECHECK_HOURS-}
+  compose_order: 62
+  unraid:
+    name: Pending Metadata Recheck Hours
+    default: '24'
+    display: advanced
+    required: false
+    mask: false
+    value: '24'
+    order: 60
+- name: IMAGE_UPGRADE_DAYS
+  section: Runtime, incremental, cache, and output
+  description: 'Adaptive base interval: missing artwork retries sooner and repeatedly unchanged candidates back off. Set 0
+    to disable timed upgrades.'
+  path:
+  - image_upgrades
+  - default_days
+  converter: safe_float
+  env_example: '30'
+  env_order: 68
+  compose: ${IMAGE_UPGRADE_DAYS-}
+  compose_order: 63
+  unraid:
+    name: Default Image Upgrade Days
+    default: '30'
+    display: advanced
+    required: false
+    mask: false
+    value: '30'
+    order: 61
+- name: MOVIE_IMAGE_UPGRADE_DAYS
+  section: Runtime, incremental, cache, and output
+  description: Optional movie-specific adaptive base interval. Blank inherits IMAGE_UPGRADE_DAYS.
+  path:
+  - image_upgrades
+  - movie_days
+  converter: safe_float
+  env_example: ''
+  env_order: 69
+  compose: ${MOVIE_IMAGE_UPGRADE_DAYS-}
+  compose_order: 64
+  unraid:
+    name: Movie Image Upgrade Days
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 62
+- name: SERIES_IMAGE_UPGRADE_DAYS
+  section: Runtime, incremental, cache, and output
+  description: Optional series-specific adaptive base interval. Blank inherits IMAGE_UPGRADE_DAYS.
+  path:
+  - image_upgrades
+  - series_days
+  converter: safe_float
+  env_example: ''
+  env_order: 70
+  compose: ${SERIES_IMAGE_UPGRADE_DAYS-}
+  compose_order: 65
+  unraid:
+    name: Series Image Upgrade Days
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 63
+- name: SEASON_IMAGE_UPGRADE_DAYS
+  section: Artwork selection
+  description: Optional season-specific adaptive base interval. Blank inherits IMAGE_UPGRADE_DAYS.
+  path:
+  - image_upgrades
+  - season_days
+  converter: safe_float
+  env_example: ''
+  env_order: 71
+  compose: ${SEASON_IMAGE_UPGRADE_DAYS-}
+  compose_order: 66
+  unraid:
+    name: Season Image Upgrade Days
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 64
+- name: TMDB_CACHE_ENABLED
+  section: Identity, connection, and TMDb
+  description: Persist successful TMDb JSON responses.
+  path:
+  - tmdb_cache
+  - enabled
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 72
+  compose: ${TMDB_CACHE_ENABLED-}
+  compose_order: 67
+  unraid:
+    name: TMDb Cache
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 65
+- name: TMDB_CACHE_TTL_HOURS
+  section: Identity, connection, and TMDb
+  description: TMDb response lifetime in hours.
+  path:
+  - tmdb_cache
+  - ttl_hours
+  converter: safe_float
+  env_example: '24'
+  env_order: 73
+  compose: ${TMDB_CACHE_TTL_HOURS-}
+  compose_order: 68
+  unraid:
+    name: TMDb Cache TTL Hours
+    default: '24'
+    display: advanced
+    required: false
+    mask: false
+    value: '24'
+    order: 66
+- name: TMDB_CACHE_NEGATIVE_TTL_HOURS
+  section: Identity, connection, and TMDb
+  description: Short cache lifetime for HTTP 404 results. Rate limits and server errors are never cached.
+  path:
+  - tmdb_cache
+  - negative_ttl_hours
+  converter: safe_float
+  env_example: '12'
+  env_order: 74
+  compose: ${TMDB_CACHE_NEGATIVE_TTL_HOURS-}
+  compose_order: 69
+  unraid:
+    name: TMDb Negative Cache TTL Hours
+    default: '12'
+    display: advanced
+    required: false
+    mask: false
+    value: '12'
+    order: 67
+- name: TMDB_CACHE_MAX_ENTRIES
+  section: Identity, connection, and TMDb
+  description: Maximum persisted TMDb responses. Set 0 for automatic storage-aware sizing and pruning.
+  path:
+  - tmdb_cache
+  - max_entries
+  converter: safe_int
+  env_example: '0'
+  env_order: 75
+  compose: ${TMDB_CACHE_MAX_ENTRIES-}
+  compose_order: 70
+  unraid:
+    name: TMDb Cache Maximum Entries
+    default: '0'
+    display: advanced
+    required: false
+    mask: false
+    value: '0'
+    order: 68
+- name: TMDB_CACHE_MAX_MB
+  section: Identity, connection, and TMDb
+  description: Compressed-payload limit in MiB. Set 0 for automatic storage-aware sizing and pruning.
+  path:
+  - tmdb_cache
+  - max_mb
+  converter: safe_float
+  env_example: '0'
+  env_order: 76
+  compose: ${TMDB_CACHE_MAX_MB-}
+  compose_order: 71
+  unraid:
+    name: TMDb Cache Maximum MiB
+    default: '0'
+    display: advanced
+    required: false
+    mask: false
+    value: '0'
+    order: 69
+- name: VALIDATE_OUTPUT
+  section: Runtime, incremental, cache, and output
+  description: Validate generated Kometa YAML before replacing known-good output.
+  path:
+  - output
+  - validate_schema
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 77
+  compose: ${VALIDATE_OUTPUT-}
+  compose_order: 72
+  unraid:
+    name: Validate Kometa Output
+    default: True|False
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 70
+- name: OUTPUT_BACKUP_COUNT
+  section: Runtime, incremental, cache, and output
+  description: Metadata backups retained per output file.
+  path:
+  - output
+  - backup_count
+  converter: safe_int
+  env_example: '3'
+  env_order: 78
+  compose: ${OUTPUT_BACKUP_COUNT-}
+  compose_order: 73
+  unraid:
+    name: Output Backup Count
+    default: '3'
+    display: advanced
+    required: false
+    mask: false
+    value: '3'
+    order: 71
+- name: DESTINATION_HISTORY_REPORT_RETENTION
+  section: Runtime, incremental, cache, and output
+  description: Artwork rename history reports retained under /config/reports. Old artwork is reported, never automatically
+    deleted.
+  path:
+  - output
+  - destination_history_report_retention
+  converter: safe_int
+  env_example: '10'
+  env_order: 79
+  compose: ${DESTINATION_HISTORY_REPORT_RETENTION-}
+  compose_order: 74
+  unraid:
+    name: Destination Report Retention
+    default: '10'
+    display: advanced
+    required: false
+    mask: false
+    value: '10'
+    order: 72
+- name: POSTER_MAX_WIDTH
+  section: Artwork selection
+  description: Preferred high-resolution width threshold; this does not cap download dimensions.
+  path:
+  - poster_set
+  - max_width
+  converter: safe_int
+  env_example: '2000'
+  env_order: 80
+  compose: ${POSTER_MAX_WIDTH-}
+  compose_order: 78
+  unraid:
+    name: Poster Preferred Width
+    default: '2000'
+    display: advanced
+    required: false
+    mask: false
+    value: '2000'
+    order: 76
+- name: POSTER_MAX_HEIGHT
+  section: Artwork selection
+  description: Preferred high-resolution height threshold; this does not cap download dimensions.
+  path:
+  - poster_set
+  - max_height
+  converter: safe_int
+  env_example: '3000'
+  env_order: 81
+  compose: ${POSTER_MAX_HEIGHT-}
+  compose_order: 79
+  unraid:
+    name: Poster Preferred Height
+    default: '3000'
+    display: advanced
+    required: false
+    mask: false
+    value: '3000'
+    order: 77
+- name: POSTER_MIN_WIDTH
+  section: Artwork selection
+  description: Minimum preferred poster width.
+  path:
+  - poster_set
+  - min_width
+  converter: safe_int
+  env_example: '1000'
+  env_order: 82
+  compose: ${POSTER_MIN_WIDTH-}
+  compose_order: 80
+  unraid:
+    name: Poster Minimum Width
+    default: '1000'
+    display: advanced
+    required: false
+    mask: false
+    value: '1000'
+    order: 78
+- name: POSTER_MIN_HEIGHT
+  section: Artwork selection
+  description: Minimum preferred poster height.
+  path:
+  - poster_set
+  - min_height
+  converter: safe_int
+  env_example: '1500'
+  env_order: 83
+  compose: ${POSTER_MIN_HEIGHT-}
+  compose_order: 81
+  unraid:
+    name: Poster Minimum Height
+    default: '1500'
+    display: advanced
+    required: false
+    mask: false
+    value: '1500'
+    order: 79
+- name: POSTER_PREFER_VOTE
+  section: Artwork selection
+  description: Preferred TMDb poster vote score.
+  path:
+  - poster_set
+  - prefer_vote
+  converter: safe_float
+  env_example: '5.0'
+  env_order: 84
+  compose: ${POSTER_PREFER_VOTE-}
+  compose_order: 82
+  unraid:
+    name: Poster Preferred Vote
+    default: '5.0'
+    display: advanced
+    required: false
+    mask: false
+    value: '5.0'
+    order: 80
+- name: POSTER_VOTE_RELAXED
+  section: Artwork selection
+  description: Relaxed fallback poster vote score.
+  path:
+  - poster_set
+  - vote_relaxed
+  converter: safe_float
+  env_example: '3.5'
+  env_order: 85
+  compose: ${POSTER_VOTE_RELAXED-}
+  compose_order: 83
+  unraid:
+    name: Poster Relaxed Vote
+    default: '3.5'
+    display: advanced
+    required: false
+    mask: false
+    value: '3.5'
+    order: 81
+- name: POSTER_VOTE_THRESHOLD
+  section: Artwork selection
+  description: Vote score used when deciding poster upgrades.
+  path:
+  - poster_set
+  - vote_threshold
+  converter: safe_float
+  env_example: '5.0'
+  env_order: 86
+  compose: ${POSTER_VOTE_THRESHOLD-}
+  compose_order: 84
+  unraid:
+    name: Poster Upgrade Vote Threshold
+    default: '5.0'
+    display: advanced
+    required: false
+    mask: false
+    value: '5.0'
+    order: 82
+- name: SEASON_MAX_WIDTH
+  section: Artwork selection
+  description: Preferred high-resolution season-poster width threshold.
+  path:
+  - season_set
+  - max_width
+  converter: safe_int
+  env_example: '2000'
+  env_order: 87
+  compose: ${SEASON_MAX_WIDTH-}
+  compose_order: 85
+  unraid:
+    name: Season Poster Preferred Width
+    default: '2000'
+    display: advanced
+    required: false
+    mask: false
+    value: '2000'
+    order: 83
+- name: SEASON_MAX_HEIGHT
+  section: Artwork selection
+  description: Preferred high-resolution season-poster height threshold.
+  path:
+  - season_set
+  - max_height
+  converter: safe_int
+  env_example: '3000'
+  env_order: 88
+  compose: ${SEASON_MAX_HEIGHT-}
+  compose_order: 86
+  unraid:
+    name: Season Poster Preferred Height
+    default: '3000'
+    display: advanced
+    required: false
+    mask: false
+    value: '3000'
+    order: 84
+- name: SEASON_MIN_WIDTH
+  section: Artwork selection
+  description: Minimum preferred season-poster width.
+  path:
+  - season_set
+  - min_width
+  converter: safe_int
+  env_example: '1000'
+  env_order: 89
+  compose: ${SEASON_MIN_WIDTH-}
+  compose_order: 87
+  unraid:
+    name: Season Poster Minimum Width
+    default: '1000'
+    display: advanced
+    required: false
+    mask: false
+    value: '1000'
+    order: 85
+- name: SEASON_MIN_HEIGHT
+  section: Artwork selection
+  description: Minimum preferred season-poster height.
+  path:
+  - season_set
+  - min_height
+  converter: safe_int
+  env_example: '1500'
+  env_order: 90
+  compose: ${SEASON_MIN_HEIGHT-}
+  compose_order: 88
+  unraid:
+    name: Season Poster Minimum Height
+    default: '1500'
+    display: advanced
+    required: false
+    mask: false
+    value: '1500'
+    order: 86
+- name: SEASON_PREFER_VOTE
+  section: Artwork selection
+  description: Preferred TMDb season-poster vote score.
+  path:
+  - season_set
+  - prefer_vote
+  converter: safe_float
+  env_example: '5.0'
+  env_order: 91
+  compose: ${SEASON_PREFER_VOTE-}
+  compose_order: 89
+  unraid:
+    name: Season Poster Preferred Vote
+    default: '5.0'
+    display: advanced
+    required: false
+    mask: false
+    value: '5.0'
+    order: 87
+- name: SEASON_VOTE_RELAXED
+  section: Artwork selection
+  description: Relaxed fallback season-poster vote score.
+  path:
+  - season_set
+  - vote_relaxed
+  converter: safe_float
+  env_example: '0.5'
+  env_order: 92
+  compose: ${SEASON_VOTE_RELAXED-}
+  compose_order: 90
+  unraid:
+    name: Season Poster Relaxed Vote
+    default: '0.5'
+    display: advanced
+    required: false
+    mask: false
+    value: '0.5'
+    order: 88
+- name: SEASON_VOTE_THRESHOLD
+  section: Artwork selection
+  description: Vote score used when deciding season-poster upgrades.
+  path:
+  - season_set
+  - vote_threshold
+  converter: safe_float
+  env_example: '3.0'
+  env_order: 93
+  compose: ${SEASON_VOTE_THRESHOLD-}
+  compose_order: 91
+  unraid:
+    name: Season Poster Upgrade Vote Threshold
+    default: '3.0'
+    display: advanced
+    required: false
+    mask: false
+    value: '3.0'
+    order: 89
+- name: BG_MAX_WIDTH
+  section: Artwork selection
+  description: Preferred high-resolution background width threshold.
+  path:
+  - background_set
+  - max_width
+  converter: safe_int
+  env_example: '3840'
+  env_order: 94
+  compose: ${BG_MAX_WIDTH-}
+  compose_order: 92
+  unraid:
+    name: Background Preferred Width
+    default: '3840'
+    display: advanced
+    required: false
+    mask: false
+    value: '3840'
+    order: 90
+- name: BG_MAX_HEIGHT
+  section: Artwork selection
+  description: Preferred high-resolution background height threshold.
+  path:
+  - background_set
+  - max_height
+  converter: safe_int
+  env_example: '2160'
+  env_order: 95
+  compose: ${BG_MAX_HEIGHT-}
+  compose_order: 93
+  unraid:
+    name: Background Preferred Height
+    default: '2160'
+    display: advanced
+    required: false
+    mask: false
+    value: '2160'
+    order: 91
+- name: BG_MIN_WIDTH
+  section: Artwork selection
+  description: Minimum preferred background width.
+  path:
+  - background_set
+  - min_width
+  converter: safe_int
+  env_example: '1920'
+  env_order: 96
+  compose: ${BG_MIN_WIDTH-}
+  compose_order: 94
+  unraid:
+    name: Background Minimum Width
+    default: '1920'
+    display: advanced
+    required: false
+    mask: false
+    value: '1920'
+    order: 92
+- name: BG_MIN_HEIGHT
+  section: Artwork selection
+  description: Minimum preferred background height.
+  path:
+  - background_set
+  - min_height
+  converter: safe_int
+  env_example: '1080'
+  env_order: 97
+  compose: ${BG_MIN_HEIGHT-}
+  compose_order: 95
+  unraid:
+    name: Background Minimum Height
+    default: '1080'
+    display: advanced
+    required: false
+    mask: false
+    value: '1080'
+    order: 93
+- name: BG_PREFER_VOTE
+  section: Artwork selection
+  description: Preferred TMDb background vote score.
+  path:
+  - background_set
+  - prefer_vote
+  converter: safe_float
+  env_example: '5.0'
+  env_order: 98
+  compose: ${BG_PREFER_VOTE-}
+  compose_order: 96
+  unraid:
+    name: Background Preferred Vote
+    default: '5.0'
+    display: advanced
+    required: false
+    mask: false
+    value: '5.0'
+    order: 94
+- name: BG_VOTE_RELAXED
+  section: Artwork selection
+  description: Relaxed fallback background vote score.
+  path:
+  - background_set
+  - vote_relaxed
+  converter: safe_float
+  env_example: '3.5'
+  env_order: 99
+  compose: ${BG_VOTE_RELAXED-}
+  compose_order: 97
+  unraid:
+    name: Background Relaxed Vote
+    default: '3.5'
+    display: advanced
+    required: false
+    mask: false
+    value: '3.5'
+    order: 95
+- name: BG_VOTE_THRESHOLD
+  section: Artwork selection
+  description: Vote score used when deciding background upgrades.
+  path:
+  - background_set
+  - vote_threshold
+  converter: safe_float
+  env_example: '5.0'
+  env_order: 100
+  compose: ${BG_VOTE_THRESHOLD-}
+  compose_order: 98
+  unraid:
+    name: Background Upgrade Vote Threshold
+    default: '5.0'
+    display: advanced
+    required: false
+    mask: false
+    value: '5.0'
+    order: 96
+- name: CONFIG_DIR
+  section: Container paths and lifecycle
+  description: Container configuration and state directory. Normally leave unchanged.
+  compose: /config
+  compose_order: 0
+  unraid:
+    name: Container Config Directory
+    default: /config
+    display: advanced
+    required: false
+    mask: false
+    value: /config
+    order: 97
+- name: STATUS_FILE
+  section: Container paths and lifecycle
+  description: Ephemeral scheduler heartbeat and healthcheck file. Normally leave unchanged.
+  compose: /tmp/metafusion-status.json
+  compose_order: 75
+  unraid:
+    name: Runtime Status File
+    default: /tmp/metafusion-status.json
+    display: advanced
+    required: false
+    mask: false
+    value: /tmp/metafusion-status.json
+    order: 98

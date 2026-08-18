@@ -11,7 +11,6 @@ from pathlib import Path
 
 import psutil
 
-
 _current_controller = ContextVar("metafusion_concurrency_controller", default=None)
 _loop_controllers = weakref.WeakKeyDictionary()
 

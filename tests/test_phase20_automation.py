@@ -15,8 +15,8 @@ from helper.runtime import DiskPressureError
 from helper.state_db import (
     _connect,
     classify_item_failure,
-    clear_item_retry,
     clear_item_retries,
+    clear_item_retry,
     load_due_item_retries,
     load_identity_binding,
     mark_item_started,
@@ -29,7 +29,6 @@ from helper.state_db import (
 )
 from helper.tmdb_cache import PersistentTTLCache
 from modules import builder
-
 
 UTC = timezone.utc
 

@@ -11,7 +11,6 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-
 MANIFEST_ACCEPT = ", ".join(
     (
         "application/vnd.oci.image.index.v1+json",

@@ -82,230 +82,39 @@ CONFIG_FILE = BASE_CONFIG_DIR / "config.yml"
 TEMPLATE_FILE = Path(__file__).parent.parent / "config_template.yml"
 CACHE_DIR = BASE_CONFIG_DIR / "cache"
 
-DEFAULT_CONFIG = {
-    "metafusion_run": False,
-    "settings": {
-        "schedule": True,
-        "run_on_start": False,
-        "schedule_catch_up": True,
-        "schedule_catch_up_max_hours": 24.0,
-        "run_times": ["06:00", "18:30"],
-        "dry_run": False,
-        "log_level": "INFO",
-        "log_max_mb": 10.0,
-        "log_backup_count": 14,
-        "mode": "kometa",
-        "path": "/kometa/",
-    },
-    "plex": {
-        "url": "http://10.0.0.1:32400",
-        "token": "PLEX_TOKEN",
-        "path_mappings": [],
-    },
-    "plex_libraries": ["auto"],
-    "tmdb": {
-        "api_key": "TMDB_API_KEY",
-        "language": "en-US",
-        "fallback": ["zh", "ja"],
-        "region": "US",
-        "artwork_allow_any_language": True,
-        "title_search_fallback": False,
-        "episode_group_fallback": True,
-        "split_series_show_policy": "preserve",
-        "split_series_mappings": {},
-        "episode_overrides": {},
-    },
-    "metadata": {
-        "run_basic": True,
-        "run_enhanced": True,
-    },
-    "kometa": {
-        "tag_policy": "append",
-    },
-    "plex_metadata": {
-        "enabled": False,
-        "policy": "fill_missing",
-        "lock_writes": False,
-        "lock_merged_tags": False,
-        "allow_overwrite": False,
-        "recheck_days": 30.0,
-        "max_writes_per_run": 100,
-        "report_retention": 10,
-        "fields": [],
-    },
-    "assets": {
-        "run_poster": True,
-        "run_season": True,
-        "run_background": False,
-        "update_policy": "managed",
-    },
-    "cleanup": {
-        "run_cleanup": False,
-    },
-    "runtime": {
-        "max_concurrency": 0,
-        "request_timeout": 30.0,
-        "connect_timeout": 10.0,
-        "plex_timeout": 10.0,
-        "plex_retries": 3,
-        "plex_retry_delay": 1.0,
-        "shutdown_timeout": 15.0,
-        "max_image_mb": 25,
-        "validate_media_mounts": True,
-        "min_free_space_mb": 256,
-    },
-    "incremental": {
-        "enabled": True,
-        "full_scan_interval_hours": 168.0,
-        "metadata_pending_recheck_hours": 24.0,
-    },
-    "image_upgrades": {
-        "default_days": 30.0,
-        "movie_days": None,
-        "series_days": None,
-        "season_days": None,
-    },
-    "library_overrides": {},
-    "tmdb_cache": {
-        "enabled": True,
-        "ttl_hours": 24.0,
-        "negative_ttl_hours": 12.0,
-        "max_entries": 0,
-        "max_mb": 0.0,
-    },
-    "output": {
-        "validate_schema": True,
-        "backup_count": 3,
-        "destination_history_report_retention": 10,
-    },
-    "safety": {
-        "allow_ambiguous_editions": False,
-    },
-    "poster_set": {
-        "max_width": 2000,
-        "max_height": 3000,
-        "min_width": 1000,
-        "min_height": 1500,
-        "prefer_vote": 5.0,
-        "vote_relaxed": 3.5,
-        "vote_threshold": 5.0,
-    },
-    "season_set": {
-        "max_width": 2000,
-        "max_height": 3000,
-        "min_width": 1000,
-        "min_height": 1500,
-        "prefer_vote": 5.0,
-        "vote_relaxed": 0.5,
-        "vote_threshold": 3.0,
-    },
-    "background_set": {
-        "max_width": 3840,
-        "max_height": 2160,
-        "min_width": 1920,
-        "min_height": 1080,
-        "prefer_vote": 5.0,
-        "vote_relaxed": 3.5,
-        "vote_threshold": 5.0,
-    },
+CONFIG_SCHEMA_FILE = Path(__file__).parent.parent / "config_schema.yml"
+
+
+def _load_config_schema():
+    try:
+        schema = yaml.safe_load(CONFIG_SCHEMA_FILE.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ConfigError(f"Unable to load configuration schema: {CONFIG_SCHEMA_FILE}") from error
+    if not isinstance(schema, dict) or schema.get("schema_version") != 1:
+        raise ConfigError("Unsupported or invalid configuration schema")
+    return schema
+
+
+_CONFIG_SCHEMA = _load_config_schema()
+DEFAULT_CONFIG = copy.deepcopy(_CONFIG_SCHEMA["defaults"])
+_CONVERTERS = {
+    "string": None,
+    "safe_int": safe_int,
+    "safe_float": safe_float,
+    "safe_bool": safe_bool,
+    "safe_list": safe_list,
+    "safe_path_mappings": safe_path_mappings,
+    "safe_json_mapping": safe_json_mapping,
 }
-
-ENV_BINDINGS = (
-    ("METAFUSION_RUN", ("metafusion_run",), safe_bool),
-    ("RUN_SCHEDULE", ("settings", "schedule"), safe_bool),
-    ("RUN_ON_START", ("settings", "run_on_start"), safe_bool),
-    ("SCHEDULE_CATCH_UP", ("settings", "schedule_catch_up"), safe_bool),
-    ("SCHEDULE_CATCH_UP_MAX_HOURS", ("settings", "schedule_catch_up_max_hours"), safe_float),
-    ("RUN_TIMES", ("settings", "run_times"), safe_list),
-    ("DRY_RUN", ("settings", "dry_run"), safe_bool),
-    ("LOG_LEVEL", ("settings", "log_level"), None),
-    ("LOG_MAX_MB", ("settings", "log_max_mb"), safe_float),
-    ("LOG_BACKUP_COUNT", ("settings", "log_backup_count"), safe_int),
-    ("RUN_MODE", ("settings", "mode"), None),
-    ("KOMETA_PATH", ("settings", "path"), None),
-    ("PLEX_URL", ("plex", "url"), None),
-    ("PLEX_TOKEN", ("plex", "token"), None),
-    ("PLEX_PATH_MAPPINGS", ("plex", "path_mappings"), safe_path_mappings),
-    ("PLEX_LIBRARIES", ("plex_libraries",), safe_list),
-    ("TMDB_API_KEY", ("tmdb", "api_key"), None),
-    ("TMDB_LANGUAGE", ("tmdb", "language"), None),
-    ("TMDB_LANGUAGE_FALLBACK", ("tmdb", "fallback"), safe_list),
-    ("TMDB_REGION", ("tmdb", "region"), None),
-    ("ARTWORK_ALLOW_ANY_LANGUAGE", ("tmdb", "artwork_allow_any_language"), safe_bool),
-    ("TMDB_TITLE_SEARCH_FALLBACK", ("tmdb", "title_search_fallback"), safe_bool),
-    ("TMDB_EPISODE_GROUP_FALLBACK", ("tmdb", "episode_group_fallback"), safe_bool),
-    ("TMDB_SPLIT_SERIES_SHOW_POLICY", ("tmdb", "split_series_show_policy"), None),
-    ("TMDB_SPLIT_SERIES_MAPPINGS", ("tmdb", "split_series_mappings"), safe_json_mapping),
-    ("TMDB_EPISODE_OVERRIDES", ("tmdb", "episode_overrides"), safe_json_mapping),
-    ("RUN_BASIC", ("metadata", "run_basic"), safe_bool),
-    ("RUN_ENHANCED", ("metadata", "run_enhanced"), safe_bool),
-    ("KOMETA_TAG_POLICY", ("kometa", "tag_policy"), None),
-    ("PLEX_METADATA_UPDATES", ("plex_metadata", "enabled"), safe_bool),
-    ("PLEX_METADATA_POLICY", ("plex_metadata", "policy"), None),
-    ("PLEX_METADATA_LOCK_WRITES", ("plex_metadata", "lock_writes"), safe_bool),
-    ("PLEX_METADATA_LOCK_MERGED_TAGS", ("plex_metadata", "lock_merged_tags"), safe_bool),
-    ("PLEX_METADATA_ALLOW_OVERWRITE", ("plex_metadata", "allow_overwrite"), safe_bool),
-    ("PLEX_METADATA_RECHECK_DAYS", ("plex_metadata", "recheck_days"), safe_float),
-    ("PLEX_METADATA_MAX_WRITES_PER_RUN", ("plex_metadata", "max_writes_per_run"), safe_int),
-    ("PLEX_METADATA_REPORT_RETENTION", ("plex_metadata", "report_retention"), safe_int),
-    ("PLEX_METADATA_FIELDS", ("plex_metadata", "fields"), safe_list),
-    ("RUN_POSTER", ("assets", "run_poster"), safe_bool),
-    ("RUN_SEASON", ("assets", "run_season"), safe_bool),
-    ("RUN_BACKGROUND", ("assets", "run_background"), safe_bool),
-    ("ASSET_UPDATE_POLICY", ("assets", "update_policy"), None),
-    ("RUN_CLEANUP", ("cleanup", "run_cleanup"), safe_bool),
-    ("MAX_CONCURRENCY", ("runtime", "max_concurrency"), safe_int),
-    ("REQUEST_TIMEOUT", ("runtime", "request_timeout"), safe_float),
-    ("CONNECT_TIMEOUT", ("runtime", "connect_timeout"), safe_float),
-    ("PLEX_TIMEOUT", ("runtime", "plex_timeout"), safe_float),
-    ("PLEX_RETRIES", ("runtime", "plex_retries"), safe_int),
-    ("PLEX_RETRY_DELAY", ("runtime", "plex_retry_delay"), safe_float),
-    ("SHUTDOWN_TIMEOUT", ("runtime", "shutdown_timeout"), safe_float),
-    ("MAX_IMAGE_MB", ("runtime", "max_image_mb"), safe_int),
-    ("VALIDATE_MEDIA_MOUNTS", ("runtime", "validate_media_mounts"), safe_bool),
-    ("MIN_FREE_SPACE_MB", ("runtime", "min_free_space_mb"), safe_int),
-    ("INCREMENTAL", ("incremental", "enabled"), safe_bool),
-    ("FULL_SCAN_INTERVAL_HOURS", ("incremental", "full_scan_interval_hours"), safe_float),
-    ("METADATA_PENDING_RECHECK_HOURS", ("incremental", "metadata_pending_recheck_hours"), safe_float),
-    ("IMAGE_UPGRADE_DAYS", ("image_upgrades", "default_days"), safe_float),
-    ("MOVIE_IMAGE_UPGRADE_DAYS", ("image_upgrades", "movie_days"), safe_float),
-    ("SERIES_IMAGE_UPGRADE_DAYS", ("image_upgrades", "series_days"), safe_float),
-    ("SEASON_IMAGE_UPGRADE_DAYS", ("image_upgrades", "season_days"), safe_float),
-    ("TMDB_CACHE_ENABLED", ("tmdb_cache", "enabled"), safe_bool),
-    ("TMDB_CACHE_TTL_HOURS", ("tmdb_cache", "ttl_hours"), safe_float),
-    ("TMDB_CACHE_NEGATIVE_TTL_HOURS", ("tmdb_cache", "negative_ttl_hours"), safe_float),
-    ("TMDB_CACHE_MAX_ENTRIES", ("tmdb_cache", "max_entries"), safe_int),
-    ("TMDB_CACHE_MAX_MB", ("tmdb_cache", "max_mb"), safe_float),
-    ("VALIDATE_OUTPUT", ("output", "validate_schema"), safe_bool),
-    ("OUTPUT_BACKUP_COUNT", ("output", "backup_count"), safe_int),
-    ("DESTINATION_HISTORY_REPORT_RETENTION", ("output", "destination_history_report_retention"), safe_int),
-    ("ALLOW_AMBIGUOUS_EDITIONS", ("safety", "allow_ambiguous_editions"), safe_bool),
-    ("POSTER_MAX_WIDTH", ("poster_set", "max_width"), safe_int),
-    ("POSTER_MAX_HEIGHT", ("poster_set", "max_height"), safe_int),
-    ("POSTER_MIN_WIDTH", ("poster_set", "min_width"), safe_int),
-    ("POSTER_MIN_HEIGHT", ("poster_set", "min_height"), safe_int),
-    ("POSTER_PREFER_VOTE", ("poster_set", "prefer_vote"), safe_float),
-    ("POSTER_VOTE_RELAXED", ("poster_set", "vote_relaxed"), safe_float),
-    ("POSTER_VOTE_THRESHOLD", ("poster_set", "vote_threshold"), safe_float),
-    ("SEASON_MAX_WIDTH", ("season_set", "max_width"), safe_int),
-    ("SEASON_MAX_HEIGHT", ("season_set", "max_height"), safe_int),
-    ("SEASON_MIN_WIDTH", ("season_set", "min_width"), safe_int),
-    ("SEASON_MIN_HEIGHT", ("season_set", "min_height"), safe_int),
-    ("SEASON_PREFER_VOTE", ("season_set", "prefer_vote"), safe_float),
-    ("SEASON_VOTE_RELAXED", ("season_set", "vote_relaxed"), safe_float),
-    ("SEASON_VOTE_THRESHOLD", ("season_set", "vote_threshold"), safe_float),
-    ("BG_MAX_WIDTH", ("background_set", "max_width"), safe_int),
-    ("BG_MAX_HEIGHT", ("background_set", "max_height"), safe_int),
-    ("BG_MIN_WIDTH", ("background_set", "min_width"), safe_int),
-    ("BG_MIN_HEIGHT", ("background_set", "min_height"), safe_int),
-    ("BG_PREFER_VOTE", ("background_set", "prefer_vote"), safe_float),
-    ("BG_VOTE_RELAXED", ("background_set", "vote_relaxed"), safe_float),
-    ("BG_VOTE_THRESHOLD", ("background_set", "vote_threshold"), safe_float),
+ENV_BINDINGS = tuple(
+    (setting["name"], tuple(setting["path"]), _CONVERTERS[setting["converter"]])
+    for setting in _CONFIG_SCHEMA["settings"]
+    if "path" in setting
 )
-
-SECRET_FILE_BINDINGS = (
-    ("PLEX_TOKEN_FILE", ("plex", "token"), "PLEX_TOKEN"),
-    ("TMDB_API_KEY_FILE", ("tmdb", "api_key"), "TMDB_API_KEY"),
+SECRET_FILE_BINDINGS = tuple(
+    (setting["name"], tuple(setting["secret_file"]["path"]), setting["secret_file"]["direct_env"])
+    for setting in _CONFIG_SCHEMA["settings"]
+    if "secret_file" in setting
 )
 
 SECRET_PATHS = {("plex", "token"), ("tmdb", "api_key")}
@@ -590,7 +399,9 @@ def validate_config(config):
         else:
             for run_time in run_times:
                 try:
-                    datetime.strptime(str(run_time), "%H:%M")
+                    datetime.strptime(  # noqa: DTZ007 -- validates a local wall clock
+                        str(run_time), "%H:%M"
+                    )
                 except (TypeError, ValueError):
                     errors.append(f"Invalid schedule time: {run_time!r}; expected HH:MM")
 

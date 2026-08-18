@@ -7,7 +7,6 @@ from pathlib import Path
 from plexapi.server import PlexServer
 
 from helper.concurrency import CircuitOpenError, runtime_slot
-
 from helper.logging import log_plex_event, redact_secrets
 from helper.plex_paths import translate_plex_path
 
@@ -486,7 +485,12 @@ def collect_plex_path_samples(sections, max_items_per_library=2):
     for section in sections or []:
         try:
             items = list(section.search(maxresults=max_items_per_library))
-        except Exception:
+        except Exception as error:
+            log_plex_event(
+                "plex_path_sample_library_failed",
+                library_name=getattr(section, "title", "unknown"),
+                error=error,
+            )
             continue
         for item in items[:max_items_per_library]:
             for location in getattr(item, "locations", None) or []:
@@ -497,7 +501,12 @@ def collect_plex_path_samples(sections, max_items_per_library=2):
                     for part in list(item.iterParts())[:2]:
                         if getattr(part, "file", None):
                             samples.append(str(part.file))
-                except Exception:
+                except Exception as error:
+                    log_plex_event(
+                        "plex_path_sample_item_failed",
+                        title=getattr(item, "title", "unknown"),
+                        error=error,
+                    )
                     continue
     return sorted(set(samples))
 

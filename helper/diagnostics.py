@@ -8,7 +8,9 @@ from pathlib import Path
 from helper.build_info import build_info
 from helper.config import BASE_CONFIG_DIR, CACHE_DIR, ENV_BINDINGS, SECRET_FILE_BINDINGS
 from helper.io import atomic_write_text
+from helper.state_db import SCHEMA_VERSION as STATE_SCHEMA_VERSION
 from helper.state_db import STATE_DATABASE
+from helper.tmdb_cache import PersistentTTLCache
 
 
 def _flatten_metadata_fields(value, prefix=()):
@@ -452,3 +454,84 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
     )
     atomic_write_text(path, "\n".join(lines))
     return path
+
+
+def write_release_qualification_report(
+    config,
+    preflight,
+    *,
+    base_dir=None,
+    environ=None,
+):
+    """Write a redacted pass/fail release qualification report."""
+    environ = os.environ if environ is None else environ
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"release-qualification-{timestamp}.txt"
+    current_build = build_info(environ)
+    state_status = _database_status(STATE_DATABASE)
+    cache_status = _tmdb_cache_status(CACHE_DIR / "tmdb_cache.sqlite3")
+    path_advice = (preflight or {}).get("path_advice") or {}
+    unresolved = sum(
+        record.get("status") == "unresolved"
+        for record in path_advice.get("records", [])
+        if isinstance(record, dict)
+    )
+    checks = [
+        ("Configuration", True, "valid"),
+        ("Plex and TMDb connectors", True, "authenticated and reachable"),
+        (
+            "Supported libraries",
+            bool((preflight or {}).get("available_count", 0)),
+            f"{int((preflight or {}).get('available_count', 0))} available",
+        ),
+        (
+            "Plex media path samples",
+            unresolved == 0,
+            "resolved" if unresolved == 0 else f"{unresolved} unresolved",
+        ),
+        (
+            "Durable state database",
+            state_status == "missing" or "check ok" in state_status,
+            state_status,
+        ),
+        (
+            "Disposable TMDb cache",
+            cache_status == "missing" or "health ok" in cache_status,
+            cache_status,
+        ),
+    ]
+    passed = all(check[1] for check in checks)
+    settings = config.get("settings", {})
+    lines = [
+        "MetaFusion release qualification (values and secrets omitted)",
+        f"Generated: {generated.isoformat()}",
+        f"Result: {'PASS' if passed else 'FAIL'}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Python: {platform.python_version()}",
+        f"Platform: {platform.system()} {platform.release()}",
+        f"Architecture: {platform.machine()}",
+        f"Run mode: {settings.get('mode')}",
+        f"State schema supported: {STATE_SCHEMA_VERSION}",
+        f"TMDb cache schema supported: {PersistentTTLCache.SCHEMA_VERSION}",
+        "",
+        "Automated checks",
+    ]
+    for name, success, detail in checks:
+        lines.append(f"- [{'PASS' if success else 'FAIL'}] {name}: {detail}")
+    lines.extend(
+        (
+            "",
+            "Manual release gates still required",
+            "- Complete one full scan with cleanup disabled or its dry-run reviewed.",
+            "- Confirm an immediate unchanged incremental run selects only due work.",
+            "- Confirm scheduled restart/catch-up and graceful stop on the deployment host.",
+            "- Back up /config and generated output while the container is stopped.",
+            "",
+            "This report contains no connector URLs, tokens, keys, library names, or host paths.",
+        )
+    )
+    atomic_write_text(path, "\n".join(lines) + "\n")
+    return path, passed

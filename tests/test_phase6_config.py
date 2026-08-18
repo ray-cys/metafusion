@@ -7,13 +7,12 @@ from pathlib import Path
 import pytest
 
 from helper.config import (
-    ConfigError,
     DEFAULT_CONFIG,
+    ConfigError,
     config_source_report,
     load_config_file,
     validate_config,
 )
-
 
 REPO_ROOT = Path(__file__).parents[1]
 

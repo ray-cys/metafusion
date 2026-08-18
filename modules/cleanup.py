@@ -320,7 +320,7 @@ async def cleanup_title_orphans(
                 metadata_content = yaml.safe_load(source_bytes.decode("utf-8")) or {}
                 metadata_entries = metadata_content.get("metadata", {})
                 if not isinstance(metadata_entries, dict):
-                    raise ValueError("metadata must be a mapping")
+                    raise TypeError("metadata must be a mapping")
                 metadata_documents.append(
                     (
                         metadata_file,

@@ -1,168 +1,95 @@
-# Plex Metadata Generator & Asset Downloader Configuration Template
+# Generated from config_schema.yml. Copy this file to config.yml before editing.
+# Environment variables override non-empty values in config.yml.
 
-# Force run of MetaFusion
 metafusion_run: false
-
-# Dry run and logging configuration
 settings:
   schedule: true
   run_on_start: false
-  # Run the latest missed slot after a restart, if it is still recent enough.
   schedule_catch_up: true
-  schedule_catch_up_max_hours: 24
+  schedule_catch_up_max_hours: 24.0
   run_times:
-    - "06:00"
-    - "18:30"
+  - 06:00
+  - '18:30'
   dry_run: false
-  log_level: "INFO"
-  # Rotate at midnight or when the active log reaches this size.
-  log_max_mb: 10
+  log_level: INFO
+  log_max_mb: 10.0
   log_backup_count: 14
-  mode: "kometa"  # or "plex"
-  path: "/kometa"
-
-# Plex server configuration
+  mode: kometa
+  path: /kometa/
 plex:
-  url: "http://10.0.0.1:32400"
-  token: "YOUR_PLEX_TOKEN"
-  # Optional Plex-server path to MetaFusion-container path translations.
-  # Docker bind mounts are still required for every destination.
+  url: http://10.0.0.1:32400
+  token: YOUR_PLEX_TOKEN
   path_mappings: []
-  # - "/volume1/media=>/media"
-
-# Auto-discover all supported Plex movie/show libraries. Replace auto with exact
-# library names when only part of the server should be processed.
 plex_libraries:
-  - auto
-
-# TMDb API configuration
+- auto
 tmdb:
-  api_key: "YOUR_TMDB_API_KEY"
-  # Metadata language. Artwork fallbacks below do not change metadata text.
-  language: "en-US"
-  region: "US"
+  api_key: YOUR_TMDB_API_KEY
+  language: en-US
   fallback:
-    - zh
-    - ja
-  # If preferred artwork languages have no result, query every TMDb language.
+  - zh
+  - ja
+  region: US
   artwork_allow_any_language: true
-  # Conservative exact-title/year search when Plex exposes no external ID.
   title_search_fallback: false
-  # Safely use a TMDb episode group only when it uniquely matches Plex numbering.
   episode_group_fallback: true
-  # For Plex series represented by multiple TMDb shows, preserve top-level show
-  # metadata/artwork by default while updating mapped seasons and episodes.
-  split_series_show_policy: "preserve"  # preserve or primary
+  split_series_show_policy: preserve
   split_series_mappings: {}
-  # Example:
-  #   "tvdb:345246":
-  #     show_policy: preserve
-  #     seasons:
-  #       1: {tmdb_id: 72844, season_number: 1}
-  #       2: {tmdb_id: 109958, season_number: 1}
-  # Deterministic Plex episode -> TMDb episode corrections for known exceptions.
   episode_overrides: {}
-  # Example:
-  #   "tvdb:12345":
-  #     "S01E01": "S01E02"
-
-# Metadata and asset processing options
 metadata:
   run_basic: true
   run_enhanced: true
-
 kometa:
-  # append preserves provider/user tags; sync makes supported tags match TMDb.
-  tag_policy: "append"
-
-# Direct Plex API metadata enrichment is Plex-mode only and opt-in. Begin with
-# fill_missing, DRY_RUN=true, and a small write limit. See README.md before use.
+  tag_policy: append
 plex_metadata:
   enabled: false
-  policy: "fill_missing"  # fill_missing, managed, or overwrite
+  policy: fill_missing
   lock_writes: false
   lock_merged_tags: false
-  allow_overwrite: false  # required acknowledgement for overwrite
-  recheck_days: 30
+  allow_overwrite: false
+  recheck_days: 30.0
   max_writes_per_run: 100
   report_retention: 10
-  fields: []  # Empty means every supported safe field.
-
+  fields: []
 assets:
   run_poster: true
   run_season: true
   run_background: false
-  # managed updates only files whose checksum still matches MetaFusion's record.
-  # fill_missing never replaces artwork; overwrite permits replacing any file.
-  update_policy: "managed"
-
+  update_policy: managed
 cleanup:
-  # Cleanup is intentionally opt-in. Test with dry_run before enabling it.
   run_cleanup: false
-
-# Adaptive runtime limits protect large libraries from exhausting resources.
 runtime:
-  # 0 selects cgroup-aware automatic tuning. A positive value is only a ceiling.
   max_concurrency: 0
-  request_timeout: 30
-  connect_timeout: 10
-  plex_timeout: 10
+  request_timeout: 30.0
+  connect_timeout: 10.0
+  plex_timeout: 10.0
   plex_retries: 3
-  plex_retry_delay: 1
-  shutdown_timeout: 15
+  plex_retry_delay: 1.0
+  shutdown_timeout: 15.0
   max_image_mb: 25
   validate_media_mounts: true
   min_free_space_mb: 256
-
-# Skip unchanged Plex items between periodic reconciliation scans.
 incremental:
   enabled: true
-  full_scan_interval_hours: 168
-  # Revisit future Plex episodes whose TMDb metadata was not published yet.
-  metadata_pending_recheck_hours: 24
-
-# Adaptive artwork rechecks use these as base intervals. Missing candidates are
-# retried sooner; repeatedly unchanged candidates back off. Per-type null values
-# inherit default_days. Set an interval to 0 to disable timed refreshes.
+  full_scan_interval_hours: 168.0
+  metadata_pending_recheck_hours: 24.0
 image_upgrades:
-  default_days: 30
+  default_days: 30.0
   movie_days: null
   series_days: null
   season_days: null
-
-# Optional per-library artwork cadence and Plex metadata policy.
 library_overrides: {}
-#  Movies 4K:
-#    image_upgrades:
-#      movie_days: 60
-#  Anime:
-#    plex_metadata:
-#      policy: fill_missing
-#      max_writes_per_run: 25
-
-# Persist successful TMDb JSON responses to reduce repeated API traffic.
 tmdb_cache:
   enabled: true
-  ttl_hours: 24
-  # Avoid repeating permanent-looking 404 requests while still rechecking soon.
-  negative_ttl_hours: 12
-  # 0 sizes each bound automatically from available storage. Positive values
-  # remain optional hard limits for unusually constrained installations.
+  ttl_hours: 24.0
+  negative_ttl_hours: 12.0
   max_entries: 0
-  max_mb: 0
-
-# Validate Kometa document structure and retain known-good output backups.
+  max_mb: 0.0
 output:
   validate_schema: true
   backup_count: 3
   destination_history_report_retention: 10
-
 safety:
-  # Kometa cannot reliably match duplicate title/year movies unless every copy
-  # has a unique Plex edition. Keep false to fail safely on ambiguous matches.
   allow_ambiguous_editions: false
-
-# Poster selection preferences (Only if run_poster is true)
 poster_set:
   max_width: 2000
   max_height: 3000
@@ -171,8 +98,6 @@ poster_set:
   prefer_vote: 5.0
   vote_relaxed: 3.5
   vote_threshold: 5.0
-
-# Season poster selection preferences (Only if run_season is true)
 season_set:
   max_width: 2000
   max_height: 3000
@@ -180,9 +105,7 @@ season_set:
   min_height: 1500
   prefer_vote: 5.0
   vote_relaxed: 0.5
-  vote_threshold: 3.0 
-  
-# Background selection preferences (Only if run_background is true)
+  vote_threshold: 3.0
 background_set:
   max_width: 3840
   max_height: 2160

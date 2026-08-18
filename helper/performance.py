@@ -3,7 +3,6 @@ import time
 from collections import Counter
 from contextvars import ContextVar
 
-
 _current_tracker = ContextVar("metafusion_performance_tracker", default=None)
 
 

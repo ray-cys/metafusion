@@ -134,6 +134,58 @@ def test_healthcheck_drops_identity_without_rewalking_paths(monkeypatch, tmp_pat
     ]
 
 
+def test_bare_docker_options_are_forwarded_to_metafusion(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(os, "geteuid", lambda: 10001)
+    monkeypatch.setattr(os, "getegid", lambda: 10001)
+    monkeypatch.setattr(docker_entrypoint, "sync_config_template", lambda *_args: False)
+    stop_at_exec(monkeypatch, calls)
+
+    with pytest.raises(ExecCalled):
+        docker_entrypoint.main(["--version"])
+
+    assert calls == [
+        (
+            "exec",
+            "python",
+            ["python", "/app/metafusion.py", "--version"],
+        )
+    ]
+
+
+def test_entrypoint_rejects_missing_command(capsys):
+    assert docker_entrypoint.main([]) == 64
+    assert "no command was supplied" in capsys.readouterr().err
+
+
+def test_entrypoint_reports_runtime_preparation_failure(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        docker_entrypoint,
+        "prepare_runtime_paths",
+        lambda *_args: (_ for _ in ()).throw(OSError("read-only mount")),
+    )
+
+    assert docker_entrypoint.main(["python", "metafusion.py"]) == 78
+    assert "read-only mount" in capsys.readouterr().err
+
+
+def test_non_root_entrypoint_reports_template_failure(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(os, "geteuid", lambda: 10001)
+    monkeypatch.setattr(os, "getegid", lambda: 10001)
+    monkeypatch.setattr(
+        docker_entrypoint,
+        "sync_config_template",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("unsafe template")),
+    )
+
+    assert docker_entrypoint.main(["python", "metafusion.py"]) == 78
+    assert "unsafe template" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("name,value", [("PUID", "abc"), ("PGID", "0"), ("PUID", "-1")])
 def test_invalid_identity_is_rejected(monkeypatch, name, value):
     monkeypatch.setenv(name, value)

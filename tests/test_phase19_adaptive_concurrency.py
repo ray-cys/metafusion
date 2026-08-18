@@ -7,7 +7,6 @@ from helper import concurrency
 from helper import tmdb as tmdb_module
 from helper.plex import plex_operation
 
-
 GIB = 1024 ** 3
 
 
