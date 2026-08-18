@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from helper.build_info import build_info
-from helper.config import BASE_CONFIG_DIR
+from helper.config import BASE_CONFIG_DIR, report_retention
 from helper.io import atomic_write_text
 from helper.plex import get_plex_metadata, load_plex_library_inventory
 from helper.provider_mappings import (
@@ -337,8 +337,6 @@ async def run_mapping_diagnosis(
     report = write_mapping_diagnosis_report(
         records,
         base_dir=base_dir,
-        retention=config.get("output", {}).get(
-            "destination_history_report_retention", 10
-        ),
+        retention=report_retention(config),
     )
     return records, report

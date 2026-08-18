@@ -84,7 +84,6 @@ def plex_config(policy="fill_missing", dry_run=False):
             "lock_merged_tags": False,
             "allow_overwrite": policy == "overwrite",
             "max_writes_per_run": 10,
-            "report_retention": 2,
             "fields": [],
         },
     }
@@ -551,7 +550,7 @@ def test_version_one_state_database_upgrades_in_place(tmp_path):
 
 def test_reporter_empty_report_retention_and_run_lifecycle(tmp_path, monkeypatch):
     config = plex_config()
-    config["plex_metadata"]["report_retention"] = 1
+    config["output"] = {"report_retention": 1}
     reports = tmp_path / "reports"
     reports.mkdir()
     stale = reports / "plex-metadata-old.txt"

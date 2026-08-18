@@ -64,6 +64,38 @@ def test_support_reports_do_not_overwrite_within_one_second(tmp_path):
     assert second.exists()
 
 
+def test_global_retention_bounds_support_and_release_reports(monkeypatch, tmp_path):
+    monkeypatch.setattr("helper.diagnostics.STATE_DATABASE", tmp_path / "state.sqlite3")
+    monkeypatch.setattr("helper.diagnostics.CACHE_DIR", tmp_path / "cache")
+    config = {
+        "settings": {"mode": "plex", "dry_run": False},
+        "output": {"report_retention": 1},
+        "plex": {"path_mappings": []},
+        "plex_libraries": [],
+        "plex_metadata": {},
+    }
+
+    old_support = write_support_report(config, base_dir=tmp_path, environ={})
+    new_support = write_support_report(config, base_dir=tmp_path, environ={})
+    old_release, _ = write_release_qualification_report(
+        config,
+        {"available_count": 1, "path_advice": {"records": []}},
+        base_dir=tmp_path,
+        environ={},
+    )
+    new_release, _ = write_release_qualification_report(
+        config,
+        {"available_count": 1, "path_advice": {"records": []}},
+        base_dir=tmp_path,
+        environ={},
+    )
+
+    assert not old_support.exists()
+    assert new_support.exists()
+    assert not old_release.exists()
+    assert new_release.exists()
+
+
 def test_tmdb_cache_status_reports_entries_and_compressed_size(tmp_path):
     database = tmp_path / "tmdb_cache.sqlite3"
     with sqlite3.connect(database) as connection:

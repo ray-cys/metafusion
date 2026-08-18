@@ -457,8 +457,8 @@ def validate_config(config):
         ("tmdb_cache.max_mb", config.get("tmdb_cache", {}).get("max_mb"), 0, 102400),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),
         (
-            "output.destination_history_report_retention",
-            config.get("output", {}).get("destination_history_report_retention"),
+            "output.report_retention",
+            config.get("output", {}).get("report_retention"),
             1,
             1000,
         ),
@@ -468,12 +468,6 @@ def validate_config(config):
             plex_metadata.get("max_writes_per_run"),
             1,
             100000,
-        ),
-        (
-            "plex_metadata.report_retention",
-            plex_metadata.get("report_retention"),
-            1,
-            1000,
         ),
     )
     for name, value, minimum, maximum in numeric_rules:
@@ -549,7 +543,7 @@ def validate_config(config):
                 allowed_metadata_keys = {
                     "enabled", "policy", "lock_writes", "lock_merged_tags",
                     "allow_overwrite", "recheck_days", "max_writes_per_run",
-                    "report_retention", "fields",
+                    "fields",
                 }
                 unexpected = set(metadata_override) - allowed_metadata_keys
                 if unexpected:
@@ -593,7 +587,6 @@ def validate_config(config):
                 for key, minimum, maximum in (
                     ("recheck_days", 0, 3650),
                     ("max_writes_per_run", 1, 100000),
-                    ("report_retention", 1, 1000),
                 ):
                     try:
                         number = float(effective_metadata.get(key))
@@ -673,6 +666,14 @@ def config_source_report(config, sources):
 
 def mode_check(config, mode="kometa"):
     return config.get("settings", {}).get("mode", "kometa").lower() == mode.lower()
+
+
+def report_retention(config):
+    """Return the global per-report-type retention with a safe default."""
+    try:
+        return max(1, int(config.get("output", {}).get("report_retention", 10)))
+    except (AttributeError, TypeError, ValueError):
+        return 10
 
 def load_config_file(
     config_file=None,

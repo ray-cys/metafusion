@@ -206,7 +206,7 @@ def test_provider_mapping_json_environment_is_parsed_and_validated(tmp_path):
                 '{"tvdb:42":{"S02E01":"S01E03"}}'
             ),
             "METADATA_PENDING_RECHECK_HOURS": "6",
-            "DESTINATION_HISTORY_REPORT_RETENTION": "4",
+            "REPORT_RETENTION": "4",
         },
     )
 
@@ -215,7 +215,7 @@ def test_provider_mapping_json_environment_is_parsed_and_validated(tmp_path):
     ]["2"]["tmdb_id"] == 99
     assert config["tmdb"]["episode_overrides"]["tvdb:42"]["S02E01"] == "S01E03"
     assert config["incremental"]["metadata_pending_recheck_hours"] == 6.0
-    assert config["output"]["destination_history_report_retention"] == 4
+    assert config["output"]["report_retention"] == 4
 
 
 def test_invalid_provider_mapping_environment_fails_validation(tmp_path):
@@ -480,6 +480,7 @@ def test_validation_reports_malformed_configuration_surface():
         {"request_timeout": 1, "connect_timeout": 10, "max_image_mb": -1}
     )
     config["incremental"]["full_scan_interval_hours"] = "often"
+    config["output"]["report_retention"] = 1001
     config["image_upgrades"].update(
         {"default_days": 4000, "movie_days": "soon", "series_days": -1}
     )
@@ -499,7 +500,6 @@ def test_validation_reports_malformed_configuration_surface():
                 "fields": "summary",
                 "recheck_days": "often",
                 "max_writes_per_run": 0,
-                "report_retention": 1001,
                 "unknown": True,
             },
         },
@@ -530,6 +530,7 @@ def test_validation_reports_malformed_configuration_surface():
         "Invalid schedule time",
         "settings.log_max_mb must be numeric",
         "runtime.max_image_mb must be between",
+        "output.report_retention must be between",
         "image_upgrades.movie_days must be numeric",
         "library_overrides.BadValue must be a mapping",
         "image_upgrades must be a mapping",

@@ -286,7 +286,12 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/reports/compatibility-*.txt     # explicit --compatibility-check runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
+/config/reports/support-report-*.txt      # explicit --support-report runs only
+/config/reports/release-qualification-*.txt # explicit --release-check runs only
 ```
+
+`REPORT_RETENTION` keeps the newest files independently for each report type;
+the default is `10`.
 
 The TMDb response cache is disposable and automatically sized, pruned, and
 quarantined if corrupt. Durable inventory, scan, job, retry, learned identity,

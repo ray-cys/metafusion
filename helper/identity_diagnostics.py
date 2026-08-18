@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from helper.build_info import build_info
-from helper.config import BASE_CONFIG_DIR, mode_check
+from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
 from helper.identity import metadata_key_for_meta, plex_identity_fingerprint
 from helper.io import atomic_write_text
 from helper.plex import get_plex_metadata, load_plex_library_inventory
@@ -494,8 +494,6 @@ async def run_identity_inspection(
     report = write_identity_inspection_report(
         results,
         base_dir=base_dir,
-        retention=config.get("output", {}).get(
-            "destination_history_report_retention", 10
-        ),
+        retention=report_retention(config),
     )
     return results, report

@@ -12,6 +12,7 @@ TARGETS = {
     "helper/provider_mappings.py": 90.0,
     "metafusion.py": 84.0,
     "helper/state_db.py": 86.0,
+    "helper/identity_diagnostics.py": 85.0,
 }
 
 

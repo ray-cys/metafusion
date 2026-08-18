@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from helper.concurrency import runtime_slot
-from helper.config import BASE_CONFIG_DIR, mode_check
+from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
 from helper.io import atomic_write_text
 from helper.state_db import (
     load_plex_metadata_ownership,
@@ -75,7 +75,7 @@ class PlexMetadataReporter:
             else str(settings.get("policy", "fill_missing"))
         )
         self.max_writes = max(1, int(settings.get("max_writes_per_run", 100)))
-        self.retention = max(1, int(settings.get("report_retention", 10)))
+        self.retention = report_retention(config)
         self.counts = Counter()
         self.entries = []
         self.max_details = 10000

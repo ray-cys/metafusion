@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from helper.build_info import build_info
-from helper.config import BASE_CONFIG_DIR, CACHE_DIR, ENV_BINDINGS, SECRET_FILE_BINDINGS
+from helper.config import (
+    BASE_CONFIG_DIR,
+    CACHE_DIR,
+    ENV_BINDINGS,
+    SECRET_FILE_BINDINGS,
+    report_retention,
+)
 from helper.io import atomic_write_text
 from helper.state_db import SCHEMA_VERSION as STATE_SCHEMA_VERSION
 from helper.state_db import STATE_DATABASE
@@ -715,6 +721,7 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
         )
     )
     atomic_write_text(path, "\n".join(lines))
+    _retain_reports(report_dir, "support-report-*.txt", report_retention(config))
     return path
 
 
@@ -796,4 +803,9 @@ def write_release_qualification_report(
         )
     )
     atomic_write_text(path, "\n".join(lines) + "\n")
+    _retain_reports(
+        report_dir,
+        "release-qualification-*.txt",
+        report_retention(config),
+    )
     return path, passed

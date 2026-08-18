@@ -125,4 +125,9 @@ no history, GUID mismatches are deduplicated and never replace the active
 binding, replacement events are transactional and bounded, schema-4 bindings
 remain queryable without an inspection-time upgrade, provider requests bypass
 the TMDb cache, older schema-4 writers remain compatible with the additive
-extension, and the report is the command's only intentional write.
+extension, and the report is the command's only intentional write. Plex-mode
+coverage also verifies API metadata destinations, mapped movie/show/season
+artwork paths including Specials, stale-ID recovery, unresolved identities,
+and the focused identity-diagnostics coverage floor. `REPORT_RETENTION`
+uniformly bounds every report type, including Plex metadata, support, and
+release-qualification reports.
