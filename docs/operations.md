@@ -44,11 +44,56 @@ python metafusion.py --metafusion_run
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
 
+## Command-line reference
+
+Enter every option with two ordinary ASCII hyphens (`--`). Copy names exactly:
+the underscores in older options such as `--metafusion_run` and `--dry_run`
+are part of the supported interface, while newer options use hyphens. Options
+apply only to the current process; omitted options continue to use environment
+or `config.yml` values.
+
+| Category | Option | Value | Purpose and requirements |
+| --- | --- | --- | --- |
+| Help | `-h`, `--help` | None | Print the supported command-line options and exit. |
+| Run control | `--metafusion_run` | None | Request one MetaFusion job immediately. |
+| Run control | `--schedule` | None | Enable the scheduler for the current process. |
+| Run control | `--run_times` | Comma-separated `HH:MM` values | Override the daily schedule, for example `--run_times 06:00,18:30`. Times use `TZ`. |
+| Run control | `--dry_run` | None | Enable dry-run behavior for the current process. |
+| Configuration | `--mode` | `kometa` or `plex` | Override the configured output mode. |
+| Configuration | `--run_basic` | None | Enable basic metadata processing. |
+| Configuration | `--run_enhanced` | None | Enable enhanced metadata processing. |
+| Configuration | `--run_poster` | None | Enable poster processing. |
+| Configuration | `--run_season` | None | Enable season artwork processing. |
+| Configuration | `--run_background` | None | Enable background processing. |
+| Diagnostics | `--doctor`, `--check-config` | None | Validate configuration and show value sources without running a job. Both names perform the same action. |
+| Diagnostics | `--preflight` | None | Check Plex, TMDb, selected libraries, mappings, and storage without processing content. |
+| Diagnostics | `--asset-audit` | None | Perform a read-only, full artwork selection and ownership/quality audit and write a report. |
+| Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
+| Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
+| Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
+| Targeting | `--rating-key` | Plex rating key | Process only the named item. Repeat the option or use comma-separated keys. Targeted runs disable cleanup. |
+| Targeting | `--metadata-only` | None | Process metadata without artwork or cleanup. It cannot be combined with `--asset-only` or `--asset-audit`. |
+| Targeting | `--asset-only` | None | Process enabled artwork without metadata or cleanup. It cannot be combined with `--metadata-only`. |
+| Targeting | `--full-scan` | None | Bypass incremental skipping and reconcile the selected scope. |
+| Targeting | `--explain-selection` | None | Explain why selected items are or are not due without processing or writing. |
+| Plex maintenance | `--plex-metadata-restore` | None | Restore MetaFusion-owned Plex fields for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-unlock`. |
+| Plex maintenance | `--plex-metadata-unlock` | None | Remove only MetaFusion-created Plex locks for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-restore`. |
+
+`--healthcheck` belongs to the container entrypoint and is reserved for the
+image's Docker health check; it is not a public `metafusion.py` option.
+
 ## Validate and inspect
 
 ```bash
 # Validate configuration and show value sources without contacting connectors
 python metafusion.py --doctor
+
+# Contact Plex and TMDb, verify selected libraries and inspect mapped storage
+# without creating or changing configuration, metadata, artwork, or state
+python metafusion.py --preflight
+
+# Perform a read-only full artwork selection and ownership/quality audit
+python metafusion.py --asset-audit
 
 # Show live scheduler state, effective build, library counts, and recent jobs
 python metafusion.py --status
@@ -56,6 +101,13 @@ python metafusion.py --status
 # Write a value-free diagnostic report under /config/reports
 python metafusion.py --support-report
 ```
+
+Preflight fails when authentication, selected library names, mapping roots, or
+required storage are unavailable. It does not create missing directories or
+probe files. The asset audit contacts Plex and TMDb and can take about as long
+as a full artwork evaluation, but it does not update YAML, artwork, ownership,
+incremental state, or TMDb cache. Its deliberate output is a value-safe
+`asset-audit-*.txt` report.
 
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
@@ -192,12 +244,17 @@ Shared reports and logs are:
 ```text
 /config/logs/metafusion.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
+/config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/metafusion-support-*.txt
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
+Asset-audit reports include the selected candidate's language, dimensions,
+vote score, ownership status, existing dimensions, and the action a real run
+would consider. They omit filesystem paths and do not prove that a later
+download will succeed.
 Destination-history reports identify old and current artwork paths after a
 Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
 reports identify fields and outcomes. Reports are bounded. Destination reports
@@ -215,6 +272,13 @@ and large libraries every 100 items or 5%, whichever interval is larger. A
 30-second minimum gap prevents log flooding, a 60-second heartbeat covers slow
 shows, and start/final progress is always logged. TV progress counts top-level
 shows while their seasons and episodes remain part of each show operation.
+
+Every completed job also logs one local performance summary: total, Plex
+inventory and library-processing time; items per minute; TMDb requests,
+cache hits/misses, retries and rate-limit waits; and the five slowest items by
+library plus Plex rating key. It intentionally omits media paths and metadata
+values. Use it to compare full and incremental runs without adding a metrics
+service.
 
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` is also checked at

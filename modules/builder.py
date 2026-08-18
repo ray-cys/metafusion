@@ -1,6 +1,7 @@
 import asyncio
 
 from helper.asset_registry import AssetDestinationRegistry, normalize_destination
+from helper.concurrency import bounded_callables, bounded_map
 from helper.logging import log_builder_event, log_asset_status
 from helper.cache import load_cache, meta_cache_async
 from helper.config import get_image_upgrade_days, mode_check
@@ -58,6 +59,120 @@ def _record_artwork_gap(
             "detail": detail,
         }
     )
+
+
+def _asset_audit_enabled(config):
+    return bool(config.get("_execution", {}).get("asset_audit", False))
+
+
+def _candidate_summary(candidate):
+    return {
+        "language": candidate.get("iso_639_1") or "untagged",
+        "width": int(candidate.get("width") or 0),
+        "height": int(candidate.get("height") or 0),
+        "vote": float(candidate.get("vote_average") or 0),
+    }
+
+
+def _existing_image_dimensions(path):
+    if not path.exists():
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return tuple(int(value) for value in image.size)
+    except (OSError, ValueError):
+        return None
+
+
+async def _audit_asset_candidate(
+    config,
+    meta,
+    cache_key,
+    candidate,
+    *,
+    media_type,
+    full_title,
+    asset_type,
+    season_number=None,
+):
+    """Record a value-safe, read-only assessment of one selected candidate."""
+    if not _asset_audit_enabled(config):
+        return
+    record = {
+        "library": config.get("_library_name") or "Unknown library",
+        "media_type": media_type,
+        "title": full_title,
+        "asset_type": asset_type,
+        "season_number": season_number,
+        "candidate": _candidate_summary(candidate),
+    }
+    asset_path = get_asset_path(
+        config,
+        meta,
+        asset_type=asset_type,
+        season_number=season_number,
+    )
+    if asset_path is None:
+        record.update(action="unavailable", ownership="path_invalid")
+        config.setdefault("_asset_audit_records", []).append(record)
+        return
+
+    normalized_media_type = "tv" if media_type == "TV Show" else "movie"
+    claim_status, owner = _asset_registry(config).claim(
+        cache_key,
+        asset_path,
+        media_type=normalized_media_type,
+        tmdb_id=meta.get("tmdb_id"),
+        asset_type=asset_type,
+        source_path=candidate.get("file_path"),
+        season_number=season_number,
+    )
+    if claim_status == "collision":
+        record.update(action="collision", ownership=str(owner or "another item"))
+        config.setdefault("_asset_audit_records", []).append(record)
+        return
+    if claim_status == "shared":
+        record.update(action="shared", ownership="shared_destination")
+        config.setdefault("_asset_audit_records", []).append(record)
+        return
+
+    exists = asset_path.exists()
+    record["existing"] = bool(exists)
+    if not exists:
+        record.update(action="would_download", ownership="missing")
+        config.setdefault("_asset_audit_records", []).append(record)
+        return
+
+    cached_entry = load_cache().get(cache_key, {})
+    allowed, reason = await asyncio.to_thread(
+        asset_write_allowed,
+        config,
+        cache_key,
+        asset_path,
+        asset_type,
+        season_number=season_number,
+        cached_entry=cached_entry,
+    )
+    dimensions = await asyncio.to_thread(_existing_image_dimensions, asset_path)
+    if dimensions:
+        record["existing_width"], record["existing_height"] = dimensions
+    candidate_width = record["candidate"]["width"]
+    candidate_height = record["candidate"]["height"]
+    lower_quality = bool(
+        dimensions
+        and (candidate_width > dimensions[0] or candidate_height > dimensions[1])
+    )
+    record["lower_quality"] = lower_quality
+    record["ownership"] = reason
+    if allowed:
+        record["action"] = "would_consider_upgrade" if lower_quality else "managed"
+    elif reason in {"no_ownership_record", "missing_checksum"}:
+        record["action"] = "would_verify_for_adoption"
+    else:
+        record["action"] = "preserve_unmanaged"
+    config.setdefault("_asset_audit_records", []).append(record)
 
 
 def _episode_pair_labels(pairs, limit=12):
@@ -190,6 +305,7 @@ def protected_asset_destination(
     tmdb_id=None,
     source_path=None,
     shared_managed=False,
+    permission=None,
 ):
     registry = _asset_registry(config)
     normalized_media_type = str(media_type).lower()
@@ -232,12 +348,8 @@ def protected_asset_destination(
             reason="shared_unverified",
         )
         return False, "shared_unverified"
-    allowed, reason = asset_write_allowed(
-        config,
-        cache_key,
-        asset_path,
-        asset_type,
-        season_number=season_number,
+    allowed, reason = permission or asset_write_allowed(
+        config, cache_key, asset_path, asset_type, season_number=season_number
     )
     adoptable_unmanaged = (
         str(config.get("assets", {}).get("update_policy", "managed")).lower()
@@ -270,6 +382,34 @@ def protected_asset_destination(
             season_number=season_number,
         )
     return allowed, reason
+
+
+async def protected_asset_destination_async(
+    config,
+    cache_key,
+    asset_path,
+    asset_type,
+    **kwargs,
+):
+    """Run destination checksum I/O off the event loop without sharing SQLite."""
+    cached_entry = load_cache().get(cache_key, {})
+    permission = await asyncio.to_thread(
+        asset_write_allowed,
+        config,
+        cache_key,
+        asset_path,
+        asset_type,
+        season_number=kwargs.get("season_number"),
+        cached_entry=cached_entry,
+    )
+    return protected_asset_destination(
+        config,
+        cache_key,
+        asset_path,
+        asset_type,
+        permission=permission,
+        **kwargs,
+    )
 
 
 def _mark_asset_verified(
@@ -1101,6 +1241,11 @@ async def _build_movie(
             poster_action = "missing"
             return
 
+        await _audit_asset_candidate(
+            config, meta, cache_key, best, media_type="Movie",
+            full_title=full_title, asset_type="poster",
+        )
+
         if feature_flags.get("dry_run", False):
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="Movie",
@@ -1145,7 +1290,7 @@ async def _build_movie(
                 poster_path=str(asset_path.resolve()),
                 poster_checksum=shared_checksum,
             )
-        allowed, protection_status = protected_asset_destination(
+        allowed, protection_status = await protected_asset_destination_async(
             config, cache_key, asset_path, "poster",
             media_type="Movie", full_title=full_title,
             tmdb_id=tmdb_id,
@@ -1206,9 +1351,11 @@ async def _build_movie(
                 poster_action = "failed"
             if success and temp_path.exists():
                 stale_days = get_image_upgrade_days(config, "movie")
-                should_upgrade, status_code, context = smart_asset_upgrade(
+                should_upgrade, status_code, context = await asyncio.to_thread(
+                    smart_asset_upgrade,
                     config, asset_path, best, new_image_path=temp_path, asset_type="poster",
                     cache_key=cache_key, stale_days=stale_days,
+                    cached_entry=load_cache().get(cache_key, {}),
                 )
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "movie",
@@ -1301,6 +1448,11 @@ async def _build_movie(
             background_action = "missing"
             return
 
+        await _audit_asset_candidate(
+            config, meta, cache_key, best, media_type="Movie",
+            full_title=full_title, asset_type="background",
+        )
+
         if feature_flags.get("dry_run", False):
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="Movie",
@@ -1345,7 +1497,7 @@ async def _build_movie(
                 background_path=str(asset_path.resolve()),
                 background_checksum=shared_checksum,
             )
-        allowed, protection_status = protected_asset_destination(
+        allowed, protection_status = await protected_asset_destination_async(
             config, cache_key, asset_path, "background",
             media_type="Movie", full_title=full_title,
             tmdb_id=tmdb_id,
@@ -1406,9 +1558,11 @@ async def _build_movie(
                 background_action = "failed"
             if success and temp_path.exists():
                 stale_days = get_image_upgrade_days(config, "movie")
-                should_upgrade, status_code, context = smart_asset_upgrade(
+                should_upgrade, status_code, context = await asyncio.to_thread(
+                    smart_asset_upgrade,
                     config, asset_path, best, new_image_path=temp_path, asset_type="background",
                     cache_key=cache_key, stale_days=stale_days,
+                    cached_entry=load_cache().get(cache_key, {}),
                 )
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "movie",
@@ -1469,9 +1623,10 @@ async def _build_movie(
                 temp_path.unlink(missing_ok=True)
         result["background"]["size"] = background_size
 
-    await asyncio.gather(
-        process_poster(),
-        process_background(),
+    await bounded_callables(
+        [process_poster, process_background],
+        config.get("runtime", {}).get("max_concurrency", 8),
+        config=config,
     )
 
     return {
@@ -1994,7 +2149,12 @@ async def _build_tv(
                 False,
             )
 
-        results = await asyncio.gather(*(process_season(info) for info in season_infos))
+        results = await bounded_map(
+            process_season,
+            season_infos,
+            config.get("runtime", {}).get("max_concurrency", 8),
+            config=config,
+        )
         failed_seasons = set()
         for season_number, season_data, plex_season, failed in results:
             if failed:
@@ -2253,6 +2413,11 @@ async def _build_tv(
             poster_action = "missing"
             return
 
+        await _audit_asset_candidate(
+            config, meta, cache_key, best, media_type="TV Show",
+            full_title=full_title, asset_type="poster",
+        )
+
         if feature_flags.get("dry_run", False):
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="TV Show",
@@ -2284,7 +2449,7 @@ async def _build_tv(
             poster_action = "failed"
             return
 
-        allowed, protection_status = protected_asset_destination(
+        allowed, protection_status = await protected_asset_destination_async(
             config, cache_key, asset_path, "poster",
             media_type="TV Show", full_title=full_title,
             tmdb_id=tmdb_id,
@@ -2336,9 +2501,11 @@ async def _build_tv(
                 poster_action = "failed"
             if success and temp_path.exists():
                 stale_days = get_image_upgrade_days(config, "series")
-                should_upgrade, status_code, context = smart_asset_upgrade(
+                should_upgrade, status_code, context = await asyncio.to_thread(
+                    smart_asset_upgrade,
                     config, asset_path, best, new_image_path=temp_path, asset_type="poster",
                     cache_key=cache_key, stale_days=stale_days,
+                    cached_entry=load_cache().get(cache_key, {}),
                 )
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "tv",
@@ -2435,6 +2602,10 @@ async def _build_tv(
             background_action = "missing"
             return
 
+        await _audit_asset_candidate(
+            config, meta, cache_key, best, media_type="TV Show",
+            full_title=full_title, asset_type="background",
+        )
 
         if feature_flags.get("dry_run", False):
             log_builder_event(
@@ -2467,7 +2638,7 @@ async def _build_tv(
             background_action = "failed"
             return
 
-        allowed, protection_status = protected_asset_destination(
+        allowed, protection_status = await protected_asset_destination_async(
             config, cache_key, asset_path, "background",
             media_type="TV Show", full_title=full_title,
             tmdb_id=tmdb_id,
@@ -2519,9 +2690,11 @@ async def _build_tv(
                 background_action = "failed"
             if success and temp_path.exists():
                 stale_days = get_image_upgrade_days(config, "series")
-                should_upgrade, status_code, context = smart_asset_upgrade(
+                should_upgrade, status_code, context = await asyncio.to_thread(
+                    smart_asset_upgrade,
                     config, asset_path, best, new_image_path=temp_path, asset_type="background",
                     cache_key=cache_key, stale_days=stale_days,
+                    cached_entry=load_cache().get(cache_key, {}),
                 )
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "tv",
@@ -2631,6 +2804,12 @@ async def _build_tv(
             season_poster_actions[season_number] = "missing"
             return
 
+        await _audit_asset_candidate(
+            config, meta, cache_key, best, media_type="TV Show",
+            full_title=full_title, asset_type="season",
+            season_number=season_number,
+        )
+
         if feature_flags.get("dry_run", False):
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="TV Show",
@@ -2661,7 +2840,7 @@ async def _build_tv(
             season_poster_actions[season_number] = "failed"
             return
 
-        allowed, protection_status = protected_asset_destination(
+        allowed, protection_status = await protected_asset_destination_async(
             config, cache_key, asset_path, "season",
             media_type="TV Show", full_title=full_title, season_number=season_number,
             tmdb_id=tmdb_id,
@@ -2720,10 +2899,12 @@ async def _build_tv(
                 season_poster_actions[season_number] = "failed"
             if success and temp_path.exists():
                 stale_days = get_image_upgrade_days(config, "season")
-                should_upgrade, status_code, context = smart_season_asset_upgrade(
+                should_upgrade, status_code, context = await asyncio.to_thread(
+                    smart_season_asset_upgrade,
                     config, asset_path, best, new_image_path=temp_path,
                     cache_key=cache_key, season_number=season_number,
                     stale_days=stale_days,
+                    cached_entry=load_cache().get(cache_key, {}),
                 )
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "tv",
@@ -2787,17 +2968,19 @@ async def _build_tv(
                 temp_path.unlink(missing_ok=True)
         result["season_posters"][season_number] = season_poster_size
     
-    season_poster_tasks = []
+    artwork_operations = [process_tv_poster, process_tv_background]
     if feature_flags and feature_flags.get("season", True):
         for season_info in season_infos:
             season_number = season_info.get("season_number")
             if season_number is not None:
-                season_poster_tasks.append(process_season_poster(season_info))
+                artwork_operations.append(
+                    lambda info=season_info: process_season_poster(info)
+                )
 
-    await asyncio.gather(
-        process_tv_poster(),
-        process_tv_background(),
-        *season_poster_tasks
+    await bounded_callables(
+        artwork_operations,
+        config.get("runtime", {}).get("max_concurrency", 8),
+        config=config,
     )
     if (
         feature_flags

@@ -7,6 +7,7 @@ import schedule
 import signal
 import sys
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,7 @@ from helper.incremental import (
     mark_library_scan_started,
 )
 from helper.diagnostics import (
+    write_asset_audit_report,
     write_artwork_gap_report,
     write_destination_history_report,
     write_support_report,
@@ -59,10 +61,18 @@ from helper.plex_metadata import (
     finish_plex_metadata_run,
     restore_plex_metadata,
 )
+from helper.performance import (
+    PerformanceTracker,
+    begin_performance_tracking,
+    log_performance_summary,
+    reset_performance_tracking,
+    tracker_for,
+)
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
     RuntimeStatus,
+    validate_preflight_paths,
     validate_runtime_paths,
 )
 from helper.state_db import STATE_DATABASE, StateDatabaseError, recent_job_runs
@@ -121,6 +131,16 @@ def parse_cli_args(argv=None):
         "--support-report",
         action="store_true",
         help="Write a redacted diagnostic report under /config/reports and exit",
+    )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Check Plex, TMDb, libraries, mappings, and storage without processing",
+    )
+    parser.add_argument(
+        "--asset-audit",
+        action="store_true",
+        help="Evaluate every enabled artwork destination and write a report only",
     )
     parser.add_argument(
         "--library",
@@ -194,6 +214,14 @@ def override_config_with_cli(config, args):
     if args.asset_only:
         config["metadata"].update({"run_basic": False, "run_enhanced": False})
         config["cleanup"]["run_cleanup"] = False
+    if args.asset_audit:
+        config["metafusion_run"] = True
+        config["settings"]["dry_run"] = True
+        config["metadata"].update({"run_basic": False, "run_enhanced": False})
+        config["cleanup"]["run_cleanup"] = False
+    if args.preflight:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
     if args.explain_selection:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -211,9 +239,10 @@ def override_config_with_cli(config, args):
     execution = {
         "rating_keys": rating_keys,
         "targeted": bool(libraries or rating_keys),
-        "full_scan": bool(args.full_scan),
+        "full_scan": bool(args.full_scan or args.asset_audit),
         "metadata_only": bool(args.metadata_only),
-        "asset_only": bool(args.asset_only),
+        "asset_only": bool(args.asset_only or args.asset_audit),
+        "asset_audit": bool(args.asset_audit),
         "explain_selection": bool(args.explain_selection),
     }
     if maintenance_action:
@@ -245,6 +274,37 @@ async def preflight_connectors(config, session, require_tmdb=True):
             raise RuntimeError("TMDb connector preflight failed") from tmdb_result
         raise RuntimeError("TMDb connector preflight returned no configuration")
     return plex
+
+
+async def connector_preflight(config):
+    runtime = config.get("runtime", {})
+    maximum = max(1, int(runtime.get("max_concurrency", 8)))
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(
+        limit=maximum,
+        limit_per_host=maximum,
+    )
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session)
+    sections, selected, available = await asyncio.to_thread(
+        connect_plex_library,
+        config,
+        plex=plex,
+    )
+    available_names = {entry["title"] for entry in available}
+    missing = sorted(set(selected) - available_names)
+    if missing:
+        raise RuntimeError(
+            "Configured Plex libraries were not found: " + ", ".join(missing)
+        )
+    return {
+        "plex_version": str(getattr(plex, "version", "unknown")),
+        "libraries": [section.title for section in sections],
+        "available_count": len(available),
+    }
 
 
 def normalize_library_type(value):
@@ -365,18 +425,20 @@ async def metafusion_main(config, logger):
             connect=max(1.0, float(runtime_config.get("connect_timeout", 10.0))),
         )
         connector = aiohttp.TCPConnector(
-            limit=max_concurrency * 4,
-            limit_per_host=max_concurrency * 4,
+            limit=max_concurrency,
+            limit_per_host=max_concurrency,
         )
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             execution = config.get("_execution", {})
             maintenance_action = execution.get("plex_metadata_maintenance")
+            inventory_started = time.monotonic()
             if maintenance_action:
                 plex = await preflight_connectors(config, session, require_tmdb=False)
             else:
                 plex = await preflight_connectors(config, session)
-            sections, selected_libraries, all_libraries = connect_plex_library(
+            sections, selected_libraries, all_libraries = await asyncio.to_thread(
+                connect_plex_library,
                 config,
                 plex=plex,
             )
@@ -481,6 +543,11 @@ async def metafusion_main(config, logger):
                             "items_succeeded": 0,
                             "items_failed": None,
                         }
+                performance = tracker_for(config)
+                if performance:
+                    performance.add_duration(
+                        "plex_inventory", time.monotonic() - inventory_started
+                    )
 
                 if maintenance_action:
                     if not mode_check(config, "plex"):
@@ -549,6 +616,9 @@ async def metafusion_main(config, logger):
                         library_config["_artwork_gaps"] = config.setdefault(
                             "_artwork_gaps", []
                         )
+                        library_config["_asset_audit_records"] = config.setdefault(
+                            "_asset_audit_records", []
+                        )
                         scope = next(
                             candidate
                             for candidate in scan_scopes
@@ -566,25 +636,34 @@ async def metafusion_main(config, logger):
                                 full_scan=section_full_scan,
                                 dry_run=feature_flags.get("dry_run", False),
                             )
-                        await process_library(
-                            library_section=section,
-                            config=library_config,
-                            library_item_counts=library_item_counts,
-                            metadata_summaries=metadata_summaries,
-                            library_filesize=library_filesize,
-                            season_cache={},
-                            episode_cache={},
-                            movie_cache={},
-                            session=session,
-                            feature_flags=library_flags,
-                            full_scan=section_full_scan,
-                            rating_keys=execution.get("rating_keys"),
-                            incremental_fingerprint=config_fingerprint(library_config),
-                            all_items=section_items[section.title],
-                            global_identity_counts=identity_counts,
-                            global_edition_counts=edition_counts,
-                            explain_selection=explain_selection,
-                        )
+                        library_started = time.monotonic()
+                        try:
+                            await process_library(
+                                library_section=section,
+                                config=library_config,
+                                library_item_counts=library_item_counts,
+                                metadata_summaries=metadata_summaries,
+                                library_filesize=library_filesize,
+                                season_cache={},
+                                episode_cache={},
+                                movie_cache={},
+                                session=session,
+                                feature_flags=library_flags,
+                                full_scan=section_full_scan,
+                                rating_keys=execution.get("rating_keys"),
+                                incremental_fingerprint=config_fingerprint(library_config),
+                                all_items=section_items[section.title],
+                                global_identity_counts=identity_counts,
+                                global_edition_counts=edition_counts,
+                                explain_selection=explain_selection,
+                            )
+                        finally:
+                            performance = tracker_for(config)
+                            if performance:
+                                performance.add_duration(
+                                    "library_processing",
+                                    time.monotonic() - library_started,
+                                )
                         successful_sections.append(section)
                         summary = metadata_summaries.get(section.title, {})
                         library_summary = summary.get("library_summary", {})
@@ -729,12 +808,18 @@ def run_metafusion_job(config, logger, runtime_status=None):
     error = None
     config["_job_library_results"] = {}
     config["_artwork_gaps"] = []
+    config["_asset_audit_records"] = []
+    performance_tracker = PerformanceTracker()
 
     async def run_active_job():
         global _active_loop, _active_task
         _active_loop = asyncio.get_running_loop()
         _active_task = asyncio.current_task()
-        await metafusion_main(config, logger)
+        performance_token = begin_performance_tracking(performance_tracker)
+        try:
+            await metafusion_main(config, logger)
+        finally:
+            reset_performance_tracking(performance_token)
 
     try:
         asyncio.run(run_active_job())
@@ -783,6 +868,22 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     logger.warning(
                         "[Diagnostics] Unable to write artwork gap report: %s", caught
                     )
+            if config.get("_execution", {}).get("asset_audit", False):
+                try:
+                    audit_report = write_asset_audit_report(
+                        config.get("_asset_audit_records"),
+                        config.get("_artwork_gaps"),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    logger.info(
+                        "[Diagnostics] Asset audit report saved to %s", audit_report
+                    )
+                except OSError as caught:
+                    success = False
+                    error = f"Failed to write asset audit report: {caught}"
+                    logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
         except Exception as caught:
@@ -790,6 +891,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
             error = f"Failed to flush persistent cache: {caught}"
             log_main_event("main_unhandled_exception", error=error, logger=logger)
         finally:
+            log_performance_summary(logger, performance_tracker)
             tmdb_response_cache.reset_memory()
         try:
             if runtime_status:
@@ -809,7 +911,7 @@ def main(argv=None):
     shutdown_requested.clear()
     shutdown_complete.clear()
     args = parse_cli_args(argv)
-    if args.metadata_only and args.asset_only:
+    if args.metadata_only and (args.asset_only or args.asset_audit):
         print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
         return 2
     if args.plex_metadata_restore and args.plex_metadata_unlock:
@@ -844,7 +946,9 @@ def main(argv=None):
         return 0
     try:
         config, sources = load_config_file(
-            create_if_missing=not (args.dry_run or args.doctor),
+            create_if_missing=not (
+                args.dry_run or args.doctor or args.preflight or args.asset_audit
+            ),
             return_sources=True,
         )
     except ConfigError as error:
@@ -893,6 +997,24 @@ def main(argv=None):
         for error in validation_errors:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    if args.preflight:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            result = asyncio.run(connector_preflight(config))
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Preflight failed: {message}", file=sys.stderr)
+            return 1
+        print("MetaFusion preflight passed.")
+        print(f"Plex version: {result['plex_version']}")
+        print(f"Configured libraries: {', '.join(result['libraries'])}")
+        print(f"Available Plex libraries: {result['available_count']}")
+        print("TMDb authentication, mappings, and storage checks passed.")
+        return 0
     _shutdown_timeout = max(
         1.0,
         float(config.get("runtime", {}).get("shutdown_timeout", 15.0)),

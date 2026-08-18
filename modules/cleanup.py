@@ -48,6 +48,11 @@ def _path_key(path):
     return str(Path(path).absolute())
 
 
+def _directory_is_empty(path):
+    directory = Path(path)
+    return directory.is_dir() and not any(directory.iterdir())
+
+
 def _cache_identity(key, entry):
     entry = entry if isinstance(entry, dict) else {}
     title = entry.get("title")
@@ -631,7 +636,7 @@ async def cleanup_title_orphans(
         for directory_path in deleted_dirs:
             directory = Path(directory_path)
             try:
-                if directory.is_dir() and not any(directory.iterdir()):
+                if await asyncio.to_thread(_directory_is_empty, directory):
                     log_cleanup_event("cleanup_removing_empty_dir", parent=directory)
                     await asyncio.to_thread(directory.rmdir)
             except Exception as error:

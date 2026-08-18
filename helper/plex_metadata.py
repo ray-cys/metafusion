@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from helper.concurrency import runtime_slot
 from helper.config import BASE_CONFIG_DIR, mode_check
 from helper.io import atomic_write_text
 from helper.state_db import (
@@ -57,7 +58,7 @@ class PlexMetadataReporter:
         self.enabled = mode_check(config, "plex") and (
             settings.get("enabled", False)
             or any(override.get("enabled", False) for override in override_settings)
-        )
+        ) and not config.get("_execution", {}).get("asset_audit", False)
         self.dry_run = config.get("settings", {}).get("dry_run", False)
         self.policy = (
             "per-library"
@@ -678,9 +679,10 @@ async def apply_plex_metadata(item, candidate, config, meta):
     result = {"writes": 0, "failures": 0}
     title = meta.get("title") or getattr(item, "title", "Unknown")
     for attempt in range(1, retries + 1):
-        result = await asyncio.to_thread(
-            _apply_candidate, item, candidate, config, meta, reporter
-        )
+        async with runtime_slot(config, "plex"):
+            result = await asyncio.to_thread(
+                _apply_candidate, item, candidate, config, meta, reporter
+            )
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             if total_writes:
@@ -941,9 +943,10 @@ async def restore_plex_metadata(item, config, meta, unlock_only=False):
     total_writes = 0
     result = {"writes": 0, "failures": 0}
     for attempt in range(1, retries + 1):
-        result = await asyncio.to_thread(
-            _restore_candidate, item, config, meta, reporter, unlock_only
-        )
+        async with runtime_slot(config, "plex"):
+            result = await asyncio.to_thread(
+                _restore_candidate, item, config, meta, reporter, unlock_only
+            )
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             return {"writes": total_writes, "failures": 0}

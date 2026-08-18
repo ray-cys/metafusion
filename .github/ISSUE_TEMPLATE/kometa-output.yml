@@ -1,0 +1,43 @@
+name: Kometa output issue
+description: Report generated YAML, schema, merge, edition, or cleanup behavior.
+title: "[Kometa]: "
+labels: ["kometa"]
+body:
+  - type: markdown
+    attributes:
+      value: Include only the smallest sanitized YAML fragment needed to reproduce the issue.
+  - type: input
+    id: version
+    attributes:
+      label: Image tag and commit
+    validations:
+      required: true
+  - type: dropdown
+    id: output
+    attributes:
+      label: Affected output
+      options: [movie metadata, TV metadata, season or episode metadata, cleanup]
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized
+    attributes:
+      label: Sanitized existing and generated YAML
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I confirmed the Plex library inventory completed successfully.
+          required: true
+        - label: I removed secrets and personal paths.
+          required: true

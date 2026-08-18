@@ -25,6 +25,7 @@ Choose the guide for your platform:
 - [Complete environment-variable and `config.yml` reference](docs/configuration.md)
 - [Policy behavior and safety rules](docs/policies.md)
 - [Scheduling, maintenance, state, and troubleshooting](docs/operations.md)
+- [Development and release testing](docs/release-testing.md)
 
 Required connections are a reachable Plex server, Plex token, TMDb API key,
 and exact Plex library names. Kometa mode also needs a writable Kometa output
@@ -258,6 +259,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/cache/meta_db.sqlite3
 /config/cache/tmdb_cache.sqlite3
 /config/reports/artwork-gaps-*.txt
+/config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
 ```
@@ -289,11 +291,18 @@ Useful commands inside the container are:
 
 ```bash
 python metafusion.py --doctor
+python metafusion.py --preflight
+python metafusion.py --asset-audit
 python metafusion.py --status
 python metafusion.py --support-report
 ```
 
-Reports redact connector secrets. Do not publish `config.yml`, Docker
+`--preflight` performs a read-only connector, selected-library, mapping, and
+storage check. `--asset-audit` performs a full read-only artwork selection pass
+and writes `/config/reports/asset-audit-*.txt` with missing, unmanaged,
+lower-resolution, collision, and rejected-identity decisions. Reports redact
+connector secrets and the asset audit omits host paths. Do not publish
+`config.yml`, Docker
 inspection output, tokens, API keys, or unredacted host paths. For operational
 checks and common symptoms, see
 [Scheduling, maintenance, state, and troubleshooting](docs/operations.md).

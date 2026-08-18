@@ -101,6 +101,36 @@ def test_dockerfile_uses_stable_python_minor_without_os_upgrade():
     assert "HEALTHCHECK" in dockerfile
 
 
+def test_docker_build_context_excludes_development_only_content():
+    exclusions = set(
+        (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    )
+
+    assert {
+        "**/.coverage",
+        "**/.DS_Store",
+        "**/.pytest_cache",
+        "**/.ruff_cache",
+        "asset",
+        "docs",
+        "requirements-dev.in",
+        "requirements-dev.lock",
+        "requirements.in",
+        "requirements.txt",
+        "unraid",
+    } <= exclusions
+
+
+def test_release_docs_match_local_feature_branch_publication_policy():
+    release_docs = (REPO_ROOT / "docs" / "release-testing.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "`codex/**` phase branch" not in release_docs
+    assert "Local feature or phase branch" in release_docs
+    assert "local branches are not pushed" in release_docs
+
+
 def test_ci_smoke_tests_unraid_runtime_identity():
     workflow = (REPO_ROOT / ".github/workflows/docker-latest.yml").read_text(
         encoding="utf-8"
@@ -112,6 +142,8 @@ def test_ci_smoke_tests_unraid_runtime_identity():
     assert "--security-opt no-new-privileges" in workflow
     assert "--read-only" in workflow
     assert "(os.getuid(), os.getgid()) == (99, 100)" in workflow
+    assert 'reports = Path("/config/reports")' in workflow
+    assert "reports.is_dir()" in workflow
     assert "(status.st_uid, status.st_gid) == (99, 100)" in workflow
 
 

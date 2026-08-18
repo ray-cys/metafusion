@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -23,6 +24,23 @@ class Section:
 
     def all(self):
         return list(self._items)
+
+
+def test_operations_document_every_public_cli_option(capsys):
+    with pytest.raises(SystemExit, match="0"):
+        metafusion.parse_cli_args(["--help"])
+
+    help_text = capsys.readouterr().out
+    public_options = set(re.findall(r"--[a-z][a-z0-9_-]*", help_text))
+    operations = (Path(__file__).parents[1] / "docs" / "operations.md").read_text(
+        encoding="utf-8"
+    )
+
+    missing = sorted(
+        option for option in public_options if f"`{option}`" not in operations
+    )
+    assert missing == []
+    assert "`-h`" in operations
 
 
 def test_targeted_cli_controls_library_item_and_metadata_only_scope():
@@ -59,6 +77,7 @@ def test_targeted_cli_controls_library_item_and_metadata_only_scope():
         "full_scan": True,
         "metadata_only": True,
         "asset_only": False,
+        "asset_audit": False,
         "explain_selection": False,
     }
 

@@ -1,0 +1,48 @@
+name: Artwork or TMDb identity issue
+description: Report missing artwork, collisions, unsafe matches, or upgrade-policy decisions.
+title: "[Artwork/Identity]: "
+labels: ["artwork"]
+body:
+  - type: markdown
+    attributes:
+      value: Run `python metafusion.py --asset-audit` first. Its report omits destination paths and secrets.
+  - type: input
+    id: version
+    attributes:
+      label: Image tag and commit
+    validations:
+      required: true
+  - type: dropdown
+    id: policy
+    attributes:
+      label: Artwork policy
+      options: [fill_missing, managed, overwrite]
+    validations:
+      required: true
+  - type: dropdown
+    id: asset
+    attributes:
+      label: Asset type
+      options: [movie poster, movie background, show poster, show background, season poster, TMDb identity]
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Asset audit and artwork-gap excerpts
+      description: Paste the affected sanitized lines only.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected decision and why
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed secrets and personal paths.
+          required: true
