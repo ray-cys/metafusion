@@ -74,7 +74,7 @@ def test_config_validation_reports_actionable_errors_without_secrets():
     config = valid_config()
     config["settings"]["mode"] = "invalid"
     config["settings"]["run_times"] = ["25:99"]
-    config["runtime"]["max_concurrency"] = 0
+    config["runtime"]["max_concurrency"] = -1
     config["poster_set"]["min_width"] = 3000
     config["poster_set"]["max_width"] = 1000
 
@@ -86,6 +86,10 @@ def test_config_validation_reports_actionable_errors_without_secrets():
     assert any("poster_set.min_width" in error for error in errors)
     assert "valid-plex-token" not in repr(errors)
     assert validate_config(valid_config()) == []
+
+    automatic = valid_config()
+    automatic["runtime"]["max_concurrency"] = 0
+    assert validate_config(automatic) == []
 
 
 def test_invalid_environment_conversion_is_not_silently_accepted(tmp_path):

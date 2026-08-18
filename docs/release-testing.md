@@ -59,3 +59,8 @@ inventory, cleanup permission failure, TMDb 404/429/5xx responses, bounded
 shutdown, scheduler catch-up, timezone offsets, canonical artwork collisions,
 and large inventory reconciliation. New write paths must add the corresponding
 recovery test before the coverage floor is raised.
+
+Adaptive-concurrency tests use deterministic resource, pressure, clock, and
+provider signals. They cover cgroup ceilings, healthy growth, rate-limit and
+resource-pressure reduction, circuit opening/half-open recovery, shared
+in-flight TMDb requests, and cancellation-safe worker bounds.

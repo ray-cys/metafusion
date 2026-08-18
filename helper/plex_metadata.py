@@ -718,10 +718,12 @@ async def apply_plex_metadata(item, candidate, config, meta):
     result = {"writes": 0, "failures": 0}
     title = meta.get("title") or getattr(item, "title", "Unknown")
     for attempt in range(1, retries + 1):
-        async with runtime_slot(config, "plex"):
+        async with runtime_slot(config, "plex") as concurrency:
             result = await asyncio.to_thread(
                 _apply_candidate, item, candidate, config, meta, reporter
             )
+            if result.get("failures"):
+                concurrency.failure("operation_failure")
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             if total_writes:
@@ -982,10 +984,12 @@ async def restore_plex_metadata(item, config, meta, unlock_only=False):
     total_writes = 0
     result = {"writes": 0, "failures": 0}
     for attempt in range(1, retries + 1):
-        async with runtime_slot(config, "plex"):
+        async with runtime_slot(config, "plex") as concurrency:
             result = await asyncio.to_thread(
                 _restore_candidate, item, config, meta, reporter, unlock_only
             )
+            if result.get("failures"):
+                concurrency.failure("operation_failure")
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             return {"writes": total_writes, "failures": 0}

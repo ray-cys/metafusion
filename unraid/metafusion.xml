@@ -83,7 +83,7 @@
   <Config Name="Guarded Cleanup" Target="RUN_CLEANUP" Default="False|True" Mode="" Description="Enable guarded orphan cleanup. Run with DRY_RUN first and verify every library name." Type="Variable" Display="advanced" Required="false" Mask="false">False</Config>
 
   <!-- Optional runtime and Plex reliability -->
-  <Config Name="Maximum Concurrency" Target="MAX_CONCURRENCY" Default="8" Mode="" Description="Maximum media items processed concurrently." Type="Variable" Display="advanced" Required="false" Mask="false">8</Config>
+  <Config Name="Concurrency Safety Ceiling" Target="MAX_CONCURRENCY" Default="0" Mode="" Description="Keep 0 for cgroup-aware automatic tuning. A positive value is an optional maximum for troubleshooting constrained systems." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
   <Config Name="Request Timeout" Target="REQUEST_TIMEOUT" Default="30" Mode="" Description="Total TMDb and image request timeout in seconds." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
   <Config Name="Connect Timeout" Target="CONNECT_TIMEOUT" Default="10" Mode="" Description="HTTP connection timeout in seconds." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
   <Config Name="Plex Request Timeout" Target="PLEX_TIMEOUT" Default="10" Mode="" Description="Timeout for each blocking Plex request in seconds." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>

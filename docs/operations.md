@@ -222,6 +222,26 @@ more TMDb/network I/O than later runs.
 Per-library timing overrides are documented in
 [Configuration](configuration.md#per-library-overrides).
 
+## Adaptive concurrency and provider protection
+
+MetaFusion uses separate item, TMDb, Plex, and nested artwork/season-work
+lanes. With `MAX_CONCURRENCY=0` (the default), startup ceilings are calculated
+from the CPU quota, CPU affinity, and memory limit visible inside the container.
+The controller starts conservatively, increases one slot after healthy work,
+and reduces only the affected lane after failures. CPU or memory pressure at
+90% reduces item/nested work without cancelling operations already in flight.
+
+TMDb HTTP 429 responses immediately reduce the TMDb lane and still honor
+`Retry-After`. Repeated provider failures open only that provider's circuit;
+new work is preserved or skipped during the cooldown, then a single half-open
+probe decides whether the circuit closes. Identical concurrent TMDb requests
+share one in-flight request, response, and cache write.
+
+The log records the detected resources, initial and maximum limits, meaningful
+adjustments, circuit transitions, and final limits. A positive
+`MAX_CONCURRENCY` remains an advanced troubleshooting ceiling, not a fixed
+worker count. It does not raise MetaFusion's internal maximums.
+
 ## Cleanup dry run
 
 Before enabling cleanup, follow the full
