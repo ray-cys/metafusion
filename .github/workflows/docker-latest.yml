@@ -23,6 +23,38 @@ env:
 
 
 jobs:
+  release-guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository and tags
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag origin and format
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+(\.[0-9]+)*)?$ ]]; then
+            echo "Unsupported release tag: ${tag}" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-list -n 1 "${tag}")"
+          git merge-base --is-ancestor "${tag_commit}" origin/main || {
+            echo "Release tags must reference a commit contained in main." >&2
+            exit 1
+          }
+          duplicate_count="$(git tag --list | awk '{print tolower($0)}' | sort | uniq -d | wc -l | tr -d ' ')"
+          test "${duplicate_count}" = "0" || {
+            echo "Case-insensitive duplicate release tags were found." >&2
+            exit 1
+          }
+
   test:
     runs-on: ubuntu-latest
     permissions:
@@ -51,6 +83,21 @@ jobs:
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps
+
+  kometa-contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate representative output with pinned Kometa 2.4.8
+        run: >-
+          docker run --rm
+          --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro"
+          kometateam/kometa@sha256:c58f6d4af511613f218b6dafbfc84078af4e5a6089790c1fdba58fd7c5dad70a
+          --validate-file /contract/metadata.yml
 
   security:
     needs: test
@@ -141,7 +188,7 @@ jobs:
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/develop' ||
        startsWith(github.ref, 'refs/tags/v'))
-    needs: [test, security]
+    needs: [release-guard, test, kometa-contract, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read

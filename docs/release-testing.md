@@ -18,6 +18,18 @@ Dependencies and GitHub Actions are opened against `develop`. Python 3.10 and
 3.13 remain the supported test matrix for the first stable release; a base
 Python upgrade is a separate compatibility change, not an automatic merge.
 
+CI also validates representative generated YAML with the official Kometa
+2.4.8 container pinned by digest. Release-tag guards accept supported semantic
+or RC `v…` tags only when their commit is already contained in `main`; the tag
+workflow's own test and security jobs must then pass before an image publishes.
+
+The separate weekly GHCR retention workflow resolves every tagged or otherwise
+retained multi-arch manifest before deleting anything. Release, branch, SHA,
+cosign, recent, newest-retained, and referenced platform manifests are
+protected; only untagged, unreferenced versions older than 30 days are eligible,
+and the newest 50 untagged versions are retained. Manual runs default to
+report-only mode.
+
 ## Required release gate
 
 Before promoting `develop` to `main`:

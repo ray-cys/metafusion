@@ -361,14 +361,41 @@ async def process_library(
             total_items=total_items,
         )
         if explain_selection:
+            target_keys = {
+                str(value) for value in (rating_keys or []) if str(value).strip()
+            }
+            candidate_count = sum(
+                not target_keys
+                or str(getattr(item, "ratingKey", "")) in target_keys
+                for item in all_items
+            )
+            cause_counts = Counter(
+                cause
+                for planned in planned_items
+                for cause in planned.selection_causes
+            )
             for planned in planned_items:
                 log_processing_event(
                     "processing_selection_reason",
                     library_name=library_name,
                     rating_key=getattr(planned.item, "ratingKey", "unknown"),
                     title=getattr(planned.item, "title", "Unknown"),
-                    reasons=", ".join(sorted(planned.reasons)),
+                    causes=", ".join(sorted(planned.selection_causes)),
+                    work=", ".join(sorted(planned.reasons)),
                 )
+            log_processing_event(
+                "processing_selection_summary",
+                library_name=library_name,
+                selected=len(planned_items),
+                skipped=max(0, candidate_count - len(planned_items)),
+                causes=(
+                    ", ".join(
+                        f"{name}={count}"
+                        for name, count in sorted(cause_counts.items())
+                    )
+                    or "none"
+                ),
+            )
             return []
 
         preloaded_metadata = []

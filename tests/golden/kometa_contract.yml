@@ -1,0 +1,51 @@
+metadata:
+  MetaFusion Contract Movie (2020):
+    match:
+      title: MetaFusion Contract Movie
+      year: 2020
+      mapping_id: 123
+    sort_title: MetaFusion Contract Movie
+    original_title: Original Contract Movie
+    originally_available: '2020-01-02'
+    content_rating: PG-13
+    studio: Contract Studio
+    tagline: Contract tagline
+    summary: Contract movie summary.
+    country:
+    - United States of America
+    genre:
+    - Science Fiction
+    director:
+    - Example Director
+    writer:
+    - Example Writer
+    producer:
+    - Example Producer
+  MetaFusion Contract Show (2021):
+    match:
+      title: MetaFusion Contract Show
+      year: 2021
+      mapping_id: 456
+    sort_title: MetaFusion Contract Show
+    original_title: Original Contract Show
+    originally_available: '2021-02-03'
+    content_rating: TV-14
+    studio: Contract Network
+    tagline: Contract show tagline
+    summary: Contract show summary.
+    genre:
+    - Drama
+    seasons:
+      0:
+        title: Specials
+        summary: Contract specials.
+        episodes:
+          1:
+            title: Contract Special
+            sort_title: Contract Special
+            originally_available: '2021-02-03'
+            summary: Contract episode summary.
+            director:
+            - Example Director
+            writer:
+            - Example Writer

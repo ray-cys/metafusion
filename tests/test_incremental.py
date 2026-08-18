@@ -92,6 +92,11 @@ def test_tv_child_inventory_change_selects_show_without_updated_at_change():
     assert select_items([new_episode], cached, fingerprint) == [new_episode]
     assert select_items([new_season], cached, fingerprint) == [new_season]
 
+    planned = plan_items([new_episode], cached, fingerprint)
+    assert planned[0].selection_causes == frozenset(
+        {"tv_child_inventory_changed"}
+    )
+
 
 def test_tv_child_inventory_fingerprint_is_lightweight_and_backward_safe():
     updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -117,11 +122,50 @@ def test_tv_child_inventory_fingerprint_is_lightweight_and_backward_safe():
     assert child_inventory_fingerprint(show) == child_inventory_fingerprint(watched)
     assert child_inventory_fingerprint(SimpleNamespace(type="movie", leafCount=20)) is None
     assert select_items([show], legacy_cache, fingerprint) == [show]
+    assert plan_items([show], legacy_cache, fingerprint)[0].selection_causes == (
+        frozenset({"tv_child_inventory_baseline"})
+    )
 
     unavailable = SimpleNamespace(
         ratingKey="show", updatedAt=updated, type="show"
     )
     assert select_items([unavailable], legacy_cache, fingerprint) == []
+
+
+def test_selection_causes_distinguish_triggers_from_selected_work():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["assets"].update(run_poster=True, run_background=False)
+    config["image_upgrades"]["movie_days"] = 30
+    fingerprint = config_fingerprint(config)
+    item = SimpleNamespace(ratingKey="movie", updatedAt=updated, type="movie")
+    cache = {
+        "movie": {
+            "rating_key": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "poster_last_checked": (now - timedelta(days=31)).isoformat(),
+        }
+    }
+
+    due = plan_items(
+        [item], cache, fingerprint, config=config, now=now,
+        feature_flags={"metadata_basic": True, "poster": True},
+    )[0]
+    targeted = plan_items(
+        [item], cache, fingerprint, rating_keys=["movie"], config=config,
+        feature_flags={"metadata_basic": True, "poster": True},
+    )[0]
+    full = plan_items(
+        [item], cache, fingerprint, full_scan=True, config=config,
+        feature_flags={"metadata_basic": True, "poster": True},
+    )[0]
+
+    assert due.selection_causes == frozenset({"poster_refresh_due"})
+    assert due.reasons == frozenset({"poster"})
+    assert targeted.selection_causes == frozenset({"targeted_rating_key"})
+    assert full.selection_causes == frozenset({"full_scan"})
 
 
 def test_configuration_changes_invalidate_incremental_entries():

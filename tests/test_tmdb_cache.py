@@ -44,6 +44,25 @@ def test_sqlite_tmdb_cache_round_trips_compresses_and_expires(monkeypatch, tmp_p
     assert expired.flush() is True
 
 
+def test_per_entry_ttl_is_capped_by_default_and_expires_independently(
+    monkeypatch, tmp_path
+):
+    clock = [1000.0]
+    monkeypatch.setattr(cache_module.time, "time", lambda: clock[0])
+    cache = PersistentTTLCache()
+    cache.configure(tmp_path / "tmdb.sqlite3", ttl_hours=24)
+    cache.set("negative", {"status": 404}, ttl_seconds=3600)
+    cache.set("capped", {"status": 404}, ttl_seconds=48 * 3600)
+    cache.flush()
+
+    clock[0] += 3601
+    assert "negative" not in cache
+    assert cache["capped"] == {"status": 404}
+
+    clock[0] += 23 * 3600
+    assert "capped" not in cache
+
+
 def test_tmdb_cache_is_entry_bounded_and_ignores_non_json_values(monkeypatch, tmp_path):
     clock = [100.0]
     monkeypatch.setattr(cache_module.time, "time", lambda: clock[0])

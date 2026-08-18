@@ -5,7 +5,7 @@ import yaml
 
 from helper.tmdb import tmdb_response_cache
 from modules import builder as builder_module
-from modules.kometa import build_episode_metadata
+from modules.kometa import build_episode_metadata, validate_metadata_document
 from modules.utils import smart_meta_update
 
 
@@ -35,6 +35,70 @@ def test_episode_metadata_matches_kometa_schema_golden_file():
         "director",
         "writer",
     }
+
+
+def test_representative_generated_metadata_matches_pinned_kometa_contract():
+    document = {
+        "metadata": {
+            "MetaFusion Contract Movie (2020)": {
+                "match": {
+                    "title": "MetaFusion Contract Movie",
+                    "year": 2020,
+                    "mapping_id": 123,
+                },
+                "sort_title": "MetaFusion Contract Movie",
+                "original_title": "Original Contract Movie",
+                "originally_available": "2020-01-02",
+                "content_rating": "PG-13",
+                "studio": "Contract Studio",
+                "tagline": "Contract tagline",
+                "summary": "Contract movie summary.",
+                "country": ["United States of America"],
+                "genre": ["Science Fiction"],
+                "director": ["Example Director"],
+                "writer": ["Example Writer"],
+                "producer": ["Example Producer"],
+            },
+            "MetaFusion Contract Show (2021)": {
+                "match": {
+                    "title": "MetaFusion Contract Show",
+                    "year": 2021,
+                    "mapping_id": 456,
+                },
+                "sort_title": "MetaFusion Contract Show",
+                "original_title": "Original Contract Show",
+                "originally_available": "2021-02-03",
+                "content_rating": "TV-14",
+                "studio": "Contract Network",
+                "tagline": "Contract show tagline",
+                "summary": "Contract show summary.",
+                "genre": ["Drama"],
+                "seasons": {
+                    0: {
+                        "title": "Specials",
+                        "summary": "Contract specials.",
+                        "episodes": {
+                            1: build_episode_metadata(
+                                {
+                                    "name": "Contract Special",
+                                    "air_date": "2021-02-03",
+                                    "overview": "Contract episode summary.",
+                                },
+                                directors=["Example Director"],
+                                writers=["Example Writer"],
+                                enhanced=True,
+                            )
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+    assert validate_metadata_document(document) is True
+    assert yaml.safe_dump(document, allow_unicode=True, sort_keys=False) == (
+        GOLDEN_DIR / "kometa_contract.yml"
+    ).read_text(encoding="utf-8")
 
 
 def test_smart_meta_update_applies_exclusions_recursively():

@@ -1,5 +1,4 @@
 import os, sys, platform, psutil, logging, textwrap, requests, datetime, time
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
@@ -8,6 +7,76 @@ LOG_FILE = LOGS_DIR / "metafusion.log"
 MIN_PYTHON = (3, 10)
 MIN_CPU_CORES = 4
 MIN_RAM_GB = 4
+
+
+class SizeAndTimeRotatingFileHandler(logging.FileHandler):
+    """Rotate at local midnight or before the active log exceeds its size cap."""
+
+    def __init__(self, filename, max_bytes, backup_count, encoding="utf-8"):
+        self.max_bytes = max(0, int(max_bytes))
+        self.backup_count = max(1, int(backup_count))
+        super().__init__(filename, encoding=encoding)
+        self.next_rollover_at = self._next_midnight()
+
+    @staticmethod
+    def _next_midnight(now=None):
+        current = now or datetime.datetime.now().astimezone()
+        tomorrow = current.date() + datetime.timedelta(days=1)
+        return datetime.datetime.combine(
+            tomorrow, datetime.time.min, tzinfo=current.tzinfo
+        ).timestamp()
+
+    def shouldRollover(self, record):
+        if time.time() >= self.next_rollover_at:
+            return True
+        if not self.max_bytes:
+            return False
+        message_bytes = len(
+            (self.format(record) + "\n").encode(self.encoding or "utf-8")
+        )
+        try:
+            current_bytes = os.path.getsize(self.baseFilename)
+        except OSError:
+            current_bytes = 0
+        return current_bytes + message_bytes > self.max_bytes
+
+    def doRollover(self):
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        source = Path(self.baseFilename)
+        if source.exists() and source.stat().st_size:
+            suffix = datetime.datetime.now().astimezone().strftime(
+                "%Y-%m-%d_%H-%M-%S"
+            )
+            destination = source.with_name(f"{source.name}.{suffix}")
+            sequence = 1
+            while destination.exists():
+                destination = source.with_name(
+                    f"{source.name}.{suffix}.{sequence:03d}"
+                )
+                sequence += 1
+            os.replace(source, destination)
+        backups = sorted(
+            source.parent.glob(f"{source.name}.*"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for expired in backups[self.backup_count :]:
+            try:
+                expired.unlink()
+            except OSError:
+                pass
+        self.stream = self._open()
+        self.next_rollover_at = self._next_midnight()
+
+    def emit(self, record):
+        try:
+            if self.shouldRollover(record):
+                self.doRollover()
+        except OSError:
+            self.handleError(record)
+        super().emit(record)
 
 
 def redact_secrets(value, *secrets):
@@ -55,8 +124,14 @@ def get_setup_logging(config):
 
     if not dry_run:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = TimedRotatingFileHandler(
-            log_file, when="midnight", interval=1, backupCount=7, encoding="utf-8"
+        file_handler = SizeAndTimeRotatingFileHandler(
+            log_file,
+            max_bytes=max(
+                0,
+                int(float(config["settings"].get("log_max_mb", 10)) * 1024 * 1024),
+            ),
+            backup_count=config["settings"].get("log_backup_count", 14),
+            encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(log_level)
@@ -352,6 +427,8 @@ def log_tmdb_event(event, logger=None, **kwargs):
     messages = {
         "tmdb_no_api_key": "[TMDb] No API key found in config: {tmdb_config}",
         "tmdb_cache_hit": "[TMDb] Returning cached response for {url} params: {params}",
+        "tmdb_negative_cache_hit": "[TMDb] Skipping recently missing resource {url}; cached HTTP 404 is still valid.",
+        "tmdb_negative_cached": "[TMDb] Cached HTTP 404 for {url} for {ttl_hours:g} hour(s).",
         "tmdb_request": "[TMDb] Requesting {url} with params: {query} (Attempt {attempt}/{retries})",
         "tmdb_success": "[TMDb] Successful response for {url} (Attempt {attempt})",
         "tmdb_rate_limited": "[TMDb] Rate limited (HTTP 429). Sleeping {retry_after}s before retry... Params: {query}",
@@ -366,6 +443,8 @@ def log_tmdb_event(event, logger=None, **kwargs):
     levels = {
         "tmdb_no_api_key": "error",
         "tmdb_cache_hit": "debug",
+        "tmdb_negative_cache_hit": "debug",
+        "tmdb_negative_cached": "debug",
         "tmdb_request": "debug",
         "tmdb_success": "debug",
         "tmdb_rate_limited": "warning",
@@ -406,7 +485,8 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_failed_write_metadata": "[Processing] Failed to write YAML: {error}",
         "processing_metadata_dry_run": "[Dry Run] Metadata for {library_name} generated but not saved.",
         "processing_failed_library": "[Processing] Failed to process library '{library_name}': {error}",
-        "processing_selection_reason": "[Processing] Selected {title} (rating key {rating_key}) from {library_name}: {reasons}",
+        "processing_selection_reason": "[Processing] Selected {title} (rating key {rating_key}) from {library_name}: cause={causes}; work={work}",
+        "processing_selection_summary": "[Processing] Selection summary for {library_name}: selected={selected}, unchanged/not due={skipped}, causes: {causes}",
         "processing_ambiguous_editions": "[Processing] Unsafe duplicate editions in '{library_name}': {description}",
         "processing_ambiguous_editions_allowed": "[Processing] Ambiguous editions allowed in '{library_name}': {description}",
     }
@@ -423,6 +503,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_metadata_dry_run": "info",
         "processing_failed_library": "error",
         "processing_selection_reason": "info",
+        "processing_selection_summary": "info",
         "processing_ambiguous_editions": "error",
         "processing_ambiguous_editions_allowed": "warning",
     }

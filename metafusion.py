@@ -38,6 +38,7 @@ from helper.diagnostics import (
     write_asset_audit_report,
     write_artwork_gap_report,
     write_destination_history_report,
+    write_metadata_audit_report,
     write_support_report,
 )
 from helper.logging import (
@@ -143,6 +144,11 @@ def parse_cli_args(argv=None):
         help="Evaluate every enabled artwork destination and write a report only",
     )
     parser.add_argument(
+        "--metadata-audit",
+        action="store_true",
+        help="Compare TMDb metadata with the selected output without writing it",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         help="Process only this Plex library; repeat or use comma-separated names",
@@ -219,6 +225,16 @@ def override_config_with_cli(config, args):
         config["settings"]["dry_run"] = True
         config["metadata"].update({"run_basic": False, "run_enhanced": False})
         config["cleanup"]["run_cleanup"] = False
+    if args.metadata_audit:
+        config["metafusion_run"] = True
+        config["settings"]["dry_run"] = True
+        config["metadata"]["run_basic"] = True
+        config["assets"].update(
+            {"run_poster": False, "run_season": False, "run_background": False}
+        )
+        config["cleanup"]["run_cleanup"] = False
+        if mode_check(config, "plex"):
+            config["plex_metadata"]["enabled"] = True
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -239,10 +255,11 @@ def override_config_with_cli(config, args):
     execution = {
         "rating_keys": rating_keys,
         "targeted": bool(libraries or rating_keys),
-        "full_scan": bool(args.full_scan or args.asset_audit),
+        "full_scan": bool(args.full_scan or args.asset_audit or args.metadata_audit),
         "metadata_only": bool(args.metadata_only),
         "asset_only": bool(args.asset_only or args.asset_audit),
         "asset_audit": bool(args.asset_audit),
+        "metadata_audit": bool(args.metadata_audit),
         "explain_selection": bool(args.explain_selection),
     }
     if maintenance_action:
@@ -619,6 +636,9 @@ async def metafusion_main(config, logger):
                         library_config["_asset_audit_records"] = config.setdefault(
                             "_asset_audit_records", []
                         )
+                        library_config["_metadata_audit_records"] = config.setdefault(
+                            "_metadata_audit_records", []
+                        )
                         scope = next(
                             candidate
                             for candidate in scan_scopes
@@ -791,6 +811,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 runtime_status.run_started()
                 runtime_status.run_finished(False, error=error)
             return False
+    config["_metadata_audit_records"] = []
     try:
         begin_cache_session(
             writable=not config.get("settings", {}).get("dry_run", False)
@@ -884,6 +905,24 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     success = False
                     error = f"Failed to write asset audit report: {caught}"
                     logger.error("[Diagnostics] %s", error)
+            if config.get("_execution", {}).get("metadata_audit", False):
+                try:
+                    metadata_audit_report = write_metadata_audit_report(
+                        config.get("_metadata_audit_records"),
+                        config.get("_artwork_gaps"),
+                        mode=config.get("settings", {}).get("mode", "unknown"),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    logger.info(
+                        "[Diagnostics] Metadata audit report saved to %s",
+                        metadata_audit_report,
+                    )
+                except OSError as caught:
+                    success = False
+                    error = f"Failed to write metadata audit report: {caught}"
+                    logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
         except Exception as caught:
@@ -913,6 +952,12 @@ def main(argv=None):
     args = parse_cli_args(argv)
     if args.metadata_only and (args.asset_only or args.asset_audit):
         print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
+        return 2
+    if args.metadata_audit and (args.asset_only or args.asset_audit):
+        print(
+            "Configuration error: --metadata-audit cannot be combined with artwork audits",
+            file=sys.stderr,
+        )
         return 2
     if args.plex_metadata_restore and args.plex_metadata_unlock:
         print(
@@ -947,7 +992,11 @@ def main(argv=None):
     try:
         config, sources = load_config_file(
             create_if_missing=not (
-                args.dry_run or args.doctor or args.preflight or args.asset_audit
+                args.dry_run
+                or args.doctor
+                or args.preflight
+                or args.asset_audit
+                or args.metadata_audit
             ),
             return_sources=True,
         )

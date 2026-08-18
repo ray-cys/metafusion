@@ -11,6 +11,171 @@ from helper.io import atomic_write_text
 from helper.state_db import STATE_DATABASE
 
 
+def _flatten_metadata_fields(value, prefix=()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _flatten_metadata_fields(child, (*prefix, str(key)))
+        return
+    yield ".".join(prefix), value
+
+
+def _metadata_path_value(document, path):
+    current = document
+    for part in path.split(".") if path else []:
+        if not isinstance(current, dict):
+            return None, False
+        candidates = (part, int(part)) if part.isdigit() else (part,)
+        for candidate in candidates:
+            if candidate in current:
+                current = current[candidate]
+                break
+        else:
+            return None, False
+    return current, True
+
+
+def record_kometa_metadata_audit(
+    config,
+    *,
+    library,
+    media_type,
+    title,
+    existing,
+    generated,
+    diagnostics=None,
+):
+    """Record field-level TMDb-to-Kometa comparisons without retaining values."""
+    if not config.get("_execution", {}).get("metadata_audit", False):
+        return 0
+    records = config.setdefault("_metadata_audit_records", [])
+    for field, desired in _flatten_metadata_fields(generated):
+        current, present = _metadata_path_value(existing or {}, field)
+        if desired in (None, "", []):
+            state = "source_missing"
+            action = "preserve_existing" if present else "none"
+        elif not present or current in (None, "", []):
+            state = "missing"
+            action = "add"
+        elif current == desired:
+            state = "unchanged"
+            action = "none"
+        else:
+            state = "different"
+            action = "update"
+        records.append(
+            {
+                "library": library,
+                "media_type": media_type,
+                "title": title,
+                "child": "item",
+                "field": field,
+                "state": state,
+                "policy": "kometa_merge",
+                "proposed_action": action,
+                "target": "Kometa YAML",
+            }
+        )
+    removed = int((diagnostics or {}).get("deprecated_removed", 0))
+    if removed:
+        records.append(
+            {
+                "library": library,
+                "media_type": media_type,
+                "title": title,
+                "child": "item",
+                "field": "deprecated generated fields",
+                "state": "unsupported",
+                "policy": "kometa_schema",
+                "proposed_action": f"remove ({removed})",
+                "target": "Kometa YAML",
+            }
+        )
+    return len(records)
+
+
+def write_metadata_audit_report(
+    records,
+    gaps=None,
+    *,
+    mode,
+    base_dir=None,
+    retention=10,
+):
+    """Write a bounded read-only metadata comparison and proposed-action report."""
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"metadata-audit-{timestamp}.txt"
+    current_build = build_info()
+    ordered = sorted(
+        (record for record in (records or []) if isinstance(record, dict)),
+        key=lambda record: (
+            str(record.get("library") or "").casefold(),
+            str(record.get("title") or "").casefold(),
+            str(record.get("child") or ""),
+            str(record.get("field") or ""),
+        ),
+    )
+    counts = {}
+    for record in ordered:
+        state = str(record.get("state") or record.get("action") or "unknown")
+        counts[state] = counts.get(state, 0) + 1
+    relevant_gaps = [
+        gap
+        for gap in (gaps or [])
+        if isinstance(gap, dict)
+        and str(gap.get("category") or "").startswith(("identity", "tmdb"))
+    ]
+    lines = [
+        "MetaFusion read-only metadata audit",
+        f"Generated: {generated.isoformat()}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Mode: {mode}",
+        f"Field decisions: {len(ordered)}",
+        f"Identity/source gaps: {len(relevant_gaps)}",
+        "Values are intentionally omitted; no metadata, artwork, cache, or ownership state was written.",
+        "",
+        "Summary",
+    ]
+    lines.extend(
+        f"- {state}: {count}" for state, count in sorted(counts.items())
+    )
+    if not counts:
+        lines.append("- no eligible metadata fields")
+    lines.extend(("", "Field decisions"))
+    if not ordered:
+        lines.append("- none")
+    for record in ordered:
+        state = record.get("state") or record.get("action") or "unknown"
+        lines.append(
+            f"- [{state}] {record.get('library') or 'Unknown library'} | "
+            f"{record.get('media_type') or 'Unknown'} | "
+            f"{record.get('title') or 'Unknown title'} | "
+            f"{record.get('child') or 'item'} | {record.get('field') or 'unknown'} | "
+            f"policy={record.get('policy') or 'unknown'} | "
+            f"proposed={record.get('proposed_action') or record.get('detail') or 'none'}"
+        )
+    lines.extend(("", "Rejected identities and unavailable TMDb sources"))
+    if not relevant_gaps:
+        lines.append("- none")
+    for gap in relevant_gaps:
+        detail = f" | {gap.get('detail')}" if gap.get("detail") else ""
+        lines.append(
+            f"- [{gap.get('category')}] {gap.get('library') or 'Unknown library'} | "
+            f"{gap.get('media_type') or 'Unknown'} | "
+            f"{gap.get('title') or 'Unknown title'}{detail}"
+        )
+    atomic_write_text(path, "\n".join(lines) + "\n")
+    reports = sorted(report_dir.glob("metadata-audit-*.txt"), reverse=True)
+    for stale in reports[max(1, int(retention)) :]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return path
+
+
 def _database_status(path):
     path = Path(path)
     if not path.exists():

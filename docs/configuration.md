@@ -65,6 +65,8 @@ Docker or Unraid administrators when supplied as environment variables.
 | `TZ` | `UTC` | Timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate without normal writes/deletions. A direct Plex metadata dry-run still writes a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
+| `LOG_MAX_MB` | `10` | Rotate the active log before it exceeds this many MiB; `0` disables only size rotation. |
+| `LOG_BACKUP_COUNT` | `14` | Number of daily/size-rotated log files retained. |
 | `RUN_BASIC` | `True` | Generate core Kometa fields or enable core direct Plex fields after Plex API opt-in. |
 | `RUN_ENHANCED` | `True` | Add supported director/writer/producer fields. Requires `RUN_BASIC=True`; cast remains with Plex's provider. |
 | `RUN_POSTER` | `True` | Generate movie and show posters. |
@@ -132,6 +134,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster interval. |
 | `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
+| `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for HTTP 404 results; 429 and 5xx responses are never cached. |
 | `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
 | `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables the byte cap. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
