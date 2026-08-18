@@ -77,3 +77,11 @@ parking, Plex update-marker resets, automatic supported-library discovery,
 missing-library cleanup protection, adaptive artwork timing, learned identity
 invalidation, path-mapping advice, slow-Plex lane reduction, write-cap
 deferral, storage-aware cache limits, and low-space artwork deferral.
+
+Phase 22 covers read-only combined plans, cross-mode library/artwork audits,
+rating-key/TMDb-ID/media-type targeting, selective retry filters, deterministic
+artwork scoring, compatibility-profile validation, and explicit SQLite health,
+backup, optimization, checkpoint, free-space, and vacuum paths. Release soak
+testing should run `--plan` and `--compatibility-check` before a normal job, and
+use `--sqlite-maintenance check` after the soak without overlapping an active
+job.

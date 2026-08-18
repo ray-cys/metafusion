@@ -1392,6 +1392,61 @@ def retry_queue_summary(path=None):
         connection.close()
 
 
+def load_item_retries(
+    *,
+    server_id=None,
+    library_uuids=None,
+    library_names=None,
+    rating_keys=None,
+    statuses=None,
+    path=None,
+):
+    """Return value-safe retry rows for an explicit selective retry command."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    allowed_uuids = {
+        str(value) for value in (library_uuids or []) if str(value).strip()
+    }
+    allowed_names = {
+        str(value).casefold() for value in (library_names or []) if str(value).strip()
+    }
+    allowed_keys = {
+        str(value) for value in (rating_keys or []) if str(value).strip()
+    }
+    allowed_statuses = {
+        str(value).lower() for value in (statuses or []) if str(value).strip()
+    }
+    try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'item_retry_queue'"
+        ).fetchone() is None:
+            return []
+        rows = connection.execute(
+            "SELECT server_id, library_uuid, library_name, rating_key, "
+            "media_type, status, failure_class, attempts, next_retry_at "
+            "FROM item_retry_queue ORDER BY library_name, rating_key"
+        ).fetchall()
+        selected = []
+        for row in rows:
+            record = dict(row)
+            if server_id is not None and str(record["server_id"]) != str(server_id):
+                continue
+            if allowed_uuids and str(record["library_uuid"]) not in allowed_uuids:
+                continue
+            if allowed_names and str(record.get("library_name") or "").casefold() not in allowed_names:
+                continue
+            if allowed_keys and str(record["rating_key"]) not in allowed_keys:
+                continue
+            if allowed_statuses and str(record["status"]).lower() not in allowed_statuses:
+                continue
+            selected.append(record)
+        return selected
+    finally:
+        connection.close()
+
+
 def reconcile_library_inventory(server_id, libraries, path=None, now=None):
     """Persist auto-discovered Plex libraries without treating absence as deletion."""
     connection = _connect(path, writable=True)

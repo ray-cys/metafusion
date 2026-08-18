@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import re
 import signal
 import sys
 import threading
@@ -18,6 +19,7 @@ import schedule
 from helper.asset_registry import AssetDestinationRegistry
 from helper.build_info import build_info
 from helper.cache import begin_cache_session, flush_cache, load_cache
+from helper.compatibility import evaluate_compatibility, resolve_compatibility_profile
 from helper.concurrency import (
     begin_adaptive_concurrency,
     concurrency_ceiling,
@@ -34,10 +36,17 @@ from helper.config import (
     mode_check,
     validate_config,
 )
+from helper.database_maintenance import (
+    format_maintenance_results,
+    maintain_databases,
+)
 from helper.diagnostics import (
     write_artwork_gap_report,
     write_asset_audit_report,
+    write_change_plan_report,
+    write_compatibility_report,
     write_destination_history_report,
+    write_library_asset_audit_report,
     write_metadata_audit_report,
     write_release_qualification_report,
     write_support_report,
@@ -91,6 +100,7 @@ from helper.state_db import (
 from helper.state_db import (
     STATE_DATABASE,
     StateDatabaseError,
+    load_item_retries,
     maintain_state_database,
     missing_library_inventory,
     recent_job_runs,
@@ -184,6 +194,16 @@ def parse_cli_args(argv=None):
         help="Compare TMDb metadata with the selected output without writing it",
     )
     parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Write one read-only metadata, artwork, and cleanup change plan",
+    )
+    parser.add_argument(
+        "--library-audit",
+        action="store_true",
+        help="Audit Plex libraries and enabled artwork without changing either mode",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         help="Process only this Plex library; repeat or use comma-separated names",
@@ -194,6 +214,17 @@ def parse_cli_args(argv=None):
         help="Process only this Plex rating key; repeat or use comma-separated keys",
     )
     parser.add_argument(
+        "--tmdb-id",
+        action="append",
+        help="Process only items exposing this TMDb GUID; repeat or use commas",
+    )
+    parser.add_argument(
+        "--media-type",
+        action="append",
+        choices=["movie", "show"],
+        help="Process only movie or show libraries; repeat to select both",
+    )
+    parser.add_argument(
         "--metadata-only",
         action="store_true",
         help="Generate metadata without artwork or cleanup",
@@ -202,6 +233,38 @@ def parse_cli_args(argv=None):
         "--full-scan",
         action="store_true",
         help="Bypass incremental skipping and reconcile the selected libraries",
+    )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry queued failed items, optionally narrowed by library/rating key",
+    )
+    parser.add_argument(
+        "--retry-status",
+        choices=["all", "pending", "parked", "running"],
+        default="all",
+        help="Select which queued failure state --retry-failed processes",
+    )
+    parser.add_argument(
+        "--sqlite-maintenance",
+        choices=["check", "optimize", "checkpoint", "vacuum", "backup"],
+        help="Inspect or explicitly maintain MetaFusion SQLite databases",
+    )
+    parser.add_argument(
+        "--sqlite-target",
+        choices=["all", "state", "tmdb"],
+        default="all",
+        help="Limit SQLite maintenance to durable state or disposable TMDb cache",
+    )
+    parser.add_argument(
+        "--compatibility-check",
+        action="store_true",
+        help="Validate the configured output mode against its compatibility profile",
+    )
+    parser.add_argument(
+        "--compatibility-profile",
+        choices=["auto", "kometa-2.4", "plex-api-v1"],
+        help="Override the compatibility profile for this command or run",
     )
     parser.add_argument(
         "--plex-metadata-restore",
@@ -247,6 +310,10 @@ def override_config_with_cli(config, args):
     rating_keys = []
     for value in args.rating_key or []:
         rating_keys.extend(part.strip() for part in value.split(",") if part.strip())
+    tmdb_ids = []
+    for value in args.tmdb_id or []:
+        tmdb_ids.extend(part.strip() for part in value.split(",") if part.strip())
+    media_types = sorted(set(args.media_type or []))
     if args.metadata_only:
         config["assets"].update(
             {"run_poster": False, "run_season": False, "run_background": False}
@@ -270,13 +337,32 @@ def override_config_with_cli(config, args):
         config["cleanup"]["run_cleanup"] = False
         if mode_check(config, "plex"):
             config["plex_metadata"]["enabled"] = True
+    if args.plan:
+        config["metafusion_run"] = True
+        config["settings"]["dry_run"] = True
+        config["metadata"]["run_basic"] = True
+        if mode_check(config, "plex"):
+            config["plex_metadata"]["enabled"] = True
+    if args.library_audit:
+        config["metafusion_run"] = True
+        config["settings"]["dry_run"] = True
+        config["metadata"].update({"run_basic": False, "run_enhanced": False})
+        config["cleanup"]["run_cleanup"] = False
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
     if args.explain_selection:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
-    if libraries or rating_keys:
+    if args.compatibility_check:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
+    if args.compatibility_profile:
+        config.setdefault("compatibility", {})["profile"] = args.compatibility_profile
+    if args.retry_failed:
+        config["metafusion_run"] = True
+        config["cleanup"]["run_cleanup"] = False
+    if libraries or rating_keys or tmdb_ids or media_types or args.retry_failed:
         config["cleanup"]["run_cleanup"] = False
     maintenance_action = None
     if args.plex_metadata_restore:
@@ -289,14 +375,35 @@ def override_config_with_cli(config, args):
         config["cleanup"]["run_cleanup"] = False
     execution = {
         "rating_keys": rating_keys,
-        "targeted": bool(libraries or rating_keys),
-        "full_scan": bool(args.full_scan or args.asset_audit or args.metadata_audit),
+        "targeted": bool(
+            libraries or rating_keys or tmdb_ids or media_types or args.retry_failed
+        ),
+        "full_scan": bool(
+            args.full_scan
+            or args.asset_audit
+            or args.metadata_audit
+            or args.plan
+            or args.library_audit
+            or tmdb_ids
+            or media_types
+        ),
         "metadata_only": bool(args.metadata_only),
-        "asset_only": bool(args.asset_only or args.asset_audit),
-        "asset_audit": bool(args.asset_audit),
-        "metadata_audit": bool(args.metadata_audit),
+        "asset_only": bool(args.asset_only or args.asset_audit or args.library_audit),
+        "asset_audit": bool(args.asset_audit or args.plan or args.library_audit),
+        "metadata_audit": bool(args.metadata_audit or args.plan),
         "explain_selection": bool(args.explain_selection),
     }
+    if tmdb_ids:
+        execution["tmdb_ids"] = tmdb_ids
+    if media_types:
+        execution["media_types"] = media_types
+    if args.plan:
+        execution["plan"] = True
+    if args.library_audit:
+        execution["library_audit"] = True
+    if args.retry_failed:
+        execution["retry_failed"] = True
+        execution["retry_status"] = args.retry_status
     if maintenance_action:
         execution["plex_metadata_maintenance"] = maintenance_action
     config["_execution"] = execution
@@ -378,6 +485,39 @@ def normalize_library_type(value):
     if library_type in {"show", "shows"}:
         return "tv"
     return library_type
+
+
+def cli_media_type(value):
+    normalized = normalize_library_type(value)
+    return "show" if normalized == "tv" else normalized
+
+
+def plex_item_tmdb_ids(item):
+    """Extract explicit TMDb GUIDs already exposed by Plex without searching."""
+    values = [getattr(item, "guid", None)]
+    values.extend(
+        getattr(guid, "id", guid) for guid in (getattr(item, "guids", None) or [])
+    )
+    identifiers = set()
+    for value in values:
+        match = re.search(r"(?:tmdb|themoviedb)(?:://|:)(\d+)", str(value or ""), re.I)
+        if match:
+            identifiers.add(match.group(1))
+    return identifiers
+
+
+def target_items_by_tmdb(items, tmdb_ids):
+    requested = {str(value) for value in (tmdb_ids or []) if str(value).strip()}
+    if not requested:
+        return list(items or []), set()
+    selected = []
+    found = set()
+    for item in items or []:
+        matches = plex_item_tmdb_ids(item) & requested
+        if matches:
+            selected.append(item)
+            found.update(matches)
+    return selected, found
 
 
 def build_scan_scopes(plex, sections, config):
@@ -509,6 +649,24 @@ async def metafusion_main(config, logger):
                 config,
                 plex=plex,
             )
+            requested_media_types = set(execution.get("media_types") or [])
+            if requested_media_types:
+                sections = [
+                    section
+                    for section in sections
+                    if cli_media_type(
+                        getattr(section, "type", None)
+                        or getattr(section, "TYPE", None)
+                    )
+                    in requested_media_types
+                ]
+                selected_libraries = [section.title for section in sections]
+            profile = resolve_compatibility_profile(config)
+            logger.info(
+                "[Compatibility] Using %s for %s mode.",
+                profile,
+                config.get("settings", {}).get("mode", "unknown"),
+            )
             metadata_summaries = {}
             library_results = {}
             config["_job_library_results"] = library_results
@@ -518,6 +676,28 @@ async def metafusion_main(config, logger):
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
             scan_scopes = build_scan_scopes(plex, sections, config)
+            if execution.get("retry_failed"):
+                retry_status = execution.get("retry_status", "all")
+                statuses = None if retry_status == "all" else [retry_status]
+                retry_records = await asyncio.to_thread(
+                    load_item_retries,
+                    server_id=getattr(plex, "machineIdentifier", None) or "unknown",
+                    library_uuids=[scope["library_uuid"] for scope in scan_scopes],
+                    rating_keys=execution.get("rating_keys"),
+                    statuses=statuses,
+                )
+                if not retry_records:
+                    logger.info(
+                        "[Recovery] No queued failed items matched the selected scope."
+                    )
+                    return
+                execution["rating_keys"] = sorted(
+                    {str(record["rating_key"]) for record in retry_records}
+                )
+                logger.info(
+                    "[Recovery] Selectively retrying %d queued item(s).",
+                    len(execution["rating_keys"]),
+                )
             scan_decisions = library_full_scan_decisions(
                 config,
                 targeted=targeted,
@@ -612,6 +792,8 @@ async def metafusion_main(config, logger):
                 section_items = {}
                 identity_counts = Counter()
                 edition_counts = Counter()
+                found_rating_keys = set()
+                found_tmdb_ids = set()
                 for section in sections:
                     try:
                         inventory = await plex_operation(
@@ -619,7 +801,16 @@ async def metafusion_main(config, logger):
                             runtime_config,
                             description=f"List library {section.title}",
                         )
-                        section_items[section.title] = inventory
+                        selected_inventory, matched_tmdb_ids = target_items_by_tmdb(
+                            inventory,
+                            execution.get("tmdb_ids"),
+                        )
+                        section_items[section.title] = selected_inventory
+                        found_tmdb_ids.update(matched_tmdb_ids)
+                        for item in selected_inventory:
+                            rating_key = getattr(item, "ratingKey", None)
+                            if rating_key is not None:
+                                found_rating_keys.add(str(rating_key))
                         for scope in scan_scopes:
                             if scope["library_name"] == section.title:
                                 scope["item_count"] = len(inventory)
@@ -646,6 +837,46 @@ async def metafusion_main(config, logger):
                             "items_succeeded": 0,
                             "items_failed": None,
                         }
+                requested_rating_keys = {
+                    str(value) for value in execution.get("rating_keys", [])
+                }
+                missing_rating_keys = requested_rating_keys - found_rating_keys
+                if missing_rating_keys:
+                    failures.append(
+                        "rating keys not found: "
+                        + ", ".join(sorted(missing_rating_keys))
+                    )
+                requested_tmdb_ids = {
+                    str(value) for value in execution.get("tmdb_ids", [])
+                }
+                missing_tmdb_ids = requested_tmdb_ids - found_tmdb_ids
+                if missing_tmdb_ids:
+                    failures.append(
+                        "TMDb IDs not exposed by Plex GUIDs: "
+                        + ", ".join(sorted(missing_tmdb_ids))
+                    )
+                if execution.get("plan") or execution.get("library_audit"):
+                    loaded_counts = {
+                        scope["library_name"]: scope.get("item_count")
+                        for scope in scan_scopes
+                    }
+                    selected_names = {section.title for section in sections}
+                    config["_library_audit_records"] = [
+                        {
+                            "library": library.get("title") or "Unknown library",
+                            "type": cli_media_type(library.get("type")),
+                            "items": loaded_counts.get(library.get("title"), 0) or 0,
+                            "selected": library.get("title") in selected_names,
+                            "status": (
+                                "loaded"
+                                if library.get("title") in loaded_counts
+                                else "available"
+                            ),
+                        }
+                        for library in all_libraries
+                        if normalize_library_type(library.get("type"))
+                        in {"movie", "tv"}
+                    ]
                 performance = tracker_for(config)
                 if performance:
                     performance.add_duration(
@@ -834,6 +1065,7 @@ async def metafusion_main(config, logger):
                 log_cleanup_event(
                     "cleanup_skipped_run_scope", reason=cleanup_skip_reason
                 )
+            config["_cleanup_result"] = cleanup_result
 
             elapsed_time = (datetime.now().astimezone() - start_time).total_seconds()
             log_final_summary(
@@ -916,6 +1148,8 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_job_library_results"] = {}
     config["_artwork_gaps"] = []
     config["_asset_audit_records"] = []
+    config["_library_audit_records"] = []
+    config["_cleanup_result"] = CleanupResult()
     performance_tracker = PerformanceTracker()
 
     async def run_active_job():
@@ -980,7 +1214,12 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     logger.warning(
                         "[Diagnostics] Unable to write artwork gap report: %s", caught
                     )
-            if config.get("_execution", {}).get("asset_audit", False):
+            execution = config.get("_execution", {})
+            if (
+                execution.get("asset_audit", False)
+                and not execution.get("plan")
+                and not execution.get("library_audit")
+            ):
                 try:
                     audit_report = write_asset_audit_report(
                         config.get("_asset_audit_records"),
@@ -996,7 +1235,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     success = False
                     error = f"Failed to write asset audit report: {caught}"
                     logger.error("[Diagnostics] %s", error)
-            if config.get("_execution", {}).get("metadata_audit", False):
+            if execution.get("metadata_audit", False) and not execution.get("plan"):
                 try:
                     metadata_audit_report = write_metadata_audit_report(
                         config.get("_metadata_audit_records"),
@@ -1013,6 +1252,46 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 except OSError as caught:
                     success = False
                     error = f"Failed to write metadata audit report: {caught}"
+                    logger.error("[Diagnostics] %s", error)
+            if execution.get("plan"):
+                try:
+                    plan_report = write_change_plan_report(
+                        config.get("_metadata_audit_records"),
+                        config.get("_asset_audit_records"),
+                        config.get("_library_audit_records"),
+                        config.get("_artwork_gaps"),
+                        config.get("_cleanup_result"),
+                        mode=config.get("settings", {}).get("mode", "unknown"),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    logger.info(
+                        "[Diagnostics] Read-only change plan saved to %s",
+                        plan_report,
+                    )
+                except OSError as caught:
+                    success = False
+                    error = f"Failed to write read-only change plan: {caught}"
+                    logger.error("[Diagnostics] %s", error)
+            if execution.get("library_audit"):
+                try:
+                    library_report = write_library_asset_audit_report(
+                        config.get("_library_audit_records"),
+                        config.get("_asset_audit_records"),
+                        config.get("_artwork_gaps"),
+                        mode=config.get("settings", {}).get("mode", "unknown"),
+                        retention=config.get("output", {}).get(
+                            "destination_history_report_retention", 10
+                        ),
+                    )
+                    logger.info(
+                        "[Diagnostics] Library and asset audit saved to %s",
+                        library_report,
+                    )
+                except OSError as caught:
+                    success = False
+                    error = f"Failed to write library and asset audit: {caught}"
                     logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
@@ -1058,6 +1337,88 @@ def main(argv=None):
     shutdown_requested.clear()
     shutdown_complete.clear()
     args = parse_cli_args(argv)
+    audit_commands = sum(
+        bool(value)
+        for value in (
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+        )
+    )
+    if args.metadata_audit and args.asset_audit:
+        print(
+            "Configuration error: --metadata-audit and --asset-audit "
+            "cannot be combined",
+            file=sys.stderr,
+        )
+        return 2
+    if audit_commands > 1:
+        print(
+            "Configuration error: choose only one audit or plan command",
+            file=sys.stderr,
+        )
+        return 2
+    if args.retry_failed and any(
+        (args.asset_audit, args.metadata_audit, args.plan, args.library_audit)
+    ):
+        print(
+            "Configuration error: --retry-failed cannot be combined with audits or --plan",
+            file=sys.stderr,
+        )
+        return 2
+    if args.retry_status != "all" and not args.retry_failed:
+        print(
+            "Configuration error: --retry-status requires --retry-failed",
+            file=sys.stderr,
+        )
+        return 2
+    if args.sqlite_target != "all" and not args.sqlite_maintenance:
+        print(
+            "Configuration error: --sqlite-target requires --sqlite-maintenance",
+            file=sys.stderr,
+        )
+        return 2
+    if args.sqlite_maintenance:
+        conflicting = any(
+            (
+                args.metafusion_run,
+                args.schedule,
+                args.preflight,
+                args.release_check,
+                args.asset_audit,
+                args.metadata_audit,
+                args.plan,
+                args.library_audit,
+                args.retry_failed,
+                args.compatibility_check,
+            )
+        )
+        if conflicting:
+            print(
+                "Configuration error: SQLite maintenance must run as a standalone command",
+                file=sys.stderr,
+            )
+            return 2
+        maintenance_lock = None
+        try:
+            if args.sqlite_maintenance != "check":
+                maintenance_lock = JobRunLock(
+                    Path(BASE_CONFIG_DIR) / ".metafusion-run.lock"
+                )
+                maintenance_lock.acquire()
+            results = maintain_databases(
+                args.sqlite_maintenance,
+                args.sqlite_target,
+            )
+        except (JobAlreadyRunningError, OSError, ValueError) as error:
+            print(f"SQLite maintenance failed: {error}", file=sys.stderr)
+            return 1
+        finally:
+            if maintenance_lock is not None:
+                maintenance_lock.release()
+        print(format_maintenance_results(results))
+        return 0 if all(result.get("healthy") for result in results) else 1
     if args.metadata_only and (args.asset_only or args.asset_audit):
         print("Configuration error: --metadata-only and --asset-only cannot be combined", file=sys.stderr)
         return 2
@@ -1109,6 +1470,9 @@ def main(argv=None):
                 or args.preflight
                 or args.asset_audit
                 or args.metadata_audit
+                or args.plan
+                or args.library_audit
+                or args.compatibility_check
                 or args.release_check
             ),
             return_sources=True,
@@ -1130,6 +1494,7 @@ def main(argv=None):
         ("assets", "run_background"): args.run_background or args.metadata_only,
         ("cleanup", "run_cleanup"): args.metadata_only or args.asset_only or bool(args.rating_key),
         ("plex_libraries",): bool(args.library),
+        ("compatibility", "profile"): args.compatibility_profile is not None,
     }
     for path, used in cli_sources.items():
         if used:
@@ -1159,6 +1524,31 @@ def main(argv=None):
         for error in validation_errors:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    if args.compatibility_check:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            preflight = asyncio.run(connector_preflight(config))
+            compatibility = evaluate_compatibility(config, preflight)
+            report = write_compatibility_report(
+                compatibility,
+                retention=config.get("output", {}).get(
+                    "destination_history_report_retention", 10
+                ),
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Compatibility check failed: {message}", file=sys.stderr)
+            return 1
+        print(
+            f"Compatibility profile {compatibility['profile']} "
+            f"{'passed' if compatibility['passed'] else 'failed'}."
+        )
+        print(f"Report saved to {report}")
+        return 0 if compatibility["passed"] else 1
     if args.release_check:
         try:
             validate_preflight_paths(config, BASE_CONFIG_DIR)
