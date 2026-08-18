@@ -204,9 +204,10 @@ def cleanup_inventory_errors(metadata, feature_flags):
             feature_flags.get(name, False)
             for name in ("metadata_basic", "metadata_enhanced", "season")
         )
-        if tv_inventory_cleanup_enabled:
-            if not isinstance(meta.get("seasons_episodes"), dict):
-                missing.append("seasons_episodes")
+        if tv_inventory_cleanup_enabled and not isinstance(
+            meta.get("seasons_episodes"), dict
+        ):
+            missing.append("seasons_episodes")
         if missing:
             errors.append(
                 f"{meta.get('title')} ({meta.get('year')}): {', '.join(missing)}"

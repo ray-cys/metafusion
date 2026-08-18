@@ -5,7 +5,9 @@ import sqlite3
 import time
 import zlib
 from collections.abc import MutableMapping
+from contextlib import suppress
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 
@@ -17,18 +19,18 @@ class PersistentTTLCache(MutableMapping):
     COMPRESSION_LEVEL = 1
 
     def __init__(self):
-        self.path = None
-        self.ttl_seconds = 24 * 3600
-        self.max_entries = 0
-        self.max_bytes = 0
+        self.path: Path | None = None
+        self.ttl_seconds: float = 24 * 3600
+        self.max_entries: int = 0
+        self.max_bytes: int = 0
         self.automatic_limits = True
         self.enabled = True
         self.writable = True
-        self._connection = None
-        self._memory = {}
-        self._memory_expires = {}
-        self._memory_touched = {}
-        self._pending_touches = {}
+        self._connection: Any = None
+        self._memory: dict[Any, Any] = {}
+        self._memory_expires: dict[Any, float] = {}
+        self._memory_touched: dict[Any, float] = {}
+        self._pending_touches: dict[Any, float] = {}
         self._ignore_database = False
         self._entry_count = 0
         self._stored_bytes = 0
@@ -85,6 +87,7 @@ class PersistentTTLCache(MutableMapping):
                 self._handle_database_error(error)
 
     def _effective_limits(self, configured_entries, configured_bytes):
+        assert self.path is not None
         parent = self.path.parent
         while not parent.exists() and parent != parent.parent:
             parent = parent.parent
@@ -118,6 +121,7 @@ class PersistentTTLCache(MutableMapping):
         )
 
     def _open_database(self):
+        assert self.path is not None
         if not self.writable and not self.path.exists():
             return
 
@@ -205,10 +209,8 @@ class PersistentTTLCache(MutableMapping):
                 reverse=True,
             )
             for expired in old_sets[4:]:
-                try:
+                with suppress(OSError):
                     expired.unlink()
-                except OSError:
-                    pass
         try:
             self._open_database()
         except (OSError, sqlite3.Error):
@@ -338,7 +340,10 @@ class PersistentTTLCache(MutableMapping):
             and sum(len(self._encode(value)) for value in self._memory.values())
             > self.max_bytes
         ):
-            oldest = min(self._memory_touched, key=self._memory_touched.get)
+            oldest = min(
+                self._memory_touched,
+                key=lambda name: self._memory_touched[name],
+            )
             self._memory.pop(oldest, None)
             self._memory_expires.pop(oldest, None)
             self._memory_touched.pop(oldest, None)
@@ -353,6 +358,7 @@ class PersistentTTLCache(MutableMapping):
         self._trim_memory()
 
     def _delete_fetched_row(self, key, stored_bytes):
+        assert self._connection is not None
         try:
             self._connection.execute(
                 "DELETE FROM tmdb_cache WHERE cache_key = ?", (key,)
@@ -380,7 +386,7 @@ class PersistentTTLCache(MutableMapping):
         if self._connection is None or self._ignore_database:
             if record_stats:
                 self._misses += 1
-            raise KeyError(key)
+            raise KeyError(key) from None
 
         try:
             row = self._connection.execute(
@@ -396,7 +402,7 @@ class PersistentTTLCache(MutableMapping):
         if row is None:
             if record_stats:
                 self._misses += 1
-            raise KeyError(key)
+            raise KeyError(key) from None
         if float(row[1]) <= now:
             if self.writable:
                 self._delete_fetched_row(key, row[3])
@@ -416,7 +422,7 @@ class PersistentTTLCache(MutableMapping):
                 self._delete_fetched_row(key, row[3])
             if record_stats:
                 self._misses += 1
-            raise KeyError(key)
+            raise KeyError(key) from None
 
         if record_stats:
             self._hits += 1
@@ -591,10 +597,8 @@ class PersistentTTLCache(MutableMapping):
     def stats(self):
         disk_bytes = 0
         if self.path is not None:
-            try:
+            with suppress(OSError):
                 disk_bytes = self.path.stat().st_size
-            except OSError:
-                pass
         if not self.enabled:
             health = "disabled"
         elif self._connection is None:
@@ -652,10 +656,8 @@ class PersistentTTLCache(MutableMapping):
             return True
         except sqlite3.Error as error:
             self._last_error = f"{type(error).__name__}: {error}"
-            try:
+            with suppress(sqlite3.Error):
                 self._connection.rollback()
-            except sqlite3.Error:
-                pass
             self._pending_touches.clear()
             self._dirty = False
             try:

@@ -12,7 +12,7 @@ from modules.kometa import (
 
 
 def test_generated_schema_rejects_cast_and_accepts_supported_crew():
-    with pytest.raises(KometaSchemaError, match="cast.sync"):
+    with pytest.raises(KometaSchemaError, match=r"cast\.sync"):
         validate_generated_metadata({"cast.sync": ["Actor"]}, "movie")
 
     assert validate_generated_metadata(

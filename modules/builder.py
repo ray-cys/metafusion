@@ -1,5 +1,8 @@
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import Any
 
 from helper.asset_registry import AssetDestinationRegistry, normalize_destination
 from helper.cache import load_cache, meta_cache_async
@@ -1807,8 +1810,8 @@ async def _build_tv(
     metadata_action = "skipped" if run_metadata else "not_due"
     poster_action = "skipped" if run_poster else "not_due"
     background_action = "skipped" if run_background else "not_due"
-    season_poster_actions = {}
-    season_candidate_sources = {}
+    season_poster_actions: dict[int | None, str] = {}
+    season_candidate_sources: dict[int, str] = {}
     result = {
         "poster": {"size": 0},
         "background": {"size": 0},
@@ -2117,7 +2120,7 @@ async def _build_tv(
             media_type="TV Show",
             full_title=full_title,
         )
-    season_details_by_number = {}
+    season_details_by_number: dict[tuple[int, str, int], Any] = {}
 
     def season_source(season_number):
         source = season_sources.get(int(season_number), {})
@@ -2253,7 +2256,7 @@ async def _build_tv(
                 )
                 return season_number, None, None, True
 
-            episode_sources = {}
+            episode_sources: dict[int, list[tuple[int, int]]] = {}
             for plex_episode in inventory[season_number]:
                 default_target_season = season_source(season_number)[1]
                 target_season, target_episode = episode_overrides.get(
@@ -3156,13 +3159,16 @@ async def _build_tv(
                 temp_path.unlink(missing_ok=True)
         result["season_posters"][season_number] = season_poster_size
     
-    artwork_operations = [process_tv_poster, process_tv_background]
+    artwork_operations: list[Callable[[], Awaitable[None]]] = [
+        process_tv_poster,
+        process_tv_background,
+    ]
     if feature_flags and feature_flags.get("season", True):
         for season_info in season_infos:
             season_number = season_info.get("season_number")
             if season_number is not None:
                 artwork_operations.append(
-                    lambda info=season_info: process_season_poster(info)
+                    partial(process_season_poster, season_info)
                 )
 
     await bounded_callables(

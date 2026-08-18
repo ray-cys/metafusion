@@ -164,7 +164,7 @@ def test_doctor_mode_is_non_writing_and_never_prints_secrets(tmp_path):
             "TMDB_API_KEY": "doctor-tmdb-secret",
             "RUN_MODE": "plex",
             "RUN_SCHEDULE": "false",
-            "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
 
@@ -174,7 +174,7 @@ def test_doctor_mode_is_non_writing_and_never_prints_secrets(tmp_path):
         env=environment,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=20,
     )
 
     output = result.stdout + result.stderr

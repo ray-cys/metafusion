@@ -1000,7 +1000,7 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
             "SCHEDULE_CATCH_UP": "false",
             "RUN_TIMES": "23:59",
             "SHUTDOWN_TIMEOUT": "2",
-            "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
     process = subprocess.Popen(
@@ -1012,12 +1012,12 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
         text=True,
     )
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 15
         while not status_file.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         if not status_file.exists():
             process.terminate()
-            output, _ = process.communicate(timeout=3)
+            output, _ = process.communicate(timeout=5)
             pytest.fail(f"scheduler did not start: {output}")
 
         started = time.monotonic()

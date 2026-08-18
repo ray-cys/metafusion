@@ -381,15 +381,18 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
         now=now,
     ):
         causes.add("background_refresh_due")
-    if normalized_type == "tv" and flags.get("season", False):
-        if timestamp_due(
+    if (
+        normalized_type == "tv"
+        and flags.get("season", False)
+        and timestamp_due(
             cached.get("season_last_checked"),
             adaptive_artwork_days(
                 cached, "season", get_image_upgrade_days(config, "season")
             ),
             now=now,
-        ):
-            causes.add("season_refresh_due")
+        )
+    ):
+        causes.add("season_refresh_due")
     return causes
 
 

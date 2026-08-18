@@ -5,8 +5,10 @@ import os
 import sqlite3
 import threading
 from collections.abc import MutableMapping
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 from helper.asset_registry import normalize_destination
@@ -16,9 +18,9 @@ STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
 SCHEMA_VERSION = 4
 FILE_MODE = 0o664
 _database_setup_lock = threading.Lock()
-_initialized_databases = set()
-_integrity_checked_databases = set()
-_backed_up_databases = set()
+_initialized_databases: set[tuple[str, int, int]] = set()
+_integrity_checked_databases: set[tuple[str, int, int]] = set()
+_backed_up_databases: set[tuple[str, int, int, int]] = set()
 
 _RETRY_DELAYS = (
     timedelta(minutes=15),
@@ -83,10 +85,8 @@ def _backup_before_schema_upgrade(connection, path, version):
         reverse=True,
     )
     for expired in backups[2:]:
-        try:
+        with suppress(OSError):
             expired.unlink()
-        except OSError:
-            pass
     _backed_up_databases.add(identity)
     return backup_path
 
@@ -395,7 +395,7 @@ def _asset_rows(cache_key, entry, seasons=None):
 
 def _backfill_asset_ownership(connection):
     connection.execute("DELETE FROM asset_ownership")
-    seasons = {}
+    seasons: dict[str, dict[str, Any]] = {}
     for row in connection.execute(
         "SELECT cache_key, season_number, payload FROM season_state"
     ):
@@ -627,7 +627,7 @@ class MediaStateStore(MutableMapping):
 
     def asset_destination_records(self, scopes=None):
         """Return indexed artwork ownership, optionally limited to scopes."""
-        records = []
+        records: list[dict[str, Any]] = []
         if self._connection is not None:
             table_exists = self._connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' "
@@ -747,10 +747,8 @@ class MediaStateStore(MutableMapping):
             self._deleted.clear()
             return True
         except (sqlite3.Error, TypeError, ValueError) as error:
-            try:
+            with suppress(sqlite3.Error):
                 self._connection.rollback()
-            except sqlite3.Error:
-                pass
             raise StateDatabaseError(
                 f"Unable to flush durable media state {self.path}: {error}"
             ) from error

@@ -213,10 +213,10 @@ async def cleanup_title_orphans(
         if not isinstance(cache_entry, dict):
             continue
         valid_seasons = {
-            str(number) for number in (meta.get("seasons_episodes") or {}).keys()
+            str(number) for number in (meta.get("seasons_episodes") or {})
         }
         cached_season_keys = {
-            str(number): number for number in (cache_entry.get("seasons") or {}).keys()
+            str(number): number for number in (cache_entry.get("seasons") or {})
         }
         identity = (meta.get("title"), safe_int(meta.get("year")))
         if not identity[0] or identity[1] is None:
@@ -398,9 +398,9 @@ async def cleanup_title_orphans(
                     if not isinstance(yaml_seasons, dict):
                         continue
                     yaml_season_keys = {
-                        str(number): number for number in yaml_seasons.keys()
+                        str(number): number for number in yaml_seasons
                     }
-                    valid_seasons = {str(number) for number in inventory.keys()}
+                    valid_seasons = {str(number) for number in inventory}
                     for season_number in set(yaml_season_keys) - valid_seasons:
                         if identity:
                             removed_seasons.add((*identity, season_number))
@@ -432,7 +432,7 @@ async def cleanup_title_orphans(
                         if not isinstance(episodes, dict):
                             continue
                         episode_keys = {
-                            str(number): number for number in episodes.keys()
+                            str(number): number for number in episodes
                         }
                         valid_episodes = {
                             str(number)

@@ -133,8 +133,8 @@ def _configured_ceiling(config):
 
 
 def automatic_item_ceiling(resources):
-    cpu_slots = max(1, int(math.floor(resources.cpu_cores * 2)))
-    memory_slots = max(1, int(math.floor(resources.memory_gib / 0.75)))
+    cpu_slots = max(1, math.floor(resources.cpu_cores * 2))
+    memory_slots = max(1, math.floor(resources.memory_gib / 0.75))
     return max(1, min(_ABSOLUTE_CEILINGS["item"], cpu_slots, memory_slots))
 
 
@@ -296,7 +296,7 @@ class AdaptiveLane:
                 self.consecutive_failures += 1
                 previous = self.limit
                 if lease.reason == "rate_limit":
-                    self.limit = max(self.floor, int(math.ceil(self.limit / 2.0)))
+                    self.limit = max(self.floor, math.ceil(self.limit / 2.0))
                 elif self.consecutive_failures >= 2:
                     self.limit = max(self.floor, self.limit - 1)
                 self._notify_adjustment(previous, lease.reason or "failure")

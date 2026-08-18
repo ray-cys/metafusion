@@ -77,11 +77,15 @@ jobs:
 
       - name: Run static checks
         run: |
-          ruff check --select F,E9,I,DTZ,S110,S112,TRY004 .
+          ruff check .
+          mypy
           python tools/generate_config_surfaces.py --check
 
       - name: Run tests
-        run: pytest -q --cov=. --cov-report=term-missing --cov-fail-under=85
+        run: |
+          pytest -q --cov=. --cov-report=term-missing \
+            --cov-report=json:coverage.json --cov-fail-under=85
+          python tools/check_targeted_coverage.py coverage.json
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.lock --require-hashes --disable-pip --no-deps

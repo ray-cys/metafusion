@@ -1,5 +1,6 @@
 import copy
 import re
+from typing import Any
 
 PROVIDER_KEY = re.compile(r"^(tmdb|tvdb|imdb):(.+)$", re.IGNORECASE)
 EPISODE_KEY = re.compile(r"^S(\d+)E(\d+)$", re.IGNORECASE)
@@ -43,11 +44,14 @@ def _normalized_split_mapping(raw, default_show_policy="preserve"):
     for plex_season, source in (raw.get("seasons") or {}).items():
         if not isinstance(source, dict) or source.get("tmdb_id") is None:
             continue
+        raw_season = source.get(
+            "season_number", source.get("season", plex_season)
+        )
+        if raw_season is None:
+            continue
         try:
             plex_number = int(plex_season)
-            tmdb_season = int(
-                source.get("season_number", source.get("season", plex_number))
-            )
+            tmdb_season = int(raw_season)
         except (TypeError, ValueError):
             continue
         seasons[plex_number] = {
@@ -68,7 +72,9 @@ def _split_mapping_catalog(config):
     ).lower()
     if default_policy not in {"preserve", "primary"}:
         default_policy = "preserve"
-    catalog = copy.deepcopy(BUILTIN_SPLIT_SERIES_MAPPINGS)
+    catalog: dict[str, dict[str, Any]] = copy.deepcopy(
+        BUILTIN_SPLIT_SERIES_MAPPINGS
+    )
     configured = config.get("tmdb", {}).get("split_series_mappings", {})
     if not isinstance(configured, dict):
         configured = {}
@@ -76,7 +82,7 @@ def _split_mapping_catalog(config):
         key = str(raw_key).strip().lower()
         if not PROVIDER_KEY.match(key) or not isinstance(raw_mapping, dict):
             continue
-        existing = catalog.get(key, {})
+        existing: dict[str, Any] = catalog.get(key, {})
         merged = copy.deepcopy(existing)
         merged.update(
             {
@@ -147,6 +153,8 @@ def _episode_pair(value):
     if isinstance(value, dict):
         season = value.get("season_number", value.get("season"))
         episode = value.get("episode_number", value.get("episode"))
+        if season is None or episode is None:
+            return None
         try:
             pair = int(season), int(episode)
             return pair if pair[0] >= 0 and pair[1] >= 1 else None
@@ -240,13 +248,14 @@ def validate_provider_mapping_config(tmdb_config):
                     errors.append(
                         f"{season_prefix}.season and season_number conflict"
                     )
+                source_tmdb_id = source.get("tmdb_id")
+                target_season = source.get(
+                    "season_number", source.get("season", plex_season)
+                )
                 try:
-                    if int(source.get("tmdb_id")) <= 0:
+                    if source_tmdb_id is None or int(source_tmdb_id) <= 0:
                         raise ValueError
-                    target_season = source.get(
-                        "season_number", source.get("season", plex_season)
-                    )
-                    if int(target_season) < 0:
+                    if target_season is None or int(target_season) < 0:
                         raise ValueError
                 except (TypeError, ValueError):
                     errors.append(
@@ -266,7 +275,7 @@ def validate_provider_mapping_config(tmdb_config):
             if not isinstance(mapping, dict):
                 errors.append(f"{prefix} must be a mapping")
                 continue
-            targets = {}
+            targets: dict[tuple[int, int], tuple[int, int]] = {}
             for source, target in mapping.items():
                 source_pair = _episode_pair(source)
                 target_pair = _episode_pair(target)

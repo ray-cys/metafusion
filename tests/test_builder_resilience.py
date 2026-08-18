@@ -1126,6 +1126,40 @@ def test_movie_builder_handles_invalid_tmdb_and_asset_download_failure(
     assert result["background_action"] == "failed"
 
 
+@pytest.mark.parametrize("missing_output_path", [True, False])
+def test_movie_builder_preserves_metadata_when_asset_destination_is_unavailable(
+    monkeypatch, tmp_path, missing_output_path
+):
+    async def no_cache(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(builder, "meta_cache_async", no_cache)
+    tmdb_response_cache["movie/100"] = movie_details()
+    meta = movie_meta()
+    if missing_output_path:
+        meta["movie_path"] = None
+    else:
+        monkeypatch.setattr(builder, "get_asset_path", lambda *_args, **_kwargs: None)
+
+    result = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                season=False,
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["metadata_action"] == "not_due"
+    assert result["poster_action"] == "failed"
+    assert result["background_action"] == "failed"
+
+
 def test_movie_builder_recovers_stale_tmdb_id_from_imdb(monkeypatch, tmp_path):
     cache_calls = install_successful_asset_mocks(monkeypatch)
     tmdb_response_cache["movie/101"] = movie_details()
@@ -1508,6 +1542,139 @@ def test_movie_request_keeps_metadata_language_while_including_artwork_fallbacks
     assert params["language"] == "en-US"
     assert params["region"] == "US"
     assert params["include_image_language"] == "en,zh,ja,null"
+
+
+def test_movie_builder_rejects_a_resolved_but_inconsistent_tmdb_identity(
+    monkeypatch, tmp_path
+):
+    tmdb_response_cache["movie/100"] = movie_details()
+    gaps = []
+    config = build_config(tmp_path)
+    config["_artwork_gaps"] = gaps
+    monkeypatch.setattr(
+        builder,
+        "tmdb_identity_consistent",
+        lambda *_args, **_kwargs: (False, "forced title and year mismatch"),
+    )
+
+    result = asyncio.run(
+        builder.build_movie(
+            config,
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                poster=False,
+                season=False,
+                background=False,
+            ),
+            meta=movie_meta(),
+            session=object(),
+        )
+    )
+
+    assert result["is_complete"] is False
+    assert result["metadata_action"] == "failed"
+    assert gaps == [
+        {
+            "library": None,
+            "category": "identity_rejected",
+            "media_type": "Movie",
+            "title": "Example Movie (2020)",
+            "asset_type": "metadata",
+            "detail": "forced title and year mismatch",
+        }
+    ]
+
+
+def test_movie_builder_persists_a_recovered_tmdb_identity(monkeypatch, tmp_path):
+    async def recovered_details(*_args, **_kwargs):
+        return "101", movie_details(), "100"
+
+    async def cache_write(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(builder, "tmdb_details_with_recovery", recovered_details)
+    monkeypatch.setattr(builder, "meta_cache_async", cache_write)
+    monkeypatch.setattr(
+        builder,
+        "tmdb_external_id_consensus",
+        lambda *_args, **_kwargs: (True, False, "not available"),
+    )
+    monkeypatch.setattr(
+        builder,
+        "tmdb_identity_consistent",
+        lambda *_args, **_kwargs: (True, "matched"),
+    )
+    meta = movie_meta()
+
+    result = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                poster=False,
+                season=False,
+                background=False,
+            ),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["metadata_action"] == "downloaded"
+    assert meta["plex_tmdb_id"] == "100"
+    assert meta["tmdb_id"] == "101"
+
+
+def test_movie_builder_handles_a_zero_tmdb_id_with_and_without_imdb_fallback(
+    monkeypatch, tmp_path
+):
+    async def zero_identity(*_args, **_kwargs):
+        return "0"
+
+    async def recovered_details(*_args, **_kwargs):
+        return "100", movie_details(), "0"
+
+    async def cache_write(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(builder, "resolve_tmdb_id", zero_identity)
+    monkeypatch.setattr(builder, "tmdb_details_with_recovery", recovered_details)
+    monkeypatch.setattr(builder, "meta_cache_async", cache_write)
+    monkeypatch.setattr(
+        builder,
+        "tmdb_external_id_consensus",
+        lambda *_args, **_kwargs: (True, False, "not available"),
+    )
+    monkeypatch.setattr(
+        builder,
+        "tmdb_identity_consistent",
+        lambda *_args, **_kwargs: (True, "matched"),
+    )
+    flags = feature_flags(poster=False, season=False, background=False)
+
+    without_imdb = movie_meta()
+    without_imdb["imdb_id"] = None
+    failed = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=flags,
+            meta=without_imdb,
+            session=object(),
+        )
+    )
+    recovered = asyncio.run(
+        builder.build_movie(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=flags,
+            meta=movie_meta(),
+            session=object(),
+        )
+    )
+
+    assert failed["metadata_action"] == "failed"
+    assert recovered["metadata_action"] == "downloaded"
 
 
 def test_cached_tmdb_source_can_skip_artwork_download(monkeypatch, tmp_path):

@@ -108,7 +108,7 @@ def test_type_validation_rejects_deprecated_metafusion_fields():
     invalid = document()
     invalid["metadata"]["Example (2020)"]["cast.sync"] = ["Actor"]
 
-    with pytest.raises(KometaSchemaError, match="cast.sync"):
+    with pytest.raises(KometaSchemaError, match=r"cast\.sync"):
         validate_metadata_document(invalid, library_type="movie")
 
 

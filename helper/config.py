@@ -705,7 +705,7 @@ def load_config_file(
             log_config_event("yaml_missing", config_file=config_file)
 
     config = copy.deepcopy(DEFAULT_CONFIG)
-    sources = {path: "default" for path in _leaf_paths(config)}
+    sources = dict.fromkeys(_leaf_paths(config), "default")
     if config_file.exists():
         try:
             with open(config_file, "r", encoding="utf-8") as f:

@@ -85,3 +85,16 @@ backup, optimization, checkpoint, free-space, and vacuum paths. Release soak
 testing should run `--plan` and `--compatibility-check` before a normal job, and
 use `--sqlite-maintenance check` after the soak without overlapping an active
 job.
+
+Phase 22 hardening also enforces focused coverage floors for the builders, TMDb
+cache, logging/provider mappings, main orchestration, and durable state paths.
+Fault tests prove that HTTP 429 responses are not cached, a later TMDb request
+can recover, and temporary Plex disconnects retry without duplicating a
+successful mutation. SQLite backups are opened independently, checked, copied
+to a separate restore path, and read back before the release gate passes.
+
+Static checks use Ruff's Bugbear, Comprehensions, Simplify, and Ruff-specific
+rule groups in addition to the existing correctness/security selectors. Mypy
+checks the storage, provider mapping, logging, state, and builder modules as the
+first typed boundary; its scope should expand only after each newly included
+module is clean.

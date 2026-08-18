@@ -408,6 +408,14 @@ which is normal before the first run. Every mutating operation holds the normal
 job lock and refuses to overlap a MetaFusion job. Stop the container before
 copying live database files outside this command.
 
+To restore durable state, stop MetaFusion, keep the damaged database for
+forensics, copy a verified `meta_db-*.sqlite3` backup back to
+`/config/cache/meta_db.sqlite3`, retain owner/group write access, and run
+`--sqlite-maintenance check --sqlite-target state` before resuming scheduled
+jobs. Never replace a live database while the container is running. TMDb cache
+restoration is normally unnecessary because that database is disposable and
+rebuilds from later API responses.
+
 ### Compatibility profiles
 
 `COMPATIBILITY_PROFILE=auto` is recommended. It resolves to `kometa-2.4` in

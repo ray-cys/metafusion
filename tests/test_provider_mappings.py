@@ -1,6 +1,8 @@
 from helper.provider_mappings import (
+    provider_identity_keys,
     resolve_episode_overrides,
     resolve_split_series_mapping,
+    split_series_season_sources,
     validate_provider_mapping_config,
 )
 
@@ -89,3 +91,113 @@ def test_provider_mapping_validation_rejects_unsafe_shapes():
     assert any("bad-key" in error for error in errors)
     assert any("requires positive tmdb_id" in error for error in errors)
     assert any("episode-one" in error for error in errors)
+
+
+def test_provider_mapping_normalization_rejects_ambiguous_and_malformed_values():
+    assert provider_identity_keys(tmdb_id=" 10 ", tvdb_id="", imdb_id="TT10") == [
+        "tmdb:10",
+        "imdb:tt10",
+    ]
+    config = {
+        "tmdb": {
+            "split_series_show_policy": "invalid",
+            "split_series_mappings": {
+                "tvdb:one": {
+                    "show_policy": "invalid",
+                    "seasons": {
+                        "bad": {"tmdb_id": "10", "season_number": "bad"},
+                        "1": {"tmdb_id": "10", "season_number": None},
+                        "2": {"tmdb_id": "10", "season_number": 1},
+                    },
+                },
+                "tvdb:two": {
+                    "seasons": {1: {"tmdb_id": "10", "season_number": 1}}
+                },
+                "not-a-provider": {"seasons": {1: {"tmdb_id": "11"}}},
+                "tmdb:12": "not a mapping",
+            },
+        }
+    }
+
+    assert resolve_split_series_mapping(config, tmdb_id="10") is None
+    resolved = resolve_split_series_mapping(config, tvdb_id="one")
+    assert resolved["show_policy"] == "preserve"
+    assert resolved["seasons"] == {2: {"tmdb_id": "10", "season_number": 1}}
+    sources = split_series_season_sources(config, tvdb_id="one")
+    sources[2]["tmdb_id"] = "changed"
+    assert split_series_season_sources(config, tvdb_id="one")[2]["tmdb_id"] == "10"
+    assert split_series_season_sources(config, tvdb_id="missing") == {}
+
+
+def test_episode_override_and_validation_shape_matrix():
+    assert resolve_episode_overrides(
+        {"tmdb": {"episode_overrides": []}}, tvdb_id="1"
+    ) == {}
+    assert resolve_episode_overrides(
+        {"tmdb": {"episode_overrides": {"tvdb:1": []}}}, tvdb_id="1"
+    ) == {}
+    assert resolve_episode_overrides(
+        {
+            "tmdb": {
+                "episode_overrides": {
+                    "tvdb:1": {
+                        "bad": "S01E01",
+                        "S01E00": "S01E01",
+                        "S01E01": {"season": None, "episode": 1},
+                        "S01E02": {"season": 2, "episode": 3},
+                    }
+                }
+            }
+        },
+        tvdb_id="1",
+    ) == {(1, 2): (2, 3)}
+
+    errors = validate_provider_mapping_config(
+        {
+            "split_series_mappings": {
+                "tvdb:1": "bad",
+                "tmdb:2": {
+                    "unexpected": True,
+                    "show_policy": "replace",
+                    "seasons": {
+                        -1: "bad",
+                        1: {
+                            "tmdb_id": 2,
+                            "season": 1,
+                            "season_number": 2,
+                            "extra": True,
+                        },
+                        2: {"tmdb_id": None, "season_number": -1},
+                    },
+                },
+            },
+            "episode_overrides": {
+                "bad": {},
+                "tvdb:1": "bad",
+                "tmdb:2": {
+                    "S01E01": "S02E01",
+                    "S01E02": "S02E01",
+                },
+            },
+        }
+    )
+
+    expected_fragments = (
+        "tvdb:1 must be a mapping",
+        "unsupported keys",
+        "show_policy",
+        "non-negative season",
+        "conflict",
+        "requires positive tmdb_id",
+        "must use a tmdb:, tvdb:, or imdb: key",
+        "maps multiple Plex episodes",
+    )
+    for fragment in expected_fragments:
+        assert any(fragment in error for error in errors)
+
+    assert validate_provider_mapping_config(
+        {"split_series_mappings": [], "episode_overrides": []}
+    ) == [
+        "tmdb.split_series_mappings must be a mapping",
+        "tmdb.episode_overrides must be a mapping",
+    ]

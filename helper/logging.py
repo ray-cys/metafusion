@@ -5,6 +5,7 @@ import platform
 import sys
 import textwrap
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import psutil
@@ -72,10 +73,8 @@ class SizeAndTimeRotatingFileHandler(logging.FileHandler):
             reverse=True,
         )
         for expired in backups[self.backup_count :]:
-            try:
+            with suppress(OSError):
                 expired.unlink()
-            except OSError:
-                pass
         self.stream = self._open()
         self.next_rollover_at = self._next_midnight()
 
@@ -913,6 +912,7 @@ class PlexMetadataProgress:
             return False
         if self.last_logged_at is None:
             self.start()
+        assert self.last_logged_at is not None
         completed = min(self.total_items, max(0, int(completed)))
         now = self.clock()
         elapsed = now - self.last_logged_at
