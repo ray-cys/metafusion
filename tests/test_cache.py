@@ -97,6 +97,15 @@ def test_cache_updates_preserve_identity_and_use_exact_season_number(tmp_path):
             None,
             None,
             update_timestamp=False,
+            plex_child_fingerprint="child-fingerprint",
+        )
+        await cache_module.meta_cache_async(
+            "tv:Example:2020",
+            None,
+            None,
+            None,
+            None,
+            update_timestamp=False,
             season_number=2,
             season_upgraded=True,
         )
@@ -123,6 +132,7 @@ def test_cache_updates_preserve_identity_and_use_exact_season_number(tmp_path):
     entry = cache_module.load_cache()["tv:Example:2020"]
 
     assert entry["tmdb_id"] == 123
+    assert entry["plex_child_fingerprint"] == "child-fingerprint"
     assert entry["title"] == "Example"
     assert entry["year"] == 2020
     assert entry["media_type"] == "tv"

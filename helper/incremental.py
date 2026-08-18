@@ -36,6 +36,38 @@ def item_updated_at(item):
     return None if value is None else str(value)
 
 
+def child_inventory_fingerprint(item):
+    """Fingerprint Plex's show-level season and episode inventory counters."""
+    if isinstance(item, dict):
+        media_type = item.get("type") or item.get("library_type")
+        get_value = item.get
+    else:
+        media_type = getattr(item, "type", None)
+
+        def get_value(name):
+            return getattr(item, name, None)
+    if str(media_type or "").lower() not in {"show", "shows", "tv"}:
+        return None
+
+    counters = {}
+    for source, target in (
+        ("childCount", "children"),
+        ("seasonCount", "seasons"),
+        ("leafCount", "episodes"),
+    ):
+        value = get_value(source)
+        if value is None:
+            continue
+        try:
+            counters[target] = int(value)
+        except (TypeError, ValueError):
+            counters[target] = str(value)
+    if not counters:
+        return None
+    encoded = json.dumps(counters, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def config_fingerprint(config):
     relevant = {
         "library_name": config.get("_library_name"),
@@ -402,12 +434,17 @@ def plan_items(
     for item in candidates:
         rating_key = str(getattr(item, "ratingKey", ""))
         updated_at = item_updated_at(item)
+        child_fingerprint = child_inventory_fingerprint(item)
         cached = cache_by_rating_key.get(rating_key)
         changed = (
             not cached
             or updated_at is None
             or cached.get("plex_updated_at") != updated_at
             or cached.get("config_fingerprint") != fingerprint
+            or (
+                child_fingerprint is not None
+                and cached.get("plex_child_fingerprint") != child_fingerprint
+            )
         )
         if changed:
             reasons = enabled_work_reasons(

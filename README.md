@@ -209,6 +209,8 @@ scheduled slot after a restart. Scheduling is based on saved timestamps, not
 container uptime.
 
 `INCREMENTAL=True` skips successfully processed unchanged items.
+TV child-count fingerprints also select a show when Plex adds a season or
+episode without changing the parent show's update timestamp.
 `FULL_SCAN_INTERVAL_HOURS` controls the maximum time between complete
 reconciliation scans. Artwork refresh intervals independently make unchanged
 items eligible for reconsideration:

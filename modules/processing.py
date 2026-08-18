@@ -8,7 +8,7 @@ from helper.cache import (
     set_cache_scope,
 )
 from helper.config import mode_check
-from helper.incremental import plan_items
+from helper.incremental import child_inventory_fingerprint, plan_items
 from helper.logging import (
     PlexMetadataProgress,
     log_processing_event,
@@ -586,6 +586,7 @@ async def process_library(
                                 str(getattr(item, "ratingKey", ""))
                             ),
                             pending_count,
+                            child_inventory_fingerprint(item),
                         )
                     )
 
@@ -804,7 +805,7 @@ async def process_library(
         elif mode_check(config, "kometa") and feature_flags["dry_run"]:
             log_processing_event("processing_metadata_dry_run", library_name=library_name)
 
-        for meta, metadata_pending_count in pending_incremental:
+        for meta, metadata_pending_count, plex_child_fingerprint in pending_incremental:
             if not meta:
                 continue
             media_type = (meta.get("library_type") or "unknown").lower()
@@ -819,6 +820,7 @@ async def process_library(
                 update_timestamp=False,
                 rating_key=meta.get("ratingKey"),
                 plex_updated_at=meta.get("updatedAt"),
+                plex_child_fingerprint=plex_child_fingerprint,
                 config_fingerprint=incremental_fingerprint,
                 metadata_pending_count=metadata_pending_count,
             )

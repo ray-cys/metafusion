@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from helper.incremental import (
+    child_inventory_fingerprint,
     config_fingerprint,
     image_upgrade_reasons,
     image_upgrade_due,
@@ -61,6 +62,66 @@ def test_incremental_selection_skips_only_matching_successful_fingerprints():
     assert [item.ratingKey for item in selected] == ["2", "3"]
     assert select_items(items, cache, fingerprint, rating_keys=["1"])[0].ratingKey == "1"
     assert len(select_items(items, cache, fingerprint, full_scan=True)) == 3
+
+
+def test_tv_child_inventory_change_selects_show_without_updated_at_change():
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fingerprint = config_fingerprint(incremental_config())
+    original = SimpleNamespace(
+        ratingKey="show",
+        updatedAt=updated,
+        type="show",
+        childCount=2,
+        seasonCount=2,
+        leafCount=20,
+    )
+    cached = {
+        "show": {
+            "rating_key": "show",
+            "plex_updated_at": updated.isoformat(),
+            "plex_child_fingerprint": child_inventory_fingerprint(original),
+            "config_fingerprint": fingerprint,
+        }
+    }
+    new_episode = SimpleNamespace(**{**vars(original), "leafCount": 21})
+    new_season = SimpleNamespace(
+        **{**vars(original), "childCount": 3, "seasonCount": 3}
+    )
+
+    assert select_items([original], cached, fingerprint) == []
+    assert select_items([new_episode], cached, fingerprint) == [new_episode]
+    assert select_items([new_season], cached, fingerprint) == [new_season]
+
+
+def test_tv_child_inventory_fingerprint_is_lightweight_and_backward_safe():
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fingerprint = config_fingerprint(incremental_config())
+    show = SimpleNamespace(
+        ratingKey="show",
+        updatedAt=updated,
+        type="show",
+        childCount="2",
+        seasonCount=2,
+        leafCount=20,
+        viewedLeafCount=0,
+    )
+    watched = SimpleNamespace(**{**vars(show), "viewedLeafCount": 20})
+    legacy_cache = {
+        "show": {
+            "rating_key": "show",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+        }
+    }
+
+    assert child_inventory_fingerprint(show) == child_inventory_fingerprint(watched)
+    assert child_inventory_fingerprint(SimpleNamespace(type="movie", leafCount=20)) is None
+    assert select_items([show], legacy_cache, fingerprint) == [show]
+
+    unavailable = SimpleNamespace(
+        ratingKey="show", updatedAt=updated, type="show"
+    )
+    assert select_items([unavailable], legacy_cache, fingerprint) == []
 
 
 def test_configuration_changes_invalidate_incremental_entries():

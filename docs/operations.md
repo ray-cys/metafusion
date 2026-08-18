@@ -141,6 +141,18 @@ selected again when its Plex update marker changes, a metadata/artwork recheck
 becomes due, required generated output is missing, or a full reconciliation is
 required.
 
+For TV libraries, MetaFusion also fingerprints the show-level `childCount`,
+`seasonCount`, and `leafCount` values returned with the normal Plex library
+inventory. A new season or episode therefore selects its parent show even when
+Plex leaves the show's `updatedAt` value unchanged. This adds no media-tree scan
+and no per-episode Plex request to an otherwise skipped show. If a Plex server
+omits all three counters, `updatedAt` and the periodic full scan remain the
+fallbacks.
+
+The first successful run after enabling this behavior selects existing shows
+whose older SQLite records have no child fingerprint, establishing a baseline.
+Later unchanged runs return to normal incremental skipping.
+
 `FULL_SCAN_INTERVAL_HOURS` is evaluated from the saved last successful full
 scan for each Plex server/library, not the current Docker runtime. The default
 `168` is seven days. Restarting the container does not force or postpone this
