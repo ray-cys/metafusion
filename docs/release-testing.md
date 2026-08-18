@@ -8,7 +8,8 @@ not publish container images.
 
 | Git ref | Tests and security image scan | Published image |
 | --- | --- | --- |
-| Pull request or `codex/**` phase branch | Yes | None |
+| Pull request | Yes | None |
+| Local feature or phase branch | Run locally before integration | None; local branches are not pushed |
 | `develop` | Yes | `develop` and immutable `sha-<commit>` |
 | `main` | Yes | `main`, `latest`, and immutable `sha-<commit>` |
 | `vX.Y.Z` or release-candidate tag | Yes | Immutable semantic-version tags and `sha-<commit>` |

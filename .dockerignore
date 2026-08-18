@@ -1,6 +1,8 @@
 **/__pycache__
 **/.venv
 **/.classpath
+**/.coverage
+**/.DS_Store
 **/.dockerignore
 **/.env
 **/.env.example
@@ -8,6 +10,8 @@
 **/.github
 **/.gitignore
 **/.project
+**/.pytest_cache
+**/.ruff_cache
 **/.settings
 **/.toolstarget
 **/.vs
@@ -26,6 +30,13 @@
 **/secrets.dev.yaml
 **/tests
 **/values.dev.yaml
+asset
+docs
+requirements-dev.in
+requirements-dev.lock
+requirements.in
+requirements.txt
+unraid
 unraid.xml
 LICENSE
 README.md

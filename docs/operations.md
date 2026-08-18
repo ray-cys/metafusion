@@ -44,6 +44,44 @@ python metafusion.py --metafusion_run
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
 
+## Command-line reference
+
+Enter every option with two ordinary ASCII hyphens (`--`). Copy names exactly:
+the underscores in older options such as `--metafusion_run` and `--dry_run`
+are part of the supported interface, while newer options use hyphens. Options
+apply only to the current process; omitted options continue to use environment
+or `config.yml` values.
+
+| Category | Option | Value | Purpose and requirements |
+| --- | --- | --- | --- |
+| Help | `-h`, `--help` | None | Print the supported command-line options and exit. |
+| Run control | `--metafusion_run` | None | Request one MetaFusion job immediately. |
+| Run control | `--schedule` | None | Enable the scheduler for the current process. |
+| Run control | `--run_times` | Comma-separated `HH:MM` values | Override the daily schedule, for example `--run_times 06:00,18:30`. Times use `TZ`. |
+| Run control | `--dry_run` | None | Enable dry-run behavior for the current process. |
+| Configuration | `--mode` | `kometa` or `plex` | Override the configured output mode. |
+| Configuration | `--run_basic` | None | Enable basic metadata processing. |
+| Configuration | `--run_enhanced` | None | Enable enhanced metadata processing. |
+| Configuration | `--run_poster` | None | Enable poster processing. |
+| Configuration | `--run_season` | None | Enable season artwork processing. |
+| Configuration | `--run_background` | None | Enable background processing. |
+| Diagnostics | `--doctor`, `--check-config` | None | Validate configuration and show value sources without running a job. Both names perform the same action. |
+| Diagnostics | `--preflight` | None | Check Plex, TMDb, selected libraries, mappings, and storage without processing content. |
+| Diagnostics | `--asset-audit` | None | Perform a read-only, full artwork selection and ownership/quality audit and write a report. |
+| Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
+| Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
+| Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
+| Targeting | `--rating-key` | Plex rating key | Process only the named item. Repeat the option or use comma-separated keys. Targeted runs disable cleanup. |
+| Targeting | `--metadata-only` | None | Process metadata without artwork or cleanup. It cannot be combined with `--asset-only` or `--asset-audit`. |
+| Targeting | `--asset-only` | None | Process enabled artwork without metadata or cleanup. It cannot be combined with `--metadata-only`. |
+| Targeting | `--full-scan` | None | Bypass incremental skipping and reconcile the selected scope. |
+| Targeting | `--explain-selection` | None | Explain why selected items are or are not due without processing or writing. |
+| Plex maintenance | `--plex-metadata-restore` | None | Restore MetaFusion-owned Plex fields for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-unlock`. |
+| Plex maintenance | `--plex-metadata-unlock` | None | Remove only MetaFusion-created Plex locks for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-restore`. |
+
+`--healthcheck` belongs to the container entrypoint and is reserved for the
+image's Docker health check; it is not a public `metafusion.py` option.
+
 ## Validate and inspect
 
 ```bash

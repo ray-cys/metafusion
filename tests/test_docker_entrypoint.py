@@ -25,6 +25,9 @@ def test_root_entrypoint_prepares_managed_paths_and_drops_privileges(
     log_file = config_dir / "logs" / "metafusion.log"
     log_file.parent.mkdir(parents=True)
     log_file.write_text("existing", encoding="utf-8")
+    report_file = config_dir / "reports" / "artwork-gaps-existing.txt"
+    report_file.parent.mkdir(parents=True)
+    report_file.write_text("existing", encoding="utf-8")
 
     monkeypatch.setenv("CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("HOME", str(tmp_path / "old-home"))
@@ -52,6 +55,7 @@ def test_root_entrypoint_prepares_managed_paths_and_drops_privileges(
     )
     assert (config_dir / "config_template.yml").stat().st_mode & 0o777 == 0o664
     assert any(call[:4] == ("chown", str(log_file), 99, 100) for call in calls)
+    assert any(call[:4] == ("chown", str(report_file), 99, 100) for call in calls)
     assert calls[-4:] == [
         ("groups", []),
         ("gid", 100),
@@ -59,6 +63,30 @@ def test_root_entrypoint_prepares_managed_paths_and_drops_privileges(
         ("exec", "python", ["python", "metafusion.py"]),
     ]
     assert os.environ["HOME"] == str(config_dir)
+
+
+def test_runtime_path_repair_is_limited_to_config_managed_directories(
+    monkeypatch, tmp_path
+):
+    calls = []
+    config_dir = tmp_path / "config"
+    unmanaged_asset = tmp_path / "kometa" / "assets" / "movie" / "poster.jpg"
+    unmanaged_asset.parent.mkdir(parents=True)
+    unmanaged_asset.write_text("existing", encoding="utf-8")
+
+    monkeypatch.setattr(
+        os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks: calls.append(str(path)),
+    )
+
+    docker_entrypoint.prepare_runtime_paths(config_dir, 99, 100)
+
+    assert (config_dir / "logs").is_dir()
+    assert (config_dir / "cache").is_dir()
+    assert (config_dir / "reports").is_dir()
+    assert str(unmanaged_asset) not in calls
+    assert all(str(tmp_path / "kometa") not in path for path in calls)
 
 
 def test_explicit_docker_user_is_honored_and_receives_template(monkeypatch, tmp_path):

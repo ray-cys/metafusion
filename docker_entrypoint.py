@@ -50,7 +50,11 @@ def prepare_runtime_paths(config_dir, uid, gid):
     config_dir.mkdir(parents=True, exist_ok=True)
     _set_owner(config_dir, uid, gid)
 
-    for directory in (config_dir / "logs", config_dir / "cache"):
+    for directory in (
+        config_dir / "logs",
+        config_dir / "cache",
+        config_dir / "reports",
+    ):
         _prepare_managed_directory(directory, uid, gid)
 
     status_file = Path(
