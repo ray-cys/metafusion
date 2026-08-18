@@ -74,6 +74,7 @@ or `config.yml` values.
 | Diagnostics | `--plan` | None | Produce one read-only full-scan plan for metadata, artwork, and eligible cleanup. The report is the only deliberate output. |
 | Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork in either output mode without applying changes. |
 | Diagnostics | `--mapping-diagnose` | None | Compare one or more Plex TV inventories with TMDb standard ordering, configured overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
+| Diagnostics | `--identity-inspect` | None | Explain the current Plex-to-TMDb identity, active learned binding, bounded history, warning reasons, edition, and computed destinations. Requires `--rating-key`; writes only a report. |
 | Diagnostics | `--compatibility-check` | None | Test connectors, paths, and the configured Kometa/Plex output contract, write a compatibility report, and exit. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
 | Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
@@ -123,6 +124,9 @@ python metafusion.py --library-audit
 
 # Explain difficult TV episode ordering without changing any mapping or metadata
 python metafusion.py --mapping-diagnose --rating-key 12345
+
+# Explain how a Plex item became associated with TMDb without changing it
+python metafusion.py --identity-inspect --rating-key 12345
 
 # Confirm the configured output contract and required connector/path support
 python metafusion.py --compatibility-check
@@ -187,6 +191,20 @@ that proposal, changes a learned identity, writes Plex or Kometa metadata, or
 downloads artwork. Results are written to
 `/config/reports/mapping-diagnosis-*.txt`; an unresolved result is a successful
 diagnostic outcome rather than a mutation failure.
+
+`--identity-inspect` works for movies and shows in either output mode. For each
+requested Plex rating key it reports Plex GUIDs and external IDs, localized and
+original titles, year, edition, selected TMDb ID, resolution source, match
+confidence, warning/rejection reasons, active learned binding, and the newest
+50 binding-history events. It also computes the Kometa YAML entry or Plex API
+target and poster, background, and season artwork destinations. Provider
+response caching is disabled and SQLite is read in query-only mode. Its sole
+deliberate write is `/config/reports/identity-inspection-*.txt`; it does not
+touch bindings, caches, provider fields, YAML, artwork, ownership, incremental
+markers, or cleanup. History begins when the identity-history extension is
+installed. An older active binding remains visible, but earlier transitions
+cannot be reconstructed. The extension remains schema-4 rollback compatible;
+older MetaFusion images ignore its nullable columns and additional table.
 
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
@@ -394,7 +412,7 @@ MetaFusion uses two separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
-| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
+| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities and bounded transition history, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
 
 Rows are read and updated individually rather than loading and rewriting a
@@ -485,6 +503,7 @@ Shared reports and logs are:
 /config/reports/change-plan-YYYYMMDD-HHMMSS.txt
 /config/reports/library-asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/mapping-diagnosis-YYYYMMDD-HHMMSS.txt
+/config/reports/identity-inspection-YYYYMMDD-HHMMSS.txt
 /config/reports/compatibility-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
@@ -496,10 +515,11 @@ Asset-audit reports include the selected candidate's language, dimensions,
 vote score, ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
-Destination-history reports identify old and current artwork paths after a
+Identity-inspection and destination-history reports contain computed or actual
+media paths and must be reviewed before sharing. Destination-history reports
+identify old and current artwork paths after a
 Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
-reports identify fields and outcomes. Reports are bounded. Destination reports
-contain host paths and must be reviewed before sharing.
+reports identify fields and outcomes. Reports are bounded.
 
 At the default `LOG_LEVEL=INFO`, MetaFusion logs confirmed mutations such as
 Kometa YAML writes, Plex API update batches, and artwork downloads or upgrades.

@@ -282,6 +282,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/reports/change-plan-*.txt       # explicit --plan runs only
 /config/reports/library-asset-audit-*.txt # explicit --library-audit runs only
 /config/reports/mapping-diagnosis-*.txt # explicit --mapping-diagnose runs only
+/config/reports/identity-inspection-*.txt # explicit --identity-inspect runs only
 /config/reports/compatibility-*.txt     # explicit --compatibility-check runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
@@ -289,7 +290,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 
 The TMDb response cache is disposable and automatically sized, pruned, and
 quarantined if corrupt. Durable inventory, scan, job, retry, learned identity,
-library-discovery, and artwork-ownership state remains isolated in
+bounded binding-history, library-discovery, and artwork-ownership state remains isolated in
 `meta_db.sqlite3`. SQLite optimization and bounded WAL checkpoints run after
 jobs. Before a schema upgrade, MetaFusion retains two versioned database
 backups. The live heartbeat is stored in `/tmp/metafusion-status.json` to avoid
@@ -325,6 +326,7 @@ python metafusion.py --metadata-audit
 python metafusion.py --plan
 python metafusion.py --library-audit
 python metafusion.py --mapping-diagnose --rating-key 12345
+python metafusion.py --identity-inspect --rating-key 12345
 python metafusion.py --compatibility-check
 python metafusion.py --status
 python metafusion.py --support-report
@@ -350,6 +352,13 @@ read-only report. `--library-audit` provides a cross-mode inventory and artwork
 health report. Targeted processing, selective retries, artwork score details,
 SQLite maintenance actions, and `COMPATIBILITY_PROFILE` contracts are documented in the
 [complete CLI and operations guide](docs/operations.md#command-line-reference).
+
+`--identity-inspect` explains the current Plex GUIDs, selected TMDb identity,
+confidence and warning reasons, learned binding history, edition, and computed
+metadata/artwork destinations for one or more `--rating-key` values. It writes
+only its report: no binding, cache, Plex field, Kometa YAML, artwork, ownership,
+incremental, or cleanup state is changed. History begins when this extension is
+installed and cannot reconstruct earlier transitions.
 
 ## References
 

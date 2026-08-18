@@ -80,7 +80,38 @@ def _asset_temp_path_or_defer(config, meta):
         return None
 
 
-async def _save_high_confidence_identity(meta, tmdb_id, *, trusted, dry_run):
+def _identity_binding_source(
+    meta,
+    tmdb_id,
+    *,
+    recovered=False,
+    split_mapping=False,
+    consensus_reason=None,
+):
+    if recovered:
+        return "stale_tmdb_recovery"
+    provider_tmdb_id = (meta or {}).get("plex_provider_tmdb_id")
+    if provider_tmdb_id and str(provider_tmdb_id) == str(tmdb_id):
+        return "plex_tmdb_guid"
+    if split_mapping:
+        return "split_series_mapping"
+    reason = str(consensus_reason or "")
+    if "IMDb" in reason:
+        return "imdb_external_id"
+    if "TVDB" in reason:
+        return "tvdb_external_id"
+    return "trusted_external_id"
+
+
+async def _save_high_confidence_identity(
+    meta,
+    tmdb_id,
+    *,
+    trusted,
+    dry_run,
+    source="trusted_external_id",
+    match_reason=None,
+):
     server_id = meta.get("server_id") if meta else None
     if (
         dry_run
@@ -106,6 +137,8 @@ async def _save_high_confidence_identity(meta, tmdb_id, *, trusted, dry_run):
         fingerprint,
         title=meta.get("title"),
         year=meta.get("year"),
+        source=source,
+        match_reason=match_reason,
     )
 
 
@@ -1136,6 +1169,13 @@ async def _build_movie(
             or (plex_tmdb_id and str(plex_tmdb_id) == str(tmdb_id))
         ),
         dry_run=feature_flags.get("dry_run", False),
+        source=_identity_binding_source(
+            meta,
+            tmdb_id,
+            recovered=bool(recovered_from_tmdb_id),
+            consensus_reason=consensus_reason,
+        ),
+        match_reason=f"{consensus_reason}; {identity_reason}",
     )
     if recovered_from_tmdb_id and not feature_flags.get("dry_run", False):
         await meta_cache_async(
@@ -2014,6 +2054,14 @@ async def _build_tv(
             or (plex_tmdb_id and str(plex_tmdb_id) == str(tmdb_id))
         ),
         dry_run=feature_flags.get("dry_run", False),
+        source=_identity_binding_source(
+            meta,
+            tmdb_id,
+            recovered=bool(recovered_from_tmdb_id),
+            split_mapping=bool(series_mapping),
+            consensus_reason=consensus_reason,
+        ),
+        match_reason=f"{consensus_reason}; {identity_reason}",
     )
 
     if not feature_flags.get("dry_run", False):

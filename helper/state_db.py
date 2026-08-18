@@ -17,6 +17,7 @@ from helper.config import CACHE_DIR
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
 SCHEMA_VERSION = 4
 FILE_MODE = 0o664
+IDENTITY_HISTORY_LIMIT = 10_000
 _database_setup_lock = threading.Lock()
 _initialized_databases: set[tuple[str, int, int]] = set()
 _integrity_checked_databases: set[tuple[str, int, int]] = set()
@@ -125,7 +126,7 @@ def _connect(path=None, writable=True):
                 _initialized_databases.add(database_identity)
             elif not writable:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (1, 2, 3, SCHEMA_VERSION):
+                if version not in range(1, SCHEMA_VERSION + 1):
                     raise StateDatabaseError(
                         f"unsupported MetaFusion state schema version {version}"
                     )
@@ -151,7 +152,7 @@ def _connect(path=None, writable=True):
 
 def _initialize_schema(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+    if version not in range(0, SCHEMA_VERSION + 1):
         raise StateDatabaseError(
             f"unsupported MetaFusion state schema version {version}"
         )
@@ -312,6 +313,8 @@ def _initialize_schema(connection):
             tmdb_id TEXT NOT NULL,
             plex_fingerprint TEXT NOT NULL,
             confidence TEXT NOT NULL,
+            source TEXT,
+            match_reason TEXT,
             title TEXT,
             year INTEGER,
             validated_at TEXT NOT NULL,
@@ -321,8 +324,40 @@ def _initialize_schema(connection):
 
         CREATE INDEX IF NOT EXISTS identity_bindings_tmdb
             ON identity_bindings(media_type, tmdb_id);
+
+        CREATE TABLE IF NOT EXISTS identity_binding_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            previous_tmdb_id TEXT,
+            tmdb_id TEXT,
+            previous_plex_fingerprint TEXT,
+            plex_fingerprint TEXT,
+            confidence TEXT,
+            source TEXT,
+            reason_code TEXT NOT NULL,
+            reason TEXT,
+            occurred_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS identity_history_item
+            ON identity_binding_history(
+                server_id, library_uuid, rating_key, id DESC
+            );
         """
     )
+    binding_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(identity_bindings)")
+    }
+    if "source" not in binding_columns:
+        connection.execute("ALTER TABLE identity_bindings ADD COLUMN source TEXT")
+    if "match_reason" not in binding_columns:
+        connection.execute(
+            "ALTER TABLE identity_bindings ADD COLUMN match_reason TEXT"
+        )
     job_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(job_runs)")
     }
@@ -1527,6 +1562,80 @@ def missing_library_inventory(server_id, libraries, path=None):
         connection.close()
 
 
+def _append_identity_history(
+    connection,
+    *,
+    server_id,
+    library_uuid,
+    rating_key,
+    media_type,
+    event_type,
+    reason_code,
+    occurred_at,
+    previous_tmdb_id=None,
+    tmdb_id=None,
+    previous_plex_fingerprint=None,
+    plex_fingerprint=None,
+    confidence=None,
+    source=None,
+    reason=None,
+):
+    values = (
+        str(server_id or "unknown"),
+        str(library_uuid),
+        str(rating_key),
+        str(media_type),
+        str(event_type),
+        None if previous_tmdb_id is None else str(previous_tmdb_id),
+        None if tmdb_id is None else str(tmdb_id),
+        (
+            None
+            if previous_plex_fingerprint is None
+            else str(previous_plex_fingerprint)
+        ),
+        None if plex_fingerprint is None else str(plex_fingerprint),
+        None if confidence is None else str(confidence),
+        None if source is None else str(source),
+        str(reason_code),
+        None if reason is None else str(reason),
+        str(occurred_at),
+    )
+    previous = connection.execute(
+        "SELECT event_type, previous_tmdb_id, tmdb_id, "
+        "previous_plex_fingerprint, plex_fingerprint, reason_code "
+        "FROM identity_binding_history WHERE server_id = ? "
+        "AND library_uuid = ? AND rating_key = ? ORDER BY id DESC LIMIT 1",
+        values[:3],
+    ).fetchone()
+    signature = (
+        values[4],
+        values[5],
+        values[6],
+        values[7],
+        values[8],
+        values[11],
+    )
+    if previous is not None and tuple(previous) == signature:
+        return False
+    connection.execute(
+        """
+        INSERT INTO identity_binding_history(
+            server_id, library_uuid, rating_key, media_type, event_type,
+            previous_tmdb_id, tmdb_id, previous_plex_fingerprint,
+            plex_fingerprint, confidence, source, reason_code, reason,
+            occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values,
+    )
+    connection.execute(
+        "DELETE FROM identity_binding_history WHERE id NOT IN "
+        "(SELECT id FROM identity_binding_history ORDER BY id DESC LIMIT ?)",
+        (IDENTITY_HISTORY_LIMIT,),
+    )
+    return True
+
+
 def save_identity_binding(
     server_id,
     library_uuid,
@@ -1538,6 +1647,8 @@ def save_identity_binding(
     title=None,
     year=None,
     confidence="high",
+    source="trusted_external_id",
+    match_reason=None,
     path=None,
     now=None,
 ):
@@ -1547,40 +1658,139 @@ def save_identity_binding(
     current = _as_utc(now).isoformat()
     try:
         with connection:
-            connection.execute(
-                """
-                INSERT INTO identity_bindings(
-                    server_id, library_uuid, rating_key, media_type, tmdb_id,
-                    plex_fingerprint, confidence, title, year,
-                    validated_at, last_used_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(server_id, library_uuid, rating_key) DO UPDATE SET
-                    media_type = excluded.media_type,
-                    tmdb_id = excluded.tmdb_id,
-                    plex_fingerprint = excluded.plex_fingerprint,
-                    confidence = excluded.confidence,
-                    title = excluded.title,
-                    year = excluded.year,
-                    validated_at = excluded.validated_at,
-                    last_used_at = excluded.last_used_at
-                WHERE identity_bindings.tmdb_id != excluded.tmdb_id
-                   OR identity_bindings.plex_fingerprint != excluded.plex_fingerprint
-                   OR identity_bindings.confidence != excluded.confidence
-                """,
-                (
-                    str(server_id or "unknown"),
-                    str(library_uuid),
-                    str(rating_key),
-                    str(media_type),
-                    str(tmdb_id),
-                    str(plex_fingerprint),
-                    confidence,
-                    title,
-                    year,
-                    current,
-                    current,
-                ),
+            connection.execute("BEGIN IMMEDIATE")
+            identity = (
+                str(server_id or "unknown"),
+                str(library_uuid),
+                str(rating_key),
             )
+            previous = connection.execute(
+                "SELECT * FROM identity_bindings WHERE server_id = ? "
+                "AND library_uuid = ? AND rating_key = ?",
+                identity,
+            ).fetchone()
+            previous = dict(previous) if previous is not None else None
+            core_changed = previous is None or any(
+                str(previous.get(field) or "") != str(value or "")
+                for field, value in (
+                    ("tmdb_id", tmdb_id),
+                    ("plex_fingerprint", plex_fingerprint),
+                    ("confidence", confidence),
+                )
+            )
+            if previous is None:
+                connection.execute(
+                    """
+                    INSERT INTO identity_bindings(
+                        server_id, library_uuid, rating_key, media_type,
+                        tmdb_id, plex_fingerprint, confidence, source,
+                        match_reason, title, year, validated_at, last_used_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        *identity,
+                        str(media_type),
+                        str(tmdb_id),
+                        str(plex_fingerprint),
+                        confidence,
+                        source,
+                        match_reason,
+                        title,
+                        year,
+                        current,
+                        current,
+                    ),
+                )
+                _append_identity_history(
+                    connection,
+                    server_id=identity[0],
+                    library_uuid=identity[1],
+                    rating_key=identity[2],
+                    media_type=media_type,
+                    event_type="established",
+                    tmdb_id=tmdb_id,
+                    plex_fingerprint=plex_fingerprint,
+                    confidence=confidence,
+                    source=source,
+                    reason_code="first_high_confidence_match",
+                    reason=match_reason,
+                    occurred_at=current,
+                )
+            elif core_changed:
+                tmdb_changed = str(previous.get("tmdb_id")) != str(tmdb_id)
+                fingerprint_changed = str(previous.get("plex_fingerprint")) != str(
+                    plex_fingerprint
+                )
+                if tmdb_changed and fingerprint_changed:
+                    reason_code = "tmdb_and_plex_guid_changed"
+                elif tmdb_changed:
+                    reason_code = "tmdb_identity_changed"
+                elif fingerprint_changed:
+                    reason_code = "plex_guid_fingerprint_changed"
+                else:
+                    reason_code = "confidence_changed"
+                _append_identity_history(
+                    connection,
+                    server_id=identity[0],
+                    library_uuid=identity[1],
+                    rating_key=identity[2],
+                    media_type=previous.get("media_type") or media_type,
+                    event_type="invalidated",
+                    previous_tmdb_id=previous.get("tmdb_id"),
+                    previous_plex_fingerprint=previous.get("plex_fingerprint"),
+                    plex_fingerprint=plex_fingerprint,
+                    confidence=previous.get("confidence"),
+                    source=previous.get("source"),
+                    reason_code=reason_code,
+                    reason=match_reason,
+                    occurred_at=current,
+                )
+                connection.execute(
+                    """
+                    UPDATE identity_bindings SET media_type = ?, tmdb_id = ?,
+                        plex_fingerprint = ?, confidence = ?, source = ?,
+                        match_reason = ?, title = ?, year = ?,
+                        validated_at = ?, last_used_at = ?
+                    WHERE server_id = ? AND library_uuid = ? AND rating_key = ?
+                    """,
+                    (
+                        str(media_type),
+                        str(tmdb_id),
+                        str(plex_fingerprint),
+                        confidence,
+                        source,
+                        match_reason,
+                        title,
+                        year,
+                        current,
+                        current,
+                        *identity,
+                    ),
+                )
+                _append_identity_history(
+                    connection,
+                    server_id=identity[0],
+                    library_uuid=identity[1],
+                    rating_key=identity[2],
+                    media_type=media_type,
+                    event_type="established",
+                    previous_tmdb_id=previous.get("tmdb_id"),
+                    tmdb_id=tmdb_id,
+                    previous_plex_fingerprint=previous.get("plex_fingerprint"),
+                    plex_fingerprint=plex_fingerprint,
+                    confidence=confidence,
+                    source=source,
+                    reason_code="replacement_high_confidence_match",
+                    reason=match_reason,
+                    occurred_at=current,
+                )
+            elif previous.get("source") is None or previous.get("match_reason") is None:
+                connection.execute(
+                    "UPDATE identity_bindings SET source = COALESCE(source, ?), "
+                    "match_reason = COALESCE(match_reason, ?) WHERE server_id = ? "
+                    "AND library_uuid = ? AND rating_key = ?",
+                    (source, match_reason, *identity),
+                )
         return True
     finally:
         connection.close()
@@ -1594,10 +1804,13 @@ def load_identity_binding(
     path=None,
     now=None,
     touch=False,
+    record_mismatch=False,
 ):
     connection = _connect(path, writable=False)
     if connection is None:
         return None
+    result = None
+    mismatch = False
     try:
         if connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' "
@@ -1612,13 +1825,28 @@ def load_identity_binding(
         if row is None:
             return None
         result = dict(row)
-        if (
+        mismatch = bool(
             result.get("confidence") != "high"
             or result.get("plex_fingerprint") != str(plex_fingerprint)
-        ):
-            return None
+        )
     finally:
         connection.close()
+    if mismatch:
+        if record_mismatch:
+            try:
+                record_identity_binding_mismatch(
+                    server_id,
+                    library_uuid,
+                    rating_key,
+                    plex_fingerprint,
+                    path=path,
+                    now=now,
+                )
+            except StateDatabaseError as error:
+                logging.getLogger(__name__).warning(
+                    "Unable to record identity-binding history: %s", error
+                )
+        return None
     if not touch:
         return result
     writable = _connect(path, writable=True)
@@ -1639,6 +1867,134 @@ def load_identity_binding(
     finally:
         writable.close()
     return result
+
+
+def record_identity_binding_mismatch(
+    server_id,
+    library_uuid,
+    rating_key,
+    plex_fingerprint,
+    *,
+    path=None,
+    now=None,
+):
+    """Record one non-mutating bypass when current Plex GUIDs changed."""
+    connection = _connect(path, writable=True)
+    current = _as_utc(now).isoformat()
+    identity = (
+        str(server_id or "unknown"),
+        str(library_uuid),
+        str(rating_key),
+    )
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                "SELECT * FROM identity_bindings WHERE server_id = ? "
+                "AND library_uuid = ? AND rating_key = ?",
+                identity,
+            ).fetchone()
+            if previous is None:
+                return False
+            previous = dict(previous)
+            if str(previous.get("plex_fingerprint")) == str(plex_fingerprint):
+                return False
+            return _append_identity_history(
+                connection,
+                server_id=identity[0],
+                library_uuid=identity[1],
+                rating_key=identity[2],
+                media_type=previous.get("media_type") or "unknown",
+                event_type="bypassed",
+                previous_tmdb_id=previous.get("tmdb_id"),
+                previous_plex_fingerprint=previous.get("plex_fingerprint"),
+                plex_fingerprint=plex_fingerprint,
+                confidence=previous.get("confidence"),
+                source=previous.get("source"),
+                reason_code="plex_guid_fingerprint_changed",
+                reason=(
+                    "The current Plex provider GUID fingerprint differs from the "
+                    "stored high-confidence binding; the stored binding was not reused."
+                ),
+                occurred_at=current,
+            )
+    finally:
+        connection.close()
+
+
+def inspect_identity_binding(
+    server_id,
+    library_uuid,
+    rating_key,
+    *,
+    current_fingerprint=None,
+    path=None,
+    history_limit=50,
+):
+    """Return active binding and bounded history without touching durable state."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return {
+            "status": "missing",
+            "active": None,
+            "history": [],
+            "history_available": False,
+            "schema_version": None,
+        }
+    identity = (
+        str(server_id or "unknown"),
+        str(library_uuid),
+        str(rating_key),
+    )
+    try:
+        schema_version = int(
+            connection.execute("PRAGMA user_version").fetchone()[0]
+        )
+        active_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'identity_bindings'"
+        ).fetchone()
+        active = None
+        if active_table is not None:
+            row = connection.execute(
+                "SELECT * FROM identity_bindings WHERE server_id = ? "
+                "AND library_uuid = ? AND rating_key = ?",
+                identity,
+            ).fetchone()
+            active = dict(row) if row is not None else None
+        history_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'identity_binding_history'"
+        ).fetchone()
+        history = []
+        if history_table is not None:
+            limit = max(1, min(100, int(history_limit)))
+            history = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM identity_binding_history WHERE server_id = ? "
+                    "AND library_uuid = ? AND rating_key = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (*identity, limit),
+                ).fetchall()
+            ]
+    finally:
+        connection.close()
+    if active is None:
+        status = "missing"
+    elif current_fingerprint is None:
+        status = "unverifiable"
+    elif str(active.get("plex_fingerprint")) == str(current_fingerprint):
+        status = "current"
+    else:
+        status = "stale"
+    return {
+        "status": status,
+        "active": active,
+        "history": history,
+        "history_available": history_table is not None,
+        "schema_version": schema_version,
+    }
 
 
 def maintain_state_database(path=None, wal_threshold_mb=8):

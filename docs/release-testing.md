@@ -118,3 +118,11 @@ diagnosis, stable paginated Plex inventory with duplicate/change/incomplete-page
 rejection, and component-level explanations for selected and rejected artwork.
 Replay fixtures must pass the credential, private-host, local-path, and server
 identifier sanitizer before they can be committed.
+
+Phase 24 adds schema-4-compatible identity-binding history and the read-only
+`--identity-inspect` command. Regression tests prove unchanged bindings create
+no history, GUID mismatches are deduplicated and never replace the active
+binding, replacement events are transactional and bounded, schema-4 bindings
+remain queryable without an inspection-time upgrade, provider requests bypass
+the TMDb cache, older schema-4 writers remain compatible with the additive
+extension, and the report is the command's only intentional write.

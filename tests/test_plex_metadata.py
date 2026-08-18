@@ -535,7 +535,10 @@ def test_version_one_state_database_upgrades_in_place(tmp_path):
     store.close()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == state_db.SCHEMA_VERSION
+        )
         tables = {
             row[0]
             for row in connection.execute(

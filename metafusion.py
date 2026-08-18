@@ -51,6 +51,7 @@ from helper.diagnostics import (
     write_release_qualification_report,
     write_support_report,
 )
+from helper.identity_diagnostics import run_identity_inspection
 from helper.incremental import (
     config_fingerprint,
     library_full_scan_decisions,
@@ -210,6 +211,11 @@ def parse_cli_args(argv=None):
         help="Explain one or more Plex TV episode mappings without changing them",
     )
     parser.add_argument(
+        "--identity-inspect",
+        action="store_true",
+        help="Explain Plex-to-TMDb identity and binding history without changing it",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         help="Process only this Plex library; repeat or use comma-separated names",
@@ -357,6 +363,9 @@ def override_config_with_cli(config, args):
     if args.mapping_diagnose:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
+    if args.identity_inspect:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -412,6 +421,8 @@ def override_config_with_cli(config, args):
         execution["library_audit"] = True
     if args.mapping_diagnose:
         execution["mapping_diagnose"] = True
+    if args.identity_inspect:
+        execution["identity_inspect"] = True
     if args.retry_failed:
         execution["retry_failed"] = True
         execution["retry_status"] = args.retry_status
@@ -505,6 +516,29 @@ async def mapping_diagnosis_connectors(config, rating_keys):
             plex=plex,
         )
         return await run_mapping_diagnosis(
+            sections,
+            config,
+            rating_keys,
+            session=session,
+        )
+
+
+async def identity_inspection_connectors(config, rating_keys):
+    runtime = config.get("runtime", {})
+    maximum = concurrency_ceiling(config, "network")
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(limit=maximum, limit_per_host=maximum)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session)
+        sections, _selected, _available = await asyncio.to_thread(
+            connect_plex_library,
+            config,
+            plex=plex,
+        )
+        return await run_identity_inspection(
             sections,
             config,
             rating_keys,
@@ -1460,6 +1494,7 @@ def main(argv=None):
             args.plan,
             args.library_audit,
             args.mapping_diagnose,
+            args.identity_inspect,
         )
     ):
         print(
@@ -1491,6 +1526,7 @@ def main(argv=None):
                 args.plan,
                 args.library_audit,
                 args.mapping_diagnose,
+                args.identity_inspect,
                 args.retry_failed,
                 args.compatibility_check,
             )
@@ -1547,6 +1583,12 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+    if args.identity_inspect and not args.rating_key:
+        print(
+            "Configuration error: --identity-inspect requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
     if args.mapping_diagnose and any(
         (
             args.asset_audit,
@@ -1558,10 +1600,47 @@ def main(argv=None):
             args.compatibility_check,
             args.plex_metadata_restore,
             args.plex_metadata_unlock,
+            args.identity_inspect,
         )
     ):
         print(
             "Configuration error: --mapping-diagnose must run as a standalone diagnostic",
+            file=sys.stderr,
+        )
+        return 2
+    if args.identity_inspect and any(
+        (
+            args.metafusion_run,
+            args.schedule,
+            args.run_times is not None,
+            args.run_basic,
+            args.run_enhanced,
+            args.run_poster,
+            args.run_season,
+            args.run_background,
+            args.asset_only,
+            args.metadata_only,
+            args.full_scan,
+            args.explain_selection,
+            args.status,
+            args.doctor,
+            args.support_report,
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.mapping_diagnose,
+            args.preflight,
+            args.release_check,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+            bool(args.tmdb_id),
+            bool(args.media_type),
+        )
+    ):
+        print(
+            "Configuration error: --identity-inspect must run as a standalone diagnostic",
             file=sys.stderr,
         )
         return 2
@@ -1598,6 +1677,7 @@ def main(argv=None):
                 or args.plan
                 or args.library_audit
                 or args.mapping_diagnose
+                or args.identity_inspect
                 or args.compatibility_check
                 or args.release_check
             ),
@@ -1679,6 +1759,35 @@ def main(argv=None):
         print(
             f"Mapping diagnosis completed for {len(records)} item(s); "
             f"{unresolved} require review."
+        )
+        print(f"Report saved to {report}")
+        return 0
+    if args.identity_inspect:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            records, report = asyncio.run(
+                identity_inspection_connectors(
+                    config,
+                    config.get("_execution", {}).get("rating_keys", []),
+                )
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Identity inspection failed: {message}", file=sys.stderr)
+            return 1
+        finally:
+            _plex_cache.clear()
+            tmdb_response_cache.reset_memory()
+        review = sum(
+            record.get("status") not in {"accepted"} for record in records
+        )
+        print(
+            f"Identity inspection completed for {len(records)} item(s); "
+            f"{review} require review."
         )
         print(f"Report saved to {report}")
         return 0
