@@ -97,6 +97,7 @@ jobs:
           docker run --rm
           --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro"
           kometateam/kometa@sha256:c58f6d4af511613f218b6dafbfc84078af4e5a6089790c1fdba58fd7c5dad70a
+          --config /contract/metadata.yml
           --validate-file /contract/metadata.yml
 
   security:
