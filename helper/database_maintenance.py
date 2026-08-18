@@ -3,6 +3,7 @@
 import os
 import shutil
 import sqlite3
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -95,10 +96,8 @@ def _backup_database(database, backup_dir, retention):
         os.chmod(temporary, FILE_MODE)
         os.replace(temporary, destination)
     except Exception:
-        try:
+        with suppress(OSError):
             temporary.unlink()
-        except OSError:
-            pass
         raise
     backups = sorted(
         backup_dir.glob(f"{database.stem}-*.sqlite3"),
@@ -106,10 +105,8 @@ def _backup_database(database, backup_dir, retention):
         reverse=True,
     )
     for stale in backups[max(1, int(retention)) :]:
-        try:
+        with suppress(OSError):
             stale.unlink()
-        except OSError:
-            pass
     return destination
 
 

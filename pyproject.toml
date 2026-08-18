@@ -1,0 +1,43 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "C4",
+    "DTZ",
+    "E9",
+    "F",
+    "I",
+    "RUF",
+    "S110",
+    "S112",
+    "SIM",
+    "TRY004",
+]
+ignore = [
+    "RUF001",  # Media titles may intentionally contain typographic Unicode.
+    "RUF005",  # Existing list concatenation is clearer in ranking code.
+    "RUF012",  # Mutable class fixtures are isolated test doubles.
+    "SIM105",  # Explicit cleanup exception handling documents durability boundaries.
+    "SIM108",  # Multi-branch assignments are retained when they improve policy clarity.
+    "SIM117",  # Nested async provider contexts keep ownership and timing boundaries clear.
+]
+
+[tool.mypy]
+python_version = "3.10"
+explicit_package_bases = true
+ignore_missing_imports = true
+follow_imports = "skip"
+check_untyped_defs = true
+show_error_codes = true
+pretty = true
+files = [
+    "helper/database_maintenance.py",
+    "helper/logging.py",
+    "helper/provider_mappings.py",
+    "helper/state_db.py",
+    "helper/tmdb_cache.py",
+    "modules/builder.py",
+]

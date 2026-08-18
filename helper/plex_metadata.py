@@ -556,17 +556,17 @@ def _apply_object(
     obj.saveEdits()
     if hasattr(obj, "reload"):
         obj.reload()
-    for kind, field, value, _locked, remove in changes:
+    for kind, field, _value, _locked, remove in changes:
         if kind == "field":
-            if _clean_scalar(getattr(obj, field, "")) != _clean_scalar(value):
+            if _clean_scalar(getattr(obj, field, "")) != _clean_scalar(_value):
                 raise RuntimeError(f"Plex did not retain the {field} field update")
             continue
         attribute = TAG_ATTRIBUTES.get(field, f"{field}s")
         current = {name.casefold() for name in _clean_tags(getattr(obj, attribute, []))}
-        expected = {name.casefold() for name in _clean_tags(value)}
+        expected = {name.casefold() for name in _clean_tags(_value)}
         if (remove and current & expected) or (not remove and not expected <= current):
             raise RuntimeError(f"Plex did not retain the {field} tag update")
-    for kind, field, value, _locked, remove in changes:
+    for kind, field, _value, _locked, remove in changes:
         action = "removed" if remove else ("tags_added" if kind == "tag" else "filled")
         reporter.record(library, title, child_key, field, action)
     return 1, records

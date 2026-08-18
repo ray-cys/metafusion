@@ -119,9 +119,7 @@ def artwork_quality_score(
     ratio_error = abs(actual_ratio - target_ratio) / target_ratio if actual_ratio else 1.0
     aspect = max(0.0, 1.0 - min(1.0, ratio_error)) * 10.0
     language = image.get("iso_639_1")
-    if preferred_language is None:
-        language_score = 10.0
-    elif language == preferred_language:
+    if preferred_language is None or language == preferred_language:
         language_score = 10.0
     elif language in config.get("tmdb", {}).get("fallback", []):
         language_score = 7.0
@@ -575,12 +573,12 @@ def smart_season_asset_upgrade(
             return True, "UPGRADE_ZERO_VOTE_SEASON", context
         if new_votes == 0 and (new_width > existing_width or new_height > existing_height):
             return True, "UPGRADE_VOTES_SEASON", context
-    if new_votes < cached_votes:
-        if new_width > existing_width or new_height > existing_height:
-            return True, "UPGRADE_VOTES_SEASON", context
-    if vote_relaxed <= new_votes < vote_threshold:
-        if new_votes > cached_votes:
-            return True, "UPGRADE_RELAXED_SEASON", context
+    if new_votes < cached_votes and (
+        new_width > existing_width or new_height > existing_height
+    ):
+        return True, "UPGRADE_VOTES_SEASON", context
+    if vote_relaxed <= new_votes < vote_threshold and new_votes > cached_votes:
+        return True, "UPGRADE_RELAXED_SEASON", context
     if new_votes >= vote_threshold:
         return True, "UPGRADE_THRESHOLD_SEASON", context
     if new_width > existing_width or new_height > existing_height:
@@ -657,15 +655,15 @@ def get_asset_path(config, meta, asset_type="poster", season_number=None):
         assets_path = Path(kometa_root) / "assets" / library_type
         if asset_type == "poster":
             if library_type == "movie":
-                return assets_path / movie_path / "poster.jpg"
+                return assets_path / movie_path / "poster.jpg" if movie_path else None
             elif library_type in ("show", "tv"):
-                return assets_path / show_path / "poster.jpg"
+                return assets_path / show_path / "poster.jpg" if show_path else None
         elif asset_type == "background":
             if library_type == "movie":
-                return assets_path / movie_path / "fanart.jpg"
+                return assets_path / movie_path / "fanart.jpg" if movie_path else None
             elif library_type in ("show", "tv"):
-                return assets_path / show_path / "fanart.jpg"
-        elif asset_type == "season" and season_number is not None:
+                return assets_path / show_path / "fanart.jpg" if show_path else None
+        elif asset_type == "season" and season_number is not None and show_path:
             return assets_path / show_path / f"Season{season_number:02}.jpg"
     return None
 
@@ -684,9 +682,9 @@ def asset_temp_path(config, meta, extension="jpg"):
             assets_path = Path(meta["show_dir"])
         else:
             assets_path = Path(".")
-    if config.get("settings", {}).get("dry_run", False):
-        assets_path.mkdir(parents=True, exist_ok=True)
-    elif mode_check(config, "kometa"):
+    if config.get("settings", {}).get("dry_run", False) or mode_check(
+        config, "kometa"
+    ):
         assets_path.mkdir(parents=True, exist_ok=True)
     ensure_storage_available(
         config,

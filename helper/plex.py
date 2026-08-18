@@ -455,7 +455,7 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     filtered_sections = []
     filtered_libraries = []
     skipped_libraries = []
-    for section, lib in zip(sections, libraries):
+    for section, lib in zip(sections, libraries, strict=False):
         if lib['title'] in selected_libraries and str(
             lib.get("type") or ""
         ).casefold() in {"movie", "movies", "show", "shows", "tv"}:

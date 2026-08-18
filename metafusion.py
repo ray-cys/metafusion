@@ -704,7 +704,7 @@ async def metafusion_main(config, logger):
                 scopes=scan_scopes,
             )
             if execution.get("full_scan"):
-                scan_decisions = {key: True for key in scan_decisions}
+                scan_decisions = dict.fromkeys(scan_decisions, True)
             run_feature_flags = dict(feature_flags)
             cleanup_skip_reason = None
             all_full_scan = False
@@ -760,7 +760,9 @@ async def metafusion_main(config, logger):
                         )
                         if not output.exists()
                     }
-                    for section, scope in zip(sections, scan_scopes):
+                    for section, scope in zip(
+                        sections, scan_scopes, strict=False
+                    ):
                         library_type = normalize_library_type(
                             getattr(section, "type", None)
                             or getattr(section, "TYPE", None)
