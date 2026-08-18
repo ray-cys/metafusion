@@ -331,12 +331,22 @@ def validate_config(config):
     runtime = config.get("runtime", {})
     plex_metadata = config.get("plex_metadata", {})
     kometa = config.get("kometa", {})
+    compatibility = config.get("compatibility", {})
 
     errors.extend(validate_provider_mapping_config(tmdb))
 
     mode = str(settings.get("mode", "")).lower()
     if mode not in {"kometa", "plex"}:
         errors.append("settings.mode must be either 'kometa' or 'plex'")
+    profile = str(compatibility.get("profile", "auto")).strip().lower()
+    if profile not in {"auto", "kometa-2.4", "plex-api-v1"}:
+        errors.append(
+            "compatibility.profile must be auto, kometa-2.4, or plex-api-v1"
+        )
+    elif profile == "kometa-2.4" and mode != "kometa":
+        errors.append("compatibility profile kometa-2.4 requires Kometa mode")
+    elif profile == "plex-api-v1" and mode != "plex":
+        errors.append("compatibility profile plex-api-v1 requires Plex mode")
     if mode == "kometa" and not str(settings.get("path", "")).strip():
         errors.append("settings.path is required in Kometa mode")
     if plex_metadata.get("enabled", False) and mode != "plex":

@@ -91,6 +91,68 @@ def recursive_season_diff(old, new, path=""):
             changes.append(strip_indices(path))
     return list(set(changes))
 
+
+def artwork_quality_score(
+    config,
+    image,
+    *,
+    asset_type="poster",
+    preferred_language=None,
+):
+    """Score TMDb artwork deterministically without requiring image downloads."""
+    section_name = {
+        "poster": "poster_set",
+        "season": "season_set",
+        "background": "background_set",
+    }.get(asset_type, "poster_set")
+    settings = config.get(section_name, {})
+    width = max(0, int(image.get("width") or 0))
+    height = max(0, int(image.get("height") or 0))
+    vote = max(0.0, min(10.0, float(image.get("vote_average") or 0)))
+    target_width = max(1, int(settings.get("max_width") or width or 1))
+    target_height = max(1, int(settings.get("max_height") or height or 1))
+    target_area = target_width * target_height
+    resolution = min(1.0, (width * height) / target_area) * 45.0
+    vote_score = (vote / 10.0) * 35.0
+    target_ratio = 16 / 9 if asset_type == "background" else 2 / 3
+    actual_ratio = width / height if height else 0.0
+    ratio_error = abs(actual_ratio - target_ratio) / target_ratio if actual_ratio else 1.0
+    aspect = max(0.0, 1.0 - min(1.0, ratio_error)) * 10.0
+    language = image.get("iso_639_1")
+    if preferred_language is None:
+        language_score = 10.0
+    elif language == preferred_language:
+        language_score = 10.0
+    elif language in config.get("tmdb", {}).get("fallback", []):
+        language_score = 7.0
+    elif language in (None, ""):
+        language_score = 4.0
+    else:
+        language_score = 0.0
+    total = round(resolution + vote_score + aspect + language_score, 2)
+    return {
+        "score": total,
+        "resolution": round(resolution, 2),
+        "vote": round(vote_score, 2),
+        "aspect": round(aspect, 2),
+        "language": round(language_score, 2),
+    }
+
+
+def _artwork_quality_key(config, image, asset_type, preferred_language=None):
+    score = artwork_quality_score(
+        config,
+        image,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )["score"]
+    return (
+        score,
+        float(image.get("vote_average") or 0),
+        int(image.get("width") or 0) * int(image.get("height") or 0),
+        str(image.get("file_path") or ""),
+    )
+
 def get_best_poster(
     config, images, preferred_language="en", fallback=None, prefer_vote=None, max_width=None,
     max_height=None, relaxed_vote=None, min_width=None, min_height=None,
@@ -128,7 +190,7 @@ def get_best_poster(
                img.get("height", 0) >= max_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
@@ -137,18 +199,18 @@ def get_best_poster(
                img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
             if img.get("width", 0) >= min_width and img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: x["width"] * x["height"])
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
 
     if images:
-        best = max(images, key=lambda x: x.get("width", 0) * x.get("height", 0))
+        best = max(images, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
         return best
     return None
 
@@ -189,7 +251,7 @@ def get_best_season(
                img.get("height", 0) >= max_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
@@ -198,18 +260,18 @@ def get_best_season(
                img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
         filtered = [
             img for img in language_filtered
             if img.get("width", 0) >= min_width and img.get("height", 0) >= min_height
         ]
         if filtered:
-            best = max(filtered, key=lambda x: x["width"] * x["height"])
+            best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
 
     if images:
-        best = max(images, key=lambda x: x.get("width", 0) * x.get("height", 0))
+        best = max(images, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
         return best
     return None
 
@@ -237,7 +299,7 @@ def get_best_background(
            img.get("height", 0) >= max_height
     ]
     if filtered:
-        best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+        best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best 
     filtered = [
         img for img in images
@@ -246,18 +308,18 @@ def get_best_background(
            img.get("height", 0) >= min_height
     ]
     if filtered:
-        best = max(filtered, key=lambda x: (x["vote_average"], x["width"] * x["height"]))
+        best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best    
     filtered = [
         img for img in images
         if img.get("width", 0) >= min_width and img.get("height", 0) >= min_height
     ]
     if filtered:
-        best = max(filtered, key=lambda x: x["width"] * x["height"])
+        best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best
 
     if images:
-        best = max(images, key=lambda x: x.get("width", 0) * x.get("height", 0))
+        best = max(images, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best
     return None
 

@@ -37,6 +37,7 @@ from modules.kometa import (
     merge_generated_metadata,
 )
 from modules.utils import (
+    artwork_quality_score,
     asset_temp_path,
     asset_write_allowed,
     download_poster,
@@ -131,12 +132,23 @@ def _asset_audit_enabled(config):
     return bool(config.get("_execution", {}).get("asset_audit", False))
 
 
-def _candidate_summary(candidate):
+def _candidate_summary(config, candidate, asset_type):
+    preferred_language = str(
+        config.get("tmdb", {}).get("language", "en-US")
+    ).split("-", 1)[0]
+    quality = artwork_quality_score(
+        config,
+        candidate,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )
     return {
         "language": candidate.get("iso_639_1") or "untagged",
         "width": int(candidate.get("width") or 0),
         "height": int(candidate.get("height") or 0),
         "vote": float(candidate.get("vote_average") or 0),
+        "quality_score": quality["score"],
+        "quality_components": quality,
     }
 
 
@@ -172,7 +184,7 @@ async def _audit_asset_candidate(
         "title": full_title,
         "asset_type": asset_type,
         "season_number": season_number,
-        "candidate": _candidate_summary(candidate),
+        "candidate": _candidate_summary(config, candidate, asset_type),
     }
     asset_path = get_asset_path(
         config,

@@ -178,6 +178,240 @@ def write_metadata_audit_report(
     return path
 
 
+def _retain_reports(report_dir, pattern, retention):
+    reports = sorted(report_dir.glob(pattern), reverse=True)
+    for stale in reports[max(1, int(retention)) :]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def write_change_plan_report(
+    metadata_records,
+    asset_records,
+    library_records,
+    gaps=None,
+    cleanup_result=None,
+    *,
+    mode,
+    base_dir=None,
+    retention=10,
+):
+    """Write one value-safe plan covering metadata, artwork, and cleanup."""
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"change-plan-{timestamp}.txt"
+    current_build = build_info()
+    metadata = [item for item in (metadata_records or []) if isinstance(item, dict)]
+    assets = [item for item in (asset_records or []) if isinstance(item, dict)]
+    libraries = [item for item in (library_records or []) if isinstance(item, dict)]
+    actionable_metadata = sum(
+        str(item.get("proposed_action") or "none")
+        not in {"none", "preserve_existing", "skip_locked", "preserve"}
+        for item in metadata
+    )
+    actionable_assets = sum(
+        str(item.get("action") or "")
+        in {"would_download", "would_consider_upgrade", "would_verify_for_adoption"}
+        for item in assets
+    )
+
+    def cleanup_value(name):
+        if cleanup_result is None:
+            return 0
+        if isinstance(cleanup_result, dict):
+            return cleanup_result.get(name, 0)
+        return getattr(cleanup_result, name, 0)
+
+    lines = [
+        "MetaFusion read-only change plan",
+        f"Generated: {generated.isoformat()}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Mode: {mode}",
+        "No metadata, artwork, cache, ownership, retry, or incremental state was written.",
+        "The report itself is the only deliberate output.",
+        "",
+        "Summary",
+        f"- Libraries inspected: {len(libraries)}",
+        f"- Metadata field decisions: {len(metadata)} ({actionable_metadata} actionable)",
+        f"- Artwork decisions: {len(assets)} ({actionable_assets} actionable)",
+        f"- Gaps/rejections: {len(gaps or [])}",
+        "- Cleanup candidates: "
+        f"titles={cleanup_value('titles')}, seasons={cleanup_value('seasons')}, "
+        f"episodes={cleanup_value('episodes')}, assets={cleanup_value('assets')}, "
+        f"cache_entries={cleanup_value('cache_entries')}",
+        "",
+        "Libraries",
+    ]
+    if not libraries:
+        lines.append("- none")
+    for record in sorted(libraries, key=lambda item: str(item.get("library") or "").casefold()):
+        lines.append(
+            f"- {record.get('library') or 'Unknown library'} | "
+            f"type={record.get('type') or 'unknown'} | items={record.get('items', 0)} | "
+            f"selected={bool(record.get('selected'))} | status={record.get('status') or 'unknown'}"
+        )
+    lines.extend(("", "Metadata changes"))
+    planned_metadata = [
+        item
+        for item in metadata
+        if str(item.get("proposed_action") or "none") != "none"
+    ]
+    if not planned_metadata:
+        lines.append("- none")
+    for record in sorted(
+        planned_metadata,
+        key=lambda item: (
+            str(item.get("library") or "").casefold(),
+            str(item.get("title") or "").casefold(),
+            str(item.get("field") or ""),
+        ),
+    ):
+        lines.append(
+            f"- {record.get('library') or 'Unknown library'} | "
+            f"{record.get('title') or 'Unknown title'} | {record.get('field') or 'unknown'} | "
+            f"state={record.get('state') or 'unknown'} | "
+            f"proposed={record.get('proposed_action') or 'none'}"
+        )
+    lines.extend(("", "Artwork changes"))
+    planned_assets = [
+        item for item in assets if str(item.get("action") or "") != "managed"
+    ]
+    if not planned_assets:
+        lines.append("- none")
+    for record in sorted(
+        planned_assets,
+        key=lambda item: (
+            str(item.get("library") or "").casefold(),
+            str(item.get("title") or "").casefold(),
+            str(item.get("asset_type") or ""),
+        ),
+    ):
+        candidate = record.get("candidate") or {}
+        lines.append(
+            f"- [{record.get('action') or 'unknown'}] "
+            f"{record.get('library') or 'Unknown library'} | "
+            f"{record.get('title') or 'Unknown title'} | "
+            f"{record.get('asset_type') or 'artwork'} | "
+            f"score={candidate.get('quality_score', 0):g} | "
+            f"ownership={record.get('ownership') or 'unknown'}"
+        )
+    atomic_write_text(path, "\n".join(lines) + "\n")
+    _retain_reports(report_dir, "change-plan-*.txt", retention)
+    return path
+
+
+def write_library_asset_audit_report(
+    library_records,
+    asset_records,
+    gaps=None,
+    *,
+    mode,
+    base_dir=None,
+    retention=10,
+):
+    """Write a cross-mode library inventory and artwork health report."""
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"library-asset-audit-{timestamp}.txt"
+    libraries = [item for item in (library_records or []) if isinstance(item, dict)]
+    assets = [item for item in (asset_records or []) if isinstance(item, dict)]
+    current_build = build_info()
+    action_counts = {}
+    for record in assets:
+        action = str(record.get("action") or "unknown")
+        action_counts[action] = action_counts.get(action, 0) + 1
+    lines = [
+        "MetaFusion read-only library and asset audit",
+        f"Generated: {generated.isoformat()}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Mode: {mode}",
+        f"Libraries discovered: {len(libraries)}",
+        f"Artwork candidates: {len(assets)}",
+        f"Gaps/rejections: {len(gaps or [])}",
+        "No metadata, artwork, cache, ownership, retry, or incremental state was written.",
+        "",
+        "Libraries",
+    ]
+    if not libraries:
+        lines.append("- none")
+    for record in sorted(libraries, key=lambda item: str(item.get("library") or "").casefold()):
+        lines.append(
+            f"- {record.get('library') or 'Unknown library'} | "
+            f"type={record.get('type') or 'unknown'} | items={record.get('items', 0)} | "
+            f"selected={bool(record.get('selected'))} | status={record.get('status') or 'unknown'}"
+        )
+    lines.extend(("", "Artwork decision summary"))
+    if not action_counts:
+        lines.append("- none")
+    for action, count in sorted(action_counts.items()):
+        lines.append(f"- {action}: {count}")
+    lines.extend(("", "Artwork decisions"))
+    if not assets:
+        lines.append("- none")
+    for record in sorted(
+        assets,
+        key=lambda item: (
+            str(item.get("library") or "").casefold(),
+            str(item.get("title") or "").casefold(),
+            str(item.get("asset_type") or ""),
+        ),
+    ):
+        candidate = record.get("candidate") or {}
+        lines.append(
+            f"- [{record.get('action') or 'unknown'}] "
+            f"{record.get('library') or 'Unknown library'} | "
+            f"{record.get('title') or 'Unknown title'} | "
+            f"{record.get('asset_type') or 'artwork'} | "
+            f"score={candidate.get('quality_score', 0):g} | "
+            f"{candidate.get('width', 0)}x{candidate.get('height', 0)} | "
+            f"ownership={record.get('ownership') or 'unknown'}"
+        )
+    atomic_write_text(path, "\n".join(lines) + "\n")
+    _retain_reports(report_dir, "library-asset-audit-*.txt", retention)
+    return path
+
+
+def write_compatibility_report(result, *, base_dir=None, retention=10):
+    """Write a value-safe compatibility profile assessment."""
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
+    path = report_dir / f"compatibility-{timestamp}.txt"
+    current_build = build_info()
+    lines = [
+        "MetaFusion compatibility profile",
+        f"Generated: {generated.isoformat()}",
+        f"Version: {current_build['version']}",
+        f"Commit: {current_build['commit']}",
+        f"Result: {'PASS' if result.get('passed') else 'FAIL'}",
+        f"Profile: {result.get('profile')}",
+        f"Mode: {result.get('mode')}",
+        f"Contract: {result.get('contract')}",
+        "",
+        "Checks",
+    ]
+    for check in result.get("checks", []):
+        lines.append(
+            f"- [{'PASS' if check.get('passed') else 'FAIL'}] "
+            f"{check.get('name')}: {check.get('detail')}"
+        )
+    lines.extend(("", "Capabilities"))
+    for capability in result.get("capabilities", []):
+        lines.append(f"- {capability}")
+    if result.get("warnings"):
+        lines.extend(("", "Warnings"))
+        lines.extend(f"- {warning}" for warning in result["warnings"])
+    atomic_write_text(path, "\n".join(lines) + "\n")
+    _retain_reports(report_dir, "compatibility-*.txt", retention)
+    return path
+
+
 def _database_status(path):
     path = Path(path)
     if not path.exists():
@@ -310,7 +544,8 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
             f"{record.get('title') or 'Unknown title'} | {asset} | "
             f"candidate {candidate.get('width', 0)}x{candidate.get('height', 0)} "
             f"lang={candidate.get('language', 'untagged')} "
-            f"vote={candidate.get('vote', 0):g} | "
+            f"vote={candidate.get('vote', 0):g} "
+            f"score={candidate.get('quality_score', 0):g} | "
             f"ownership={record.get('ownership') or 'unknown'}{existing}"
         )
     lines.extend(("", "Missing, rejected, and failed candidates"))

@@ -40,6 +40,8 @@ metadata:
   run_enhanced: true
 kometa:
   tag_policy: append
+compatibility:
+  profile: auto
 plex_metadata:
   enabled: false
   policy: fill_missing

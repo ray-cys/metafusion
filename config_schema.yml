@@ -39,6 +39,8 @@ defaults:
     run_enhanced: true
   kometa:
     tag_policy: append
+  compatibility:
+    profile: auto
   plex_metadata:
     enabled: false
     policy: fill_missing
@@ -1994,3 +1996,22 @@ settings:
     mask: false
     value: /tmp/metafusion-status.json
     order: 98
+- name: COMPATIBILITY_PROFILE
+  section: Runtime, incremental, cache, and output
+  description: Output compatibility contract. Auto selects Kometa 2.4 or Plex API v1 from RUN_MODE.
+  path:
+  - compatibility
+  - profile
+  converter: string
+  env_example: auto
+  env_order: 101
+  compose: ${COMPATIBILITY_PROFILE-}
+  compose_order: 99
+  unraid:
+    name: Compatibility Profile
+    default: auto|kometa-2.4|plex-api-v1
+    display: advanced
+    required: false
+    mask: false
+    value: auto
+    order: 99

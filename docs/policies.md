@@ -87,6 +87,24 @@ does not bypass source, quality, path, or collision checks.
 
 ### Quality and refresh behavior
 
+TMDb candidates first pass the configured language and minimum/preferred
+threshold tiers. Candidates within the same eligible tier receive a
+deterministic 0-100 quality score:
+
+| Component | Weight | Meaning |
+| --- | ---: | --- |
+| Resolution | 45 | Image area relative to the configured preferred dimensions, capped at full credit. |
+| TMDb vote | 35 | TMDb's normalized artwork vote average, capped at 10. |
+| Aspect ratio | 10 | Closeness to 2:3 for posters/season posters or 16:9 for backgrounds. |
+| Language | 10 | Preferred language gets 10, configured fallback 7, untagged 4, and another language 0. |
+
+The highest score wins; vote, pixel area, and source path provide stable tie
+breakers. Scoring does not allow a lower-priority language to jump ahead of an
+available preferred-language tier and does not bypass minimum dimensions or
+vote thresholds. The chosen candidate and component scores appear in explicit
+asset, library, and change-plan audits without downloading the image merely to
+score it.
+
 After a policy permits an existing destination to be considered, the artwork
 upgrade engine still decides whether to write:
 

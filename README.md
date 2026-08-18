@@ -16,6 +16,8 @@ scanner or metadata agent, and it never modifies video or audio files.
   provider health.
 - Retries transient item failures durably after restarts and parks persistent
   failures without blocking healthy items.
+- Provides read-only change plans, cross-mode library/artwork audits, selective
+  retry, deterministic artwork scoring, and explicit SQLite maintenance.
 - Discovers Plex movie/show libraries automatically unless an explicit list is
   supplied.
 - Validates provider identities and mapped storage before destructive or write operations.
@@ -277,6 +279,9 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/cache/tmdb_cache.sqlite3
 /config/reports/artwork-gaps-*.txt
 /config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
+/config/reports/change-plan-*.txt       # explicit --plan runs only
+/config/reports/library-asset-audit-*.txt # explicit --library-audit runs only
+/config/reports/compatibility-*.txt     # explicit --compatibility-check runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
 ```
@@ -315,6 +320,9 @@ python metafusion.py --doctor
 python metafusion.py --preflight
 python metafusion.py --asset-audit
 python metafusion.py --metadata-audit
+python metafusion.py --plan
+python metafusion.py --library-audit
+python metafusion.py --compatibility-check
 python metafusion.py --status
 python metafusion.py --support-report
 ```
@@ -333,6 +341,12 @@ checks and common symptoms, see
 missing, different, unchanged, locked, policy-excluded, unsupported, and
 identity-rejected metadata plus the proposed action, without writing metadata,
 artwork, cache state, or ownership records.
+
+`--plan` combines metadata, artwork, and eligible cleanup decisions in one
+read-only report. `--library-audit` provides a cross-mode inventory and artwork
+health report. Targeted processing, selective retries, artwork score details,
+SQLite maintenance actions, and `COMPATIBILITY_PROFILE` contracts are documented in the
+[complete CLI and operations guide](docs/operations.md#command-line-reference).
 
 ## References
 
