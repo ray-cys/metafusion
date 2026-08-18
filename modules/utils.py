@@ -137,6 +137,95 @@ def artwork_quality_score(
     }
 
 
+def artwork_candidate_explanations(
+    config,
+    images,
+    selected,
+    *,
+    asset_type="poster",
+    preferred_language=None,
+    limit=3,
+):
+    """Explain why the highest-scoring rejected artwork candidates lost."""
+    if not selected or not images or limit <= 0:
+        return []
+    section_name = {
+        "poster": "poster_set",
+        "season": "season_set",
+        "background": "background_set",
+    }.get(asset_type, "poster_set")
+    settings = config.get(section_name, {})
+    selected_quality = artwork_quality_score(
+        config,
+        selected,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )
+    selected_path = str(selected.get("file_path") or "")
+    selected_language = selected.get("iso_639_1")
+    minimum_width = max(0, int(settings.get("min_width") or 0))
+    minimum_height = max(0, int(settings.get("min_height") or 0))
+    relaxed_vote = max(0.0, float(settings.get("vote_relaxed") or 0))
+    rejected = []
+
+    for image in images:
+        if image is selected or (
+            selected_path and str(image.get("file_path") or "") == selected_path
+        ):
+            continue
+        quality = artwork_quality_score(
+            config,
+            image,
+            asset_type=asset_type,
+            preferred_language=preferred_language,
+        )
+        width = max(0, int(image.get("width") or 0))
+        height = max(0, int(image.get("height") or 0))
+        vote = max(0.0, float(image.get("vote_average") or 0))
+        language = image.get("iso_639_1")
+        reasons = []
+        if preferred_language and language != preferred_language:
+            if selected_language == preferred_language:
+                reasons.append("lower language priority")
+            elif language not in config.get("tmdb", {}).get("fallback", []):
+                reasons.append("outside configured language fallback")
+        if width < minimum_width or height < minimum_height:
+            reasons.append("below minimum dimensions")
+        if vote < relaxed_vote:
+            reasons.append("below relaxed vote threshold")
+        if quality["aspect"] < selected_quality["aspect"]:
+            reasons.append("less suitable aspect ratio")
+        if quality["resolution"] < selected_quality["resolution"]:
+            reasons.append("lower resolution contribution")
+        if quality["vote"] < selected_quality["vote"]:
+            reasons.append("lower TMDb vote contribution")
+        if quality["score"] < selected_quality["score"]:
+            reasons.append("lower overall quality score")
+        if not reasons:
+            reasons.append("lost deterministic selection tie-break")
+        rejected.append(
+            {
+                "language": language or "untagged",
+                "width": width,
+                "height": height,
+                "vote": vote,
+                "quality_score": quality["score"],
+                "quality_components": quality,
+                "reasons": reasons,
+            }
+        )
+
+    rejected.sort(
+        key=lambda candidate: (
+            float(candidate["quality_score"]),
+            float(candidate["vote"]),
+            int(candidate["width"]) * int(candidate["height"]),
+        ),
+        reverse=True,
+    )
+    return rejected[: int(limit)]
+
+
 def _artwork_quality_key(config, image, asset_type, preferred_language=None):
     score = artwork_quality_score(
         config,

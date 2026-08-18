@@ -187,6 +187,30 @@ def _retain_reports(report_dir, pattern, retention):
             pass
 
 
+def _append_artwork_selection_details(lines, candidate, indent="  "):
+    components = candidate.get("quality_components") or {}
+    if components:
+        lines.append(
+            f"{indent}selected components: "
+            f"resolution={components.get('resolution', 0):g}, "
+            f"vote={components.get('vote', 0):g}, "
+            f"aspect={components.get('aspect', 0):g}, "
+            f"language={components.get('language', 0):g}"
+        )
+    rejected = candidate.get("rejected_candidates") or []
+    if rejected:
+        lines.append(f"{indent}highest-scoring rejected candidates:")
+    for alternative in rejected:
+        reasons = ", ".join(alternative.get("reasons") or ["not selected"])
+        lines.append(
+            f"{indent}- {alternative.get('width', 0)}x"
+            f"{alternative.get('height', 0)} "
+            f"lang={alternative.get('language', 'untagged')} "
+            f"vote={alternative.get('vote', 0):g} "
+            f"score={alternative.get('quality_score', 0):g}: {reasons}"
+        )
+
+
 def write_change_plan_report(
     metadata_records,
     asset_records,
@@ -299,6 +323,7 @@ def write_change_plan_report(
             f"score={candidate.get('quality_score', 0):g} | "
             f"ownership={record.get('ownership') or 'unknown'}"
         )
+        _append_artwork_selection_details(lines, candidate)
     atomic_write_text(path, "\n".join(lines) + "\n")
     _retain_reports(report_dir, "change-plan-*.txt", retention)
     return path
@@ -372,6 +397,7 @@ def write_library_asset_audit_report(
             f"{candidate.get('width', 0)}x{candidate.get('height', 0)} | "
             f"ownership={record.get('ownership') or 'unknown'}"
         )
+        _append_artwork_selection_details(lines, candidate)
     atomic_write_text(path, "\n".join(lines) + "\n")
     _retain_reports(report_dir, "library-asset-audit-*.txt", retention)
     return path
@@ -548,6 +574,7 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
             f"score={candidate.get('quality_score', 0):g} | "
             f"ownership={record.get('ownership') or 'unknown'}{existing}"
         )
+        _append_artwork_selection_details(lines, candidate)
     lines.extend(("", "Missing, rejected, and failed candidates"))
     if not gaps:
         lines.append("- none")
