@@ -66,6 +66,7 @@ from helper.logging import (
     log_main_event,
     redact_secrets,
 )
+from helper.mapping_diagnostics import run_mapping_diagnosis
 from helper.performance import (
     PerformanceTracker,
     begin_performance_tracking,
@@ -79,7 +80,7 @@ from helper.plex import (
     connect_plex_library,
     connect_plex_server,
     get_plex_metadata,
-    plex_operation,
+    load_plex_library_inventory,
 )
 from helper.plex_metadata import (
     begin_plex_metadata_run,
@@ -202,6 +203,11 @@ def parse_cli_args(argv=None):
         "--library-audit",
         action="store_true",
         help="Audit Plex libraries and enabled artwork without changing either mode",
+    )
+    parser.add_argument(
+        "--mapping-diagnose",
+        action="store_true",
+        help="Explain one or more Plex TV episode mappings without changing them",
     )
     parser.add_argument(
         "--library",
@@ -348,6 +354,9 @@ def override_config_with_cli(config, args):
         config["settings"]["dry_run"] = True
         config["metadata"].update({"run_basic": False, "run_enhanced": False})
         config["cleanup"]["run_cleanup"] = False
+    if args.mapping_diagnose:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -401,6 +410,8 @@ def override_config_with_cli(config, args):
         execution["plan"] = True
     if args.library_audit:
         execution["library_audit"] = True
+    if args.mapping_diagnose:
+        execution["mapping_diagnose"] = True
     if args.retry_failed:
         execution["retry_failed"] = True
         execution["retry_status"] = args.retry_status
@@ -478,6 +489,29 @@ async def connector_preflight(config):
     }
 
 
+async def mapping_diagnosis_connectors(config, rating_keys):
+    runtime = config.get("runtime", {})
+    maximum = concurrency_ceiling(config, "network")
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(limit=maximum, limit_per_host=maximum)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session)
+        sections, _selected, _available = await asyncio.to_thread(
+            connect_plex_library,
+            config,
+            plex=plex,
+        )
+        return await run_mapping_diagnosis(
+            sections,
+            config,
+            rating_keys,
+            session=session,
+        )
+
+
 def normalize_library_type(value):
     library_type = (value or "").lower()
     if library_type == "movies":
@@ -518,6 +552,30 @@ def target_items_by_tmdb(items, tmdb_ids):
             selected.append(item)
             found.update(matches)
     return selected, found
+
+
+def validate_inventory_snapshot(library_name, inventory, discovery_records):
+    """Reject same-size inventory replacement between discovery and processing."""
+    if len(inventory) != len(discovery_records):
+        raise RuntimeError(
+            f"Plex inventory for {library_name} changed between discovery and "
+            "processing; cleanup is disabled"
+        )
+    discovered_keys = {
+        str(record["rating_key"])
+        for record in discovery_records
+        if record.get("rating_key") is not None
+    }
+    processing_keys = {
+        str(item.ratingKey)
+        for item in inventory
+        if getattr(item, "ratingKey", None) is not None
+    }
+    if discovered_keys != processing_keys:
+        raise RuntimeError(
+            f"Plex inventory for {library_name} changed rating keys between "
+            "discovery and processing; cleanup is disabled"
+        )
 
 
 def build_scan_scopes(plex, sections, config):
@@ -791,43 +849,51 @@ async def metafusion_main(config, logger):
                             "incremental run; full reconciliation required"
                         )
                     run_feature_flags["cleanup"] = False
-                section_items = {}
+                section_inventory_records = {}
                 identity_counts = Counter()
                 edition_counts = Counter()
                 found_rating_keys = set()
                 found_tmdb_ids = set()
                 for section in sections:
                     try:
-                        inventory = await plex_operation(
-                            lambda current=section: list(current.all()),
+                        inventory = await load_plex_library_inventory(
+                            section,
                             runtime_config,
-                            description=f"List library {section.title}",
+                            records_only=True,
                         )
-                        selected_inventory, matched_tmdb_ids = target_items_by_tmdb(
-                            inventory,
-                            execution.get("tmdb_ids"),
+                        section_inventory_records[section.title] = inventory
+                        requested_tmdb = {
+                            str(value)
+                            for value in execution.get("tmdb_ids", [])
+                            if str(value).strip()
+                        }
+                        selected_inventory = [
+                            record
+                            for record in inventory
+                            if not requested_tmdb
+                            or str(record.get("tmdb_id")) in requested_tmdb
+                        ]
+                        found_tmdb_ids.update(
+                            str(record["tmdb_id"])
+                            for record in selected_inventory
+                            if record.get("tmdb_id") is not None
                         )
-                        section_items[section.title] = selected_inventory
-                        found_tmdb_ids.update(matched_tmdb_ids)
-                        for item in selected_inventory:
-                            rating_key = getattr(item, "ratingKey", None)
-                            if rating_key is not None:
-                                found_rating_keys.add(str(rating_key))
+                        found_rating_keys.update(
+                            str(record["rating_key"])
+                            for record in selected_inventory
+                            if record.get("rating_key") is not None
+                        )
                         for scope in scan_scopes:
                             if scope["library_name"] == section.title:
                                 scope["item_count"] = len(inventory)
                                 break
-                        for item in inventory:
-                            media_type = normalize_library_type(
-                                getattr(item, "type", None)
-                            )
-                            title = getattr(item, "title", None)
-                            year = getattr(item, "year", None)
+                        for record in inventory:
+                            media_type = normalize_library_type(record.get("media_type"))
+                            title = record.get("title")
+                            year = record.get("year")
                             identity_counts[(media_type, title, year)] += 1
                             if media_type == "movie":
-                                edition = getattr(item, "editionTitle", None) or getattr(
-                                    item, "edition", None
-                                )
+                                edition = record.get("edition")
                                 edition_counts[(title, year, edition)] += 1
                     except asyncio.CancelledError:
                         raise
@@ -901,7 +967,20 @@ async def metafusion_main(config, logger):
                     maintenance_failures = list(failures)
                     for section in sections:
                         library_config = config_for_library(config, section.title)
-                        for item in section_items.get(section.title, []):
+                        inventory = await load_plex_library_inventory(
+                            section,
+                            runtime_config,
+                        )
+                        validate_inventory_snapshot(
+                            section.title,
+                            inventory,
+                            section_inventory_records.get(section.title, []),
+                        )
+                        selected_inventory, _matched = target_items_by_tmdb(
+                            inventory,
+                            execution.get("tmdb_ids"),
+                        )
+                        for item in selected_inventory:
                             rating_key = str(getattr(item, "ratingKey", ""))
                             if rating_key not in target_keys:
                                 continue
@@ -942,9 +1021,22 @@ async def metafusion_main(config, logger):
                         cache_store.asset_destination_records()
                     )
                 for section in sections:
-                    if section.title not in section_items:
+                    if section.title not in section_inventory_records:
                         continue
                     try:
+                        inventory = await load_plex_library_inventory(
+                            section,
+                            runtime_config,
+                        )
+                        validate_inventory_snapshot(
+                            section.title,
+                            inventory,
+                            section_inventory_records.get(section.title, []),
+                        )
+                        selected_inventory, _matched = target_items_by_tmdb(
+                            inventory,
+                            execution.get("tmdb_ids"),
+                        )
                         library_config = config_for_library(config, section.title)
                         library_config["_asset_destination_registry"] = (
                             asset_destination_registry
@@ -991,7 +1083,7 @@ async def metafusion_main(config, logger):
                                 full_scan=section_full_scan,
                                 rating_keys=execution.get("rating_keys"),
                                 incremental_fingerprint=config_fingerprint(library_config),
-                                all_items=section_items[section.title],
+                                all_items=selected_inventory,
                                 global_identity_counts=identity_counts,
                                 global_edition_counts=edition_counts,
                                 explain_selection=explain_selection,
@@ -1362,7 +1454,13 @@ def main(argv=None):
         )
         return 2
     if args.retry_failed and any(
-        (args.asset_audit, args.metadata_audit, args.plan, args.library_audit)
+        (
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.mapping_diagnose,
+        )
     ):
         print(
             "Configuration error: --retry-failed cannot be combined with audits or --plan",
@@ -1392,6 +1490,7 @@ def main(argv=None):
                 args.metadata_audit,
                 args.plan,
                 args.library_audit,
+                args.mapping_diagnose,
                 args.retry_failed,
                 args.compatibility_check,
             )
@@ -1442,6 +1541,30 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+    if args.mapping_diagnose and not args.rating_key:
+        print(
+            "Configuration error: --mapping-diagnose requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
+    if args.mapping_diagnose and any(
+        (
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.preflight,
+            args.release_check,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+        )
+    ):
+        print(
+            "Configuration error: --mapping-diagnose must run as a standalone diagnostic",
+            file=sys.stderr,
+        )
+        return 2
     if args.status:
         status_path = Path(
             os.environ.get("STATUS_FILE", "/tmp/metafusion-status.json")
@@ -1474,6 +1597,7 @@ def main(argv=None):
                 or args.metadata_audit
                 or args.plan
                 or args.library_audit
+                or args.mapping_diagnose
                 or args.compatibility_check
                 or args.release_check
             ),
@@ -1526,6 +1650,38 @@ def main(argv=None):
         for error in validation_errors:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    if args.mapping_diagnose:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            begin_tmdb_cache(config)
+            records, report = asyncio.run(
+                mapping_diagnosis_connectors(
+                    config,
+                    config.get("_execution", {}).get("rating_keys", []),
+                )
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Mapping diagnosis failed: {message}", file=sys.stderr)
+            return 1
+        finally:
+            _plex_cache.clear()
+            tmdb_response_cache.reset_memory()
+        unresolved = sum(
+            record.get("status")
+            not in {"aligned", "configured_override", "episode_group", "split_series"}
+            for record in records
+        )
+        print(
+            f"Mapping diagnosis completed for {len(records)} item(s); "
+            f"{unresolved} require review."
+        )
+        print(f"Report saved to {report}")
+        return 0
     if args.compatibility_check:
         try:
             validate_preflight_paths(config, BASE_CONFIG_DIR)

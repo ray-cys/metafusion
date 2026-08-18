@@ -40,6 +40,7 @@ from modules.kometa import (
     merge_generated_metadata,
 )
 from modules.utils import (
+    artwork_candidate_explanations,
     artwork_quality_score,
     asset_temp_path,
     asset_write_allowed,
@@ -135,7 +136,7 @@ def _asset_audit_enabled(config):
     return bool(config.get("_execution", {}).get("asset_audit", False))
 
 
-def _candidate_summary(config, candidate, asset_type):
+def _candidate_summary(config, candidate, asset_type, candidate_pool=None):
     preferred_language = str(
         config.get("tmdb", {}).get("language", "en-US")
     ).split("-", 1)[0]
@@ -145,7 +146,7 @@ def _candidate_summary(config, candidate, asset_type):
         asset_type=asset_type,
         preferred_language=preferred_language,
     )
-    return {
+    summary = {
         "language": candidate.get("iso_639_1") or "untagged",
         "width": int(candidate.get("width") or 0),
         "height": int(candidate.get("height") or 0),
@@ -153,6 +154,14 @@ def _candidate_summary(config, candidate, asset_type):
         "quality_score": quality["score"],
         "quality_components": quality,
     }
+    summary["rejected_candidates"] = artwork_candidate_explanations(
+        config,
+        candidate_pool or [],
+        candidate,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )
+    return summary
 
 
 def _existing_image_dimensions(path):
@@ -177,6 +186,7 @@ async def _audit_asset_candidate(
     full_title,
     asset_type,
     season_number=None,
+    candidate_pool=None,
 ):
     """Record a value-safe, read-only assessment of one selected candidate."""
     if not _asset_audit_enabled(config):
@@ -187,7 +197,9 @@ async def _audit_asset_candidate(
         "title": full_title,
         "asset_type": asset_type,
         "season_number": season_number,
-        "candidate": _candidate_summary(config, candidate, asset_type),
+        "candidate": _candidate_summary(
+            config, candidate, asset_type, candidate_pool=candidate_pool
+        ),
     }
     asset_path = get_asset_path(
         config,
@@ -1321,13 +1333,15 @@ async def _build_movie(
             return
         preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(details, "posters", [], path=["images"])
+        candidate_pool = list(images or [])
         fallback = config["tmdb"].get("fallback", [])
         best = get_best_poster(config, images, preferred_language=preferred_language, fallback=fallback)
         if not best:
             unfiltered = await all_language_images()
+            candidate_pool = list(unfiltered.get("posters", []) or [])
             best = get_best_poster(
                 config,
-                unfiltered.get("posters", []),
+                candidate_pool,
                 preferred_language=preferred_language,
                 fallback=fallback,
             )
@@ -1354,6 +1368,7 @@ async def _build_movie(
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="Movie",
             full_title=full_title, asset_type="poster",
+            candidate_pool=candidate_pool,
         )
 
         if feature_flags.get("dry_run", False):
@@ -1544,10 +1559,12 @@ async def _build_movie(
             background_action = "not_due"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
+        candidate_pool = list(images or [])
         best = get_best_background(config, images)
         if not best:
             unfiltered = await all_language_images()
-            best = get_best_background(config, unfiltered.get("backdrops", []))
+            candidate_pool = list(unfiltered.get("backdrops", []) or [])
+            best = get_best_background(config, candidate_pool)
             if best:
                 log_builder_event(
                     "builder_artwork_language_fallback", media_type="Movie",
@@ -1571,6 +1588,7 @@ async def _build_movie(
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="Movie",
             full_title=full_title, asset_type="background",
+            candidate_pool=candidate_pool,
         )
 
         if feature_flags.get("dry_run", False):
@@ -2541,13 +2559,15 @@ async def _build_tv(
             return
         preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(details, "posters", [], path=["images"])
+        candidate_pool = list(images or [])
         fallback = config["tmdb"].get("fallback", [])
         best = get_best_poster(config, images, preferred_language=preferred_language, fallback=fallback)
         if not best:
             unfiltered = await all_language_images()
+            candidate_pool = list(unfiltered.get("posters", []) or [])
             best = get_best_poster(
                 config,
-                unfiltered.get("posters", []),
+                candidate_pool,
                 preferred_language=preferred_language,
                 fallback=fallback,
             )
@@ -2574,6 +2594,7 @@ async def _build_tv(
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
             full_title=full_title, asset_type="poster",
+            candidate_pool=candidate_pool,
         )
 
         if feature_flags.get("dry_run", False):
@@ -2746,10 +2767,12 @@ async def _build_tv(
             background_action = "skipped"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
+        candidate_pool = list(images or [])
         best = get_best_background(config, images)
         if not best:
             unfiltered = await all_language_images()
-            best = get_best_background(config, unfiltered.get("backdrops", []))
+            candidate_pool = list(unfiltered.get("backdrops", []) or [])
+            best = get_best_background(config, candidate_pool)
             if best:
                 log_builder_event(
                     "builder_artwork_language_fallback", media_type="TV Show",
@@ -2773,6 +2796,7 @@ async def _build_tv(
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
             full_title=full_title, asset_type="background",
+            candidate_pool=candidate_pool,
         )
 
         if feature_flags.get("dry_run", False):
@@ -2954,13 +2978,15 @@ async def _build_tv(
 
         preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(season_details, "posters", [], path=["images"])
+        candidate_pool = list(images or [])
         fallback = config["tmdb"].get("fallback", [])
         best = get_best_season(config, images, preferred_language=preferred_language, fallback=fallback)
         if not best:
             unfiltered = await all_language_images(season_number=season_number)
+            candidate_pool = list(unfiltered.get("posters", []) or [])
             best = get_best_season(
                 config,
-                unfiltered.get("posters", []),
+                candidate_pool,
                 preferred_language=preferred_language,
                 fallback=fallback,
             )
@@ -2991,6 +3017,7 @@ async def _build_tv(
             config, meta, cache_key, best, media_type="TV Show",
             full_title=full_title, asset_type="season",
             season_number=season_number,
+            candidate_pool=candidate_pool,
         )
 
         if feature_flags.get("dry_run", False):

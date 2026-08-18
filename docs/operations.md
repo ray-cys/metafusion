@@ -73,6 +73,7 @@ or `config.yml` values.
 | Diagnostics | `--metadata-audit` | None | Perform a read-only full metadata comparison against TMDb and write field-level proposed actions. Artwork and cleanup are disabled. |
 | Diagnostics | `--plan` | None | Produce one read-only full-scan plan for metadata, artwork, and eligible cleanup. The report is the only deliberate output. |
 | Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork in either output mode without applying changes. |
+| Diagnostics | `--mapping-diagnose` | None | Compare one or more Plex TV inventories with TMDb standard ordering, configured overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
 | Diagnostics | `--compatibility-check` | None | Test connectors, paths, and the configured Kometa/Plex output contract, write a compatibility report, and exit. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
 | Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
@@ -120,6 +121,9 @@ python metafusion.py --plan
 # Inventory every Plex movie/show library and enabled artwork destination
 python metafusion.py --library-audit
 
+# Explain difficult TV episode ordering without changing any mapping or metadata
+python metafusion.py --mapping-diagnose --rating-key 12345
+
 # Confirm the configured output contract and required connector/path support
 python metafusion.py --compatibility-check
 
@@ -165,10 +169,24 @@ prove an orphan.
 
 `--library-audit` works in Kometa and Plex modes. It lists discovered and
 selected movie/show libraries, item counts, artwork ownership outcomes,
-candidate dimensions, and the normalized 0-100 artwork quality score. It
+candidate dimensions, and the normalized 0-100 artwork quality score. It also
+lists the highest-scoring rejected candidates, their score components, and
+whether language priority, dimensions, vote threshold, aspect ratio, downgrade
+protection against the existing file, or a deterministic tie-break determined
+the reported action. It
 writes `/config/reports/library-asset-audit-*.txt` and does not modify either
 output mode. Like the asset audit, it can take about as long as full artwork
 evaluation because it contacts Plex and TMDb.
+
+`--mapping-diagnose` accepts one or more TV show rating keys. It compares the
+complete Plex season/episode inventory with TMDb standard ordering, configured
+`TMDB_EPISODE_OVERRIDES`, split-series mappings, and available TMDb episode
+groups. When one complete one-step numbering offset is uniquely provable, the
+report includes a proposed configuration snippet for review. It never applies
+that proposal, changes a learned identity, writes Plex or Kometa metadata, or
+downloads artwork. Results are written to
+`/config/reports/mapping-diagnosis-*.txt`; an unresolved result is a successful
+diagnostic outcome rather than a mutation failure.
 
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
@@ -466,6 +484,7 @@ Shared reports and logs are:
 /config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/change-plan-YYYYMMDD-HHMMSS.txt
 /config/reports/library-asset-audit-YYYYMMDD-HHMMSS.txt
+/config/reports/mapping-diagnosis-YYYYMMDD-HHMMSS.txt
 /config/reports/compatibility-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
@@ -474,9 +493,9 @@ Shared reports and logs are:
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
 Asset-audit reports include the selected candidate's language, dimensions,
-vote score, ownership status, existing dimensions, and the action a real run
-would consider. They omit filesystem paths and do not prove that a later
-download will succeed.
+vote score, ownership status, existing dimensions, score components, the top
+rejected candidates, and the action a real run would consider. They omit
+filesystem paths and do not prove that a later download will succeed.
 Destination-history reports identify old and current artwork paths after a
 Plex title/path rename; MetaFusion does not delete the old path. Plex metadata
 reports identify fields and outcomes. Reports are bounded. Destination reports
@@ -511,6 +530,14 @@ artwork is deferred to the retry queue while metadata processing continues.
 A missing/unmounted destination still fails safely instead of writing into an
 unintended container directory. `VALIDATE_MEDIA_MOUNTS=False` disables only the
 startup mapping-root check; per-artwork destination checks remain active.
+
+Plex inventories are retrieved through automatic bounded pages. A lightweight
+discovery pass establishes global title/edition counts; only one library's Plex
+objects are retained during its processing pass. MetaFusion verifies the item
+total before and after paging, rejects duplicate rating keys, and requires the
+processing pass to match discovery. Any missing, repeated, or changing page
+fails the library safely and disables cleanup for that run. Page size is
+automatic and has no user setting.
 
 ## Container health and shutdown
 

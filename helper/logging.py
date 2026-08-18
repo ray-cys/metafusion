@@ -400,6 +400,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_critical_metadata_missing": "[Plex] Critical metadata missing for item [ratingKey={item_key}]: {missing_critical}. Extracted: {result}",
         "plex_path_sample_library_failed": "[Plex] Unable to sample paths from library {library_name}: {error}",
         "plex_path_sample_item_failed": "[Plex] Unable to sample a media path for {title}: {error}",
+        "plex_inventory_paged": "[Plex] Inventory {library_name}: {items} items across {pages} page(s) (page size {page_size}).",
     }
     levels = {
         "plex_connected": "info",
@@ -419,6 +420,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_critical_metadata_missing": "warning",
         "plex_path_sample_library_failed": "warning",
         "plex_path_sample_item_failed": "warning",
+        "plex_inventory_paged": "debug",
     }
     msg = messages.get(event, "[Plex] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Plex")

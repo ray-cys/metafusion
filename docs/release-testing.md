@@ -110,3 +110,11 @@ rule groups in addition to the existing correctness/security selectors. Mypy
 checks the storage, provider mapping, logging, state, and builder modules as the
 first typed boundary; its scope should expand only after each newly included
 module is clean.
+
+Phase 23 adds checked, redacted provider-shaped replay fixtures for editions,
+localized titles, year disambiguation, Specials, alternate episode groups,
+split-series mappings, and missing artwork. It also covers read-only mapping
+diagnosis, stable paginated Plex inventory with duplicate/change/incomplete-page
+rejection, and component-level explanations for selected and rejected artwork.
+Replay fixtures must pass the credential, private-host, local-path, and server
+identifier sanitizer before they can be committed.

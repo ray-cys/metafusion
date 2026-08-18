@@ -281,6 +281,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
 /config/reports/change-plan-*.txt       # explicit --plan runs only
 /config/reports/library-asset-audit-*.txt # explicit --library-audit runs only
+/config/reports/mapping-diagnosis-*.txt # explicit --mapping-diagnose runs only
 /config/reports/compatibility-*.txt     # explicit --compatibility-check runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
@@ -303,7 +304,8 @@ stopped.
 | `1.2.3-rc.1` | Exact release candidate for testing |
 | `sha-<full-commit>` | Immutable diagnostic or rollback build |
 | `develop` | Moving test build; never updates `latest` |
-| `main`, `latest` | Moving production builds from `main` |
+| `main` | Moving production-candidate build from `main`; does not update `latest` |
+| `latest` | Most recent exact stable release tag; never an RC or branch build |
 
 Production installations should pin an exact release. Change only the image
 tag to roll back; keep `/config`, `/kometa`, permissions, and media mappings
@@ -322,6 +324,7 @@ python metafusion.py --asset-audit
 python metafusion.py --metadata-audit
 python metafusion.py --plan
 python metafusion.py --library-audit
+python metafusion.py --mapping-diagnose --rating-key 12345
 python metafusion.py --compatibility-check
 python metafusion.py --status
 python metafusion.py --support-report
