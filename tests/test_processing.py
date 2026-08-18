@@ -237,13 +237,18 @@ def test_cached_tmdb_recovery_is_scoped_to_same_plex_source_id():
         "title": "Movie 1",
         "year": 2020,
         "tmdb_id": "100",
+        "plex_provider_tmdb_id": "100",
+        "imdb_id": "tt0000100",
     }
+    fingerprint = processing.plex_identity_fingerprint(meta)
     cache = {
         "movie:plex:1": {
             "tmdb_id": "101",
             "tmdb_recovery_source_id": "100",
+            "tmdb_recovery_identity_fingerprint": fingerprint,
         }
     }
+    original_meta = dict(meta)
 
     assert processing.apply_cached_tmdb_recovery(meta, cache) is True
     assert meta["plex_tmdb_id"] == "100"
@@ -252,6 +257,10 @@ def test_cached_tmdb_recovery_is_scoped_to_same_plex_source_id():
     corrected_by_plex = {**meta, "tmdb_id": "102"}
     assert processing.apply_cached_tmdb_recovery(corrected_by_plex, cache) is False
     assert corrected_by_plex["tmdb_id"] == "102"
+
+    changed_guid = {**original_meta, "imdb_id": "tt0000200"}
+    assert processing.apply_cached_tmdb_recovery(changed_guid, cache) is False
+    assert changed_guid["tmdb_id"] == "100"
 
 
 def test_ambiguous_blank_editions_fail_safely(monkeypatch, tmp_path):

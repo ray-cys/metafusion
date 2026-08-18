@@ -64,3 +64,9 @@ Adaptive-concurrency tests use deterministic resource, pressure, clock, and
 provider signals. They cover cgroup ceilings, healthy growth, rate-limit and
 resource-pressure reduction, circuit opening/half-open recovery, shared
 in-flight TMDb requests, and cancellation-safe worker bounds.
+
+Phase 20 additionally covers interrupted-item recovery, exponential retry and
+parking, Plex update-marker resets, automatic supported-library discovery,
+missing-library cleanup protection, adaptive artwork timing, learned identity
+invalidation, path-mapping advice, slow-Plex lane reduction, write-cap
+deferral, storage-aware cache limits, and low-space artwork deferral.

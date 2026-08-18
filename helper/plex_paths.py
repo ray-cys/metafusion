@@ -51,3 +51,94 @@ def translate_plex_path(value, mappings=None):
     if ".." in normalized.parts:
         raise PlexPathError(f"Plex path contains unsafe traversal: {value}")
     return Path(str(normalized))
+
+
+def visible_mount_roots(mountinfo_path="/proc/self/mountinfo"):
+    """Return plausible user volume roots without walking their contents."""
+    roots = set()
+    try:
+        lines = Path(mountinfo_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    ignored = (
+        "/dev",
+        "/proc",
+        "/sys",
+        "/etc",
+        "/run",
+        "/usr",
+        "/var/lib",
+    )
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        mount_point = fields[4].replace("\\040", " ")
+        if mount_point == "/" or mount_point.startswith(ignored):
+            continue
+        path = Path(mount_point)
+        if path.is_dir():
+            roots.add(path)
+    for conventional in ("/media", "/mnt", "/movies", "/tv"):
+        path = Path(conventional)
+        if path.is_dir():
+            roots.add(path)
+    return sorted(roots, key=lambda path: (len(path.parts), str(path)))
+
+
+def advise_path_mappings(
+    reported_paths,
+    mappings=None,
+    *,
+    mount_roots=None,
+    exists=None,
+):
+    """Resolve visible Plex paths and infer only unique suffix-based mappings."""
+    exists = (lambda path: Path(path).exists()) if exists is None else exists
+    roots = list(visible_mount_roots() if mount_roots is None else mount_roots)
+    records = []
+    suggestions = set()
+    for raw in sorted({str(value) for value in reported_paths or [] if value}):
+        translated = translate_plex_path(raw, mappings)
+        if exists(translated):
+            records.append(
+                {
+                    "reported": raw,
+                    "translated": str(translated),
+                    "status": "resolved",
+                }
+            )
+            continue
+        parts = list(PurePosixPath(raw).parts)
+        if parts and parts[0] == "/":
+            parts = parts[1:]
+        inferred = set()
+        for root in roots:
+            root = Path(root)
+            for cut in range(1, len(parts)):
+                candidate = root.joinpath(*parts[cut:])
+                if not exists(candidate):
+                    continue
+                source = "/" + "/".join(parts[:cut])
+                inferred.add((source, str(root), str(candidate)))
+        if len(inferred) == 1:
+            source, destination, candidate = next(iter(inferred))
+            suggestion = f"{source}=>{destination}"
+            suggestions.add(suggestion)
+            records.append(
+                {
+                    "reported": raw,
+                    "translated": candidate,
+                    "status": "suggested",
+                    "suggestion": suggestion,
+                }
+            )
+        else:
+            records.append(
+                {
+                    "reported": raw,
+                    "translated": str(translated),
+                    "status": "unresolved",
+                }
+            )
+    return {"records": records, "suggestions": sorted(suggestions)}

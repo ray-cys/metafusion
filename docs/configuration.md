@@ -34,7 +34,7 @@ effective configuration without contacting Plex or TMDb.
 | `PLEX_URL` | placeholder | Complete Plex server URL, including port. |
 | `PLEX_TOKEN` | required | Plex authentication token. |
 | `PLEX_TOKEN_FILE` | unset | Mounted file containing the Plex token; a non-empty direct token wins. |
-| `PLEX_LIBRARIES` | `Movies,TV Shows` | Comma-separated exact Plex library names. |
+| `PLEX_LIBRARIES` | `auto` | `auto` discovers every supported movie/show library; comma-separated exact names limit the scope. Do not combine `auto` and explicit names. |
 | `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations for Plex-mode artwork. Docker mappings are still required. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | Mounted file containing the TMDb key; a non-empty direct key wins. |
@@ -114,7 +114,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 | `STOP_GRACE_PERIOD` | `20s` | Docker Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size in MiB. |
 | `VALIDATE_MEDIA_MOUNTS` | `True` | Validate configured Plex-mode mapping destinations before artwork processing. |
-| `MIN_FREE_SPACE_MB` | `256` | Minimum free space required on runtime and artwork destinations before writes. |
+| `MIN_FREE_SPACE_MB` | `256` | Explicit free-space floor. MetaFusion also applies a storage-aware automatic floor of 1% of the volume, bounded between 256 MiB and 2 GiB. |
 | `PUID` | `10001` | Runtime user ID; use `99` on standard Unraid. |
 | `PGID` | `10001` | Runtime group ID; use `100` on standard Unraid. |
 
@@ -132,15 +132,15 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `INCREMENTAL` | `True` | Skip successfully processed unchanged items. |
 | `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between complete reconciliation scans. |
 | `METADATA_PENDING_RECHECK_HOURS` | `24` | Recheck interval for Plex episodes whose TMDb metadata is not published yet. |
-| `IMAGE_UPGRADE_DAYS` | `30` | Default minimum age before unchanged artwork is reconsidered; `0` disables timed rechecks. |
-| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background interval. |
-| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background interval. |
-| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster interval. |
+| `IMAGE_UPGRADE_DAYS` | `30` | Default adaptive base interval; `0` disables timed rechecks. |
+| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
+| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
+| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster adaptive base interval. |
 | `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
 | `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for HTTP 404 results; 429 and 5xx responses are never cached. |
-| `TMDB_CACHE_MAX_ENTRIES` | `5000` | Maximum persisted TMDb responses. |
-| `TMDB_CACHE_MAX_MB` | `0` | Optional compressed-payload limit in MiB; `0` disables the byte cap. |
+| `TMDB_CACHE_MAX_ENTRIES` | `0` | Maximum persisted responses; `0` chooses a storage-aware automatic limit. |
+| `TMDB_CACHE_MAX_MB` | `0` | Compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `DESTINATION_HISTORY_REPORT_RETENTION` | `10` | Artwork destination-change reports retained under `/config/reports`. |
@@ -148,8 +148,10 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 
-Artwork age comes from saved MetaFusion upgrade timestamps, not filesystem
-mtime. Decimal day values are accepted (`0.5` is 12 hours). A due interval
+Artwork age comes from saved MetaFusion observations, not filesystem mtime.
+Decimal day values are accepted (`0.5` is 12 hours). Missing artwork is
+rechecked sooner and stable unchanged candidates back off automatically; these
+settings are the bases and optional bounds for that behavior. A due interval
 makes an item eligible for evaluation; `ASSET_UPDATE_POLICY` and quality rules
 still determine whether an existing file can be replaced.
 

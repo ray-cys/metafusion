@@ -102,7 +102,7 @@ DEFAULT_CONFIG = {
         "token": "PLEX_TOKEN",
         "path_mappings": [],
     },
-    "plex_libraries": ["Movies", "TV Shows"],
+    "plex_libraries": ["auto"],
     "tmdb": {
         "api_key": "TMDB_API_KEY",
         "language": "en-US",
@@ -170,7 +170,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "ttl_hours": 24.0,
         "negative_ttl_hours": 12.0,
-        "max_entries": 5000,
+        "max_entries": 0,
         "max_mb": 0.0,
     },
     "output": {
@@ -576,8 +576,12 @@ def validate_config(config):
         errors.append("TMDb API key is missing or still uses a placeholder")
 
     libraries = config.get("plex_libraries")
-    if not isinstance(libraries, list) or not any(str(value).strip() for value in libraries):
-        errors.append("plex_libraries must contain at least one library name")
+    if not isinstance(libraries, list):
+        errors.append("plex_libraries must be a list or use auto discovery")
+    elif any(str(value).strip().casefold() == "auto" for value in libraries) and len(
+        [value for value in libraries if str(value).strip()]
+    ) > 1:
+        errors.append("plex_libraries auto cannot be combined with explicit names")
 
     if settings.get("schedule", False):
         run_times = settings.get("run_times")
@@ -628,7 +632,7 @@ def validate_config(config):
         ),
         ("tmdb_cache.ttl_hours", config.get("tmdb_cache", {}).get("ttl_hours"), 0.1, 8760),
         ("tmdb_cache.negative_ttl_hours", config.get("tmdb_cache", {}).get("negative_ttl_hours"), 0.1, 168),
-        ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 1, 100000),
+        ("tmdb_cache.max_entries", config.get("tmdb_cache", {}).get("max_entries"), 0, 100000),
         ("tmdb_cache.max_mb", config.get("tmdb_cache", {}).get("max_mb"), 0, 102400),
         ("output.backup_count", config.get("output", {}).get("backup_count"), 0, 50),
         (

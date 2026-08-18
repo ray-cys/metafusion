@@ -192,6 +192,8 @@ def test_connector_preflight_reuses_connection_and_rejects_missing_library(
         "plex_version": "1.42",
         "libraries": ["Movies"],
         "available_count": 1,
+        "library_discovery": "explicit",
+        "path_advice": {"records": [], "suggestions": []},
     }
 
     monkeypatch.setattr(

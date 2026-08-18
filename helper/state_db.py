@@ -1,21 +1,43 @@
 import copy
 import json
+import logging
 import os
 import sqlite3
 import threading
 from collections.abc import MutableMapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 FILE_MODE = 0o664
 _database_setup_lock = threading.Lock()
 _initialized_databases = set()
 _integrity_checked_databases = set()
+_backed_up_databases = set()
+
+_RETRY_DELAYS = (
+    timedelta(minutes=15),
+    timedelta(hours=1),
+    timedelta(hours=6),
+    timedelta(hours=24),
+)
+_PERMANENT_FAILURE_MARKERS = (
+    "ambiguous artwork destination",
+    "ambiguous edition",
+    "cannot uniquely match",
+    "identity mismatch",
+    "identity rejected",
+    "invalid path mapping",
+    "mapping contains unsafe",
+    "mapping source must be absolute",
+    "recorded_path_mismatch",
+    "unsupported library type",
+    "unsupported metadata",
+)
 
 
 class StateDatabaseError(RuntimeError):
@@ -24,6 +46,48 @@ class StateDatabaseError(RuntimeError):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _as_utc(value=None):
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _backup_before_schema_upgrade(connection, path, version):
+    """Create a bounded SQLite backup before changing an existing schema."""
+    if version <= 0 or version >= SCHEMA_VERSION:
+        return None
+    stat = Path(path).stat()
+    identity = (str(Path(path).absolute()), stat.st_dev, stat.st_ino, version)
+    if identity in _backed_up_databases:
+        return None
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    backup_path = Path(f"{path}.pre-v{version}-{timestamp}.bak")
+    backup = sqlite3.connect(backup_path)
+    try:
+        connection.backup(backup)
+    finally:
+        backup.close()
+    os.chmod(backup_path, FILE_MODE)
+    backups = sorted(
+        Path(path).parent.glob(f"{Path(path).name}.pre-v*.bak"),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+    for expired in backups[2:]:
+        try:
+            expired.unlink()
+        except OSError:
+            pass
+    _backed_up_databases.add(identity)
+    return backup_path
 
 
 def _connect(path=None, writable=True):
@@ -46,7 +110,7 @@ def _connect(path=None, writable=True):
         connection.execute("PRAGMA foreign_keys = ON")
         database_identity = None
         if writable:
-            connection.execute("PRAGMA journal_mode = DELETE")
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             if not existed:
                 os.chmod(path, FILE_MODE)
@@ -54,11 +118,13 @@ def _connect(path=None, writable=True):
         database_identity = (str(path.absolute()), stat.st_dev, stat.st_ino)
         with _database_setup_lock:
             if writable and database_identity not in _initialized_databases:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                _backup_before_schema_upgrade(connection, path, version)
                 _initialize_schema(connection)
                 _initialized_databases.add(database_identity)
             elif not writable:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (1, 2, SCHEMA_VERSION):
+                if version not in (1, 2, 3, SCHEMA_VERSION):
                     raise StateDatabaseError(
                         f"unsupported MetaFusion state schema version {version}"
                     )
@@ -84,7 +150,7 @@ def _connect(path=None, writable=True):
 
 def _initialize_schema(connection):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, 1, 2, SCHEMA_VERSION):
+    if version not in (0, 1, 2, 3, SCHEMA_VERSION):
         raise StateDatabaseError(
             f"unsupported MetaFusion state schema version {version}"
         )
@@ -202,6 +268,58 @@ def _initialize_schema(connection):
 
         CREATE INDEX IF NOT EXISTS plex_metadata_ownership_library
             ON plex_metadata_ownership(server_id, library_uuid, media_type);
+
+        CREATE TABLE IF NOT EXISTS item_retry_queue (
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT,
+            rating_key TEXT NOT NULL,
+            media_type TEXT,
+            plex_updated_at TEXT,
+            status TEXT NOT NULL,
+            failure_class TEXT,
+            error_type TEXT,
+            error_message TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            first_failed_at TEXT,
+            last_failed_at TEXT,
+            next_retry_at TEXT,
+            started_at TEXT,
+            PRIMARY KEY (server_id, library_uuid, rating_key)
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS item_retry_due
+            ON item_retry_queue(server_id, library_uuid, status, next_retry_at);
+
+        CREATE TABLE IF NOT EXISTS plex_library_inventory (
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT NOT NULL,
+            library_type TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            missing_since TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (server_id, library_uuid)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS identity_bindings (
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            tmdb_id TEXT NOT NULL,
+            plex_fingerprint TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            title TEXT,
+            year INTEGER,
+            validated_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            PRIMARY KEY (server_id, library_uuid, rating_key)
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS identity_bindings_tmdb
+            ON identity_bindings(media_type, tmdb_id);
         """
     )
     job_columns = {
@@ -959,6 +1077,533 @@ def prune_plex_metadata_library(
                 ),
             )
         return len(stale)
+    finally:
+        connection.close()
+
+
+def classify_item_failure(error):
+    """Classify failures for bounded automatic retry without endless loops."""
+    message = str(error or "").strip()
+    lowered = message.casefold()
+    if any(marker in lowered for marker in _PERMANENT_FAILURE_MARKERS):
+        return "permanent"
+    transient_markers = (
+        "429",
+        "5xx",
+        "circuit",
+        "connection",
+        "temporar",
+        "timeout",
+        "timed out",
+        "rate limit",
+        "disk pressure",
+        "no space",
+        "unavailable",
+        "interrupted",
+        "empty or rejected response",
+    )
+    if any(marker in lowered for marker in transient_markers):
+        return "transient"
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return "transient"
+    return "transient"
+
+
+def mark_item_started(
+    server_id,
+    library_uuid,
+    rating_key,
+    *,
+    library_name=None,
+    media_type=None,
+    plex_updated_at=None,
+    path=None,
+    now=None,
+):
+    """Persist an in-flight marker so abrupt container stops are recoverable."""
+    return mark_items_started(
+        server_id,
+        library_uuid,
+        [
+            {
+                "rating_key": rating_key,
+                "library_name": library_name,
+                "media_type": media_type,
+                "plex_updated_at": plex_updated_at,
+            }
+        ],
+        path=path,
+        now=now,
+    )
+
+
+def mark_items_started(
+    server_id,
+    library_uuid,
+    items,
+    *,
+    path=None,
+    now=None,
+):
+    """Persist one library's selected work in a single durable transaction."""
+    items = list(items or [])
+    if not items:
+        return False
+    connection = _connect(path, writable=True)
+    current = _as_utc(now).isoformat()
+    server_id = str(server_id or "unknown")
+    library_uuid = str(library_uuid)
+    try:
+        with connection:
+            connection.executemany(
+                """
+                INSERT INTO item_retry_queue(
+                    server_id, library_uuid, library_name, rating_key,
+                    media_type, plex_updated_at, status, attempts, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?)
+                ON CONFLICT(server_id, library_uuid, rating_key) DO UPDATE SET
+                    library_name = excluded.library_name,
+                    media_type = excluded.media_type,
+                    attempts = CASE
+                        WHEN item_retry_queue.plex_updated_at IS NOT excluded.plex_updated_at
+                        THEN 0 ELSE item_retry_queue.attempts END,
+                    first_failed_at = CASE
+                        WHEN item_retry_queue.plex_updated_at IS NOT excluded.plex_updated_at
+                        THEN NULL ELSE item_retry_queue.first_failed_at END,
+                    plex_updated_at = excluded.plex_updated_at,
+                    status = 'running',
+                    started_at = excluded.started_at
+                """,
+                (
+                    (
+                        server_id,
+                        library_uuid,
+                        item.get("library_name"),
+                        str(item.get("rating_key")),
+                        item.get("media_type"),
+                        item.get("plex_updated_at"),
+                        current,
+                    )
+                    for item in items
+                    if item.get("rating_key") is not None
+                ),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def record_item_failure(
+    server_id,
+    library_uuid,
+    rating_key,
+    error,
+    *,
+    library_name=None,
+    media_type=None,
+    plex_updated_at=None,
+    failure_class=None,
+    path=None,
+    now=None,
+):
+    """Persist a bounded retry or parked permanent failure for one Plex item."""
+    connection = _connect(path, writable=True)
+    current = _as_utc(now)
+    normalized_class = failure_class or classify_item_failure(error)
+    normalized_class = (
+        normalized_class if normalized_class in {"transient", "permanent"}
+        else "transient"
+    )
+    key = (
+        str(server_id or "unknown"),
+        str(library_uuid),
+        str(rating_key),
+    )
+    try:
+        existing = connection.execute(
+            "SELECT attempts, first_failed_at, plex_updated_at FROM item_retry_queue "
+            "WHERE server_id = ? AND library_uuid = ? AND rating_key = ?",
+            key,
+        ).fetchone()
+        changed_item = bool(
+            existing
+            and plex_updated_at is not None
+            and existing[2] is not None
+            and str(existing[2]) != str(plex_updated_at)
+        )
+        attempts = 1 if existing is None or changed_item else int(existing[0] or 0) + 1
+        first_failed = (
+            current.isoformat()
+            if existing is None or changed_item or not existing[1]
+            else str(existing[1])
+        )
+        if normalized_class == "permanent" or attempts > len(_RETRY_DELAYS):
+            status = "parked"
+            next_retry = None
+        else:
+            status = "pending"
+            next_retry = (current + _RETRY_DELAYS[attempts - 1]).isoformat()
+        message = str(error or "Unknown item failure").replace("\n", " ")[:500]
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO item_retry_queue(
+                    server_id, library_uuid, library_name, rating_key,
+                    media_type, plex_updated_at, status, failure_class,
+                    error_type, error_message, attempts, first_failed_at,
+                    last_failed_at, next_retry_at, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(server_id, library_uuid, rating_key) DO UPDATE SET
+                    library_name = excluded.library_name,
+                    media_type = excluded.media_type,
+                    plex_updated_at = excluded.plex_updated_at,
+                    status = excluded.status,
+                    failure_class = excluded.failure_class,
+                    error_type = excluded.error_type,
+                    error_message = excluded.error_message,
+                    attempts = excluded.attempts,
+                    first_failed_at = excluded.first_failed_at,
+                    last_failed_at = excluded.last_failed_at,
+                    next_retry_at = excluded.next_retry_at,
+                    started_at = NULL
+                """,
+                (
+                    *key[:2],
+                    library_name,
+                    key[2],
+                    media_type,
+                    plex_updated_at,
+                    status,
+                    normalized_class,
+                    type(error).__name__ if error is not None else "RuntimeError",
+                    message,
+                    attempts,
+                    first_failed,
+                    current.isoformat(),
+                    next_retry,
+                ),
+            )
+        result = {
+            "status": status,
+            "attempts": attempts,
+            "next_retry_at": next_retry,
+            "failure_class": normalized_class,
+        }
+        logger = logging.getLogger(__name__)
+        if status == "pending":
+            logger.info(
+                "[Recovery] Deferred %s/%s for automatic retry %s "
+                "(attempt %d).",
+                library_name or library_uuid,
+                rating_key,
+                next_retry,
+                attempts,
+            )
+        else:
+            logger.warning(
+                "[Recovery] Parked %s/%s after %d attempt(s); deadline retries "
+                "stop until the item changes or a full, targeted, or "
+                "configuration-triggered evaluation succeeds.",
+                library_name or library_uuid,
+                rating_key,
+                attempts,
+            )
+        return result
+    finally:
+        connection.close()
+
+
+def clear_item_retry(server_id, library_uuid, rating_key, path=None):
+    return clear_item_retries(
+        server_id,
+        library_uuid,
+        [rating_key],
+        path=path,
+    )
+
+
+def clear_item_retries(server_id, library_uuid, rating_keys, path=None):
+    rating_keys = {
+        str(rating_key)
+        for rating_key in (rating_keys or [])
+        if rating_key is not None
+    }
+    if not rating_keys:
+        return 0
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            before = connection.total_changes
+            connection.executemany(
+                "DELETE FROM item_retry_queue WHERE server_id = ? "
+                "AND library_uuid = ? AND rating_key = ?",
+                (
+                    (str(server_id or "unknown"), str(library_uuid), rating_key)
+                    for rating_key in rating_keys
+                ),
+            )
+            removed = connection.total_changes - before
+        return max(0, int(removed))
+    finally:
+        connection.close()
+
+
+def load_due_item_retries(server_id, library_uuid, path=None, now=None):
+    """Return interrupted or deadline-due rating keys for one library."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return {}
+    current = _as_utc(now).isoformat()
+    try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'item_retry_queue'"
+        ).fetchone() is None:
+            return {}
+        rows = connection.execute(
+            "SELECT * FROM item_retry_queue WHERE server_id = ? "
+            "AND library_uuid = ? AND (status = 'running' OR "
+            "(status = 'pending' AND next_retry_at <= ?))",
+            (str(server_id or "unknown"), str(library_uuid), current),
+        ).fetchall()
+        return {str(row["rating_key"]): dict(row) for row in rows}
+    finally:
+        connection.close()
+
+
+def retry_queue_summary(path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return {}
+    try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'item_retry_queue'"
+        ).fetchone() is None:
+            return {}
+        return {
+            str(row[0]): int(row[1])
+            for row in connection.execute(
+                "SELECT status, COUNT(*) FROM item_retry_queue GROUP BY status"
+            )
+        }
+    finally:
+        connection.close()
+
+
+def reconcile_library_inventory(server_id, libraries, path=None, now=None):
+    """Persist auto-discovered Plex libraries without treating absence as deletion."""
+    connection = _connect(path, writable=True)
+    current = _as_utc(now).isoformat()
+    server_id = str(server_id or "unknown")
+    normalized = []
+    for library in libraries or []:
+        library_uuid = str(
+            library.get("uuid") or library.get("key") or library.get("title")
+        )
+        normalized.append(
+            (
+                server_id,
+                library_uuid,
+                str(library.get("title") or library_uuid),
+                str(library.get("type") or "unknown"),
+            )
+        )
+    seen = {row[1] for row in normalized}
+    try:
+        previous = {
+            str(row["library_uuid"]): dict(row)
+            for row in connection.execute(
+                "SELECT * FROM plex_library_inventory WHERE server_id = ?",
+                (server_id,),
+            )
+        }
+        with connection:
+            for row in normalized:
+                connection.execute(
+                    """
+                    INSERT INTO plex_library_inventory(
+                        server_id, library_uuid, library_name, library_type,
+                        first_seen, last_seen, missing_since, active
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, 1)
+                    ON CONFLICT(server_id, library_uuid) DO UPDATE SET
+                        library_name = excluded.library_name,
+                        library_type = excluded.library_type,
+                        last_seen = excluded.last_seen,
+                        missing_since = NULL,
+                        active = 1
+                    """,
+                    (*row, current, current),
+                )
+            missing = sorted(set(previous) - seen)
+            for library_uuid in missing:
+                connection.execute(
+                    "UPDATE plex_library_inventory SET active = 0, "
+                    "missing_since = COALESCE(missing_since, ?) "
+                    "WHERE server_id = ? AND library_uuid = ?",
+                    (current, server_id, library_uuid),
+                )
+        return [previous[key] for key in sorted(set(previous) - seen)]
+    finally:
+        connection.close()
+
+
+def missing_library_inventory(server_id, libraries, path=None):
+    """Compare auto-discovery with durable inventory without writing state."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    server_id = str(server_id or "unknown")
+    seen = {
+        str(library.get("uuid") or library.get("key") or library.get("title"))
+        for library in libraries or []
+    }
+    try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'plex_library_inventory'"
+        ).fetchone() is None:
+            return []
+        rows = connection.execute(
+            "SELECT * FROM plex_library_inventory WHERE server_id = ?",
+            (server_id,),
+        ).fetchall()
+        return [dict(row) for row in rows if str(row["library_uuid"]) not in seen]
+    finally:
+        connection.close()
+
+
+def save_identity_binding(
+    server_id,
+    library_uuid,
+    rating_key,
+    media_type,
+    tmdb_id,
+    plex_fingerprint,
+    *,
+    title=None,
+    year=None,
+    confidence="high",
+    path=None,
+    now=None,
+):
+    if not tmdb_id or not plex_fingerprint or confidence != "high":
+        return False
+    connection = _connect(path, writable=True)
+    current = _as_utc(now).isoformat()
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO identity_bindings(
+                    server_id, library_uuid, rating_key, media_type, tmdb_id,
+                    plex_fingerprint, confidence, title, year,
+                    validated_at, last_used_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(server_id, library_uuid, rating_key) DO UPDATE SET
+                    media_type = excluded.media_type,
+                    tmdb_id = excluded.tmdb_id,
+                    plex_fingerprint = excluded.plex_fingerprint,
+                    confidence = excluded.confidence,
+                    title = excluded.title,
+                    year = excluded.year,
+                    validated_at = excluded.validated_at,
+                    last_used_at = excluded.last_used_at
+                WHERE identity_bindings.tmdb_id != excluded.tmdb_id
+                   OR identity_bindings.plex_fingerprint != excluded.plex_fingerprint
+                   OR identity_bindings.confidence != excluded.confidence
+                """,
+                (
+                    str(server_id or "unknown"),
+                    str(library_uuid),
+                    str(rating_key),
+                    str(media_type),
+                    str(tmdb_id),
+                    str(plex_fingerprint),
+                    confidence,
+                    title,
+                    year,
+                    current,
+                    current,
+                ),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def load_identity_binding(
+    server_id,
+    library_uuid,
+    rating_key,
+    plex_fingerprint,
+    path=None,
+    now=None,
+    touch=False,
+):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return None
+    try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'identity_bindings'"
+        ).fetchone() is None:
+            return None
+        row = connection.execute(
+            "SELECT * FROM identity_bindings WHERE server_id = ? "
+            "AND library_uuid = ? AND rating_key = ?",
+            (str(server_id or "unknown"), str(library_uuid), str(rating_key)),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        if (
+            result.get("confidence") != "high"
+            or result.get("plex_fingerprint") != str(plex_fingerprint)
+        ):
+            return None
+    finally:
+        connection.close()
+    if not touch:
+        return result
+    writable = _connect(path, writable=True)
+    try:
+        with writable:
+            writable.execute(
+                "UPDATE identity_bindings SET last_used_at = ? WHERE "
+                "server_id = ? AND library_uuid = ? AND rating_key = ? "
+                "AND last_used_at != ?",
+                (
+                    _as_utc(now).isoformat(),
+                    str(server_id or "unknown"),
+                    str(library_uuid),
+                    str(rating_key),
+                    _as_utc(now).isoformat(),
+                ),
+            )
+    finally:
+        writable.close()
+    return result
+
+
+def maintain_state_database(path=None, wal_threshold_mb=8):
+    """Run bounded post-job SQLite maintenance without rebuilding durable state."""
+    database = Path(path or STATE_DATABASE)
+    connection = _connect(database, writable=True)
+    result = {"optimized": False, "checkpointed": False, "wal_bytes": 0}
+    try:
+        connection.execute("PRAGMA optimize")
+        result["optimized"] = True
+        wal_path = Path(f"{database}-wal")
+        try:
+            result["wal_bytes"] = wal_path.stat().st_size
+        except OSError:
+            result["wal_bytes"] = 0
+        if result["wal_bytes"] >= max(1, int(wal_threshold_mb)) * 1024 * 1024:
+            row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            result["checkpointed"] = bool(row is not None and int(row[0]) == 0)
+        return result
     finally:
         connection.close()
 

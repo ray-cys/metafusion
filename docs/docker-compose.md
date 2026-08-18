@@ -80,17 +80,23 @@ Edit `.env` and provide at least:
 RUN_MODE=kometa
 PLEX_URL=http://192.168.1.10:32400
 PLEX_TOKEN=your-token
-PLEX_LIBRARIES=Movies,TV Shows
+PLEX_LIBRARIES=auto
 TMDB_API_KEY=your-key
 TZ=Asia/Singapore
 ```
 
-Use exact Plex library names. A connection can use an IP address, Docker DNS
-name, or another URL reachable from the MetaFusion container.
+`auto` processes every supported movie/show library. Replace it with exact
+comma-separated Plex library names when only part of the server should be in
+scope. A connection can use an IP address, Docker DNS name, or another URL
+reachable from the MetaFusion container.
 
 The complete variable list is in [Configuration](configuration.md). Keep
 `PLEX_TOKEN` and `TMDB_API_KEY` out of screenshots and support attachments.
 The optional `*_FILE` settings can read credentials from mounted secret files.
+
+Run `--preflight` after mounting Plex-mode media. It reports discovered
+libraries and may suggest a `PLEX_PATH_MAPPINGS` value when a sampled Plex path
+has one unambiguous visible mount; it never changes Docker mounts for you.
 
 ## 4. Set filesystem permissions
 

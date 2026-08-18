@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 
 
@@ -7,6 +8,27 @@ def fallback_cache_key(meta):
     if media_type == "show":
         media_type = "tv"
     return f"{media_type}:{meta.get('title')}:{meta.get('year')}"
+
+
+def plex_identity_fingerprint(meta):
+    """Fingerprint provider GUIDs without depending on localized title text."""
+    provider_tmdb = (
+        meta.get("plex_provider_tmdb_id")
+        if "plex_provider_tmdb_id" in meta
+        else (meta.get("plex_tmdb_id") or meta.get("tmdb_id"))
+    )
+    values = {
+        "tmdb": str(provider_tmdb or ""),
+        "imdb": str(meta.get("imdb_id") or "").casefold(),
+        "tvdb": str(meta.get("tvdb_id") or ""),
+        "media_type": str(meta.get("library_type") or "unknown").casefold(),
+    }
+    if not any(values[name] for name in ("tmdb", "imdb", "tvdb")):
+        return None
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def item_identity(meta):

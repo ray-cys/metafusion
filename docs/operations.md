@@ -106,12 +106,16 @@ python metafusion.py --status
 python metafusion.py --support-report
 ```
 
-Preflight fails when authentication, selected library names, mapping roots, or
-required storage are unavailable. It does not create missing directories or
-probe files. The asset audit contacts Plex and TMDb and can take about as long
-as a full artwork evaluation, but it does not update YAML, artwork, ownership,
-incremental state, or TMDb cache. Its deliberate output is a value-safe
-`asset-audit-*.txt` report.
+Preflight fails when authentication, explicitly selected library names, mapping
+roots, or required storage are unavailable. With `PLEX_LIBRARIES=auto`, it
+prints the discovered movie/show libraries. It samples only a few Plex media
+paths and, when one visible container mount is an unambiguous suffix match,
+prints a proposed `PLEX_PATH_MAPPINGS` value. This is guidance only: Docker
+mounts and filesystem ownership remain manual safety decisions. Preflight does
+not create missing directories or probe files. The asset audit contacts Plex
+and TMDb and can take about as long as a full artwork evaluation, but it does
+not update YAML, artwork, ownership, incremental state, or TMDb cache. Its
+deliberate output is a value-safe `asset-audit-*.txt` report.
 
 The metadata audit always uses a dry-run full scan and writes
 `/config/reports/metadata-audit-*.txt`. In Kometa mode it compares generated
@@ -185,6 +189,27 @@ are marked pending in SQLite. They are selected for metadata-only evaluation
 after `METADATA_PENDING_RECHECK_HOURS` even if Plex's update timestamp is
 unchanged; the marker clears automatically once every pending episode resolves.
 
+### Durable failed-item recovery
+
+Before processing, each real Plex item is marked `running` in
+`meta_db.sqlite3`. A container stop therefore leaves interrupted work visible
+and eligible on the next run. Transient failures use bounded exponential
+delays of 15 minutes, 1 hour, 6 hours, then 24 hours; successful processing
+clears the record. After repeated failures, or for deterministic identity/path
+rejections, the deadline queue parks the item so one bad title cannot consume
+every incremental run. A full scan, explicit targeted run, Plex marker change,
+or configuration-triggered evaluation can still recheck it.
+
+A changed Plex `updatedAt` marker resets the failure history and gives a parked
+item a fresh attempt. Retry selection works during incremental mode and does
+not enable cleanup. `python metafusion.py --status` shows pending, running, and
+parked queue totals. Retry deadlines are evaluated at job start; MetaFusion
+does not wake outside configured schedule times solely for a retry.
+
+In-flight markers and successful removals are committed once per library, not
+once per item. This preserves restart recovery without adding thousands of
+SQLite fsyncs to a large full scan.
+
 ## Artwork refresh timing
 
 Unchanged artwork can become due independently for movies, series, and
@@ -199,8 +224,16 @@ SEASON_IMAGE_UPGRADE_DAYS=15
 
 Blank type-specific values inherit `IMAGE_UPGRADE_DAYS`. Decimal values are
 supported; `0.5` means 12 hours. `0` disables timed refreshes for that type.
-The saved MetaFusion upgrade timestamp is used—there is no media-tree scan to
-calculate artwork age from filesystem dates.
+The values are adaptive bases, not a filesystem age scan:
+
+- Missing candidates retry after 1, 3, 7, 14, 30, then 60 days, never later
+  than the configured base.
+- A repeatedly unchanged candidate doubles its base up to 180 days, while an
+  explicitly longer base remains respected.
+- A different candidate or successful upgrade resets the unchanged backoff.
+
+Candidate identity and observations are saved in SQLite. MetaFusion does not
+walk the media tree or read file mtimes to calculate artwork age.
 
 ## Log retention
 
@@ -237,6 +270,11 @@ new work is preserved or skipped during the cooldown, then a single half-open
 probe decides whether the circuit closes. Identical concurrent TMDb requests
 share one in-flight request, response, and cache write.
 
+Successful Plex calls taking five seconds or longer reduce only the Plex lane,
+preventing a slow server from accumulating requests even when it returns no
+error. Direct Plex metadata writes that reach the per-run safety cap are
+recorded as deferred and returned to the durable retry planner for a later job.
+
 The log records the detected resources, initial and maximum limits, meaningful
 adjustments, circuit transitions, and final limits. A positive
 `MAX_CONCURRENCY` remains an advanced troubleshooting ceiling, not a fixed
@@ -264,12 +302,13 @@ MetaFusion uses two separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
-| `/config/cache/meta_db.sqlite3` | Durable media state, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Do not treat as disposable. |
-| `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; corruption or deletion causes a clean cache rebuild. |
+| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
+| `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
 
 Rows are read and updated individually rather than loading and rewriting a
 large JSON cache. TMDb cache expiry or pruning cannot remove durable scan or
-artwork ownership state.
+artwork ownership state. After jobs, both databases run bounded optimization;
+WAL files are truncated only after reaching the maintenance threshold.
 
 Obsolete `meta_cache.json`, `incremental_state.json`,
 `tmdb_response_cache.json`, and `.bak` files are ignored. There is no JSON
@@ -338,11 +377,14 @@ values. Use it to compare full and incremental runs without adding a metrics
 service.
 
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
-configured Plex mapping destinations. `MIN_FREE_SPACE_MB` is also checked at
-each artwork destination before a download. A missing/unmounted destination or
-low-space volume fails safely instead of writing into an unintended container
-directory. `VALIDATE_MEDIA_MOUNTS=False` disables only the startup mapping-root
-check; per-artwork destination checks remain active.
+configured Plex mapping destinations. `MIN_FREE_SPACE_MB` and an automatic
+1%-of-volume floor (bounded from 256 MiB to 2 GiB) are checked at each artwork
+destination before a download. MetaFusion first prunes disposable TMDb cache
+rows when both databases share the pressured volume. If space remains low,
+artwork is deferred to the retry queue while metadata processing continues.
+A missing/unmounted destination still fails safely instead of writing into an
+unintended container directory. `VALIDATE_MEDIA_MOUNTS=False` disables only the
+startup mapping-root check; per-artwork destination checks remain active.
 
 ## Container health and shutdown
 

@@ -251,6 +251,7 @@ class AdaptiveLane:
         self.rejections = 0
         self.increases = 0
         self.decreases = 0
+        self.slow_responses = 0
         self.total_duration = 0.0
 
     def _notify_adjustment(self, previous, reason):
@@ -319,6 +320,13 @@ class AdaptiveLane:
             else:
                 self.successes += 1
                 self.consecutive_failures = 0
+                slow_response = self.kind == "plex" and float(duration) >= 5.0
+                if slow_response:
+                    self.slow_responses += 1
+                    previous = self.limit
+                    self.limit = max(self.floor, self.limit - 1)
+                    self.healthy_count = 0
+                    self._notify_adjustment(previous, "slow_response")
                 if lease.half_open:
                     self.open_until = 0.0
                     self.half_open_active = False
@@ -329,7 +337,7 @@ class AdaptiveLane:
                             self.limit,
                             "circuit_closed",
                         )
-                if allow_increase and self.limit < self.ceiling:
+                if allow_increase and not slow_response and self.limit < self.ceiling:
                     self.healthy_count += 1
                     if self.healthy_count >= self.healthy_window:
                         previous = self.limit
@@ -356,6 +364,7 @@ class AdaptiveLane:
             "circuit_rejections": self.rejections,
             "increases": self.increases,
             "decreases": self.decreases,
+            "slow_responses": self.slow_responses,
             "average_seconds": (
                 self.total_duration / max(1, self.successes + self.failures)
             ),
