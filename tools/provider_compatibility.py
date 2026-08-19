@@ -60,36 +60,26 @@ def plexapi_pin(requirements_path: Path = DEFAULT_REQUIREMENTS) -> str:
 def validate_manifest(
     manifest: Mapping[str, Any], requirements_path: Path = DEFAULT_REQUIREMENTS
 ) -> dict[str, str]:
-    if manifest.get("format") != 1:
-        raise ContractError("provider contract format must be 1")
+    if manifest.get("format") != 2:
+        raise ContractError("provider contract format must be 2")
 
     kometa = _mapping(manifest.get("kometa"), "kometa")
     plex = _mapping(manifest.get("plex"), "plex")
     required_kometa = {
         "profile",
-        "release",
         "repository",
         "image",
-        "digest",
         "schema_path",
-        "schema_sha256",
+        "baseline",
+        "current",
     }
     missing = sorted(required_kometa - set(kometa))
     if missing:
         raise ContractError(f"kometa contract is missing: {', '.join(missing)}")
 
-    release = str(kometa["release"])
-    digest = str(kometa["digest"])
-    schema_sha256 = str(kometa["schema_sha256"])
     for profile_name in (kometa.get("profile"), plex.get("profile")):
         if not PROFILE_PATTERN.fullmatch(str(profile_name or "")):
             raise ContractError(f"Invalid compatibility profile: {profile_name}")
-    if not KOMETA_RELEASE_PATTERN.fullmatch(release):
-        raise ContractError(f"Invalid stable Kometa release: {release}")
-    if not DIGEST_PATTERN.fullmatch(digest):
-        raise ContractError("Kometa image digest must be a full sha256 digest")
-    if not SHA256_PATTERN.fullmatch(schema_sha256):
-        raise ContractError("Kometa schema checksum must be a full sha256 checksum")
 
     repository = str(kometa["repository"])
     image = str(kometa["image"])
@@ -100,6 +90,42 @@ def validate_manifest(
         raise ContractError(f"Invalid Kometa image: {image}")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", schema_path):
         raise ContractError(f"Invalid Kometa schema path: {schema_path}")
+
+    contracts = {}
+    for name in ("baseline", "current"):
+        contract = _mapping(kometa.get(name), f"kometa.{name}")
+        missing_contract = sorted(
+            {"release", "digest", "schema_sha256"} - set(contract)
+        )
+        if missing_contract:
+            raise ContractError(
+                f"kometa.{name} contract is missing: {', '.join(missing_contract)}"
+            )
+        release = str(contract["release"])
+        digest = str(contract["digest"])
+        schema_sha256 = str(contract["schema_sha256"])
+        if not KOMETA_RELEASE_PATTERN.fullmatch(release):
+            raise ContractError(f"Invalid stable Kometa release: {release}")
+        if not DIGEST_PATTERN.fullmatch(digest):
+            raise ContractError("Kometa image digest must be a full sha256 digest")
+        if not SHA256_PATTERN.fullmatch(schema_sha256):
+            raise ContractError("Kometa schema checksum must be a full sha256 checksum")
+        contracts[name] = {
+            "release": release,
+            "image": f"{image}@{digest}",
+            "schema_sha256": schema_sha256,
+            "schema_url": (
+                f"https://raw.githubusercontent.com/{repository}/{release}/{schema_path}"
+            ),
+        }
+
+    def semver(value: str) -> tuple[int, int, int]:
+        return tuple(int(part) for part in value.removeprefix("v").split("."))
+
+    if semver(contracts["baseline"]["release"]) > semver(
+        contracts["current"]["release"]
+    ):
+        raise ContractError("Kometa baseline release cannot be newer than current")
 
     if plex.get("package") != "plexapi":
         raise ContractError("Plex contract package must be plexapi")
@@ -116,13 +142,22 @@ def validate_manifest(
     ):
         raise ContractError("Plex replay tests must be Python paths below tests/")
 
+    current = contracts["current"]
     return {
-        "kometa_release": release,
-        "kometa_image": f"{image}@{digest}",
-        "kometa_schema_sha256": schema_sha256,
-        "kometa_schema_url": (
-            f"https://raw.githubusercontent.com/{repository}/{release}/{schema_path}"
-        ),
+        "kometa_baseline_release": contracts["baseline"]["release"],
+        "kometa_baseline_image": contracts["baseline"]["image"],
+        "kometa_baseline_schema_sha256": contracts["baseline"]["schema_sha256"],
+        "kometa_baseline_schema_url": contracts["baseline"]["schema_url"],
+        "kometa_current_release": current["release"],
+        "kometa_current_image": current["image"],
+        "kometa_current_schema_sha256": current["schema_sha256"],
+        "kometa_current_schema_url": current["schema_url"],
+        # Compatibility aliases keep the update workflow focused on the current
+        # contract while all validation jobs exercise both supported versions.
+        "kometa_release": current["release"],
+        "kometa_image": current["image"],
+        "kometa_schema_sha256": current["schema_sha256"],
+        "kometa_schema_url": current["schema_url"],
         "plexapi_version": plexapi_pin(requirements_path),
         "plex_replay_tests": " ".join(replay_tests),
     }
@@ -276,8 +311,9 @@ def update_kometa_contract(
     manifest = load_manifest(manifest_path)
     validate_manifest(manifest)
     kometa = _mapping(manifest["kometa"], "kometa")
+    current = _mapping(kometa["current"], "kometa.current")
     old_hash = _schema_hash(old_schema)
-    if old_hash != kometa["schema_sha256"]:
+    if old_hash != current["schema_sha256"]:
         raise ContractError(
             "Downloaded baseline Kometa schema does not match the pinned checksum"
         )
@@ -289,14 +325,14 @@ def update_kometa_contract(
     new_hash = _schema_hash(new_schema)
     changed = any(
         (
-            kometa["release"] != release,
-            kometa["digest"] != digest,
-            kometa["schema_sha256"] != new_hash,
+            current["release"] != release,
+            current["digest"] != digest,
+            current["schema_sha256"] != new_hash,
         )
     )
-    kometa["release"] = release
-    kometa["digest"] = digest
-    kometa["schema_sha256"] = new_hash
+    current["release"] = release
+    current["digest"] = digest
+    current["schema_sha256"] = new_hash
     temporary = manifest_path.with_suffix(f"{manifest_path.suffix}.tmp")
     temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     temporary.replace(manifest_path)
@@ -336,7 +372,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "verify":
             values = validate_manifest(load_manifest(args.manifest), args.requirements)
             print(
-                f"Provider contracts valid: Kometa {values['kometa_release']}; "
+                "Provider contracts valid: Kometa "
+                f"{values['kometa_baseline_release']} and "
+                f"{values['kometa_current_release']}; "
                 f"PlexAPI {values['plexapi_version']}"
             )
         elif args.command == "outputs":

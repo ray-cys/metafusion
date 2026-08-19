@@ -46,6 +46,7 @@ async def _standard_episode_pairs(config, tmdb_id, plex_inventory, session):
             config,
             f"tv/{tmdb_id}/season/{season_number}",
             session=session,
+            cache=False,
         )
         for episode in details.get("episodes", []) if isinstance(details, dict) else []:
             try:
@@ -75,6 +76,7 @@ async def _split_series_pairs(
             config,
             f"tv/{source_tmdb_id}/season/{source_season}",
             session=session,
+            cache=False,
         )
         for episode in details.get("episodes", []) if isinstance(details, dict) else []:
             try:
@@ -136,6 +138,7 @@ async def diagnose_mapping(item, config, session=None):
         title=meta.get("title"),
         year=meta.get("year"),
         session=session,
+        cache=False,
     )
     record["tmdb_id"] = tmdb_id
     if not tmdb_id:
@@ -216,6 +219,7 @@ async def diagnose_mapping(item, config, session=None):
         plex_inventory,
         episode_ordering=meta.get("episode_ordering"),
         session=session,
+        cache=False,
     )
     if episode_group:
         record.update(

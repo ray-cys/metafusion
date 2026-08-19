@@ -75,6 +75,7 @@ or `config.yml` values.
 | Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork in either output mode without applying changes. |
 | Diagnostics | `--mapping-diagnose` | None | Compare one or more Plex TV inventories with TMDb standard ordering, configured overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
 | Diagnostics | `--identity-inspect` | None | Explain the current Plex-to-TMDb identity, active learned binding, bounded history, warning reasons, edition, and computed destinations. Requires `--rating-key`; writes only a report. |
+| Diagnostics | `--explain-item` | None | Produce one unified item report covering identity/binding, normal scheduled selection, effective metadata and artwork policies, TV episode mapping, retries, and computed destinations. Requires `--rating-key`; writes only the report. |
 | Diagnostics | `--compatibility-check` | None | Test connectors, paths, and the configured Kometa/Plex output contract, write a compatibility report, and exit. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
 | Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
@@ -127,6 +128,9 @@ python metafusion.py --mapping-diagnose --rating-key 12345
 
 # Explain how a Plex item became associated with TMDb without changing it
 python metafusion.py --identity-inspect --rating-key 12345
+
+# Explain one item's identity, scheduling, policies, mapping, and destinations
+python metafusion.py --explain-item --rating-key 12345
 
 # Confirm the configured output contract and required connector/path support
 python metafusion.py --compatibility-check
@@ -205,6 +209,19 @@ markers, or cleanup. History begins when the identity-history extension is
 installed. An older active binding remains visible, but earlier transitions
 cannot be reconstructed. The extension remains schema-4 rollback compatible;
 older MetaFusion images ignore its nullable columns and additional table.
+
+`--explain-item` is the single starting point for an item-level investigation.
+It includes the identity and learned-binding decision, then evaluates what a
+normal scheduled run would do using the current SQLite state, full-scan timing,
+configuration fingerprint, Plex update marker, TV child inventory marker, and
+retry status. It records the effective library override, metadata target and
+policy, artwork policy and recheck cadence, TV mapping outcome, and computed
+metadata/artwork destinations. TMDb requests bypass the persistent response
+cache and SQLite is opened read-only. The only deliberate write is
+`/config/reports/item-explanation-*.txt`; no normal processing, cleanup, cache,
+binding, metadata, artwork, ownership, or incremental state is changed. Use
+`--library-audit` when the investigation also needs live artwork candidate
+scores and rejection details.
 
 The support report contains image version/commit, configuration binding names,
 state and cache health, platform details, and validation status. It does not
@@ -504,6 +521,7 @@ Shared reports and logs are:
 /config/reports/library-asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/mapping-diagnosis-YYYYMMDD-HHMMSS.txt
 /config/reports/identity-inspection-YYYYMMDD-HHMMSS.txt
+/config/reports/item-explanation-YYYYMMDD-HHMMSS.txt
 /config/reports/compatibility-YYYYMMDD-HHMMSS.txt
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt

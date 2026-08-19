@@ -19,8 +19,10 @@ Dependencies and GitHub Actions are opened against `develop`. Python 3.10 and
 3.13 remain the supported test matrix for the first stable release; a base
 Python upgrade is a separate compatibility change, not an automatic merge.
 
-CI also validates representative generated YAML with the official Kometa
-container and digest declared in `.github/provider-contracts.json`. Release-tag
+CI regenerates a representative Kometa contract corpus through MetaFusion's
+real merge and serialization code, then validates every document with both the
+supported baseline and current official Kometa containers pinned by immutable
+digests in `.github/provider-contracts.json`. Release-tag
 guards accept supported semantic or RC `v…` tags only when their commit is the
 exact current `main` HEAD; the tag workflow's own test and security jobs must
 then pass before an image publishes.
@@ -49,14 +51,17 @@ report-only mode.
 ## Provider compatibility automation
 
 `.github/provider-contracts.json` is the single source of truth for the Kometa
-release, immutable image digest, metadata-schema checksum, PlexAPI version
-source, and focused Plex replay suite. The weekly provider workflow runs from
+support-floor and current releases, immutable image digests, metadata-schema
+checksums, PlexAPI version source, and focused Plex replay suite. The support
+floor prevents a new upstream release from silently dropping compatibility
+with the oldest supported 2.4 release. The weekly provider workflow runs from
 the default branch, checks out `develop`, and queries stable upstream releases.
 It never uses Kometa nightly builds and never accesses a private Plex server.
 
 For a new Kometa release, the workflow resolves the release-specific image
-digest, verifies and compares the old and candidate JSON schemas, runs the
-candidate's own `--validate-file` command, and opens a draft PR against
+digest, verifies and compares the old and candidate JSON schemas, regenerates
+the movie/edition/show/Specials/season/episode corpus, runs the candidate's own
+`--validate-file` command for every document, and opens a draft PR against
 `develop`. It never auto-merges. The PR keeps MetaFusion's existing output
 profile unless a reviewed code change deliberately adopts new schema features.
 A failed candidate remains visible for diagnosis instead of silently changing
@@ -95,9 +100,13 @@ Before promoting `develop` to `main`:
     release, confirm `latest`, the exact version, and `sha-<commit>` resolve to
     the manifest verified by the tag workflow.
 
-The Phase 16 synthetic inventory test models 2,000 movies, 300 shows, 1,000
-seasons, and 8,000 episodes. It is a deterministic regression fixture, not a
-replacement for the Unraid soak test against a real Plex server.
+The performance-regression CI job models 2,000 movies, 300 shows, 1,000
+seasons, and 8,000 episodes using real batched SQLite state writes, targeted
+reads, Kometa corpus generation, validation, and YAML rendering. It records
+wall-clock sections, throughput, peak traced memory, and database size in a
+30-day workflow artifact and fails when a committed conservative budget is
+exceeded. It is a deterministic regression signal, not a replacement for the
+Unraid soak test against a real Plex server.
 
 ## Fault-injection coverage
 
@@ -160,3 +169,10 @@ artwork paths including Specials, stale-ID recovery, unresolved identities,
 and the focused identity-diagnostics coverage floor. `REPORT_RETENTION`
 uniformly bounds every report type, including Plex metadata, support, and
 release-qualification reports.
+
+The unified `--explain-item` diagnostic combines identity/binding history,
+normal incremental/full-scan selection, effective per-library metadata and
+artwork policies, retry status, TV episode mapping, and computed destinations
+without mutating provider, cache, state, or output. Its focused tests also
+prove that inspecting an installation with no SQLite database does not create
+one.

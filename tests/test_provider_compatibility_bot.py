@@ -22,11 +22,14 @@ def test_committed_provider_contract_is_reproducible_and_complete():
         committed_manifest(), REQUIREMENTS_PATH
     )
 
-    assert values["kometa_release"] == "v2.4.8"
-    assert values["kometa_image"].startswith("kometateam/kometa@sha256:")
-    assert values["kometa_schema_url"].endswith(
+    assert values["kometa_baseline_release"] == "v2.4.5"
+    assert values["kometa_current_release"] == "v2.4.8"
+    assert values["kometa_baseline_image"].startswith("kometateam/kometa@sha256:")
+    assert values["kometa_current_image"].startswith("kometateam/kometa@sha256:")
+    assert values["kometa_current_schema_url"].endswith(
         "/v2.4.8/json-schema/metadata-schema.json"
     )
+    assert values["kometa_release"] == values["kometa_current_release"]
     assert values["plexapi_version"] == "4.18.2"
     replay_tests = values["plex_replay_tests"].split()
     assert "tests/test_phase23_post_release.py" in replay_tests
@@ -44,7 +47,7 @@ def test_committed_provider_contract_is_reproducible_and_complete():
 )
 def test_manifest_rejects_unpinned_or_unstable_kometa_values(field, value, message):
     manifest = copy.deepcopy(committed_manifest())
-    manifest["kometa"][field] = value
+    manifest["kometa"]["current"][field] = value
 
     with pytest.raises(provider_compatibility.ContractError, match=message):
         provider_compatibility.validate_manifest(manifest, REQUIREMENTS_PATH)
@@ -161,7 +164,9 @@ def test_schema_update_is_atomic_and_writes_a_constraint_report(tmp_path):
         encoding="utf-8",
     )
     manifest = committed_manifest()
-    manifest["kometa"]["schema_sha256"] = hashlib.sha256(old_schema.read_bytes()).hexdigest()
+    manifest["kometa"]["current"]["schema_sha256"] = hashlib.sha256(
+        old_schema.read_bytes()
+    ).hexdigest()
     manifest_path = tmp_path / "provider-contracts.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     report = tmp_path / "report.md"
@@ -178,11 +183,12 @@ def test_schema_update_is_atomic_and_writes_a_constraint_report(tmp_path):
 
     updated = provider_compatibility.load_manifest(manifest_path)
     assert changed is True
-    assert updated["kometa"]["release"] == "v2.5.0"
-    assert updated["kometa"]["digest"] == digest
-    assert updated["kometa"]["schema_sha256"] == hashlib.sha256(
+    assert updated["kometa"]["current"]["release"] == "v2.5.0"
+    assert updated["kometa"]["current"]["digest"] == digest
+    assert updated["kometa"]["current"]["schema_sha256"] == hashlib.sha256(
         new_schema.read_bytes()
     ).hexdigest()
+    assert updated["kometa"]["baseline"] == manifest["kometa"]["baseline"]
     assert not manifest_path.with_suffix(".json.tmp").exists()
     report_text = report.read_text(encoding="utf-8")
     assert "Constraint paths added: **2**" in report_text
@@ -244,7 +250,9 @@ def test_cli_commands_cover_machine_and_operator_interfaces(tmp_path, monkeypatc
         )
         == 0
     )
-    assert "kometa_release=v2.4.8" in github_output.read_text(encoding="utf-8")
+    output_text = github_output.read_text(encoding="utf-8")
+    assert "kometa_baseline_release=v2.4.5" in output_text
+    assert "kometa_current_release=v2.4.8" in output_text
 
     monkeypatch.setattr(
         provider_compatibility,
@@ -354,7 +362,10 @@ def test_provider_workflows_are_non_publishing_and_blocked_by_default():
     assert "--auto" not in update_workflow
     assert "gh workflow run docker-latest.yml" in update_workflow
     assert "plex-contract:" in release_workflow
-    assert "tests/golden/kometa_contract.yml" in release_workflow
+    assert "generate_kometa_contract_corpus.py --check" in release_workflow
+    assert "tests/golden/kometa_contract_corpus" in release_workflow
+    assert "kometa_baseline_image" in release_workflow
+    assert "kometa_current_image" in release_workflow
     assert "provider-contracts.json" not in release_workflow
     assert "provider_compatibility.py outputs" in release_workflow
     assert "workflow_dispatch:" in release_workflow

@@ -37,6 +37,8 @@ requirements-dev.lock
 requirements.in
 requirements.txt
 tools/provider_compatibility.py
+tools/generate_kometa_contract_corpus.py
+tools/performance_regression.py
 unraid
 unraid.xml
 LICENSE

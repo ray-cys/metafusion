@@ -283,6 +283,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/reports/library-asset-audit-*.txt # explicit --library-audit runs only
 /config/reports/mapping-diagnosis-*.txt # explicit --mapping-diagnose runs only
 /config/reports/identity-inspection-*.txt # explicit --identity-inspect runs only
+/config/reports/item-explanation-*.txt   # explicit --explain-item runs only
 /config/reports/compatibility-*.txt     # explicit --compatibility-check runs only
 /config/reports/destination-history-*.txt # renamed artwork paths; manual review only
 /config/reports/plex-metadata-*.txt       # direct Plex metadata runs only
@@ -332,6 +333,7 @@ python metafusion.py --plan
 python metafusion.py --library-audit
 python metafusion.py --mapping-diagnose --rating-key 12345
 python metafusion.py --identity-inspect --rating-key 12345
+python metafusion.py --explain-item --rating-key 12345
 python metafusion.py --compatibility-check
 python metafusion.py --status
 python metafusion.py --support-report
@@ -364,6 +366,11 @@ metadata/artwork destinations for one or more `--rating-key` values. It writes
 only its report: no binding, cache, Plex field, Kometa YAML, artwork, ownership,
 incremental, or cleanup state is changed. History begins when this extension is
 installed and cannot reconstruct earlier transitions.
+
+Use `--explain-item --rating-key KEY` when one report should combine that
+identity/binding evidence with the normal scheduled-run decision, effective
+metadata and artwork policies, TV mapping outcome, retry state, and computed
+destinations. It is read-only apart from its retained report.
 
 ## References
 

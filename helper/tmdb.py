@@ -607,6 +607,7 @@ async def resolve_episode_group_mapping(
     plex_inventory,
     episode_ordering=None,
     session=None,
+    cache=True,
 ):
     """Return a TMDb episode-group mapping only when one layout is unambiguous."""
     if not config.get("tmdb", {}).get("episode_group_fallback", True):
@@ -615,7 +616,7 @@ async def resolve_episode_group_mapping(
     if not wanted:
         return None
     listing = await tmdb_api_request(
-        config, f"tv/{tmdb_id}/episode_groups", session=session
+        config, f"tv/{tmdb_id}/episode_groups", session=session, cache=cache
     )
     descriptors = listing.get("results", []) if isinstance(listing, dict) else []
     preferred_types = {
@@ -636,7 +637,7 @@ async def resolve_episode_group_mapping(
         if not group_id:
             continue
         details = await tmdb_api_request(
-            config, f"tv/episode_group/{group_id}", session=session
+            config, f"tv/episode_group/{group_id}", session=session, cache=cache
         )
         groups = details.get("groups", []) if isinstance(details, dict) else []
         for season_offset in (0, 1):

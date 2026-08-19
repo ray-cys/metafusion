@@ -59,6 +59,7 @@ from helper.incremental import (
     mark_library_scan_complete,
     mark_library_scan_started,
 )
+from helper.item_explanation import run_item_explanation
 from helper.logging import (
     check_sys_requirements,
     get_meta_banner,
@@ -217,6 +218,11 @@ def parse_cli_args(argv=None):
         help="Explain Plex-to-TMDb identity and binding history without changing it",
     )
     parser.add_argument(
+        "--explain-item",
+        action="store_true",
+        help="Unify identity, schedule, policy, mapping, and destination diagnostics",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         help="Process only this Plex library; repeat or use comma-separated names",
@@ -367,6 +373,9 @@ def override_config_with_cli(config, args):
     if args.identity_inspect:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
+    if args.explain_item:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -424,6 +433,8 @@ def override_config_with_cli(config, args):
         execution["mapping_diagnose"] = True
     if args.identity_inspect:
         execution["identity_inspect"] = True
+    if args.explain_item:
+        execution["explain_item"] = True
     if args.retry_failed:
         execution["retry_failed"] = True
         execution["retry_status"] = args.retry_status
@@ -540,6 +551,29 @@ async def identity_inspection_connectors(config, rating_keys):
             plex=plex,
         )
         return await run_identity_inspection(
+            sections,
+            config,
+            rating_keys,
+            session=session,
+        )
+
+
+async def item_explanation_connectors(config, rating_keys):
+    runtime = config.get("runtime", {})
+    maximum = concurrency_ceiling(config, "network")
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(limit=maximum, limit_per_host=maximum)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session)
+        sections, _selected, _available = await asyncio.to_thread(
+            connect_plex_library,
+            config,
+            plex=plex,
+        )
+        return await run_item_explanation(
             sections,
             config,
             rating_keys,
@@ -1489,6 +1523,7 @@ def main(argv=None):
             args.library_audit,
             args.mapping_diagnose,
             args.identity_inspect,
+            args.explain_item,
         )
     ):
         print(
@@ -1521,6 +1556,7 @@ def main(argv=None):
                 args.library_audit,
                 args.mapping_diagnose,
                 args.identity_inspect,
+                args.explain_item,
                 args.retry_failed,
                 args.compatibility_check,
             )
@@ -1583,6 +1619,12 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+    if args.explain_item and not args.rating_key:
+        print(
+            "Configuration error: --explain-item requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
     if args.mapping_diagnose and any(
         (
             args.asset_audit,
@@ -1595,6 +1637,7 @@ def main(argv=None):
             args.plex_metadata_restore,
             args.plex_metadata_unlock,
             args.identity_inspect,
+            args.explain_item,
         )
     ):
         print(
@@ -1624,6 +1667,7 @@ def main(argv=None):
             args.plan,
             args.library_audit,
             args.mapping_diagnose,
+            args.explain_item,
             args.preflight,
             args.release_check,
             args.compatibility_check,
@@ -1635,6 +1679,43 @@ def main(argv=None):
     ):
         print(
             "Configuration error: --identity-inspect must run as a standalone diagnostic",
+            file=sys.stderr,
+        )
+        return 2
+    if args.explain_item and any(
+        (
+            args.metafusion_run,
+            args.schedule,
+            args.run_times is not None,
+            args.run_basic,
+            args.run_enhanced,
+            args.run_poster,
+            args.run_season,
+            args.run_background,
+            args.asset_only,
+            args.metadata_only,
+            args.full_scan,
+            args.explain_selection,
+            args.status,
+            args.doctor,
+            args.support_report,
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.mapping_diagnose,
+            args.identity_inspect,
+            args.preflight,
+            args.release_check,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+            bool(args.tmdb_id),
+            bool(args.media_type),
+        )
+    ):
+        print(
+            "Configuration error: --explain-item must run as a standalone diagnostic",
             file=sys.stderr,
         )
         return 2
@@ -1672,6 +1753,7 @@ def main(argv=None):
                 or args.library_audit
                 or args.mapping_diagnose
                 or args.identity_inspect
+                or args.explain_item
                 or args.compatibility_check
                 or args.release_check
             ),
@@ -1781,6 +1863,33 @@ def main(argv=None):
         )
         print(
             f"Identity inspection completed for {len(records)} item(s); "
+            f"{review} require review."
+        )
+        print(f"Report saved to {report}")
+        return 0
+    if args.explain_item:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            records, report = asyncio.run(
+                item_explanation_connectors(
+                    config,
+                    config.get("_execution", {}).get("rating_keys", []),
+                )
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+            )
+            print(f"Item explanation failed: {message}", file=sys.stderr)
+            return 1
+        finally:
+            _plex_cache.clear()
+            tmdb_response_cache.reset_memory()
+        review = sum(record.get("status") != "accepted" for record in records)
+        print(
+            f"Item explanation completed for {len(records)} item(s); "
             f"{review} require review."
         )
         print(f"Report saved to {report}")

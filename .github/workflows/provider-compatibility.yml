@@ -110,6 +110,12 @@ jobs:
             --new-schema /tmp/kometa-schema-new.json \
             --report /tmp/kometa-schema-report.md
 
+      - name: Install replay-test dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Regenerate and verify the Kometa contract corpus
+        run: python tools/generate_kometa_contract_corpus.py --check
+
       - name: Validate candidate output with official Kometa
         if: steps.upstream.outputs.kometa_changed == 'true'
         id: kometa-candidate
@@ -117,14 +123,15 @@ jobs:
         env:
           CANDIDATE_IMAGE: ${{ steps.candidate-image.outputs.image }}
         run: |
-          docker run --rm \
-            --volume "${PWD}/tests/golden/kometa_contract.yml:/contract/metadata.yml:ro" \
-            "${CANDIDATE_IMAGE}" \
-            --config /contract/metadata.yml \
-            --validate-file /contract/metadata.yml
-
-      - name: Install replay-test dependencies
-        run: python -m pip install --require-hashes -r requirements-dev.lock
+          set -euo pipefail
+          for contract in tests/golden/kometa_contract_corpus/*.yml; do
+            filename="$(basename "${contract}")"
+            docker run --rm \
+              --volume "${PWD}/tests/golden/kometa_contract_corpus:/contract:ro" \
+              "${CANDIDATE_IMAGE}" \
+              --config "/contract/${filename}" \
+              --validate-file "/contract/${filename}"
+          done
 
       - name: Run Plex provider replay contract
         run: |
