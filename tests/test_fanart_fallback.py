@@ -564,6 +564,82 @@ def test_fanart_candidates_follow_artwork_language_policy(monkeypatch):
     assert selected["provider"] == "fanart"
 
 
+def test_missing_destination_uses_automatic_language_relaxation(
+    monkeypatch, tmp_path
+):
+    config = artwork_config()
+    config["settings"] = {"mode": "kometa", "path": str(tmp_path)}
+    meta = {"library_type": "movie", "movie_path": "Example (2024)"}
+
+    async def no_tmdb(*_args, **_kwargs):
+        return {}
+
+    async def japanese_only(*_args, **_kwargs):
+        image = candidate(
+            "https://assets.fanart.tv/ja.jpg", 1000, 1500, "fanart"
+        )
+        image["iso_639_1"] = "ja"
+        return [image]
+
+    monkeypatch.setattr(builder, "tmdb_unfiltered_images", no_tmdb)
+    monkeypatch.setattr(builder, "fanart_artwork_candidates", japanese_only)
+
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            meta,
+            [],
+            asset_type="poster",
+            media_type="movie",
+            tmdb_id=1,
+            session=object(),
+        )
+    )
+
+    assert selected["provider"] == "fanart"
+    assert selected["automatic_relaxed"] is True
+    assert selected["selection_stage"] == "missing_only_relaxed"
+    assert selected["provider_attempts"][-1]["status"] == (
+        "selected_missing_only_relaxed"
+    )
+
+
+def test_automatic_relaxation_never_selects_for_existing_artwork(
+    monkeypatch, tmp_path
+):
+    config = artwork_config()
+    config["settings"] = {"mode": "kometa", "path": str(tmp_path)}
+    meta = {"library_type": "movie", "movie_path": "Example (2024)"}
+    destination = (
+        tmp_path / "assets" / "movie" / "Example (2024)" / "poster.jpg"
+    )
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"manual-artwork")
+
+    async def japanese_only(*_args, **_kwargs):
+        image = candidate(
+            "https://assets.fanart.tv/ja.jpg", 1000, 1500, "fanart"
+        )
+        image["iso_639_1"] = "ja"
+        return [image]
+
+    monkeypatch.setattr(builder, "fanart_artwork_candidates", japanese_only)
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            meta,
+            [],
+            asset_type="poster",
+            media_type="movie",
+            tmdb_id=1,
+            session=object(),
+        )
+    )
+
+    assert selected is None
+    assert destination.read_bytes() == b"manual-artwork"
+
+
 def test_external_download_rejects_redirects_and_untrusted_provider_urls():
     session = Session(Response(302, b"", {"Location": "https://example.com/image.jpg"}))
     result = asyncio.run(

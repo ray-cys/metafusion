@@ -44,6 +44,7 @@ from modules.kometa import (
     validate_metadata_document,
     write_kometa_metadata,
 )
+from modules.utils import get_asset_path
 
 
 class ItemProcessingError(RuntimeError):
@@ -377,6 +378,46 @@ async def process_item(
             stats["_retry_error"] = stats.get("_retry_error") or (
                 "Builder or Plex metadata action reported a recoverable failure"
             )
+    storage_files = []
+    if not effective_flags.get("dry_run", False):
+        storage_targets = []
+        if effective_flags.get("poster", False):
+            storage_targets.append(
+                ("poster", get_asset_path(config, meta, asset_type="poster"))
+            )
+        if effective_flags.get("background", False):
+            storage_targets.append(
+                ("background", get_asset_path(config, meta, asset_type="background"))
+            )
+        if effective_flags.get("season", False):
+            for season_number in stats.get("season_poster_actions", {}):
+                if season_number is None:
+                    continue
+                storage_targets.append(
+                    (
+                        "season",
+                        get_asset_path(
+                            config,
+                            meta,
+                            asset_type="season",
+                            season_number=int(season_number),
+                        ),
+                    )
+                )
+        for asset_type, path in storage_targets:
+            if path is None:
+                continue
+            try:
+                storage_files.append(
+                    {
+                        "asset_type": asset_type,
+                        "path": str(path.resolve()),
+                        "bytes": path.stat().st_size,
+                    }
+                )
+            except OSError:
+                continue
+    stats["storage_files"] = storage_files
     log_item_outcomes(
         library_name,
         full_title,
@@ -417,6 +458,8 @@ async def process_library(
     season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_not_due = season_poster_preserved = season_poster_missing = season_poster_deferred = season_poster_failed = 0
     artwork_provider_writes = Counter()
     artwork_deferred = 0
+    artwork_storage_files = {}
+    artwork_automatic_relaxed = 0
 
     server = getattr(library_section, "_server", None)
     server_id = getattr(server, "machineIdentifier", None) or "unknown"
@@ -755,6 +798,7 @@ async def process_library(
             nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_not_due, season_poster_missing, season_poster_deferred, season_poster_failed
             nonlocal poster_preserved, background_preserved, season_poster_preserved
             nonlocal artwork_deferred
+            nonlocal artwork_automatic_relaxed
 
             item = planned.item
             item_metadata = {"metadata": {}}
@@ -838,6 +882,13 @@ async def process_library(
                         generated_entries
                     )
                 all_stats.append(stats)
+                for storage_file in stats.get("storage_files", []):
+                    path = storage_file.get("path")
+                    if path:
+                        artwork_storage_files[str(path)] = {
+                            "asset_type": storage_file.get("asset_type"),
+                            "bytes": max(0, int(storage_file.get("bytes") or 0)),
+                        }
                 if (
                     incremental_success
                     and not feature_flags.get("dry_run", False)
@@ -891,6 +942,10 @@ async def process_library(
                 if action in {"downloaded", "upgraded", "adopted"}:
                     provider = (stats.get("artwork_providers") or {}).get("poster")
                     artwork_provider_writes[str(provider or "unknown")] += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "poster"
+                    ) == "missing_only_relaxed":
+                        artwork_automatic_relaxed += 1
 
                 action = stats.get("background_action")
                 if action == "downloaded":
@@ -915,6 +970,10 @@ async def process_library(
                 if action in {"downloaded", "upgraded", "adopted"}:
                     provider = (stats.get("artwork_providers") or {}).get("background")
                     artwork_provider_writes[str(provider or "unknown")] += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "background"
+                    ) == "missing_only_relaxed":
+                        artwork_automatic_relaxed += 1
 
                 season_actions = stats.get("season_poster_actions", {})
                 for season_number, season_action in season_actions.items():
@@ -946,6 +1005,15 @@ async def process_library(
                                 str(season_number)
                             )
                         artwork_provider_writes[str(provider or "unknown")] += 1
+                        stage = (stats.get("season_artwork_selection_stages") or {}).get(
+                            season_number
+                        )
+                        if stage is None:
+                            stage = (
+                                stats.get("season_artwork_selection_stages") or {}
+                            ).get(str(season_number))
+                        if stage == "missing_only_relaxed":
+                            artwork_automatic_relaxed += 1
 
                 if feature_flags["poster"]:
                     poster_size += stats.get("poster", {}).get("size", 0)
@@ -1073,6 +1141,23 @@ async def process_library(
                 },
             )
 
+        if artwork_storage_files:
+            poster_size = sum(
+                record["bytes"]
+                for record in artwork_storage_files.values()
+                if record["asset_type"] == "poster"
+            )
+            background_size = sum(
+                record["bytes"]
+                for record in artwork_storage_files.values()
+                if record["asset_type"] == "background"
+            )
+            season_poster_size = sum(
+                record["bytes"]
+                for record in artwork_storage_files.values()
+                if record["asset_type"] == "season"
+            )
+            total_asset_size = poster_size + background_size + season_poster_size
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size
 
@@ -1148,6 +1233,12 @@ async def process_library(
         percent_complete = round((completed / total_items) * 100, 2) if total_items else 100.0
         percent_incomplete = round((incomplete / total_items) * 100, 2) if total_items else 0.0
 
+        metadata_bytes = 0
+        if output_path is not None and output_path.exists():
+            try:
+                metadata_bytes = output_path.stat().st_size
+            except OSError:
+                metadata_bytes = 0
         library_summary = {
             "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded,
             "meta_skipped": meta_skipped, "meta_failed": meta_failed + len(item_errors),
@@ -1162,6 +1253,13 @@ async def process_library(
             "incremental_skipped": total_library_items - total_items,
             "item_failures": len(item_errors),
             "artwork_deferred": artwork_deferred,
+            "artwork_automatic_relaxed": artwork_automatic_relaxed,
+            "poster_bytes": poster_size,
+            "background_bytes": background_size,
+            "season_poster_bytes": season_poster_size,
+            "artwork_bytes": total_asset_size,
+            "metadata_bytes": metadata_bytes,
+            "storage_scope": "full inventory" if full_scan else "processed items",
         }
 
         if metadata_summaries is not None:

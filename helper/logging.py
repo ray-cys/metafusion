@@ -2,12 +2,13 @@ import datetime
 import logging
 import os
 import platform
+import shutil
 import sys
-import textwrap
 import time
 from collections import Counter
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import psutil
 import requests
@@ -161,21 +162,11 @@ def get_setup_logging(config):
     return logger
 
 def get_meta_banner(logger=None):
-    width = 80
-    border = "=" * width
-    title = " ".join("METAFUSION").center(width - 6)
-    centered = f"| {title} |"
-    lines = [
-        border,
-        centered,
-        border,
-    ]
+    line = "[Startup] M E T A F U S I O N"
     if logger:
-        for line in lines:
-            logger.info(line)
+        logger.info(line)
     else:
-        for line in lines:
-            print(line)
+        print(line)
 
 def check_sys_requirements(logger, config, check_network=True):
     os_info = f"{platform.system()} {platform.release()}"
@@ -187,42 +178,42 @@ def check_sys_requirements(logger, config, check_network=True):
     free_gb = mem.available / (1024 ** 3)
     cpu_percent = psutil.cpu_percent(interval=None)
 
-    box_width = 80
-    lines = []
-    header = "=" * box_width
-    title = "SYSTEM CONFIGURATION"
-    lines.append(header)
-    lines.append(f"| {title.center(box_width - 4)} |")
-    lines.append(header)
-
-    def box_line(text, width=box_width):
-        import textwrap
-        wrapped = textwrap.wrap(text, width=width - 4)
-        return [f"| {line.ljust(width - 4)} |" for line in wrapped]
-
-    lines.extend(box_line(f"[System] Operating System detected: {os_info}", box_width))
+    logger.info(
+        "[System] Runtime | OS=%s | Python=%s | CPUCores=%s | CPUUsage=%.1f%% | "
+        "RAMTotal=%.2f GB | RAMUsed=%.2f GB | RAMFree=%.2f GB",
+        os_info,
+        platform.python_version(),
+        cpu_cores if cpu_cores is not None else "unknown",
+        cpu_percent,
+        total_gb,
+        used_gb,
+        free_gb,
+    )
     if py_version < MIN_PYTHON:
-        lines.extend(box_line(f"[System] Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ required. Detected: {platform.python_version()}. Exiting.", box_width))
-        for line in lines:
-            logger.error(line)
+        logger.error(
+            "[System] Runtime validation failed | Requirement=Python %d.%d+ | "
+            "Detected=%s",
+            MIN_PYTHON[0],
+            MIN_PYTHON[1],
+            platform.python_version(),
+        )
         raise RuntimeError(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required")
-    else:
-        lines.extend(box_line(f"[System] Python version detected: {platform.python_version()}", box_width))
 
     if cpu_cores is not None and cpu_cores < MIN_CPU_CORES:
-        lines.extend(box_line(f"[System] {cpu_cores} CPU cores detected; {MIN_CPU_CORES}+ is recommended for best performance.", box_width))
-    else:
-        lines.extend(box_line(f"[System] CPU Cores detected: {cpu_cores} (Usage: {cpu_percent}%)", box_width))
+        logger.warning(
+            "[System] Resource recommendation | CPUCores=%d | Recommended=%d+",
+            cpu_cores,
+            MIN_CPU_CORES,
+        )
 
     if total_gb < MIN_RAM_GB:
-        lines.extend(box_line(f"[System] {total_gb:.2f} GB RAM detected; {MIN_RAM_GB} GB is recommended for large libraries.", box_width))
-    else:
-        lines.extend(box_line(f"[System] RAM Memory detected: {total_gb:.2f} GB (Used: {used_gb:.2f} GB, Free: {free_gb:.2f} GB)", box_width))
+        logger.warning(
+            "[System] Resource recommendation | RAMTotal=%.2f GB | Recommended=%d GB+",
+            total_gb,
+            MIN_RAM_GB,
+        )
 
     if not check_network:
-        lines.append(header)
-        for line in lines:
-            logger.info(line)
         return True
 
     plex_url = config.get('plex', {}).get('url')
@@ -238,14 +229,23 @@ def check_sys_requirements(logger, config, check_network=True):
             )
             internal_up = resp.status_code in (200, 401)
             if internal_up:
-                lines.extend(box_line("[Network] Plex Media Server connection: UP", box_width))
+                logger.info("[Connection] Plex validation | Status=UP")
             else:
-                lines.extend(box_line("[Network] Plex Media Server connection: DOWN", box_width))
+                logger.warning(
+                    "[Connection] Plex validation | Status=DOWN | HTTPStatus=%s",
+                    resp.status_code,
+                )
         except Exception as e:
             safe_error = redact_secrets(e, plex_token)
-            lines.extend(box_line(f"[Network] Plex Media Server connection check failed: {safe_error}", box_width))
+            logger.warning(
+                "[Connection] Plex validation | Status=DOWN | Error=%s",
+                safe_error,
+            )
     else:
-        lines.extend(box_line("[Network] Plex Media Server URL or token not set. Check configuration...", box_width))
+        logger.error(
+            "[Connection] Plex validation | Status=INVALID | "
+            "Reason=URL or token is not configured"
+        )
 
     tmdb_api_key = config.get('tmdb', {}).get('api_key')
     tmdb_up = False
@@ -259,18 +259,23 @@ def check_sys_requirements(logger, config, check_network=True):
             )
             tmdb_up = resp.status_code == 200
             if tmdb_up:
-                lines.extend(box_line("[Network] TMDb API connection: UP", box_width))
+                logger.info("[Connection] TMDb validation | Status=UP")
             else:
-                lines.extend(box_line("[Network] TMDb API connection: DOWN", box_width))
+                logger.warning(
+                    "[Connection] TMDb validation | Status=DOWN | HTTPStatus=%s",
+                    resp.status_code,
+                )
         except Exception as e:
             safe_error = redact_secrets(e, tmdb_api_key)
-            lines.extend(box_line(f"[Network] TMDb API connection check failed: {safe_error}", box_width))
+            logger.warning(
+                "[Connection] TMDb validation | Status=DOWN | Error=%s",
+                safe_error,
+            )
     else:
-        lines.extend(box_line("[Network] TMDb API key not set in config.", box_width))
-
-    lines.append(header)
-    for line in lines:
-        logger.info(line)
+        logger.error(
+            "[Connection] TMDb validation | Status=INVALID | "
+            "Reason=API key is not configured"
+        )
 
     if not internal_up or not tmdb_up:
         logger.warning(
@@ -282,8 +287,8 @@ def check_sys_requirements(logger, config, check_network=True):
 def log_main_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
     messages = {
-        "main_started": "[MetaFusion] Processing started on {start_time}",
-        "main_force_run": "[MetaFusion] Force run started on {start_time}",
+        "main_started": "[Startup] Run | StartedAt={start_time}",
+        "main_force_run": "[Startup] Forced run | StartedAt={start_time}",
         "main_processing_disabled": "[MetaFusion] Processing is set to False. Exiting without changes.",
         "main_no_libraries": "[MetaFusion] No libraries scheduled for processing.",
         "main_unhandled_exception": "[MetaFusion] Unhandled exception: {error}",
@@ -324,6 +329,7 @@ def log_config_event(event, logger=None, **kwargs):
         "invalid_env_var": "[Configuration] Invalid environment variable for {key}: '{value}'. Using default: {default}",
         "feature_disabled": "[Configuration] {feature} is DISABLED and will not be processed.",
         "feature_enabled": "[Configuration] {feature} is ENABLED and will be processed.",
+        "feature_profile": "[Configuration] Run profile | Mode={mode} | Metadata={metadata} | PlexMetadata={plex_metadata} | Poster={poster} | SeasonPoster={season} | Background={background} | Cleanup={cleanup} | DryRun={dry_run}",
         "unknown_feature": "[Configuration] Unknown configuration settings: {feature}",
         "unknown_key": "[Configuration] Unknown configuration key: {key}",
         "yaml_not_found": "[Configuration] YAML not found at {config_file}. Copying template to {config_file}...",
@@ -334,8 +340,9 @@ def log_config_event(event, logger=None, **kwargs):
     }
     levels = {
         "invalid_env_var": "error",
-        "feature_disabled": "info",
-        "feature_enabled": "info",
+        "feature_disabled": "debug",
+        "feature_enabled": "debug",
+        "feature_profile": "info",
         "unknown_feature": "warning",
         "unknown_key": "warning",
         "yaml_not_found": "warning",
@@ -387,11 +394,11 @@ def log_cache_event(event, logger=None, **kwargs):
 def log_plex_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
     messages = {
-        "plex_connected": "[Plex] Successfully connected to server version: {version}.",
-        "plex_connect_failed": "[Plex] Failed to connect to server: {error}",
-        "plex_libraries_retrieved_failed": "[Plex] Failed to retrieve libraries: {error}",
-        "plex_detected_and_skipped_libraries": "[Plex] Libraries - Detected [ {detected} ] Skipped [ {skipped} ]",
-        "plex_no_libraries_found": "[Plex] No libraries found. Exiting.",
+        "plex_connected": "[Connection] Plex | Connected | ServerVersion={version}",
+        "plex_connect_failed": "[Connection] Plex | Attempt failed | Attempt={attempt}/{retries} | Error={error}",
+        "plex_libraries_retrieved_failed": "[Inventory] Plex libraries | Retrieval failed | Attempt={attempt}/{retries} | Error={error}",
+        "plex_detected_and_skipped_libraries": "[Inventory] Plex libraries | Available={detected} | Selected={selected} | Skipped={skipped} | Selection={selection}",
+        "plex_no_libraries_found": "[Inventory] Plex libraries | No processable libraries found",
         "plex_failed_extract_item_id": "[Plex] Failed to extract item ID for {title} ({year}): {error}",
         "plex_failed_extract_library_type": "[Plex] Failed to extract library type for {library_name}: {error}",
         "plex_failed_extract_ids": "[Plex] Failed to extract TMDb, IMDb, TVDb IDs for {title} ({year}): {error}",
@@ -409,8 +416,8 @@ def log_plex_event(event, logger=None, **kwargs):
     }
     levels = {
         "plex_connected": "info",
-        "plex_connect_failed": "error",
-        "plex_libraries_retrieved_failed": "error",
+        "plex_connect_failed": "warning",
+        "plex_libraries_retrieved_failed": "warning",
         "plex_detected_and_skipped_libraries": "info",
         "plex_no_libraries_found": "warning",
         "plex_failed_extract_item_id": "warning",
@@ -457,8 +464,8 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_request_failed": "[TMDb] Attempt {attempt}: Request failed for URL {url} with params {query}: {error}",
         "tmdb_retrying": "[TMDb] Retrying in {sleep_time}s... (Attempt {next_attempt}/{retries})",
         "tmdb_failed": "[TMDb] Failed after {retries} attempts for {url} with params {query}",
-        "tmdb_cache_stats": "[TMDb] SQLite cache entries: {entries}, compressed: {stored_mib:.1f} MiB, disk: {disk_mib:.1f} MiB, hits: {hits}, misses: {misses}, evictions: {evictions}, recoveries: {recoveries}",
-        "tmdb_cache_degraded": "[TMDb] Persistent cache is degraded; continuing with memory cache: {error}",
+        "tmdb_cache_stats": "[Cache] Provider=TMDb | Entries={entries} | Compressed={stored_mib:.1f} MiB | Disk={disk_mib:.1f} MiB | Hits={hits} | Misses={misses} | Evictions={evictions} | Recoveries={recoveries}",
+        "tmdb_cache_degraded": "[Cache] Provider=TMDb | Status=Degraded | Fallback=Memory | Error={error}",
     }
     levels = {
         "tmdb_no_api_key": "error",
@@ -510,8 +517,8 @@ def log_fanart_event(event, logger=None, **kwargs):
         "fanart_request_failed": "[Fanart.tv] Request failed for {resource_type}:{resource_id} on attempt {attempt}/{retries}: {error}",
         "fanart_retrying": "[Fanart.tv] Retrying in {sleep_time}s (attempt {next_attempt}/{retries}).",
         "fanart_failed": "[Fanart.tv] Provider unavailable after {retries} attempts for {resource_type}:{resource_id}; continuing fallback.",
-        "fanart_cache_stats": "[Fanart.tv] SQLite cache entries: {entries}, compressed: {stored_mib:.1f} MiB, disk: {disk_mib:.1f} MiB, hits: {hits}, misses: {misses}, evictions: {evictions}, recoveries: {recoveries}.",
-        "fanart_cache_degraded": "[Fanart.tv] Persistent cache is degraded; continuing with memory cache: {error}",
+        "fanart_cache_stats": "[Cache] Provider=Fanart.tv | Entries={entries} | Compressed={stored_mib:.1f} MiB | Disk={disk_mib:.1f} MiB | Hits={hits} | Misses={misses} | Evictions={evictions} | Recoveries={recoveries}",
+        "fanart_cache_degraded": "[Cache] Provider=Fanart.tv | Status=Degraded | Fallback=Memory | Error={error}",
     }
     levels = {
         "fanart_disabled": "debug",
@@ -876,7 +883,13 @@ def log_item_outcomes(
         if action == "not_due":
             continue
         provider = provider_label(providers.get(asset), action)
-        emit("Artwork", asset, action, provider, artwork_target)
+        stage = (stats.get("artwork_selection_stages") or {}).get(asset)
+        detail = (
+            "Selection=Automatic missing-only relaxation"
+            if stage == "missing_only_relaxed"
+            else None
+        )
+        emit("Artwork", asset, action, provider, artwork_target, detail)
 
     season_actions = stats.get("season_poster_actions") or {}
     if season_actions:
@@ -916,6 +929,7 @@ def log_item_outcomes(
                 "reserve": "below requirements",
                 "selected": "selected",
                 "selected_best_available": "selected as best available",
+                "selected_missing_only_relaxed": "selected by missing-only relaxation",
             }
             missing_details = []
             season_attempts = stats.get("season_artwork_attempts") or {}
@@ -942,6 +956,18 @@ def log_item_outcomes(
                     f"{season_label} ({attempt_text or 'provider attempts unavailable'})"
                 )
             quiet_actions = set(action_counts).issubset({"skipped", "preserved"})
+            season_stages = stats.get("season_artwork_selection_stages") or {}
+            relaxed_count = sum(
+                (
+                    season_stages.get(number)
+                    if season_stages.get(number) is not None
+                    else season_stages.get(str(number))
+                )
+                == "missing_only_relaxed"
+                for number in season_actions
+            )
+            if relaxed_count:
+                action_detail += f", AutomaticRelaxed={relaxed_count}"
             level = (
                 logger.error
                 if action_counts.get("failed")
@@ -1061,21 +1087,21 @@ def metadata_action_summary(library_summary, feature_flags):
     library_summary = library_summary or {}
     if feature_flags.get("plex_metadata", False):
         return (
-            "Plex Metadata - Items changed: "
-            f"{library_summary.get('meta_upgraded', 0)}, "
-            f"API batches: {library_summary.get('plex_metadata_writes', 0)}, "
-            f"Unchanged: {library_summary.get('meta_skipped', 0)}, "
-            f"Failed: {library_summary.get('meta_failed', 0)}"
+            "Metadata | Target=Plex | Changed="
+            f"{library_summary.get('meta_upgraded', 0)} | "
+            f"APIBatches={library_summary.get('plex_metadata_writes', 0)} | "
+            f"Unchanged={library_summary.get('meta_skipped', 0)} | "
+            f"Failed={library_summary.get('meta_failed', 0)}"
         )
     if feature_flags.get("metadata_basic", False) or feature_flags.get(
         "metadata_enhanced", False
     ):
         return (
-            "Kometa Metadata - Created: "
-            f"{library_summary.get('meta_downloaded', 0)}, "
-            f"Updated: {library_summary.get('meta_upgraded', 0)}, "
-            f"Unchanged: {library_summary.get('meta_skipped', 0)}, "
-            f"Failed: {library_summary.get('meta_failed', 0)}"
+            "Metadata | Target=Kometa YAML | Created="
+            f"{library_summary.get('meta_downloaded', 0)} | "
+            f"Updated={library_summary.get('meta_upgraded', 0)} | "
+            f"Unchanged={library_summary.get('meta_skipped', 0)} | "
+            f"Failed={library_summary.get('meta_failed', 0)}"
         )
     return None
 
@@ -1185,10 +1211,9 @@ def log_library_summary(
     library_summary=None, logger=None, library_type=None, season_count=None, episode_count=None
 ):
     logger = logger or logging.getLogger()
-    box_width = 80
-    def box_line(text, width=box_width):
-        wrapped = textwrap.wrap(text, width=width - 4)
-        return [f"| {line.ljust(width - 4)} |" for line in wrapped]
+    box_width = None
+    def box_line(text, width=None):
+        return [f"[Summary] Library={library_name} | {text}"]
 
     library_type = (library_type or "unknown").strip().lower()
     if library_type not in ("movie", "tv", "show"):
@@ -1199,55 +1224,41 @@ def log_library_summary(
         else:
             library_type = "unknown"
             
-    header = "=" * box_width
-    title = "LIBRARY PROCESSING SUMMARY"
     lines = [
-        header,
-        f"| {title.center(box_width - 4)} |",
-        header,
-        (
-            f"| {library_name} - Titles: {total_items}"
-            + (
-                f" | Seasons: {season_count or 0} | Episodes: {episode_count or 0}"
-                if library_type in ("tv", "show") and (season_count is not None or episode_count is not None)
-                else ""
-            )
-        ).ljust(box_width - 1) + "|"
-        ]
+        f"[Summary] Library={library_name} | Inventory | Titles={total_items}"
+        + (
+            f" | Seasons={season_count or 0} | Episodes={episode_count or 0}"
+            if library_type in ("tv", "show")
+            and (season_count is not None or episode_count is not None)
+            else ""
+        )
+    ]
     
     metadata_summary = metadata_action_summary(library_summary, feature_flags)
     if metadata_summary:
         lines.extend(box_line(metadata_summary, box_width))
     if run_metadata:
         meta_line = (
-            f"Metadata coverage - Meets threshold: {completed}/{total_items} "
-            f"({percent_complete}%), Below threshold: {incomplete} "
+            f"Metadata coverage | MeetsThreshold={completed}/{total_items} "
+            f"({percent_complete}%) | BelowThreshold={incomplete} "
             f"({percent_incomplete}%)"
         )
-        lines.extend(box_line(meta_line, box_width))
+        lines.extend(box_line(meta_line))
        
     if feature_flags and feature_flags.get("poster", False) and (library_type in ("movie", "tv", "show")):
         lines.extend(box_line(
-            f"Poster - Downloaded: {library_summary.get('poster_downloaded', 0)}, "
-            f"Upgraded: {library_summary.get('poster_upgraded', 0)}, "
-            f"Adopted: {library_summary.get('poster_adopted', 0)}, "
-            f"Unchanged: {library_summary.get('poster_skipped', 0)}, "
-            f"Not due: {library_summary.get('poster_not_due', 0)}, "
-            f"Preserved: {library_summary.get('poster_preserved', 0)}, "
-            f"Missing: {library_summary.get('poster_missing', 0)}, "
-            f"Deferred: {library_summary.get('poster_deferred', 0)}, "
-            f"Failed: {library_summary.get('poster_failed', 0)}", box_width))
+            f"Artwork poster | Downloaded={library_summary.get('poster_downloaded', 0)} | "
+            f"Upgraded={library_summary.get('poster_upgraded', 0)} | Adopted={library_summary.get('poster_adopted', 0)} | "
+            f"Unchanged={library_summary.get('poster_skipped', 0)} | NotDue={library_summary.get('poster_not_due', 0)} | "
+            f"Preserved={library_summary.get('poster_preserved', 0)} | Missing={library_summary.get('poster_missing', 0)} | "
+            f"Deferred={library_summary.get('poster_deferred', 0)} | Failed={library_summary.get('poster_failed', 0)}"))
     if feature_flags and feature_flags.get("background", False) and (library_type in ("movie", "tv", "show")):
         lines.extend(box_line(
-            f"Background - Downloaded: {library_summary.get('background_downloaded', 0)}, "
-            f"Upgraded: {library_summary.get('background_upgraded', 0)}, "
-            f"Adopted: {library_summary.get('background_adopted', 0)}, "
-            f"Unchanged: {library_summary.get('background_skipped', 0)}, "
-            f"Not due: {library_summary.get('background_not_due', 0)}, "
-            f"Preserved: {library_summary.get('background_preserved', 0)}, "
-            f"Missing: {library_summary.get('background_missing', 0)}, "
-            f"Deferred: {library_summary.get('background_deferred', 0)}, "
-            f"Failed: {library_summary.get('background_failed', 0)}", box_width))
+            f"Artwork background | Downloaded={library_summary.get('background_downloaded', 0)} | "
+            f"Upgraded={library_summary.get('background_upgraded', 0)} | Adopted={library_summary.get('background_adopted', 0)} | "
+            f"Unchanged={library_summary.get('background_skipped', 0)} | NotDue={library_summary.get('background_not_due', 0)} | "
+            f"Preserved={library_summary.get('background_preserved', 0)} | Missing={library_summary.get('background_missing', 0)} | "
+            f"Deferred={library_summary.get('background_deferred', 0)} | Failed={library_summary.get('background_failed', 0)}"))
     if (
         feature_flags and feature_flags.get("season", False)
         and library_type in ("tv", "show")
@@ -1264,15 +1275,11 @@ def log_library_summary(
         )
     ):
         lines.extend(box_line(
-            f"Season - Downloaded: {library_summary.get('season_poster_downloaded', 0)}, "
-            f"Upgraded: {library_summary.get('season_poster_upgraded', 0)}, "
-            f"Adopted: {library_summary.get('season_poster_adopted', 0)}, "
-            f"Unchanged: {library_summary.get('season_poster_skipped', 0)}, "
-            f"Not due: {library_summary.get('season_poster_not_due', 0)}, "
-            f"Preserved: {library_summary.get('season_poster_preserved', 0)}, "
-            f"Missing: {library_summary.get('season_poster_missing', 0)}, "
-            f"Deferred: {library_summary.get('season_poster_deferred', 0)}, "
-            f"Failed: {library_summary.get('season_poster_failed', 0)}", box_width))
+            f"Artwork season posters | Downloaded={library_summary.get('season_poster_downloaded', 0)} | "
+            f"Upgraded={library_summary.get('season_poster_upgraded', 0)} | Adopted={library_summary.get('season_poster_adopted', 0)} | "
+            f"Unchanged={library_summary.get('season_poster_skipped', 0)} | NotDue={library_summary.get('season_poster_not_due', 0)} | "
+            f"Preserved={library_summary.get('season_poster_preserved', 0)} | Missing={library_summary.get('season_poster_missing', 0)} | "
+            f"Deferred={library_summary.get('season_poster_deferred', 0)} | Failed={library_summary.get('season_poster_failed', 0)}"))
 
     asset_summaries = []
     if feature_flags and feature_flags.get("poster") and poster_size > 0:
@@ -1285,33 +1292,91 @@ def log_library_summary(
         total_size = ""
         if library_filesize is not None and library_filesize.get(library_name, 0) > 0:
             total_size = f", Total: {human_readable_size(library_filesize[library_name])}"
-        lines.extend(box_line(f"Assets - {', '.join(asset_summaries)}{total_size}", box_width))
+        lines.extend(box_line(f"Storage observed | {', '.join(asset_summaries)}{total_size}"))
 
-    lines.append(header)
     for line in lines:
         logger.info(line)
+
+
+def _file_group_bytes(paths):
+    total = 0
+    for path in paths:
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _runtime_storage_bytes():
+    cache_dir = BASE_CONFIG_DIR / "cache"
+    databases = {
+        "StateDB": cache_dir / "meta_db.sqlite3",
+        "TMDbCache": cache_dir / "tmdb_cache.sqlite3",
+        "FanartCache": cache_dir / "fanart_cache.sqlite3",
+    }
+    result = {}
+    for label, path in databases.items():
+        result[label] = _file_group_bytes(
+            [path, Path(f"{path}-wal"), Path(f"{path}-shm")]
+        )
+    result["Logs"] = _file_group_bytes(LOGS_DIR.glob("*"))
+    result["Reports"] = _file_group_bytes((BASE_CONFIG_DIR / "reports").glob("*"))
+    return result
+
+
+def _nearest_existing_path(path):
+    candidate = Path(path)
+    return candidate if candidate.exists() else None
+
+
+def _storage_mounts(config):
+    mode = str(config.get("settings", {}).get("mode", "kometa")).lower()
+    candidates: list[tuple[str, Path | str]] = [("Config", BASE_CONFIG_DIR)]
+    if mode == "kometa":
+        candidates.append(("Kometa output", config.get("settings", {}).get("path", ".")))
+    else:
+        for index, mapping in enumerate(config.get("plex", {}).get("path_mappings", []), 1):
+            _source, separator, destination = str(mapping).partition("=>")
+            if separator and destination.strip():
+                candidates.append((f"Plex media {index}", destination.strip()))
+    mounts: dict[int, dict[str, Any]] = {}
+    for label, raw_path in candidates:
+        path = _nearest_existing_path(raw_path)
+        if path is None:
+            continue
+        try:
+            device = path.stat().st_dev
+            usage = shutil.disk_usage(path)
+        except OSError:
+            continue
+        record = mounts.setdefault(
+            device,
+            {"labels": [], "path": str(path), "usage": usage},
+        )
+        record["labels"].append(label)
+    return list(mounts.values())
+
 
 def log_final_summary(
     logger, elapsed_time, metadata_summaries, library_filesize, cleanup_result, cleanup_title_orphans,
     selected_libraries, libraries, config, feature_flags=None
 ):
-    box_width = 80
-    def box_line(text, width=box_width):
-        wrapped = textwrap.wrap(text, width=width - 4)
-        return [f"| {line.ljust(width - 4)} |" for line in wrapped]
+    box_width = None
+    def box_line(text, width=None):
+        return [f"[Summary] {text}"]
 
-    border = "=" * box_width
-    title = "METAFUSION SUMMARY REPORT".center(box_width - 4)
-    lines = [
-        "",
-        "",
-        border,
-        f"| {title.center(box_width - 4)} |",
-        border
-    ]
+    lines = []
+    storage_warnings = []
     minutes, seconds = divmod(int(elapsed_time), 60)
     run_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    lines.extend(box_line(f"Executed on {run_date} in {minutes} mins {seconds} secs.", box_width))
+    lines.extend(
+        box_line(
+            f"Run | CompletedAt={run_date} | Duration={minutes}m {seconds}s | "
+            f"Mode={str(config.get('settings', {}).get('mode', 'kometa')).title()}"
+        )
+    )
     processed_libraries = [
         lib["title"] for lib in libraries if lib["title"] in selected_libraries
     ]
@@ -1320,11 +1385,10 @@ def log_final_summary(
         str(value).strip().casefold() == "auto" for value in configured_libraries
     )
     scope = "Plex automatic discovery" if auto_discovery else "Explicit library selection"
-    lines.extend(box_line(f"Scope - {scope}", box_width))
+    lines.extend(box_line(f"Scope | Selection={scope}"))
     lines.extend(box_line(
-        f"Processed - {', '.join(processed_libraries) if processed_libraries else 'None'} "
-        f"({len(processed_libraries)})",
-        box_width,
+        f"Scope | Libraries={', '.join(processed_libraries) if processed_libraries else 'None'} "
+        f"| LibraryCount={len(processed_libraries)}",
     ))
 
     summaries = [
@@ -1384,16 +1448,18 @@ def log_final_summary(
         )
     )
     lines.extend(box_line(
-        f"Overall - Titles: {total_titles} | Metadata created/updated: "
+        f"Overall | Titles={total_titles} | MetadataChanged="
         f"{overall['meta_downloaded'] + overall['meta_upgraded']} | "
-        f"Unchanged: {overall['meta_skipped']} | Failed: {overall['meta_failed']}",
+        f"MetadataUnchanged={overall['meta_skipped']} | "
+        f"MetadataFailed={overall['meta_failed']}",
         box_width,
     ))
     lines.extend(box_line(
-        f"Artwork - Written: {artwork_written} | Adopted: {artwork_adopted} | "
-        f"Unchanged: {artwork_unchanged} | Not due: {artwork_not_due} | "
-        f"Preserved: {artwork_preserved} | Missing: {artwork_missing} | "
-        f"Deferred: {artwork_deferred} | Failed: {artwork_failed}",
+        f"Artwork | Written={artwork_written} | Adopted={artwork_adopted} | "
+        f"Unchanged={artwork_unchanged} | NotDue={artwork_not_due} | "
+        f"Preserved={artwork_preserved} | Missing={artwork_missing} | "
+        f"Deferred={artwork_deferred} | Failed={artwork_failed} | "
+        f"AutomaticRelaxed={overall['artwork_automatic_relaxed']}",
         box_width,
     ))
     if providers:
@@ -1403,16 +1469,17 @@ def log_final_summary(
             for name, count in sorted(providers.items())
         )
         lines.extend(box_line(
-            f"Artwork selected providers (written/adopted) - {provider_text}",
+            f"Artwork providers | Selected={provider_text}",
             box_width,
         ))
 
-    total_asset_size = sum(library_filesize.values())
     for lib, summary in metadata_summaries.items():
         if summary is None:
             continue
         libsum = summary.get("library_summary", {})
-        asset_size = library_filesize.get(lib, 0)
+        asset_size = int(
+            libsum.get("artwork_bytes", library_filesize.get(lib, 0)) or 0
+        )
         library_type = (summary.get("library_type", "") or "unknown").strip().lower()
         if library_type not in ("movie", "tv", "show"):
             if "movie" in lib.lower():
@@ -1422,13 +1489,12 @@ def log_final_summary(
             else:
                 library_type = "unknown"
                 
-        lines.append(border)
         season_count = summary.get("season_count")
         episode_count = summary.get("episode_count")
         summary_line = (
-            f"{lib} - Titles: {summary['total_items']}"
+            f"Library={lib} | Inventory | Titles={summary['total_items']}"
             + (
-                f" | Seasons: {season_count or 0} | Episodes: {episode_count or 0}"
+                f" | Seasons={season_count or 0} | Episodes={episode_count or 0}"
                 if library_type in ("tv", "show") and (season_count is not None or episode_count is not None)
                 else ""
             )
@@ -1439,47 +1505,39 @@ def log_final_summary(
         if incremental_skipped:
             lines.extend(
                 box_line(
-                    f"Incremental - Library items: {library_items}, "
-                    f"processed: {summary['total_items']}, unchanged skipped: {incremental_skipped}",
+                    f"Library={lib} | Incremental | LibraryItems={library_items} | "
+                    f"Processed={summary['total_items']} | UnchangedSkipped={incremental_skipped}",
                     box_width,
                 )
             )
         metadata_summary = metadata_action_summary(libsum, feature_flags)
         if metadata_summary:
-            lines.extend(box_line(metadata_summary, box_width))
+            lines.extend(box_line(f"Library={lib} | {metadata_summary}", box_width))
         if summary.get("percent_complete") is not None:
             percent_incomplete = summary.get("percent_incomplete")
             if percent_incomplete is None:
                 percent_incomplete = 100 - summary["percent_complete"]
             lines.extend(box_line(
-                f"Metadata coverage - Meets threshold: "
+                f"Library={lib} | Metadata coverage | MeetsThreshold="
                 f"{summary['complete']}/{summary['total_items']} "
-                f"({summary['percent_complete']}%), Below threshold: "
+                f"({summary['percent_complete']}%) | BelowThreshold="
                 f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
             lines.extend(box_line(
-                f"Artwork poster - Downloaded: {libsum.get('poster_downloaded', 0)}, "
-                f"Upgraded: {libsum.get('poster_upgraded', 0)}, "
-                f"Adopted: {libsum.get('poster_adopted', 0)}, "
-                f"Unchanged: {libsum.get('poster_skipped', 0)}, "
-                f"Not due: {libsum.get('poster_not_due', 0)}, "
-                f"Preserved: {libsum.get('poster_preserved', 0)}, "
-                f"Missing: {libsum.get('poster_missing', 0)}, "
-                f"Deferred: {libsum.get('poster_deferred', 0)}, "
-                f"Failed: {libsum.get('poster_failed', 0)}", box_width))
+                f"Library={lib} | Artwork poster | Downloaded={libsum.get('poster_downloaded', 0)} | "
+                f"Upgraded={libsum.get('poster_upgraded', 0)} | Adopted={libsum.get('poster_adopted', 0)} | "
+                f"Unchanged={libsum.get('poster_skipped', 0)} | NotDue={libsum.get('poster_not_due', 0)} | "
+                f"Preserved={libsum.get('poster_preserved', 0)} | Missing={libsum.get('poster_missing', 0)} | "
+                f"Deferred={libsum.get('poster_deferred', 0)} | Failed={libsum.get('poster_failed', 0)}", box_width))
 
         if feature_flags and feature_flags.get("background", False) and library_type in ("movie", "tv", "show"):
             lines.extend(box_line(
-                f"Artwork background - Downloaded: {libsum.get('background_downloaded', 0)}, "
-                f"Upgraded: {libsum.get('background_upgraded', 0)}, "
-                f"Adopted: {libsum.get('background_adopted', 0)}, "
-                f"Unchanged: {libsum.get('background_skipped', 0)}, "
-                f"Not due: {libsum.get('background_not_due', 0)}, "
-                f"Preserved: {libsum.get('background_preserved', 0)}, "
-                f"Missing: {libsum.get('background_missing', 0)}, "
-                f"Deferred: {libsum.get('background_deferred', 0)}, "
-                f"Failed: {libsum.get('background_failed', 0)}", box_width))
+                f"Library={lib} | Artwork background | Downloaded={libsum.get('background_downloaded', 0)} | "
+                f"Upgraded={libsum.get('background_upgraded', 0)} | Adopted={libsum.get('background_adopted', 0)} | "
+                f"Unchanged={libsum.get('background_skipped', 0)} | NotDue={libsum.get('background_not_due', 0)} | "
+                f"Preserved={libsum.get('background_preserved', 0)} | Missing={libsum.get('background_missing', 0)} | "
+                f"Deferred={libsum.get('background_deferred', 0)} | Failed={libsum.get('background_failed', 0)}", box_width))
 
         if (
             feature_flags and feature_flags.get("season", False)
@@ -1497,15 +1555,11 @@ def log_final_summary(
             )
         ):
             lines.extend(box_line(
-                f"Artwork season posters - Downloaded: {libsum.get('season_poster_downloaded', 0)}, "
-                f"Upgraded: {libsum.get('season_poster_upgraded', 0)}, "
-                f"Adopted: {libsum.get('season_poster_adopted', 0)}, "
-                f"Unchanged: {libsum.get('season_poster_skipped', 0)}, "
-                f"Not due: {libsum.get('season_poster_not_due', 0)}, "
-                f"Preserved: {libsum.get('season_poster_preserved', 0)}, "
-                f"Missing: {libsum.get('season_poster_missing', 0)}, "
-                f"Deferred: {libsum.get('season_poster_deferred', 0)}, "
-                f"Failed: {libsum.get('season_poster_failed', 0)}", box_width))
+                f"Library={lib} | Artwork season posters | Downloaded={libsum.get('season_poster_downloaded', 0)} | "
+                f"Upgraded={libsum.get('season_poster_upgraded', 0)} | Adopted={libsum.get('season_poster_adopted', 0)} | "
+                f"Unchanged={libsum.get('season_poster_skipped', 0)} | NotDue={libsum.get('season_poster_not_due', 0)} | "
+                f"Preserved={libsum.get('season_poster_preserved', 0)} | Missing={libsum.get('season_poster_missing', 0)} | "
+                f"Deferred={libsum.get('season_poster_deferred', 0)} | Failed={libsum.get('season_poster_failed', 0)}", box_width))
 
         library_providers = libsum.get("artwork_provider_writes") or {}
         if library_providers:
@@ -1515,57 +1569,114 @@ def log_final_summary(
                 for name, count in sorted(library_providers.items())
             )
             lines.extend(box_line(
-                f"Artwork selected providers (written/adopted) - {provider_text}",
+                f"Library={lib} | Artwork providers | Selected={provider_text}",
                 box_width,
             ))
 
-        lines.extend(box_line(
-            f"Artwork bytes - {human_readable_size(asset_size)} / "
-            f"{human_readable_size(total_asset_size)}", box_width))
-        lines.append(border)
+        poster_bytes = int(libsum.get("poster_bytes", 0) or 0)
+        background_bytes = int(libsum.get("background_bytes", 0) or 0)
+        season_bytes = int(libsum.get("season_poster_bytes", 0) or 0)
+        metadata_bytes = int(libsum.get("metadata_bytes", 0) or 0)
+        storage_scope = str(libsum.get("storage_scope") or "processed items")
+        mode = str(config.get("settings", {}).get("mode", "kometa")).lower()
+        if mode == "kometa":
+            metadata_storage = f"MetadataYAML={human_readable_size(metadata_bytes)}"
+            accounted = asset_size + metadata_bytes
+        else:
+            metadata_storage = "PlexMetadata=Server-managed (not measurable)"
+            accounted = asset_size
+        lines.extend(
+            box_line(
+                f"Library={lib} | Storage | Scope={storage_scope} | "
+                f"Artwork={human_readable_size(asset_size)} | "
+                f"Posters={human_readable_size(poster_bytes)} | "
+                f"Backgrounds={human_readable_size(background_bytes)} | "
+                f"SeasonPosters={human_readable_size(season_bytes)} | "
+                f"{metadata_storage} | AccountedTotal={human_readable_size(accounted)}"
+            )
+        )
+
+    runtime_storage = _runtime_storage_bytes()
+    lines.extend(
+        box_line(
+            "Runtime storage | "
+            + " | ".join(
+                f"{label}={human_readable_size(size)}"
+                for label, size in runtime_storage.items()
+            )
+            + f" | Total={human_readable_size(sum(runtime_storage.values()))}"
+        )
+    )
+    minimum_free = max(
+        0,
+        int(float(config.get("runtime", {}).get("min_free_space_mb", 256)) * 1024 * 1024),
+    )
+    for mount in _storage_mounts(config):
+        usage = mount["usage"]
+        free_percent = (usage.free / usage.total * 100) if usage.total else 0.0
+        lines.extend(
+            box_line(
+                f"Filesystem={'+'.join(mount['labels'])} | Path={mount['path']} | "
+                f"Used={human_readable_size(usage.used)} | "
+                f"Free={human_readable_size(usage.free)} | "
+                f"Capacity={human_readable_size(usage.total)} | "
+                f"FreePercent={free_percent:.1f}%"
+            )
+        )
+        if usage.free < minimum_free:
+            storage_warnings.append(
+                (
+                    "+".join(mount["labels"]),
+                    human_readable_size(usage.free),
+                    human_readable_size(minimum_free),
+                )
+            )
 
     if cleanup_result is not None and getattr(cleanup_result, "failed_reason", None):
         cleanup_mode = str(getattr(cleanup_result, "mode", "unknown")).title()
         lines.extend(
             box_line(
-                f"Cleanup - Failed | Mode: {cleanup_mode} | "
-                f"Reason: {cleanup_result.failed_reason}",
+                f"Cleanup | Status=Failed | Mode={cleanup_mode} | "
+                f"Reason={cleanup_result.failed_reason}",
                 box_width,
             )
         )
         lines.extend(
             box_line(
-                "Cleanup confirmed before failure - "
-                f"Titles: {cleanup_result.titles}, "
-                f"Seasons: {cleanup_result.seasons}, "
-                f"Episodes: {cleanup_result.episodes}",
+                "Cleanup confirmed before failure | "
+                f"Titles={cleanup_result.titles} | "
+                f"Seasons={cleanup_result.seasons} | "
+                f"Episodes={cleanup_result.episodes}",
                 box_width,
             )
         )
         lines.extend(
             box_line(
-                f"Cleanup records - Cache: {cleanup_result.cache_entries}, "
-                f"Kometa YAML: {cleanup_result.yaml_entries}",
+                f"Cleanup records | Cache={cleanup_result.cache_entries} | "
+                f"KometaYAML={cleanup_result.yaml_entries}",
                 box_width,
             )
         )
         lines.extend(
             box_line(
-                f"Cleanup artwork - Removed: {cleanup_result.assets}, "
-                f"Preserved: {cleanup_result.assets_preserved}, "
-                f"Unchanged: {cleanup_result.assets_skipped}",
+                f"Cleanup artwork | Removed={cleanup_result.assets} | "
+                f"Preserved={cleanup_result.assets_preserved} | "
+                f"Unchanged={cleanup_result.assets_skipped}",
                 box_width,
             )
         )
         lines.extend(
             box_line(
-                f"Cleanup failures - Total: {cleanup_result.failures}",
+                f"Cleanup failures | Total={cleanup_result.failures}",
                 box_width,
             )
         )
     elif cleanup_result is not None and getattr(cleanup_result, "skipped_reason", None):
         lines.extend(
-            box_line(f"Cleanup - Skipped ({cleanup_result.skipped_reason})", box_width)
+            box_line(
+                f"Cleanup | Status=Skipped | Reason={cleanup_result.skipped_reason}",
+                box_width,
+            )
         )
     elif feature_flags and feature_flags.get("cleanup", False):
         if hasattr(cleanup_result, "titles"):
@@ -1579,49 +1690,55 @@ def log_final_summary(
             )
             lines.extend(
                 box_line(
-                    f"Cleanup - {status} | Mode: {cleanup_mode} | Scope: {scope}",
+                    f"Cleanup | Status={status} | Mode={cleanup_mode} | Scope={scope}",
                     box_width,
                 )
             )
             lines.extend(
                 box_line(
-                    f"Cleanup stale inventory - Titles: {cleanup_result.titles}, "
-                    f"Seasons: {cleanup_result.seasons}, "
-                    f"Episodes: {cleanup_result.episodes}",
+                    f"Cleanup stale inventory | Titles={cleanup_result.titles} | "
+                    f"Seasons={cleanup_result.seasons} | "
+                    f"Episodes={cleanup_result.episodes}",
                     box_width,
                 )
             )
             lines.extend(
                 box_line(
-                    f"Cleanup records - {action}: Cache: "
-                    f"{cleanup_result.cache_entries}, Kometa YAML: "
+                    f"Cleanup records | Action={action} | Cache="
+                    f"{cleanup_result.cache_entries} | KometaYAML="
                     f"{cleanup_result.yaml_entries}",
                     box_width,
                 )
             )
             lines.extend(
                 box_line(
-                    f"Cleanup artwork - {action}: {cleanup_result.assets}, "
-                    f"Preserved: {cleanup_result.assets_preserved}, "
-                    f"Unchanged: {cleanup_result.assets_skipped}",
+                    f"Cleanup artwork | Action={action} | Assets={cleanup_result.assets} | "
+                    f"Preserved={cleanup_result.assets_preserved} | "
+                    f"Unchanged={cleanup_result.assets_skipped}",
                     box_width,
                 )
             )
             lines.extend(
                 box_line(
-                    f"Cleanup failures - Total: {cleanup_result.failures}",
+                    f"Cleanup failures | Total={cleanup_result.failures}",
                     box_width,
                 )
             )
         else:
             lines.extend(
-                box_line(f"Cleanup - {cleanup_result or 0} Titles Removed", box_width)
+                box_line(f"Cleanup | TitlesRemoved={cleanup_result or 0}", box_width)
             )
     if config["settings"].get("dry_run", False):
-        lines.extend(box_line("[Dry Run] Completed. No files were written.", box_width))
-    lines.append(border)
+        lines.extend(box_line("Dry run | Completed | FilesWritten=0", box_width))
     for line in lines:
         logger.info(line)
+    for filesystem, free, required in storage_warnings:
+        logger.warning(
+            "[Storage] Low free space | Filesystem=%s | Free=%s | Required=%s",
+            filesystem,
+            free,
+            required,
+        )
             
 def human_readable_size(size, decimal_places=2):
     for unit in ['bytes', 'KB', 'MB', 'GB', 'TB']:

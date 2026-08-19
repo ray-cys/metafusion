@@ -461,6 +461,28 @@ blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
 totals are warnings; the corresponding `plex-metadata-*.txt` report retains
 field-level audit details.
 
+Startup records use the same structured style and are not padded or wrapped to
+a fixed width. `[Startup]` identifies the build and run, `[System]` reports the
+runtime resources, `[Connection]` reports Plex/TMDb validation, and
+`[Inventory]` reports available, selected, and skipped libraries. The effective
+feature profile is one `[Configuration] Run profile` record at `INFO`; individual
+feature toggles and a successfully loaded configuration file remain at `DEBUG`.
+One successful connector result is `INFO`, retryable attempts are `WARNING`, and
+terminal failures are `ERROR` at the run boundary.
+
+Every final-summary record begins with `[Summary]` and one logical record is
+emitted by one logger call, so long entries are not split into continuation
+lines. Per-library storage separates posters, backgrounds, season posters, and
+Kometa YAML. Plex-mode metadata is explicitly labelled server-managed because
+its Plex database use cannot be measured from the container. The scope says
+`full inventory` or `processed items`; MetaFusion stats known generated output
+files and does not read artwork contents or recursively scan the media tree.
+Runtime storage separately reports the durable state database, TMDb cache,
+Fanart.tv cache, logs, and reports. Filesystem records show total volume used,
+free, capacity, and free percentage; they do not claim that all used bytes
+belong to MetaFusion. TMDb and Fanart.tv cache entry statistics use the same
+`[Cache] Provider=...` format at `DEBUG`.
+
 Direct Plex metadata progress is automatic and not configurable. It uses the
 `[Metadata] Plex progress` component. Small
 libraries report every 5 items or 10%, medium libraries every 25 items or 5%,

@@ -145,6 +145,27 @@ def test_secondary_shared_claim_never_rewrites_under_overwrite_policy(tmp_path):
     ) == (False, "shared")
 
 
+def test_automatic_relaxed_candidate_never_replaces_existing_artwork(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"manual-artwork")
+    config = {"assets": {"update_policy": "overwrite"}}
+
+    allowed = builder.protected_asset_destination(
+        config,
+        "movie:plex:1",
+        destination,
+        "poster",
+        media_type="Movie",
+        full_title="Example (2024)",
+        tmdb_id="100",
+        source_path="/relaxed-poster.jpg",
+        automatic_relaxed=True,
+    )
+
+    assert allowed == (False, "automatic_relaxed_existing_protected")
+    assert destination.read_bytes() == b"manual-artwork"
+
+
 def test_exact_tmdb_asset_adoption_preserves_existing_file(monkeypatch, tmp_path):
     config = build_config(tmp_path)
     config["assets"]["update_policy"] = "managed"

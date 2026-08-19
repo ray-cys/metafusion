@@ -164,14 +164,33 @@ async def _select_artwork_with_fallback(
 ):
     """Select TMDb, Fanart.tv, Plex, then the strongest below-minimum reserve."""
     attempts = []
+    destination_season = (
+        plex_season_number
+        if plex_season_number is not None
+        else season_number
+    )
+    try:
+        destination = get_asset_path(
+            config,
+            meta,
+            asset_type=asset_type,
+            season_number=destination_season,
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        # Selection can also be used by read-only diagnostics before a complete
+        # output path is available. In that case the missing-only relaxation is
+        # simply ineligible; the normal provider chain remains unchanged.
+        destination = None
+    destination_missing = bool(destination is not None and not destination.exists())
     tmdb_pool = [_with_provider(candidate) for candidate in (tmdb_candidates or [])]
     tmdb_pool = [candidate for candidate in tmdb_pool if candidate]
     tmdb_best = _best_candidate(config, tmdb_pool, asset_type)
+    unfiltered_response = None
     if (
         not artwork_candidate_acceptable(config, tmdb_best, asset_type=asset_type)
         and config.get("tmdb", {}).get("artwork_allow_any_language", True)
     ):
-        unfiltered = await tmdb_unfiltered_images(
+        unfiltered_response = await tmdb_unfiltered_images(
             config,
             media_type,
             tmdb_id,
@@ -184,7 +203,7 @@ async def _select_artwork_with_fallback(
             for candidate in tmdb_pool
             if candidate.get("file_path")
         }
-        for candidate in (unfiltered or {}).get(key, []) or []:
+        for candidate in (unfiltered_response or {}).get(key, []) or []:
             normalized = _with_provider(candidate)
             if normalized and normalized.get("file_path"):
                 combined[str(normalized["file_path"])] = normalized
@@ -211,7 +230,7 @@ async def _select_artwork_with_fallback(
             attempts_out.extend(attempts)
         return selected
 
-    fanart_pool = await fanart_artwork_candidates(
+    fanart_all_pool = await fanart_artwork_candidates(
         config,
         media_type,
         tmdb_id=tmdb_id,
@@ -222,7 +241,7 @@ async def _select_artwork_with_fallback(
     )
     fanart_pool = [
         candidate
-        for candidate in fanart_pool
+        for candidate in fanart_all_pool
         if _artwork_language_allowed(config, candidate)
     ]
     fanart_best = _best_candidate(config, fanart_pool, asset_type)
@@ -306,6 +325,76 @@ async def _select_artwork_with_fallback(
         if attempts_out is not None:
             attempts_out.extend(attempts)
         return selected
+    if destination_missing:
+        relaxed_tmdb_pool = list(tmdb_pool)
+        if unfiltered_response is None:
+            unfiltered_response = await tmdb_unfiltered_images(
+                config,
+                media_type,
+                tmdb_id,
+                session=session,
+                season_number=season_number,
+            )
+        key = "backdrops" if asset_type == "background" else "posters"
+        combined = {
+            str(candidate.get("file_path")): candidate
+            for candidate in relaxed_tmdb_pool
+            if candidate.get("file_path")
+        }
+        for candidate in (unfiltered_response or {}).get(key, []) or []:
+            normalized = _with_provider(candidate)
+            if normalized and normalized.get("file_path"):
+                combined[str(normalized["file_path"])] = normalized
+        relaxed_tmdb_pool = list(combined.values())
+        relaxed_fanart_pool = [
+            candidate
+            for candidate in fanart_all_pool
+            if candidate and candidate.get("file_path")
+        ]
+        relaxed_candidates = [
+            candidate
+            for candidate in (
+                _best_candidate(config, relaxed_tmdb_pool, asset_type),
+                _best_candidate(config, relaxed_fanart_pool, asset_type),
+            )
+            if candidate
+        ]
+        if relaxed_candidates:
+            preferred = str(config.get("tmdb", {}).get("language", "en-US")).split(
+                "-", 1
+            )[0].lower()
+            selected = dict(
+                max(
+                    relaxed_candidates,
+                    key=lambda candidate: artwork_quality_score(
+                        config,
+                        candidate,
+                        asset_type=asset_type,
+                        preferred_language=preferred,
+                    )["score"],
+                )
+            )
+            selected["automatic_relaxed"] = True
+            selected["selection_stage"] = "missing_only_relaxed"
+            selected["selection_reason"] = (
+                "automatic missing-only relaxation; no standard source candidate"
+            )
+            attempts.append(
+                {
+                    "provider": _provider_label(selected),
+                    "status": "selected_missing_only_relaxed",
+                    "candidates": len(relaxed_candidates),
+                }
+            )
+            selected["provider_attempts"] = attempts
+            selected["candidate_pool"] = (
+                relaxed_tmdb_pool
+                if _candidate_provider(selected) == "tmdb"
+                else relaxed_fanart_pool
+            )
+            if attempts_out is not None:
+                attempts_out.extend(attempts)
+            return selected
     if attempts_out is not None:
         attempts_out.extend(attempts)
     return None
@@ -686,8 +775,19 @@ def protected_asset_destination(
     tmdb_id=None,
     source_path=None,
     shared_managed=False,
+    automatic_relaxed=False,
     permission=None,
 ):
+    if automatic_relaxed and asset_path.exists():
+        log_builder_event(
+            "builder_preserving_existing_asset",
+            media_type=media_type,
+            asset_type=asset_type,
+            full_title=full_title,
+            destination=asset_path,
+            reason="automatic relaxed fallback cannot replace existing artwork",
+        )
+        return False, "automatic_relaxed_existing_protected"
     registry = _asset_registry(config)
     normalized_media_type = str(media_type).lower()
     if normalized_media_type == "tv show":
@@ -1254,6 +1354,7 @@ async def _build_movie(
         "poster": {"size": 0},
         "background": {"size": 0},
         "artwork_providers": {},
+        "artwork_selection_stages": {},
     }
         
     if not any((run_metadata, run_poster, run_background)):
@@ -1649,6 +1750,7 @@ async def _build_movie(
             poster_action = "preserved" if preserved else "missing"
             return
         result["artwork_providers"]["poster"] = _candidate_provider(best)
+        result["artwork_selection_stages"]["poster"] = best.get("selection_stage")
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="Movie",
@@ -1707,6 +1809,7 @@ async def _build_movie(
             tmdb_id=tmdb_id,
             source_path=source_path,
             shared_managed=bool(shared_checksum),
+            automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
@@ -1885,6 +1988,7 @@ async def _build_movie(
             background_action = "preserved" if preserved else "missing"
             return
         result["artwork_providers"]["background"] = _candidate_provider(best)
+        result["artwork_selection_stages"]["background"] = best.get("selection_stage")
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="Movie",
@@ -1943,6 +2047,7 @@ async def _build_movie(
             tmdb_id=tmdb_id,
             source_path=source_path,
             shared_managed=bool(shared_checksum),
+            automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
@@ -2147,7 +2252,9 @@ async def _build_tv(
         "season_poster": {"size": 0},
         "season_posters": {}, 
         "artwork_providers": {},
+        "artwork_selection_stages": {},
         "season_artwork_providers": {},
+        "season_artwork_selection_stages": {},
         "season_artwork_attempts": {},
     }
     if not any((run_metadata, run_poster, run_background, run_season)):
@@ -2898,6 +3005,7 @@ async def _build_tv(
             poster_action = "preserved" if preserved else "missing"
             return
         result["artwork_providers"]["poster"] = _candidate_provider(best)
+        result["artwork_selection_stages"]["poster"] = best.get("selection_stage")
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
@@ -2941,6 +3049,7 @@ async def _build_tv(
             media_type="TV Show", full_title=full_title,
             tmdb_id=tmdb_id,
             source_path=best.get("file_path"),
+            automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
@@ -3117,6 +3226,7 @@ async def _build_tv(
             background_action = "preserved" if preserved else "missing"
             return
         result["artwork_providers"]["background"] = _candidate_provider(best)
+        result["artwork_selection_stages"]["background"] = best.get("selection_stage")
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
@@ -3160,6 +3270,7 @@ async def _build_tv(
             media_type="TV Show", full_title=full_title,
             tmdb_id=tmdb_id,
             source_path=best.get("file_path"),
+            automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
@@ -3342,6 +3453,9 @@ async def _build_tv(
             return
 
         result["season_artwork_providers"][season_number] = _candidate_provider(best)
+        result["season_artwork_selection_stages"][season_number] = best.get(
+            "selection_stage"
+        )
 
         season_candidate_sources[int(season_number)] = str(
             best.get("file_path") or ""
@@ -3389,6 +3503,7 @@ async def _build_tv(
             media_type="TV Show", full_title=full_title, season_number=season_number,
             tmdb_id=tmdb_id,
             source_path=best.get("file_path"),
+            automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(

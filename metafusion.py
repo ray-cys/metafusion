@@ -745,7 +745,7 @@ async def metafusion_main(config, logger):
         get_meta_banner(logger)
         current_build = build_info()
         logger.info(
-            "[MetaFusion] Version %s (commit %s)",
+            "[Startup] Build | Version=%s | Commit=%s",
             current_build["version"],
             current_build["commit"],
         )

@@ -43,11 +43,14 @@ def test_cleanup_summary_reports_each_removed_scope():
         )
     )
 
-    assert "Cleanup - Completed | Mode: Kometa" in report
-    assert "Cleanup stale inventory - Titles: 0, Seasons: 1, Episodes: 3" in report
-    assert "Cleanup records - Removed: Cache: 2, Kometa YAML: 4" in report
-    assert "Cleanup artwork - Removed: 1, Preserved: 5, Unchanged: 6" in report
-    assert "Cleanup failures - Total: 0" in report
+    assert "Cleanup | Status=Completed | Mode=Kometa" in report
+    assert "Cleanup stale inventory | Titles=0 | Seasons=1 | Episodes=3" in report
+    assert "Cleanup records | Action=Removed | Cache=2 | KometaYAML=4" in report
+    assert (
+        "Cleanup artwork | Action=Removed | Assets=1 | Preserved=5 | Unchanged=6"
+        in report
+    )
+    assert "Cleanup failures | Total=0" in report
 
 
 def test_cleanup_summary_reports_skipped_incremental_run():
@@ -59,7 +62,7 @@ def test_cleanup_summary_reports_skipped_incremental_run():
     )
 
     assert (
-        "Cleanup - Skipped (incremental run; full reconciliation required)"
+        "Cleanup | Status=Skipped | Reason=incremental run; full reconciliation required"
         in report
     )
 
@@ -78,9 +81,9 @@ def test_cleanup_summary_labels_dry_run_counts_as_proposed():
         dry_run=True,
     )
 
-    assert "Cleanup - Preview | Mode: Kometa" in report
-    assert "Cleanup records - Would remove: Cache: 5, Kometa YAML: 6" in report
-    assert "Cleanup artwork - Would remove: 4" in report
+    assert "Cleanup | Status=Preview | Mode=Kometa" in report
+    assert "Cleanup records | Action=Would remove | Cache=5 | KometaYAML=6" in report
+    assert "Cleanup artwork | Action=Would remove | Assets=4" in report
 
 
 def test_cleanup_summary_labels_plex_state_only_scope():
@@ -88,10 +91,10 @@ def test_cleanup_summary_labels_plex_state_only_scope():
         CleanupResult(titles=2, cache_entries=2, mode="plex")
     )
 
-    assert "Cleanup - Completed | Mode: Plex" in report
-    assert "Scope: State only; Kometa YAML" in report
+    assert "Cleanup | Status=Completed | Mode=Plex" in report
+    assert "Scope=State only; Kometa YAML" in report
     assert "artwork preserved" in report
-    assert "Cleanup records - Removed: Cache: 2, Kometa YAML: 0" in report
+    assert "Cleanup records | Action=Removed | Cache=2 | KometaYAML=0" in report
 
 
 def test_cleanup_summary_retains_confirmed_results_after_failure():
@@ -107,11 +110,11 @@ def test_cleanup_summary_retains_confirmed_results_after_failure():
         )
     )
 
-    assert "Cleanup - Failed | Mode: Kometa" in report
-    assert "Cleanup confirmed before failure - Titles: 1" in report
-    assert "Cleanup records - Cache: 1, Kometa YAML: 1" in report
-    assert "Cleanup artwork - Removed: 2, Preserved: 3" in report
-    assert "Cleanup failures - Total: 1" in report
+    assert "Cleanup | Status=Failed | Mode=Kometa" in report
+    assert "Cleanup confirmed before failure | Titles=1" in report
+    assert "Cleanup records | Cache=1 | KometaYAML=1" in report
+    assert "Cleanup artwork | Removed=2 | Preserved=3" in report
+    assert "Cleanup failures | Total=1" in report
 
 
 def test_cleanup_item_outcome_matches_component_action_format(caplog):
@@ -164,7 +167,7 @@ def test_final_summary_reports_season_failures_without_other_season_actions():
 
     report = "\n".join(logger.lines)
     assert (
-        "Artwork season posters - Downloaded: 0, Upgraded: 0, Adopted: 0"
+        "Artwork season posters | Downloaded=0 | Upgraded=0 | Adopted=0"
         in report
     )
-    assert "Failed: 1" in report
+    assert "Failed=1" in report

@@ -381,6 +381,8 @@ def connect_plex_server(config):
             log_plex_event(
                 "plex_connect_failed",
                 error=redact_secrets(error, config.get("plex", {}).get("token")),
+                attempt=attempt,
+                retries=retries,
             )
             if attempt < retries and retry_delay:
                 time.sleep(retry_delay * attempt)
@@ -410,6 +412,8 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
             log_plex_event(
                 "plex_libraries_retrieved_failed",
                 error=redact_secrets(error, config.get("plex", {}).get("token")),
+                attempt=attempt,
+                retries=retries,
             )
             if attempt < retries and retry_delay:
                 time.sleep(retry_delay * attempt)
@@ -470,7 +474,9 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     log_plex_event(
         "plex_detected_and_skipped_libraries",
         detected=", ".join(detected_names) if detected_names else "None",
-        skipped=", ".join(skipped_libraries) if skipped_libraries else "None"
+        selected=", ".join(selected_libraries) if selected_libraries else "None",
+        skipped=", ".join(skipped_libraries) if skipped_libraries else "None",
+        selection="automatic" if automatic else "explicit",
     )
     if not sections:
         log_plex_event("plex_no_libraries_found")

@@ -397,7 +397,9 @@ def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
         feature_flags=flags,
     )
 
-    assert "Season - Downloaded" in (tmp_path / "metafusion.log").read_text(
+    assert "Artwork season posters | Downloaded=" in (
+        tmp_path / "metafusion.log"
+    ).read_text(
         encoding="utf-8"
     )
     for handler in list(logger.handlers):

@@ -386,7 +386,7 @@ def test_feature_reporting_library_override_and_invalid_upgrade_interval(monkeyp
     monkeypatch.setattr(
         config_module,
         "log_config_event",
-        lambda event, **kwargs: events.append((event, kwargs.get("feature"))),
+        lambda event, **kwargs: events.append((event, kwargs)),
     )
     get_disabled_features(
         {
@@ -396,8 +396,19 @@ def test_feature_reporting_library_override_and_invalid_upgrade_interval(monkeyp
         },
         None,
     )
-    assert ("feature_enabled", "Metadata Extraction") in events
-    assert ("feature_disabled", "Cleanup Libraries") in events
+    assert any(
+        event == "feature_enabled" and details.get("feature") == "Metadata Extraction"
+        for event, details in events
+    )
+    assert any(
+        event == "feature_disabled" and details.get("feature") == "Cleanup Libraries"
+        for event, details in events
+    )
+    profile = next(details for event, details in events if event == "feature_profile")
+    assert profile["mode"] == "Kometa"
+    assert profile["metadata"] == "Basic"
+    assert profile["poster"] == "Disabled"
+    assert profile["cleanup"] == "Disabled"
 
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["library_overrides"] = {

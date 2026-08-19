@@ -5,7 +5,9 @@ from helper.logging import (
     _format_event_message,
     get_meta_banner,
     log_builder_event,
+    log_fanart_event,
     log_processing_event,
+    log_tmdb_event,
     metadata_action_summary,
     plex_progress_item_interval,
 )
@@ -83,6 +85,26 @@ def test_successful_kometa_yaml_write_is_info(caplog):
     assert "ChangedItems=2 | NormalizedEntries=0" in caplog.text
 
 
+def test_provider_cache_statistics_share_one_debug_format(caplog):
+    statistics = {
+        "entries": 10,
+        "stored_mib": 2.5,
+        "disk_mib": 3.0,
+        "hits": 7,
+        "misses": 3,
+        "evictions": 1,
+        "recoveries": 0,
+    }
+
+    with caplog.at_level(logging.DEBUG):
+        log_tmdb_event("tmdb_cache_stats", **statistics)
+        log_fanart_event("fanart_cache_stats", **statistics)
+
+    assert "[Cache] Provider=TMDb | Entries=10" in caplog.text
+    assert "[Cache] Provider=Fanart.tv | Entries=10" in caplog.text
+    assert "Compressed=2.5 MiB | Disk=3.0 MiB" in caplog.text
+
+
 def test_routine_identity_and_mapping_outcomes_are_debug(caplog):
     with caplog.at_level(logging.INFO):
         log_builder_event(
@@ -136,13 +158,14 @@ def test_metadata_summaries_are_mode_specific():
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": False}
     ) == (
-        "Kometa Metadata - Created: 2, Updated: 3, Unchanged: 4, Failed: 1"
+        "Metadata | Target=Kometa YAML | Created=2 | Updated=3 | "
+        "Unchanged=4 | Failed=1"
     )
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": True}
     ) == (
-        "Plex Metadata - Items changed: 3, API batches: 5, "
-        "Unchanged: 4, Failed: 1"
+        "Metadata | Target=Plex | Changed=3 | APIBatches=5 | "
+        "Unchanged=4 | Failed=1"
     )
 
 
@@ -215,8 +238,7 @@ def test_banner_supports_logger_and_console_and_malformed_events_are_safe(capsys
 
     logger = CaptureLogger()
     get_meta_banner(logger)
-    assert len(logger.lines) == 3
-    assert "M E T A F U S I O N" in logger.lines[1]
+    assert logger.lines == ["[Startup] M E T A F U S I O N"]
 
     get_meta_banner()
     assert "M E T A F U S I O N" in capsys.readouterr().out

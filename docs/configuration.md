@@ -170,6 +170,11 @@ settings are the bases and optional bounds for that behavior. A due interval
 makes an item eligible for evaluation; `ASSET_UPDATE_POLICY` and quality rules
 still determine whether an existing file can be replaced.
 
+When the normal TMDb → Fanart.tv → Plex → best-available chain has no candidate,
+MetaFusion automatically relaxes artwork language selection only for a missing
+destination. This safety fallback has no setting and never replaces an existing
+file, including under `ASSET_UPDATE_POLICY=overwrite`.
+
 The two mapping environment variables must contain JSON objects. Equivalent
 YAML can be placed under `tmdb` in `config.yml`:
 

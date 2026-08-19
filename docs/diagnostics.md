@@ -113,7 +113,10 @@ python metafusion.py --asset-audit
 
 The asset audit performs a full read-only artwork selection pass. It evaluates
 TMDb first, Fanart.tv when TMDb does not provide an acceptable candidate, Plex
-artwork next, and the best available TMDb/Fanart.tv reserve last. The report
+artwork next, and the best available TMDb/Fanart.tv reserve. When the computed
+destination is missing and those standard stages are empty, it also evaluates
+the automatic missing-only relaxed-language stage. Existing artwork is never
+eligible for that final stage. The report
 records attempted provider stages, selected source and image ID when available,
 language, dimensions, quality score, ownership, collision protection, rejected
 candidates, and the action a normal run would consider.

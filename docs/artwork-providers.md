@@ -9,13 +9,24 @@ season posters, and backgrounds in both Kometa and Plex modes:
 3. The current artwork exposed by the configured Plex server.
 4. The highest-scoring TMDb or Fanart.tv candidate below the preferred minimum
    dimensions, labelled `best available`.
-5. Preserve an existing destination and add a report entry, or report missing
-   artwork when no destination exists.
+5. If the destination file is missing and every standard stage is empty,
+   automatically reconsider the remaining TMDb and Fanart.tv candidates with
+   the artwork-language preference relaxed. This is labelled `automatic
+   missing-only relaxation`.
+6. Preserve an existing destination and add a report entry, or report missing
+   artwork when no candidate exists.
 
 Provider priority is evaluated before quality scoring. A lower-priority source
 does not replace an acceptable higher-priority candidate simply because its
 score is higher. `ASSET_UPDATE_POLICY` still decides whether the selected
 candidate may replace an existing file.
+
+The automatic relaxed stage is deliberately narrower than `overwrite`. It is
+eligible only when the computed destination does not exist. It can create a
+missing poster, season poster, or background, but it cannot replace manual or
+otherwise existing artwork—even when `ASSET_UPDATE_POLICY=overwrite`. A second
+write-time guard protects against a file appearing after selection. It needs no
+inbox, override file, or additional configuration.
 
 ## Fanart.tv integration and attribution
 
@@ -76,13 +87,15 @@ name missing season numbers and report whether TMDb and Fanart.tv had no
 candidates and whether Plex exposed an explicit season thumbnail. The final
 summary separates writes, adoption, unchanged, not-due, preserved, missing,
 deferred, and failed outcomes and counts successful writes/adoptions by
-provider. Detailed request/cache activity is available at `LOG_LEVEL=DEBUG`;
+provider. It also counts successful `AutomaticRelaxed` writes. Detailed
+request/cache activity is available at `LOG_LEVEL=DEBUG`;
 authorization, rate limiting, malformed responses, and provider exhaustion are
 warnings.
 
 `--asset-audit`, `--library-audit`, and `--plan` reports show the selected
 provider, provider image ID when available, selection reason, candidate count,
-and provider stages attempted. `--explain-item` reports the saved provider and
+and provider stages attempted, including the missing-only relaxed stage when it
+is eligible. `--explain-item` reports the saved provider and
 destinations but does not perform live candidate scoring. When every stage
 fails, `/config/reports/artwork-gaps-*.txt` retains the bounded
 missing/preserved entry. Reports never include API keys.

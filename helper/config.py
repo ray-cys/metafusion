@@ -167,6 +167,35 @@ def get_disabled_features(config, logger):
         enabled = bool(sub_config)
         event = "feature_enabled" if enabled else "feature_disabled"
         log_config_event(event, feature=feature)
+    metadata = config.get("metadata", {})
+    mode = str(config.get("settings", {}).get("mode", "kometa")).lower()
+    plex_metadata_enabled = bool(
+        mode == "plex" and config.get("plex_metadata", {}).get("enabled", False)
+    )
+    metadata_available = mode != "plex" or plex_metadata_enabled
+    if metadata_available and metadata.get("run_enhanced", False):
+        metadata_mode = "Enhanced"
+    elif metadata_available and metadata.get("run_basic", False):
+        metadata_mode = "Basic"
+    else:
+        metadata_mode = "Disabled"
+    def enabled_label(value):
+        return "Enabled" if bool(value) else "Disabled"
+    log_config_event(
+        "feature_profile",
+        mode=mode.title(),
+        metadata=metadata_mode,
+        plex_metadata=enabled_label(
+            plex_metadata_enabled
+        ),
+        poster=enabled_label(config.get("assets", {}).get("run_poster", True)),
+        season=enabled_label(config.get("assets", {}).get("run_season", True)),
+        background=enabled_label(
+            config.get("assets", {}).get("run_background", False)
+        ),
+        cleanup=enabled_label(config.get("cleanup", {}).get("run_cleanup", False)),
+        dry_run=enabled_label(config.get("settings", {}).get("dry_run", False)),
+    )
 
 def get_feature_flags(config):
     plex_metadata = config.get("plex_metadata", {})
