@@ -291,7 +291,7 @@ def test_heartbeat_retries_after_transient_write_failure(tmp_path, caplog):
     assert "retrying" in caplog.text
 
 
-def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():
+def test_plex_show_inventory_merges_explicit_seasons_and_episode_fallbacks():
     calls = []
 
     class Show:
@@ -307,12 +307,26 @@ def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():
             part = SimpleNamespace(file="/tv/Example/Season 00/Special.mkv")
             media = SimpleNamespace(parts=[part])
             return [
-                SimpleNamespace(seasonNumber=0, episodeNumber=1, media=[media]),
-                SimpleNamespace(seasonNumber=1, episodeNumber=2, media=[]),
+                SimpleNamespace(
+                    seasonNumber=0,
+                    episodeNumber=1,
+                    parentThumb=None,
+                    media=[media],
+                ),
+                SimpleNamespace(
+                    seasonNumber=1,
+                    episodeNumber=2,
+                    parentThumb="/episode-derived/season-1",
+                    media=[],
+                ),
             ]
 
         def seasons(self):
-            raise AssertionError("season inventory should be derived from episodes")
+            calls.append("seasons")
+            return [
+                SimpleNamespace(index=0, thumb="/explicit/specials"),
+                SimpleNamespace(index=1, thumb=None),
+            ]
 
     plex_module._plex_cache.clear()
     metadata = asyncio.run(
@@ -321,8 +335,51 @@ def test_plex_show_inventory_uses_one_episode_request_and_includes_specials():
         )
     )
 
-    assert calls == ["episodes"]
+    assert calls == ["episodes", "seasons"]
     assert metadata["seasons_episodes"] == {0: [1], 1: [2]}
+    assert metadata["plex_seasons"] == [0, 1]
+    assert metadata["plex_artwork"]["seasons"] == {
+        0: "/explicit/specials",
+        1: "/episode-derived/season-1",
+    }
+
+
+def test_plex_show_inventory_keeps_episode_season_fallback_when_seasons_fail(caplog):
+    episode = SimpleNamespace(
+        seasonNumber=0,
+        episodeNumber=1,
+        parentThumb=None,
+        media=[],
+    )
+
+    class Show:
+        title = "Example"
+        year = 2020
+        type = "show"
+        ratingKey = "season-fallback"
+        librarySection = SimpleNamespace(title="TV Shows", type="show")
+        guids = [SimpleNamespace(id="tmdb://123")]
+
+        @staticmethod
+        def seasons():
+            raise OSError("season endpoint unavailable")
+
+        @staticmethod
+        def episodes():
+            return [episode]
+
+    plex_module._plex_cache.clear()
+    with caplog.at_level(logging.WARNING):
+        metadata = asyncio.run(
+            plex_module.get_plex_metadata(
+                Show(),
+                _runtime_config={"plex_retries": 1},
+            )
+        )
+
+    assert metadata["plex_seasons"] == [0]
+    assert metadata["plex_artwork"]["seasons"] == {}
+    assert "episode-derived inventory will be used" in caplog.text
 
 
 def test_plex_operation_retries_transient_failures(monkeypatch):

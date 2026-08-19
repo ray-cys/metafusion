@@ -15,9 +15,10 @@ from helper.config import (
 )
 from helper.identity_diagnostics import diagnose_identity
 from helper.incremental import config_fingerprint, library_full_scan_decisions, plan_items
-from helper.io import atomic_write_text
 from helper.mapping_diagnostics import diagnose_mapping
 from helper.plex import get_plex_metadata, load_plex_library_inventory
+from helper.report_identity import item_report_record, item_report_records
+from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import STATE_DATABASE, MediaStateStore, load_item_retries
 
 
@@ -120,6 +121,19 @@ def _selection_record(item, meta, config):
             if isinstance(cached, dict)
             else False
         ),
+        "cached_artwork_providers": (
+            {
+                "poster": cached.get("poster_provider"),
+                "background": cached.get("background_provider"),
+                "seasons": {
+                    str(number): season.get("season_provider")
+                    for number, season in (cached.get("seasons") or {}).items()
+                    if isinstance(season, dict) and season.get("season_provider")
+                },
+            }
+            if isinstance(cached, dict)
+            else {}
+        ),
         "retry_status": retries[0].get("status") if retries else None,
         "retry_failure_class": retries[0].get("failure_class") if retries else None,
     }
@@ -155,16 +169,19 @@ async def explain_item(
             "explanation": "Episode mapping applies only to TV shows.",
         }
     )
-    return {
-        "status": identity.get("status"),
-        "library": identity.get("library"),
-        "rating_key": identity.get("rating_key"),
-        "media_type": media_type,
-        "identity": identity,
-        "selection": _selection_record(item, meta, effective),
-        "policies": _policy_record(effective, media_type),
-        "episode_mapping": mapping,
-    }
+    return item_report_record(
+        {
+            "status": identity.get("status"),
+            "library": identity.get("library"),
+            "rating_key": identity.get("rating_key"),
+            "media_type": media_type,
+            "identity": identity,
+            "selection": _selection_record(item, meta, effective),
+            "policies": _policy_record(effective, media_type),
+            "episode_mapping": mapping,
+        },
+        identity,
+    )
 
 
 def _display(value):
@@ -178,6 +195,7 @@ def _display(value):
 
 
 def write_item_explanation_report(records, *, base_dir=None, retention=10):
+    records = item_report_records(records)
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
     generated = datetime.now(timezone.utc)
     path = report_dir / f"item-explanation-{generated.strftime('%Y%m%d-%H%M%S%f')}.txt"
@@ -224,6 +242,7 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
                 f"- selected work: {_display(scheduled.get('work'))}",
                 f"- durable item state present: {_display(scheduled.get('cache_record_present'))}",
                 f"- cached configuration matches: {_display(scheduled.get('cached_config_matches'))}",
+                f"- cached artwork providers: {_display(scheduled.get('cached_artwork_providers'))}",
                 f"- retry status/class: {_display(scheduled.get('retry_status'))}/{_display(scheduled.get('retry_failure_class'))}",
                 "",
                 "Metadata policy:",
@@ -258,18 +277,25 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
                 f"- season {destination.get('season')}: {_display(destination.get('path'))}"
             )
         lines.append("")
-    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
-    reports = sorted(report_dir.glob("item-explanation-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)) :]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+    write_diagnostic_report(
+        path,
+        "\n".join(lines).rstrip() + "\n",
+        report_type="item_explanation",
+        data={"items": records},
+        generated_at=generated,
+    )
+    retain_diagnostic_reports(report_dir, "item-explanation", retention)
     return path
 
 
 async def run_item_explanation(
-    sections, config, rating_keys, session=None, *, base_dir=None
+    sections,
+    config,
+    rating_keys,
+    session=None,
+    *,
+    base_dir=None,
+    write_report=True,
 ):
     requested = {str(value) for value in rating_keys or [] if str(value).strip()}
     identity_counts = Counter()
@@ -326,9 +352,11 @@ async def run_item_explanation(
                 "episode_mapping": {},
             }
         )
-    report = write_item_explanation_report(
-        results,
-        base_dir=base_dir,
-        retention=report_retention(config),
-    )
+    report = None
+    if write_report:
+        report = write_item_explanation_report(
+            results,
+            base_dir=base_dir,
+            retention=report_retention(config),
+        )
     return results, report

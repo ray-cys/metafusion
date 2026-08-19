@@ -381,6 +381,8 @@ def connect_plex_server(config):
             log_plex_event(
                 "plex_connect_failed",
                 error=redact_secrets(error, config.get("plex", {}).get("token")),
+                attempt=attempt,
+                retries=retries,
             )
             if attempt < retries and retry_delay:
                 time.sleep(retry_delay * attempt)
@@ -410,6 +412,8 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
             log_plex_event(
                 "plex_libraries_retrieved_failed",
                 error=redact_secrets(error, config.get("plex", {}).get("token")),
+                attempt=attempt,
+                retries=retries,
             )
             if attempt < retries and retry_delay:
                 time.sleep(retry_delay * attempt)
@@ -470,7 +474,9 @@ def connect_plex_library(config, selected_libraries=None, plex=None):
     log_plex_event(
         "plex_detected_and_skipped_libraries",
         detected=", ".join(detected_names) if detected_names else "None",
-        skipped=", ".join(skipped_libraries) if skipped_libraries else "None"
+        selected=", ".join(selected_libraries) if selected_libraries else "None",
+        skipped=", ".join(skipped_libraries) if skipped_libraries else "None",
+        selection="automatic" if automatic else "explicit",
     )
     if not sections:
         log_plex_event("plex_no_libraries_found")
@@ -792,6 +798,7 @@ async def get_plex_metadata(
     show_dir = None
     season_dirs = {}
     season_path_errors = {}
+    seasons = []
     episodes = []
     if library_type in ("show", "tv") or hasattr(item, "episodes"):
         try:
@@ -843,9 +850,16 @@ async def get_plex_metadata(
                     "ambiguous artwork destination"
                 )
         except Exception as e:
-            log_plex_event("plex_failed_extract_show_path", title=title, year=year, error=e)
+            log_plex_event(
+                "plex_failed_extract_show_path",
+                title=title,
+                year=year,
+                error=e,
+            )
     
     seasons_episodes = None
+    plex_season_artwork = {}
+    plex_seasons = set()
     if library_type in ("show", "tv") or episodes:
         try:
             seasons_episodes = {}
@@ -862,9 +876,49 @@ async def get_plex_metadata(
                 )
                 if season_number is None or episode_number is None:
                     continue
+                season_number = int(season_number)
+                plex_seasons.add(season_number)
                 seasons_episodes.setdefault(season_number, []).append(episode_number)
+                season_thumb = getattr(episode, "parentThumb", None)
+                if season_thumb and season_number not in plex_season_artwork:
+                    plex_season_artwork[season_number] = str(season_thumb)
         except Exception as e:
             log_plex_event("plex_failed_extract_seasons_episodes", title=title, year=year, error=e)
+        missing_explicit_artwork = plex_seasons - set(plex_season_artwork)
+        if hasattr(item, "seasons") and (not plex_seasons or missing_explicit_artwork):
+            try:
+                if item_key in _season_cache:
+                    seasons = _season_cache[item_key]
+                else:
+                    seasons = await plex_operation(
+                        lambda: list(item.seasons()),
+                        _runtime_config,
+                        description=f"Read explicit seasons for {title} ({year})",
+                    )
+                    _season_cache[item_key] = seasons
+                for season in seasons:
+                    season_number = getattr(
+                        season,
+                        "index",
+                        getattr(season, "seasonNumber", None),
+                    )
+                    if season_number is None:
+                        continue
+                    season_number = int(season_number)
+                    plex_seasons.add(season_number)
+                    season_thumb = getattr(season, "thumb", None)
+                    if season_thumb:
+                        plex_season_artwork.setdefault(
+                            season_number,
+                            str(season_thumb),
+                        )
+            except Exception as e:
+                log_plex_event(
+                    "plex_failed_extract_seasons",
+                    title=title,
+                    year=year,
+                    error=e,
+                )
             
     result = {
         "library_name": library_name,
@@ -885,6 +939,7 @@ async def get_plex_metadata(
         "edition_title": edition_title,
         "plex_provider_tmdb_id": tmdb_id,
         "tmdb_id": tmdb_id,
+        "identity_source": "plex_tmdb_guid" if tmdb_id else None,
         "imdb_id": imdb_id,
         "tvdb_id": tvdb_id,
         "movie_path": movie_path,
@@ -894,6 +949,12 @@ async def get_plex_metadata(
         "season_dirs": season_dirs,
         "season_path_errors": season_path_errors,
         "seasons_episodes": seasons_episodes,
+        "plex_seasons": sorted(plex_seasons),
+        "plex_artwork": {
+            "poster": getattr(item, "thumb", None),
+            "background": getattr(item, "art", None),
+            "seasons": plex_season_artwork,
+        },
         "episode_ordering": (
             getattr(item, "episodeOrdering", None)
             or getattr(item, "episodeOrder", None)
