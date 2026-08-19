@@ -1,61 +1,68 @@
-# .gitignore
 # Python cache and compiled files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Virtual environments
+# Virtual environments and local Python tooling
 .env/
 .venv/
 env/
 venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.json
+coverage/
+htmlcov/
+test_output/
+*.cover
 
-# OS files
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+/config.yml
+*.profile
+/docker-compose.override.yml
+/compose.override.yml
+
+# Docker bind mounts and generated runtime output
+/config/
+/kometa/
+/logs/
+/cache/
+/reports/
+/backups/
+/metadata/
+/assets/
+*.log
+*.pid
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.journal
+*.bak
+*.tmp
+.metafusion-run.lock
+.metafusion-write-test
+
+# Packaging output
+build/
+dist/
+*.egg-info/
+
+# OS and editor files
 .DS_Store
 Thumbs.db
-
-# IDE/project files
 .vscode/
 .idea/
 *.sublime-workspace
 *.sublime-project
 
-# Logs and runtime files
-logs/
-*.log
-*.pid
-
-# Cache and temp files
-cache/
-*.db
-*.sqlite
-*.bak
-*.tmp
-
-# Metadata and assets (user-generated, not source)
-metadata/
-assets/
-
-# Sensitive or user-specific config
-config.yml
-.env
-*.profile
-
-# TMDb and other caches
-cache/
-cache/*
-!/cache/.gitkeep
-
-# Test output
-test_output/
-coverage/
-htmlcov/
-*.cover
-.coverage
-coverage.json
-.pytest_cache/
-.ruff_cache/
-
-# Ignore Jupyter notebooks (if any)
+# Ignore Jupyter notebooks, if any
 *.ipynb
