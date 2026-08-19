@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import hashlib
+import logging
 import os
 import re
 import tempfile
@@ -14,9 +15,32 @@ from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.config import mode_check
 from helper.io import atomic_write_bytes, sha256_file
 from helper.runtime import ensure_storage_available
+from helper.state_db import (
+    StateDatabaseError,
+    load_artwork_analysis,
+    save_artwork_analysis,
+)
 from helper.tmdb import tmdb_api_request
 
 _CACHE_ENTRY_UNSET = object()
+_ARTWORK_ANALYSIS_MEMORY = {}
+
+
+def _artwork_content_analysis(image):
+    analysis = image.get("content_analysis")
+    provider = str(image.get("provider") or "tmdb").lower()
+    source_path = image.get("file_path")
+    if analysis is None and source_path:
+        analysis_key = (provider, str(source_path))
+        if analysis_key not in _ARTWORK_ANALYSIS_MEMORY:
+            try:
+                _ARTWORK_ANALYSIS_MEMORY[analysis_key] = load_artwork_analysis(
+                    provider, source_path
+                )
+            except Exception:
+                _ARTWORK_ANALYSIS_MEMORY[analysis_key] = None
+        analysis = _ARTWORK_ANALYSIS_MEMORY.get(analysis_key)
+    return analysis if isinstance(analysis, dict) else None
 
 
 def _md5_file(path):
@@ -108,8 +132,23 @@ def artwork_quality_score(
         "background": "background_set",
     }.get(asset_type, "poster_set")
     settings = config.get(section_name, {})
-    width = max(0, int(image.get("width") or 0))
-    height = max(0, int(image.get("height") or 0))
+    analysis = _artwork_content_analysis(image)
+    width = max(
+        0,
+        int(
+            (analysis or {}).get("width")
+            or image.get("width")
+            or 0
+        ),
+    )
+    height = max(
+        0,
+        int(
+            (analysis or {}).get("height")
+            or image.get("height")
+            or 0
+        ),
+    )
     vote = max(0.0, min(10.0, float(image.get("vote_average") or 0)))
     target_width = max(1, int(settings.get("max_width") or width or 1))
     target_height = max(1, int(settings.get("max_height") or height or 1))
@@ -129,13 +168,40 @@ def artwork_quality_score(
         language_score = 4.0
     else:
         language_score = 0.0
-    total = round(resolution + vote_score + aspect + language_score, 2)
+    content_score = 0.0
+    blank_penalty = 0.0
+    perceptual_hash = None
+    if isinstance(analysis, dict):
+        perceptual_hash = analysis.get("perceptual_hash")
+        if analysis.get("blank"):
+            blank_penalty = 100.0
+        else:
+            # Edge variance grows quickly. A logarithmic curve prevents one very
+            # noisy image from overwhelming language, aspect, and provider votes.
+            sharpness = max(0.0, float(analysis.get("sharpness") or 0.0))
+            content_score = min(8.0, 1.5 * (sharpness + 1.0) ** 0.25)
+    total = round(
+        max(
+            0.0,
+            min(
+                100.0,
+                resolution + vote_score + aspect + language_score
+                + content_score - blank_penalty,
+            ),
+        ),
+        2,
+    )
     return {
         "score": total,
         "resolution": round(resolution, 2),
         "vote": round(vote_score, 2),
         "aspect": round(aspect, 2),
         "language": round(language_score, 2),
+        "content": round(content_score, 2),
+        "blank_penalty": round(blank_penalty, 2),
+        "perceptual_hash": perceptual_hash,
+        "validated_width": width if analysis else None,
+        "validated_height": height if analysis else None,
     }
 
 
@@ -203,6 +269,14 @@ def artwork_candidate_explanations(
             reasons.append("lower provider-score contribution")
         if quality["score"] < selected_quality["score"]:
             reasons.append("lower overall quality score")
+        if quality.get("blank_penalty"):
+            reasons.append("cached blank-image detection")
+        if (
+            quality.get("perceptual_hash")
+            and quality.get("perceptual_hash")
+            == selected_quality.get("perceptual_hash")
+        ):
+            reasons.append("visually duplicates the selected artwork")
         if not reasons:
             reasons.append("lost deterministic selection tie-break")
         rejected.append(
@@ -245,6 +319,12 @@ def artwork_candidate_acceptable(config, image, *, asset_type="poster"):
         minimum_height = int(settings.get("min_height") or 0)
     except (TypeError, ValueError):
         return False
+    analysis = _artwork_content_analysis(image)
+    if analysis:
+        if analysis.get("blank"):
+            return False
+        width = int(analysis.get("width") or width)
+        height = int(analysis.get("height") or height)
     return width >= minimum_width and height >= minimum_height
 
 
@@ -784,7 +864,14 @@ async def _download_external_artwork(
 
 
 async def download_poster(
-    config, image_path, save_path, session=None, retries=3, provider=None
+    config,
+    image_path,
+    save_path,
+    session=None,
+    retries=3,
+    provider=None,
+    asset_type="poster",
+    expected_image=None,
 ):
     if session is None:
         return False, None, "HTTP session failed"
@@ -830,7 +917,15 @@ async def download_poster(
                     else f"Empty or rejected response from {normalized_provider}"
                 ),
             )
-        result, error = await save_poster(response_content, save_path)
+        result, error = await save_poster(
+            response_content,
+            save_path,
+            config=config,
+            provider=normalized_provider,
+            source_path=source,
+            asset_type=asset_type,
+            expected_image=expected_image,
+        )
         if result is True or result == "ALREADY_UP_TO_DATE":
             return True, status or 200, error
         return False, status, error or "File not saved after download"
@@ -927,16 +1022,133 @@ def asset_temp_path(config, meta, extension="jpg"):
     temp_filename = f"temp_{uuid.uuid4().hex}.{extension}"
     return assets_path / temp_filename
 
-async def save_poster(image_content, save_path):
+def analyze_image_content(image_content, *, asset_type="poster", expected_image=None):
+    """Decode artwork and return deterministic validation and content signals."""
+    from PIL import Image, ImageFilter, ImageStat
+
+    with Image.open(BytesIO(image_content)) as image:
+        image.load()
+        width, height = (int(value) for value in image.size)
+        image_format = str(image.format or "unknown").upper()
+        if width <= 0 or height <= 0:
+            raise ValueError("Artwork has invalid dimensions")
+        if image_format not in {"JPEG", "PNG", "WEBP"}:
+            raise ValueError(f"Unsupported artwork format: {image_format}")
+        ratio = width / height
+        if asset_type == "background":
+            if not 0.8 <= ratio <= 4.0:
+                raise ValueError(
+                    f"Background aspect ratio is implausible: {width}x{height}"
+                )
+        elif not 0.25 <= ratio <= 1.25:
+            raise ValueError(f"Poster aspect ratio is implausible: {width}x{height}")
+        expected = expected_image or {}
+        expected_width = int(expected.get("width") or 0)
+        expected_height = int(expected.get("height") or 0)
+        if expected_width and expected_height:
+            width_error = abs(width - expected_width) / expected_width
+            height_error = abs(height - expected_height) / expected_height
+            if width_error > 0.15 or height_error > 0.15:
+                raise ValueError(
+                    "Downloaded artwork dimensions differ from provider metadata: "
+                    f"expected {expected_width}x{expected_height}, got {width}x{height}"
+                )
+
+        grayscale = image.convert("L")
+        statistics = ImageStat.Stat(grayscale)
+        variance = float(statistics.var[0])
+        extrema = grayscale.getextrema()
+        blank = variance < 2.0 or (int(extrema[1]) - int(extrema[0])) < 4
+        edges = grayscale.resize((128, 128)).filter(ImageFilter.FIND_EDGES)
+        sharpness = float(ImageStat.Stat(edges).var[0])
+        reduced = grayscale.resize((9, 8))
+        pixel_reader = getattr(reduced, "get_flattened_data", reduced.getdata)
+        pixels = list(pixel_reader())
+        bits = []
+        for row in range(8):
+            offset = row * 9
+            bits.extend(
+                pixels[offset + column] > pixels[offset + column + 1]
+                for column in range(8)
+            )
+        fingerprint = 0
+        for bit in bits:
+            fingerprint = (fingerprint << 1) | int(bit)
+        return {
+            "content_sha256": hashlib.sha256(image_content).hexdigest(),
+            "width": width,
+            "height": height,
+            "format": image_format,
+            "sharpness": round(sharpness, 4),
+            "blank": blank,
+            "perceptual_hash": f"{fingerprint:016x}",
+            "analyzed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+
+async def save_poster(
+    image_content,
+    save_path,
+    *,
+    config=None,
+    provider=None,
+    source_path=None,
+    asset_type="poster",
+    expected_image=None,
+):
     try:
-        from PIL import Image
-
-        def validate_image():
-            with Image.open(BytesIO(image_content)) as image:
-                image.verify()
-
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, validate_image)
+        analysis = await loop.run_in_executor(
+            None,
+            lambda: analyze_image_content(
+                image_content,
+                asset_type=asset_type,
+                expected_image=expected_image,
+            ),
+        )
+        if (
+            config
+            and provider
+            and source_path
+            and not config.get("settings", {}).get("dry_run", False)
+        ):
+            try:
+                await asyncio.to_thread(
+                    save_artwork_analysis,
+                    provider,
+                    source_path,
+                    analysis,
+                )
+            except (OSError, StateDatabaseError, TypeError, ValueError) as error:
+                logging.getLogger(__name__).warning(
+                    "[Artwork] Content analysis cache | Status: Degraded | Error: %s",
+                    type(error).__name__,
+                )
+            _ARTWORK_ANALYSIS_MEMORY[(str(provider), str(source_path))] = analysis
+        section_name = {
+            "poster": "poster_set",
+            "season": "season_set",
+            "background": "background_set",
+        }.get(asset_type, "poster_set")
+        image_settings = (config or {}).get(section_name, {})
+        minimum_width = max(0, int(image_settings.get("min_width") or 0))
+        minimum_height = max(0, int(image_settings.get("min_height") or 0))
+        below_minimum = (
+            int(analysis.get("width") or 0) < minimum_width
+            or int(analysis.get("height") or 0) < minimum_height
+        )
+        declared_fallback = bool(expected_image) and not artwork_candidate_acceptable(
+            config or {}, expected_image, asset_type=asset_type
+        )
+        if below_minimum and not declared_fallback:
+            return (
+                False,
+                "Downloaded artwork is below configured minimum dimensions: "
+                f"required {minimum_width}x{minimum_height}, got "
+                f"{analysis.get('width')}x{analysis.get('height')}",
+            )
+        if config and analysis.get("blank"):
+            return False, "Artwork was rejected because it appears blank"
         new_checksum = hashlib.md5(image_content).hexdigest()
         if save_path.exists():
             existing_checksum = await asyncio.to_thread(_md5_file, save_path)

@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -15,9 +16,10 @@ from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
 
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 FILE_MODE = 0o664
 IDENTITY_HISTORY_LIMIT = 10_000
+UNRESOLVED_HISTORY_LIMIT = 10_000
 _database_setup_lock = threading.Lock()
 _initialized_databases: set[tuple[str, int, int]] = set()
 _integrity_checked_databases: set[tuple[str, int, int]] = set()
@@ -347,6 +349,41 @@ def _initialize_schema(connection):
             ON identity_binding_history(
                 server_id, library_uuid, rating_key, id DESC
             );
+
+        CREATE TABLE IF NOT EXISTS unresolved_work (
+            fingerprint TEXT PRIMARY KEY,
+            library_name TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            asset_type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            detail TEXT,
+            status TEXT NOT NULL,
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            resolved_at TEXT
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS unresolved_work_status
+            ON unresolved_work(status, library_name, category);
+
+        CREATE TABLE IF NOT EXISTS artwork_analysis (
+            source_key TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            image_format TEXT NOT NULL,
+            sharpness REAL NOT NULL,
+            blank INTEGER NOT NULL,
+            perceptual_hash TEXT NOT NULL,
+            analyzed_at TEXT NOT NULL
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS artwork_analysis_content
+            ON artwork_analysis(content_sha256);
         """
     )
     binding_columns = {
@@ -385,6 +422,237 @@ def _json_load(value, description):
     if not isinstance(decoded, dict):
         raise StateDatabaseError(f"Invalid object stored for {description}")
     return decoded
+
+
+def _source_key(provider, source_path):
+    value = f"{str(provider or 'unknown').lower()}\0{source_path or ''!s}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def save_artwork_analysis(
+    provider,
+    source_path,
+    analysis,
+    *,
+    path=None,
+):
+    """Persist content-derived artwork properties for later selection runs."""
+    if not source_path or not isinstance(analysis, dict):
+        return False
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO artwork_analysis(
+                    source_key, provider, source_path, content_sha256,
+                    width, height, image_format, sharpness, blank,
+                    perceptual_hash, analyzed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    content_sha256 = excluded.content_sha256,
+                    width = excluded.width,
+                    height = excluded.height,
+                    image_format = excluded.image_format,
+                    sharpness = excluded.sharpness,
+                    blank = excluded.blank,
+                    perceptual_hash = excluded.perceptual_hash,
+                    analyzed_at = excluded.analyzed_at
+                """,
+                (
+                    _source_key(provider, source_path),
+                    str(provider or "unknown").lower(),
+                    str(source_path),
+                    str(analysis.get("content_sha256") or ""),
+                    max(0, int(analysis.get("width") or 0)),
+                    max(0, int(analysis.get("height") or 0)),
+                    str(analysis.get("format") or "unknown"),
+                    float(analysis.get("sharpness") or 0.0),
+                    int(bool(analysis.get("blank"))),
+                    str(analysis.get("perceptual_hash") or ""),
+                    str(analysis.get("analyzed_at") or utc_now()),
+                ),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def load_artwork_analysis(provider, source_path, *, path=None):
+    """Load cached content properties without downloading the image again."""
+    if not source_path:
+        return None
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return None
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'artwork_analysis'"
+        ).fetchone()
+        if table is None:
+            return None
+        row = connection.execute(
+            "SELECT content_sha256, width, height, image_format, sharpness, "
+            "blank, perceptual_hash, analyzed_at FROM artwork_analysis "
+            "WHERE source_key = ?",
+            (_source_key(provider, source_path),),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["format"] = result.pop("image_format")
+        result["blank"] = bool(result.get("blank"))
+        return result
+    finally:
+        connection.close()
+
+
+def _unresolved_fingerprint(record):
+    fields = (
+        str(record.get("library") or "Unknown library").strip(),
+        str(record.get("media_type") or "Unknown").strip(),
+        str(record.get("title") or "Unknown title").strip(),
+        str(record.get("asset_type") or "metadata").strip(),
+        str(record.get("category") or "unknown").strip(),
+    )
+    return hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest(), fields
+
+
+def _unresolved_work_class(asset_type):
+    normalized = str(asset_type or "metadata").strip().lower()
+    if normalized.startswith("season"):
+        return "season"
+    if normalized in {"poster", "background", "metadata"}:
+        return normalized
+    return "metadata"
+
+
+def reconcile_unresolved_work(
+    records,
+    *,
+    resolved_libraries=None,
+    resolved_work=None,
+    path=None,
+    now=None,
+):
+    """Upsert current problems and resolve absent ones only for full-scan libraries."""
+    connection = _connect(path, writable=True)
+    current = _as_utc(now).isoformat()
+    normalized = {}
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        fingerprint, fields = _unresolved_fingerprint(record)
+        library, media_type, title, asset_type, category = fields
+        normalized[fingerprint] = (
+            fingerprint,
+            library,
+            media_type,
+            title,
+            asset_type,
+            category,
+            str(record.get("detail") or ""),
+        )
+    resolved_scope = {
+        str(value).casefold() for value in (resolved_libraries or []) if str(value)
+    }
+    work_scope = {
+        str(library).casefold(): {
+            _unresolved_work_class(asset_type)
+            for asset_type in (asset_types or [])
+        }
+        for library, asset_types in (resolved_work or {}).items()
+        if str(library)
+    }
+    resolved_scope.update(work_scope)
+    try:
+        with connection:
+            for row in normalized.values():
+                connection.execute(
+                    """
+                    INSERT INTO unresolved_work(
+                        fingerprint, library_name, media_type, title,
+                        asset_type, category, detail, status, occurrences,
+                        first_seen, last_seen, resolved_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?, NULL)
+                    ON CONFLICT(fingerprint) DO UPDATE SET
+                        detail = excluded.detail,
+                        status = 'open',
+                        occurrences = unresolved_work.occurrences + 1,
+                        last_seen = excluded.last_seen,
+                        resolved_at = NULL
+                    """,
+                    (*row, current, current),
+                )
+            if resolved_scope:
+                open_rows = connection.execute(
+                    "SELECT fingerprint, library_name, asset_type "
+                    "FROM unresolved_work "
+                    "WHERE status = 'open'"
+                ).fetchall()
+                resolved = [
+                    str(row["fingerprint"])
+                    for row in open_rows
+                    if str(row["library_name"]).casefold() in resolved_scope
+                    and (
+                        not work_scope
+                        or _unresolved_work_class(row["asset_type"])
+                        in work_scope.get(
+                            str(row["library_name"]).casefold(), set()
+                        )
+                    )
+                    and str(row["fingerprint"]) not in normalized
+                ]
+                connection.executemany(
+                    "UPDATE unresolved_work SET status = 'resolved', "
+                    "resolved_at = ? WHERE fingerprint = ?",
+                    ((current, fingerprint) for fingerprint in resolved),
+                )
+            connection.execute(
+                "DELETE FROM unresolved_work WHERE status = 'resolved' "
+                "AND fingerprint NOT IN (SELECT fingerprint FROM unresolved_work "
+                "WHERE status = 'resolved' ORDER BY resolved_at DESC LIMIT ?)",
+                (UNRESOLVED_HISTORY_LIMIT,),
+            )
+        return load_unresolved_work(path=path)
+    finally:
+        connection.close()
+
+
+def load_unresolved_work(*, statuses=None, path=None, limit=10_000):
+    """Return the bounded durable unresolved-work ledger for diagnostics."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    allowed = {
+        str(value).lower()
+        for value in (statuses or [])
+        if str(value).lower() in {"open", "resolved"}
+    }
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'unresolved_work'"
+        ).fetchone()
+        if table is None:
+            return []
+        where = ""
+        parameters = []
+        if allowed:
+            placeholders = ", ".join("?" for _status in allowed)
+            where = f" WHERE status IN ({placeholders})"
+            parameters.extend(sorted(allowed))
+        rows = connection.execute(
+            "SELECT fingerprint, library_name, media_type, title, asset_type, "
+            "category, detail, status, occurrences, first_seen, last_seen, "
+            "resolved_at FROM unresolved_work" + where + " ORDER BY "
+            "CASE status WHEN 'open' THEN 0 ELSE 1 END, last_seen DESC LIMIT ?",
+            (*parameters, max(1, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
 
 
 def _asset_rows(cache_key, entry, seasons=None):
@@ -1845,7 +2113,7 @@ def load_identity_binding(
             except StateDatabaseError as error:
                 logging.getLogger(__name__).warning(
                     "[Identity] Binding history | Failed to record mismatch | "
-                    "Error=%s",
+                    "Error: %s",
                     error,
                 )
         return None

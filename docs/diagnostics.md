@@ -12,6 +12,7 @@ for every public flag and supported value.
 | --- | --- | --- | --- |
 | Validate configuration and show each value's source | `--doctor` or `--check-config` | None | None; prints locally |
 | Read scheduler heartbeat, recent jobs, and retry totals | `--status` | None | None; prints JSON |
+| List persistent unresolved artwork/identity work | `--problems` | None | None; prints JSON |
 | Prepare a value-free attachment for a support request | `--support-report` | None | `support-report-*.txt` |
 | Check connections, selected libraries, mappings, and required storage | `--preflight` | Plex and TMDb | None; prints guidance |
 | Qualify a build and its local state before release | `--release-check` | Plex and TMDb | `release-qualification-*.txt` |
@@ -23,6 +24,7 @@ for every public flag and supported value.
 | Diagnose TV season/episode numbering | `--mapping-diagnose --rating-key KEY` | Plex and TMDb | `mapping-diagnosis-*.txt` |
 | Explain how one Plex item is bound to TMDb | `--identity-inspect --rating-key KEY` | Plex and TMDb | `identity-inspection-*.txt` |
 | Explain identity, scheduling, policy, mapping, retry, and destinations together | `--explain-item --rating-key KEY` | Plex and TMDb | `item-explanation-*.txt` |
+| Capture sanitized item evidence for a reproducible support case | `--capture-replay --rating-key KEY` | Plex and TMDb | `provider-replay-capture-*.txt` |
 
 The full artwork audits can take about as long as normal artwork evaluation.
 They exercise the configured source order rather than merely checking whether
@@ -219,6 +221,19 @@ The command does not perform a live multi-provider artwork candidate audit.
 Use `--library-audit` when candidate scores, rejected alternatives, or provider
 fallback stages are the question.
 
+### Sanitized replay capture
+
+```bash
+python metafusion.py --capture-replay --rating-key 12345
+```
+
+Replay capture retains the same read-only identity, scheduling, policy,
+mapping, retry, and destination evidence as the item explanation in a
+sanitized JSON bundle. Connector secrets, Plex rating keys, private provider
+hosts, and local paths are removed or replaced deterministically. Titles and
+other matching evidence remain useful for reproducing the problem, so review
+the JSON before attaching it to a public issue.
+
 ## Reports, retention, and privacy
 
 | Report | Created by |
@@ -233,10 +248,13 @@ fallback stages are the question.
 | `/config/reports/compatibility-*.txt` | `--compatibility-check` |
 | `/config/reports/support-report-*.txt` | `--support-report` |
 | `/config/reports/release-qualification-*.txt` | `--release-check` |
+| `/config/reports/provider-replay-capture-*.txt` | `--capture-replay` |
 
-`REPORT_RETENTION` keeps the newest files independently for each report type;
-the default is `10`. Routine processing can additionally produce artwork-gap,
-destination-history, and Plex-metadata reports. See
+Every text report above has a same-name machine-readable `.json` companion.
+`REPORT_RETENTION` keeps the newest text/JSON pairs independently for each
+report type; the default is `10`. Routine processing can additionally produce
+artwork-gap, destination-history, unresolved-work, post-application adoption,
+and Plex-metadata report pairs. See
 [generated output and reports](operations.md#generated-output-and-reports).
 
 Reports redact connector secrets, but identity, mapping, destination-history,
@@ -249,7 +267,8 @@ Follow the [support and version policy](../SUPPORT.md) when opening an issue.
 
 - Choose only one of `--asset-audit`, `--metadata-audit`, `--plan`, or
   `--library-audit` per invocation.
-- `--mapping-diagnose`, `--identity-inspect`, and `--explain-item` require
+- `--mapping-diagnose`, `--identity-inspect`, `--explain-item`, and
+  `--capture-replay` require
   `--rating-key` and run as standalone diagnostics.
 - Target filters can reduce relevant audit scope, but a targeted plan cannot
   qualify cleanup.

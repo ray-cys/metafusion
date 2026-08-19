@@ -18,7 +18,7 @@ from helper.identity import (
     plex_identity_fingerprint,
 )
 from helper.io import atomic_replace_file, sha256_file
-from helper.logging import log_asset_status, log_builder_event
+from helper.logging import format_fields, log_asset_status, log_builder_event
 from helper.plex import get_plex_country
 from helper.provider_mappings import (
     resolve_episode_overrides,
@@ -161,9 +161,13 @@ async def _select_artwork_with_fallback(
     plex_season_number=None,
     session=None,
     attempts_out=None,
+    excluded_providers=None,
 ):
     """Select TMDb, Fanart.tv, Plex, then the strongest below-minimum reserve."""
     attempts = []
+    excluded = {
+        str(provider).lower() for provider in (excluded_providers or set())
+    }
     destination_season = (
         plex_season_number
         if plex_season_number is not None
@@ -184,10 +188,13 @@ async def _select_artwork_with_fallback(
     destination_missing = bool(destination is not None and not destination.exists())
     tmdb_pool = [_with_provider(candidate) for candidate in (tmdb_candidates or [])]
     tmdb_pool = [candidate for candidate in tmdb_pool if candidate]
-    tmdb_best = _best_candidate(config, tmdb_pool, asset_type)
+    tmdb_best = (
+        None if "tmdb" in excluded else _best_candidate(config, tmdb_pool, asset_type)
+    )
     unfiltered_response = None
     if (
-        not artwork_candidate_acceptable(config, tmdb_best, asset_type=asset_type)
+        "tmdb" not in excluded
+        and not artwork_candidate_acceptable(config, tmdb_best, asset_type=asset_type)
         and config.get("tmdb", {}).get("artwork_allow_any_language", True)
     ):
         unfiltered_response = await tmdb_unfiltered_images(
@@ -215,14 +222,18 @@ async def _select_artwork_with_fallback(
     attempts.append(
         {
             "provider": "TMDb",
-            "status": "selected" if tmdb_acceptable else (
-                "reserve" if tmdb_best else "no_candidates"
+            "status": (
+                "excluded_after_download_failure"
+                if "tmdb" in excluded
+                else "selected" if tmdb_acceptable else (
+                    "reserve" if tmdb_best else "no_candidates"
+                )
             ),
             "candidates": len(tmdb_pool),
         }
     )
     if tmdb_acceptable:
-        selected = dict(tmdb_best)
+        selected = dict(tmdb_best or {})
         selected["selection_reason"] = "primary provider met requirements"
         selected["provider_attempts"] = attempts
         selected["candidate_pool"] = tmdb_pool
@@ -230,15 +241,17 @@ async def _select_artwork_with_fallback(
             attempts_out.extend(attempts)
         return selected
 
-    fanart_all_pool = await fanart_artwork_candidates(
-        config,
-        media_type,
-        tmdb_id=tmdb_id,
-        tvdb_id=tvdb_id,
-        asset_type=asset_type,
-        season_number=season_number,
-        session=session,
-    )
+    fanart_all_pool = []
+    if "fanart" not in excluded:
+        fanart_all_pool = await fanart_artwork_candidates(
+            config,
+            media_type,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            asset_type=asset_type,
+            season_number=season_number,
+            session=session,
+        )
     fanart_pool = [
         candidate
         for candidate in fanart_all_pool
@@ -251,8 +264,12 @@ async def _select_artwork_with_fallback(
     attempts.append(
         {
             "provider": "Fanart.tv",
-            "status": "selected" if fanart_acceptable else (
-                "reserve" if fanart_best else "no_candidates"
+            "status": (
+                "excluded_after_download_failure"
+                if "fanart" in excluded
+                else "selected" if fanart_acceptable else (
+                    "reserve" if fanart_best else "no_candidates"
+                )
             ),
             "candidates": len(fanart_pool),
         }
@@ -266,20 +283,26 @@ async def _select_artwork_with_fallback(
             attempts_out.extend(attempts)
         return selected
 
-    plex_candidate = _plex_artwork_candidate(
-        config,
-        meta,
-        asset_type,
-        season_number=(
-            plex_season_number
-            if plex_season_number is not None
-            else season_number
-        ),
-    )
+    plex_candidate = None
+    if "plex" not in excluded:
+        plex_candidate = _plex_artwork_candidate(
+            config,
+            meta,
+            asset_type,
+            season_number=(
+                plex_season_number
+                if plex_season_number is not None
+                else season_number
+            ),
+        )
     attempts.append(
         {
             "provider": "Plex",
-            "status": "selected" if plex_candidate else "no_candidate",
+            "status": (
+                "excluded_after_download_failure"
+                if "plex" in excluded
+                else "selected" if plex_candidate else "no_candidate"
+            ),
             "candidates": 1 if plex_candidate else 0,
         }
     )
@@ -293,7 +316,14 @@ async def _select_artwork_with_fallback(
             attempts_out.extend(attempts)
         return plex_candidate
 
-    reserves = [candidate for candidate in (tmdb_best, fanart_best) if candidate]
+    reserves = [
+        candidate
+        for candidate in (tmdb_best, fanart_best)
+        if candidate
+        and not artwork_quality_score(
+            config, candidate, asset_type=asset_type
+        ).get("blank_penalty")
+    ]
     if reserves:
         preferred = str(config.get("tmdb", {}).get("language", "en-US")).split(
             "-", 1
@@ -326,8 +356,8 @@ async def _select_artwork_with_fallback(
             attempts_out.extend(attempts)
         return selected
     if destination_missing:
-        relaxed_tmdb_pool = list(tmdb_pool)
-        if unfiltered_response is None:
+        relaxed_tmdb_pool = [] if "tmdb" in excluded else list(tmdb_pool)
+        if "tmdb" not in excluded and unfiltered_response is None:
             unfiltered_response = await tmdb_unfiltered_images(
                 config,
                 media_type,
@@ -341,16 +371,21 @@ async def _select_artwork_with_fallback(
             for candidate in relaxed_tmdb_pool
             if candidate.get("file_path")
         }
-        for candidate in (unfiltered_response or {}).get(key, []) or []:
-            normalized = _with_provider(candidate)
-            if normalized and normalized.get("file_path"):
-                combined[str(normalized["file_path"])] = normalized
+        if "tmdb" not in excluded:
+            for candidate in (unfiltered_response or {}).get(key, []) or []:
+                normalized = _with_provider(candidate)
+                if normalized and normalized.get("file_path"):
+                    combined[str(normalized["file_path"])] = normalized
         relaxed_tmdb_pool = list(combined.values())
-        relaxed_fanart_pool = [
-            candidate
-            for candidate in fanart_all_pool
-            if candidate and candidate.get("file_path")
-        ]
+        relaxed_fanart_pool = (
+            []
+            if "fanart" in excluded
+            else [
+                candidate
+                for candidate in fanart_all_pool
+                if candidate and candidate.get("file_path")
+            ]
+        )
         relaxed_candidates = [
             candidate
             for candidate in (
@@ -358,6 +393,9 @@ async def _select_artwork_with_fallback(
                 _best_candidate(config, relaxed_fanart_pool, asset_type),
             )
             if candidate
+            and not artwork_quality_score(
+                config, candidate, asset_type=asset_type
+            ).get("blank_penalty")
         ]
         if relaxed_candidates:
             preferred = str(config.get("tmdb", {}).get("language", "en-US")).split(
@@ -398,6 +436,80 @@ async def _select_artwork_with_fallback(
     if attempts_out is not None:
         attempts_out.extend(attempts)
     return None
+
+
+async def _download_with_missing_failover(
+    config,
+    meta,
+    initial_candidate,
+    temp_path,
+    destination,
+    tmdb_candidates,
+    *,
+    asset_type,
+    media_type,
+    tmdb_id,
+    tvdb_id=None,
+    season_number=None,
+    plex_season_number=None,
+    session=None,
+):
+    """Retry a failed missing-destination download through later providers."""
+    candidate = initial_candidate
+    failed_providers = set()
+    failure_details: list[dict[str, Any]] = []
+    for _attempt in range(3):
+        provider = _candidate_provider(candidate)
+        success, status, error = await download_poster(
+            config,
+            candidate.get("file_path"),
+            temp_path,
+            session=session,
+            provider=provider,
+            asset_type=asset_type,
+            expected_image=candidate,
+        )
+        if success:
+            if failure_details:
+                candidate = dict(candidate)
+                candidate["selection_stage"] = "missing_only_download_failover"
+                candidate["selection_reason"] = (
+                    "missing destination; earlier provider downloads failed"
+                )
+                candidate["download_failures"] = list(failure_details)
+            return candidate, True, status, error
+        failure_details.append(
+            {
+                "provider": _provider_label(candidate),
+                "status": status,
+                "error": str(error or "download failed"),
+            }
+        )
+        failed_providers.add(provider)
+        if destination.exists():
+            break
+        candidate = await _select_artwork_with_fallback(
+            config,
+            meta,
+            tmdb_candidates,
+            asset_type=asset_type,
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            season_number=season_number,
+            plex_season_number=plex_season_number,
+            session=session,
+            excluded_providers=failed_providers,
+        )
+        if not candidate:
+            break
+    detail = "; ".join(
+        f"{failure['provider']}: {failure['error']}"
+        for failure in failure_details
+    )
+    return initial_candidate, False, (
+        failure_details[-1]["status"] if failure_details else None
+    ), detail or "Artwork download failed"
 
 
 def _asset_temp_path_or_defer(config, meta):
@@ -904,8 +1016,10 @@ def _mark_asset_verified(
     source_path,
     season_number=None,
     checksum=None,
+    full_title=None,
+    provider=None,
 ):
-    return _asset_registry(config).mark_verified(
+    verified_checksum = _asset_registry(config).mark_verified(
         cache_key,
         asset_path,
         media_type=media_type,
@@ -915,6 +1029,36 @@ def _mark_asset_verified(
         season_number=season_number,
         checksum=checksum,
     )
+    status = "missing_after_write"
+    try:
+        if asset_path.is_file() and not asset_path.is_symlink():
+            actual_checksum = sha256_file(asset_path)
+            status = (
+                "filesystem_verified"
+                if verified_checksum and actual_checksum == verified_checksum
+                else "checksum_mismatch"
+            )
+    except OSError:
+        status = "verification_failed"
+    config.setdefault("_adoption_audit_records", []).append(
+        {
+            "library": config.get("_library_name") or "Unknown library",
+            "title": full_title or str(cache_key),
+            "media_type": media_type,
+            "asset_type": asset_type,
+            "season_number": season_number,
+            "provider": str(provider or "unknown"),
+            "source_path": str(source_path or ""),
+            "destination": str(asset_path),
+            "status": status,
+            "plex_visibility": (
+                "pending_normal_plex_discovery"
+                if mode_check(config, "plex") and status == "filesystem_verified"
+                else "not_applicable"
+            ),
+        }
+    )
+    return verified_checksum
 
 
 def managed_source_matches(
@@ -1067,6 +1211,8 @@ async def adopt_exact_tmdb_asset(
             temp_path,
             session=session,
             provider=_candidate_provider(candidate),
+            asset_type=asset_type,
+            expected_image=candidate,
         )
         if not success or not temp_path.exists():
             log_builder_event(
@@ -1077,7 +1223,7 @@ async def adopt_exact_tmdb_asset(
                 destination=asset_path,
                 reason=(
                     f"ownership could not be verified against {_provider_label(candidate)}"
-                    f" (status={status}, error={error})"
+                    f" ({format_fields(('Status', status), ('Error', error))})"
                 ),
             )
             if asset_type in {"poster", "background"}:
@@ -1149,6 +1295,8 @@ async def adopt_exact_tmdb_asset(
             source_path=candidate.get("file_path"),
             season_number=season_number,
             checksum=existing_checksum,
+            full_title=full_title,
+            provider=_provider_label(candidate),
         )
         await _record_asset_observation(
             cache_key,
@@ -1863,9 +2011,21 @@ async def _build_movie(
             poster_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(
-                config, best["file_path"], temp_path, session=session,
-                provider=_candidate_provider(best),
+            best, success, status, error = await _download_with_missing_failover(
+                config,
+                meta,
+                best,
+                temp_path,
+                asset_path,
+                images,
+                asset_type="poster",
+                media_type="movie",
+                tmdb_id=tmdb_id,
+                session=session,
+            )
+            result["artwork_providers"]["poster"] = _candidate_provider(best)
+            result["artwork_selection_stages"]["poster"] = best.get(
+                "selection_stage"
             )
             if not success:
                 log_builder_event(
@@ -1875,7 +2035,7 @@ async def _build_movie(
                 )
                 _record_artwork_gap(
                     config, "provider_failure", "Movie", full_title, "poster",
-                    f"{_provider_label(best)} artwork download failed: {error}",
+                    f"Artwork provider chain failed: {error}",
                 )
                 poster_action = "failed"
             if success and temp_path.exists():
@@ -1904,7 +2064,8 @@ async def _build_movie(
                         config, cache_key, asset_path,
                         media_type="movie", tmdb_id=tmdb_id,
                         asset_type="poster", source_path=best.get("file_path"),
-                        checksum=asset_checksum,
+                        checksum=asset_checksum, full_title=full_title,
+                        provider=_provider_label(best),
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
@@ -2101,9 +2262,21 @@ async def _build_movie(
             background_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(
-                config, best["file_path"], temp_path, session=session,
-                provider=_candidate_provider(best),
+            best, success, status, error = await _download_with_missing_failover(
+                config,
+                meta,
+                best,
+                temp_path,
+                asset_path,
+                images,
+                asset_type="background",
+                media_type="movie",
+                tmdb_id=tmdb_id,
+                session=session,
+            )
+            result["artwork_providers"]["background"] = _candidate_provider(best)
+            result["artwork_selection_stages"]["background"] = best.get(
+                "selection_stage"
             )
             if not success:
                 log_builder_event(
@@ -2113,7 +2286,7 @@ async def _build_movie(
                 )
                 _record_artwork_gap(
                     config, "provider_failure", "Movie", full_title, "background",
-                    f"{_provider_label(best)} artwork download failed: {error}",
+                    f"Artwork provider chain failed: {error}",
                 )
                 background_action = "failed"
             if success and temp_path.exists():
@@ -2142,7 +2315,8 @@ async def _build_movie(
                         config, cache_key, asset_path,
                         media_type="movie", tmdb_id=tmdb_id,
                         asset_type="background", source_path=best.get("file_path"),
-                        checksum=asset_checksum,
+                        checksum=asset_checksum, full_title=full_title,
+                        provider=_provider_label(best),
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
@@ -3095,9 +3269,22 @@ async def _build_tv(
             poster_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(
-                config, best["file_path"], temp_path, session=session,
-                provider=_candidate_provider(best),
+            best, success, status, error = await _download_with_missing_failover(
+                config,
+                meta,
+                best,
+                temp_path,
+                asset_path,
+                images,
+                asset_type="poster",
+                media_type="tv",
+                tmdb_id=tmdb_id,
+                tvdb_id=tvdb_id,
+                session=session,
+            )
+            result["artwork_providers"]["poster"] = _candidate_provider(best)
+            result["artwork_selection_stages"]["poster"] = best.get(
+                "selection_stage"
             )
             if not success:
                 log_builder_event(
@@ -3107,7 +3294,7 @@ async def _build_tv(
                 )
                 _record_artwork_gap(
                     config, "provider_failure", "TV Show", full_title, "poster",
-                    f"{_provider_label(best)} artwork download failed: {error}",
+                    f"Artwork provider chain failed: {error}",
                 )
                 poster_action = "failed"
             if success and temp_path.exists():
@@ -3136,7 +3323,8 @@ async def _build_tv(
                         config, cache_key, asset_path,
                         media_type="tv", tmdb_id=tmdb_id,
                         asset_type="poster", source_path=best.get("file_path"),
-                        checksum=asset_checksum,
+                        checksum=asset_checksum, full_title=full_title,
+                        provider=_provider_label(best),
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
@@ -3316,9 +3504,22 @@ async def _build_tv(
             background_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(
-                config, best["file_path"], temp_path, session=session,
-                provider=_candidate_provider(best),
+            best, success, status, error = await _download_with_missing_failover(
+                config,
+                meta,
+                best,
+                temp_path,
+                asset_path,
+                images,
+                asset_type="background",
+                media_type="tv",
+                tmdb_id=tmdb_id,
+                tvdb_id=tvdb_id,
+                session=session,
+            )
+            result["artwork_providers"]["background"] = _candidate_provider(best)
+            result["artwork_selection_stages"]["background"] = best.get(
+                "selection_stage"
             )
             if not success:
                 log_builder_event(
@@ -3328,7 +3529,7 @@ async def _build_tv(
                 )
                 _record_artwork_gap(
                     config, "provider_failure", "TV Show", full_title, "background",
-                    f"{_provider_label(best)} artwork download failed: {error}",
+                    f"Artwork provider chain failed: {error}",
                 )
                 background_action = "failed"
             if success and temp_path.exists():
@@ -3357,7 +3558,8 @@ async def _build_tv(
                         config, cache_key, asset_path,
                         media_type="tv", tmdb_id=tmdb_id,
                         asset_type="background", source_path=best.get("file_path"),
-                        checksum=asset_checksum,
+                        checksum=asset_checksum, full_title=full_title,
+                        provider=_provider_label(best),
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
@@ -3554,9 +3756,26 @@ async def _build_tv(
             season_poster_actions[season_number] = "deferred"
             return
         try:
-            success, status, error = await download_poster(
-                config, best["file_path"], temp_path, session=session,
-                provider=_candidate_provider(best),
+            best, success, status, error = await _download_with_missing_failover(
+                config,
+                meta,
+                best,
+                temp_path,
+                asset_path,
+                images,
+                asset_type="season",
+                media_type="tv",
+                tmdb_id=source_tmdb_id,
+                tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
+                season_number=source_season_number,
+                plex_season_number=season_number,
+                session=session,
+            )
+            result["season_artwork_providers"][season_number] = _candidate_provider(
+                best
+            )
+            result["season_artwork_selection_stages"][season_number] = best.get(
+                "selection_stage"
             )
             if not success:
                 log_builder_event(
@@ -3567,7 +3786,7 @@ async def _build_tv(
                 _record_artwork_gap(
                     config, "provider_failure", "TV Show", full_title,
                     f"season {season_number} poster",
-                    f"{_provider_label(best)} artwork download failed: {error}",
+                    f"Artwork provider chain failed: {error}",
                 )
                 season_poster_actions[season_number] = "failed"
             if success and temp_path.exists():
@@ -3598,6 +3817,7 @@ async def _build_tv(
                         media_type="tv", tmdb_id=tmdb_id,
                         asset_type="season", source_path=best.get("file_path"),
                         season_number=season_number, checksum=asset_checksum,
+                        full_title=full_title, provider=_provider_label(best),
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",

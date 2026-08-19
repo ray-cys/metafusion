@@ -7,7 +7,7 @@ from pathlib import Path
 
 from helper.concurrency import runtime_slot
 from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
-from helper.io import atomic_write_text
+from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import (
     load_plex_metadata_ownership,
     save_plex_metadata_ownership,
@@ -180,14 +180,30 @@ class PlexMetadataReporter:
                 lines.append(
                     f"- [{library}] {title} | {child} | {field}: {action}{suffix}"
                 )
-        atomic_write_text(path, "\n".join(lines))
-        reports = sorted(
-            report_dir.glob("plex-metadata-*.txt"),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
+        write_diagnostic_report(
+            path,
+            "\n".join(lines),
+            report_type="plex_metadata",
+            data={
+                "policy": self.policy,
+                "dry_run": self.dry_run,
+                "writes": self.writes,
+                "write_limit": self.max_writes,
+                "summary": dict(self.counts),
+                "items": [
+                    {
+                        "library": library,
+                        "title": title,
+                        "child": child,
+                        "field": field,
+                        "action": action,
+                        "detail": detail,
+                    }
+                    for library, title, child, field, action, detail in self.entries
+                ],
+            },
         )
-        for expired in reports[self.retention :]:
-            expired.unlink()
+        retain_diagnostic_reports(report_dir, "plex-metadata", self.retention)
         logger = logging.getLogger(__name__)
         logger.info(
             "[Metadata] Plex summary | API batches: %d/%d, fields filled: %d, "
@@ -210,7 +226,7 @@ class PlexMetadataReporter:
         }
         if any(safety_counts.values()):
             logger.warning(
-                "[Metadata] Plex safety | %s | Report=%s",
+                "[Metadata] Plex safety | %s | Report: %s",
                 ", ".join(
                     f"{name}: {count}" for name, count in safety_counts.items()
                 ),
@@ -668,7 +684,7 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 type(error).__name__,
             )
             logging.getLogger(__name__).error(
-                "[Metadata] Plex | %s | Failed %s | ErrorType=%s",
+                "[Metadata] Plex | %s | Failed %s | Error type: %s",
                 meta.get("title") or getattr(item, "title", "Unknown"),
                 child_key or "item",
                 type(error).__name__,
@@ -758,7 +774,7 @@ async def apply_plex_metadata(item, candidate, config, meta):
         if attempt < retries and delay:
             await asyncio.sleep(delay * attempt)
     logging.getLogger(__name__).debug(
-        "[Metadata] Plex | %s | API update attempts exhausted | Attempts=%d",
+        "[Metadata] Plex | %s | API update attempts exhausted | Attempts: %d",
         title,
         retries,
     )

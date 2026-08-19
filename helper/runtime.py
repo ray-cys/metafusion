@@ -11,6 +11,7 @@ from helper.build_info import build_info
 from helper.io import atomic_write_json
 from helper.plex_paths import parse_path_mappings
 from helper.state_db import StateDatabaseError, record_job_run
+from helper.storage import storage_pressure_threshold
 
 
 def utc_now():
@@ -25,18 +26,6 @@ class DiskPressureError(RuntimeError):
         self.free_bytes = int(free_bytes)
         self.required_bytes = int(required_bytes)
         super().__init__(message)
-
-
-def storage_pressure_threshold(config, usage):
-    configured_mb = max(
-        0, int(config.get("runtime", {}).get("min_free_space_mb", 256))
-    )
-    configured_bytes = configured_mb * 1024 * 1024
-    automatic_bytes = min(
-        2 * 1024 ** 3,
-        max(256 * 1024 ** 2, int(max(0, usage.total) * 0.01)),
-    )
-    return configured_mb, max(configured_bytes, automatic_bytes)
 
 
 def ensure_storage_available(

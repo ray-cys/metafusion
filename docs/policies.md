@@ -105,14 +105,21 @@ deterministic 0-100 quality score:
 | Provider score | 35 | TMDb vote average or Fanart.tv likes proxy, capped at 10. Plex candidates have no pre-download score. |
 | Aspect ratio | 10 | Closeness to 2:3 for posters/season posters or 16:9 for backgrounds. |
 | Language | 10 | Preferred language gets 10, configured fallback 7, untagged 4, and another language 0. |
+| Cached content quality | up to 8 | A bounded sharpness bonus from a previously validated download; the final score remains capped at 100. |
 
 The highest score wins within the current provider stage; vote, pixel area,
-and source path provide stable tie
-breakers. Scoring does not allow a lower-priority language to jump ahead of an
-available preferred-language tier and does not bypass minimum dimensions or
-vote thresholds. The chosen candidate and component scores appear in explicit
-asset, library, and change-plan audits without downloading the image merely to
-score it.
+and source path provide stable tie breakers. A cached blank-image result makes
+the candidate ineligible, while a perceptual hash identifies visually duplicate
+candidates in selection explanations. A perceptual hash is not treated as a
+quality measurement. Scoring does not allow a lower-priority language to jump
+ahead of an available preferred-language tier or bypass the normal provider and
+minimum-dimension stages. A deliberately selected `best available` fallback can
+remain below the configured minimum, but its downloaded dimensions, format,
+aspect ratio and provider declaration are still validated before installation.
+The chosen candidate and component scores appear in explicit asset, library,
+and change-plan audits. Content signals are used only after that provider/source
+has been downloaded and validated on an earlier attempt or run; MetaFusion does
+not download every candidate merely to score it.
 
 After a policy permits an existing destination to be considered, the artwork
 upgrade engine still decides whether to write:

@@ -112,9 +112,9 @@ def test_plex_metadata_progress_logs_start_and_completion(
             )
         )
 
-    assert "[Metadata] Plex progress | Movies | Checked=0/3 (0.0%)" in caplog.text
-    assert "[Metadata] Plex progress | Movies | Checked=3/3 (100.0%)" in caplog.text
-    assert "Changed=0 | APIBatches=0 | Unchanged=3 | Failed=0" in caplog.text
+    assert "[Metadata] Plex progress | Movies | Checked: 0/3 (0.0%)" in caplog.text
+    assert "[Metadata] Plex progress | Movies | Checked: 3/3 (100.0%)" in caplog.text
+    assert "Changed: 0 | API batches: 0 | Unchanged: 3 | Failed: 0" in caplog.text
 
 
 def test_process_library_propagates_item_failures(monkeypatch, tmp_path):
@@ -540,9 +540,9 @@ def test_explain_selection_reports_causes_without_loading_metadata(
         )
 
     assert result == []
-    assert "new=2" in caplog.text
-    assert "due=1" in caplog.text
-    assert "selected=2" in caplog.text
+    assert "new: 2" in caplog.text
+    assert "due: 1" in caplog.text
+    assert "Selected: 2" in caplog.text
 
 
 def test_library_metadata_inventory_failure_is_aggregated_without_cleanup(

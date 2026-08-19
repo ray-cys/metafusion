@@ -3,6 +3,7 @@ import logging
 from helper.logging import (
     PlexMetadataProgress,
     _format_event_message,
+    format_fields,
     get_meta_banner,
     log_builder_event,
     log_fanart_event,
@@ -25,7 +26,7 @@ def test_unchanged_metadata_log_labels_completeness_percentages(caplog):
 
     assert (
         "[Metadata] Kometa | Movie | 1917 (2019) | Unchanged | "
-        "FieldCoverage=100% | MissingFields=0%"
+        "Field coverage: 100% | Missing fields: 0%"
         in caplog.text
     )
     assert "(100%/0%) completed" not in caplog.text
@@ -82,7 +83,7 @@ def test_successful_kometa_yaml_write_is_info(caplog):
         )
 
     assert "[Metadata] Movies | Saved Kometa YAML" in caplog.text
-    assert "ChangedItems=2 | NormalizedEntries=0" in caplog.text
+    assert "Changed items: 2 | Normalized entries: 0" in caplog.text
 
 
 def test_provider_cache_statistics_share_one_debug_format(caplog):
@@ -100,9 +101,9 @@ def test_provider_cache_statistics_share_one_debug_format(caplog):
         log_tmdb_event("tmdb_cache_stats", **statistics)
         log_fanart_event("fanart_cache_stats", **statistics)
 
-    assert "[Cache] Provider=TMDb | Entries=10" in caplog.text
-    assert "[Cache] Provider=Fanart.tv | Entries=10" in caplog.text
-    assert "Compressed=2.5 MiB | Disk=3.0 MiB" in caplog.text
+    assert "[Cache] Provider: TMDb | Entries: 10" in caplog.text
+    assert "[Cache] Provider: Fanart.tv | Entries: 10" in caplog.text
+    assert "Compressed: 2.5 MiB | Disk: 3.0 MiB" in caplog.text
 
 
 def test_routine_identity_and_mapping_outcomes_are_debug(caplog):
@@ -158,14 +159,14 @@ def test_metadata_summaries_are_mode_specific():
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": False}
     ) == (
-        "Metadata | Target=Kometa YAML | Created=2 | Updated=3 | "
-        "Unchanged=4 | Failed=1"
+        "Metadata | Target: Kometa YAML | Created: 2 | Updated: 3 | "
+        "Unchanged: 4 | Failed: 1"
     )
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": True}
     ) == (
-        "Metadata | Target=Plex | Changed=3 | APIBatches=5 | "
-        "Unchanged=4 | Failed=1"
+        "Metadata | Target: Plex | Changed: 3 | API batches: 5 | "
+        "Unchanged: 4 | Failed: 1"
     )
 
 
@@ -217,11 +218,14 @@ def test_plex_progress_rate_limits_items_and_emits_heartbeat_and_final():
         force=True,
     ) is True
 
-    assert "Movies | Checked=0/50 (0.0%)" in logger.lines[0]
-    assert "Movies | Checked=5/50 (10.0%)" in logger.lines[1]
-    assert "Movies | Checked=5/50 (10.0%)" in logger.lines[2]
-    assert "Movies | Checked=50/50 (100.0%)" in logger.lines[3]
-    assert "Changed=2 | APIBatches=3 | Unchanged=47 | Failed=1" in logger.lines[3]
+    assert "Movies | Checked: 0/50 (0.0%)" in logger.lines[0]
+    assert "Movies | Checked: 5/50 (10.0%)" in logger.lines[1]
+    assert "Movies | Checked: 5/50 (10.0%)" in logger.lines[2]
+    assert "Movies | Checked: 50/50 (100.0%)" in logger.lines[3]
+    assert (
+        "Changed: 2 | API batches: 3 | Unchanged: 47 | Failed: 1"
+        in logger.lines[3]
+    )
 
 
 def test_banner_supports_logger_and_console_and_malformed_events_are_safe(capsys):
@@ -238,7 +242,7 @@ def test_banner_supports_logger_and_console_and_malformed_events_are_safe(capsys
 
     logger = CaptureLogger()
     get_meta_banner(logger)
-    assert logger.lines == ["[Startup] M E T A F U S I O N"]
+    assert logger.lines == ["[Startup] ── M E T A F U S I O N ──"]
 
     get_meta_banner()
     assert "M E T A F U S I O N" in capsys.readouterr().out
@@ -246,3 +250,11 @@ def test_banner_supports_logger_and_console_and_malformed_events_are_safe(capsys
     template = "Missing {required}"
     assert _format_event_message(template, {}, logger, "Test") == template
     assert "Unable to format log event" in logger.debug_lines[0]
+
+
+def test_shared_field_formatter_uses_human_readable_labels():
+    assert format_fields(
+        ("RAM used", "12.39 GB"),
+        ("CPU cores", 28),
+        ("Dry run", False),
+    ) == "RAM used: 12.39 GB | CPU cores: 28 | Dry run: Disabled"

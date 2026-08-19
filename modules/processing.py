@@ -23,6 +23,7 @@ from helper.incremental import child_inventory_fingerprint, plan_items
 from helper.io import sha256_file
 from helper.logging import (
     PlexMetadataProgress,
+    format_fields,
     log_item_outcomes,
     log_processing_event,
 )
@@ -460,6 +461,7 @@ async def process_library(
     artwork_deferred = 0
     artwork_storage_files = {}
     artwork_automatic_relaxed = 0
+    artwork_download_failover = 0
 
     server = getattr(library_section, "_server", None)
     server_id = getattr(server, "machineIdentifier", None) or "unknown"
@@ -568,10 +570,7 @@ async def process_library(
                 selected=len(planned_items),
                 skipped=max(0, candidate_count - len(planned_items)),
                 causes=(
-                    ", ".join(
-                        f"{name}={count}"
-                        for name, count in sorted(cause_counts.items())
-                    )
+                    format_fields(*sorted(cause_counts.items()))
                     or "none"
                 ),
             )
@@ -799,6 +798,7 @@ async def process_library(
             nonlocal poster_preserved, background_preserved, season_poster_preserved
             nonlocal artwork_deferred
             nonlocal artwork_automatic_relaxed
+            nonlocal artwork_download_failover
 
             item = planned.item
             item_metadata = {"metadata": {}}
@@ -946,6 +946,10 @@ async def process_library(
                         "poster"
                     ) == "missing_only_relaxed":
                         artwork_automatic_relaxed += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "poster"
+                    ) == "missing_only_download_failover":
+                        artwork_download_failover += 1
 
                 action = stats.get("background_action")
                 if action == "downloaded":
@@ -974,6 +978,10 @@ async def process_library(
                         "background"
                     ) == "missing_only_relaxed":
                         artwork_automatic_relaxed += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "background"
+                    ) == "missing_only_download_failover":
+                        artwork_download_failover += 1
 
                 season_actions = stats.get("season_poster_actions", {})
                 for season_number, season_action in season_actions.items():
@@ -1014,6 +1022,8 @@ async def process_library(
                             ).get(str(season_number))
                         if stage == "missing_only_relaxed":
                             artwork_automatic_relaxed += 1
+                        if stage == "missing_only_download_failover":
+                            artwork_download_failover += 1
 
                 if feature_flags["poster"]:
                     poster_size += stats.get("poster", {}).get("size", 0)
@@ -1254,6 +1264,7 @@ async def process_library(
             "item_failures": len(item_errors),
             "artwork_deferred": artwork_deferred,
             "artwork_automatic_relaxed": artwork_automatic_relaxed,
+            "artwork_download_failover": artwork_download_failover,
             "poster_bytes": poster_size,
             "background_bytes": background_size,
             "season_poster_bytes": season_poster_size,

@@ -71,12 +71,22 @@ warning. Specials use Season 0 when Season 0 exists in Plex. Split-series
 mappings retain the Plex destination season while querying TMDb and Fanart.tv
 with the configured source season.
 
-Fallback advances because a provider has no candidate or its candidate does
-not meet the configured hard dimensions. It does not automatically switch an
-entire run to another provider after a selected image suffers a transient
-download outage: the selected source is retried, the destination is preserved,
-and the failure is reported. This avoids widespread source churn during an
-upstream outage.
+Fallback advances because a provider has no candidate, its candidate does not
+meet the configured hard dimensions, or a selected download/decoded image is
+unusable. Download-time failover is strictly missing-only: after bounded
+retries, MetaFusion can continue through later providers only while the final
+destination is still absent. An outage never replaces an existing/manual file
+or changes the provider for an upgrade already installed at that destination.
+
+Every successful response is decoded before it is installed. MetaFusion
+rejects unsupported formats, implausible aspect ratios, provider dimensions
+that differ materially from the downloaded image, and images detected as
+effectively blank. The validated width, height, format, content checksum,
+sharpness signal, blank result, and perceptual hash are cached in durable
+SQLite by provider/source. Later candidate scoring can use the cached
+sharpness signal, reject known blank content, and explain visually duplicate
+candidates without downloading them again. Provider order and ownership
+policy remain stronger than the content score.
 
 ## Logs and diagnostics
 
@@ -87,7 +97,8 @@ name missing season numbers and report whether TMDb and Fanart.tv had no
 candidates and whether Plex exposed an explicit season thumbnail. The final
 summary separates writes, adoption, unchanged, not-due, preserved, missing,
 deferred, and failed outcomes and counts successful writes/adoptions by
-provider. It also counts successful `AutomaticRelaxed` writes. Detailed
+provider. It also counts successful `Automatic relaxation` writes and reports
+missing-only transport recovery separately as `Download failover`. Detailed
 request/cache activity is available at `LOG_LEVEL=DEBUG`;
 authorization, rate limiting, malformed responses, and provider exhaustion are
 warnings.

@@ -15,9 +15,9 @@ from helper.config import (
 )
 from helper.identity_diagnostics import diagnose_identity
 from helper.incremental import config_fingerprint, library_full_scan_decisions, plan_items
-from helper.io import atomic_write_text
 from helper.mapping_diagnostics import diagnose_mapping
 from helper.plex import get_plex_metadata, load_plex_library_inventory
+from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import STATE_DATABASE, MediaStateStore, load_item_retries
 
 
@@ -272,18 +272,25 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
                 f"- season {destination.get('season')}: {_display(destination.get('path'))}"
             )
         lines.append("")
-    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
-    reports = sorted(report_dir.glob("item-explanation-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)) :]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+    write_diagnostic_report(
+        path,
+        "\n".join(lines).rstrip() + "\n",
+        report_type="item_explanation",
+        data={"items": records},
+        generated_at=generated,
+    )
+    retain_diagnostic_reports(report_dir, "item-explanation", retention)
     return path
 
 
 async def run_item_explanation(
-    sections, config, rating_keys, session=None, *, base_dir=None
+    sections,
+    config,
+    rating_keys,
+    session=None,
+    *,
+    base_dir=None,
+    write_report=True,
 ):
     requested = {str(value) for value in rating_keys or [] if str(value).strip()}
     identity_counts = Counter()
@@ -340,9 +347,11 @@ async def run_item_explanation(
                 "episode_mapping": {},
             }
         )
-    report = write_item_explanation_report(
-        results,
-        base_dir=base_dir,
-        retention=report_retention(config),
-    )
+    report = None
+    if write_report:
+        report = write_item_explanation_report(
+            results,
+            base_dir=base_dir,
+            retention=report_retention(config),
+        )
     return results, report

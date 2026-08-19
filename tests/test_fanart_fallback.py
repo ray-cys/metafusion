@@ -678,9 +678,9 @@ def test_aligned_item_logging_identifies_metadata_and_artwork_sources(caplog):
     with caplog.at_level(logging.INFO):
         log_item_outcomes("Movies", "Example (2024)", stats, flags)
 
-    assert "Created | Source=TMDb | Target=Kometa YAML" in caplog.text
-    assert "Poster downloaded | Source=Fanart.tv | Target=Kometa assets" in caplog.text
-    assert "Background missing | Source=None | Target=Kometa assets" in caplog.text
+    assert "Created | Source: TMDb | Target: Kometa YAML" in caplog.text
+    assert "Poster downloaded | Source: Fanart.tv | Target: Kometa assets" in caplog.text
+    assert "Background missing | Source: None | Target: Kometa assets" in caplog.text
 
 
 def test_season_artwork_warning_names_missing_season_and_provider_attempts(caplog):
@@ -707,11 +707,11 @@ def test_season_artwork_warning_names_missing_season_and_provider_attempts(caplo
             {"mode": "plex"},
         )
 
-    assert "Missing=1, Unchanged=1" in caplog.text
-    assert "Sources=None=1, TMDb=1" in caplog.text
-    assert "Target=Plex local media" in caplog.text
+    assert "Missing: 1 | Unchanged: 1" in caplog.text
+    assert "Sources: None: 1 | TMDb: 1" in caplog.text
+    assert "Target: Plex local media" in caplog.text
     assert (
-        "MissingSeasons=S00 (TMDb:no candidates, Fanart.tv:no candidates, "
+        "Missing seasons: S00 (TMDb:no candidates, Fanart.tv:no candidates, "
         "Plex:no explicit season thumb)"
         in caplog.text
     )

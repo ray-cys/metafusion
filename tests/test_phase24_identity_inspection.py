@@ -165,13 +165,13 @@ def test_schema_four_binding_can_be_inspected_without_upgrade_or_history(tmp_pat
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
-def test_identity_history_extension_remains_schema_four_rollback_compatible(tmp_path):
+def test_schema_four_identity_writer_remains_compatible_after_schema_five_upgrade(tmp_path):
     database = tmp_path / "meta_db.sqlite3"
     save_identity_binding(
         "server", "library", "10", "movie", "100", "fingerprint", path=database
     )
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         connection.execute(
             """
             INSERT INTO identity_bindings(

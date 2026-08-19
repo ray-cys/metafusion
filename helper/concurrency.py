@@ -11,6 +11,8 @@ from pathlib import Path
 
 import psutil
 
+from helper.logging import format_fields
+
 _current_controller = ContextVar("metafusion_concurrency_controller", default=None)
 _loop_controllers = weakref.WeakKeyDictionary()
 
@@ -416,13 +418,13 @@ class AdaptiveConcurrencyController:
         logger = logging.getLogger(__name__)
         if str(reason).startswith("circuit_open"):
             logger.warning(
-                "[Concurrency] %s circuit opened (%s); limit=%d.",
+                "[Concurrency] %s circuit opened (%s) | Limit: %d.",
                 kind,
                 str(reason).split(":", 1)[-1],
                 current,
             )
         elif reason == "circuit_closed":
-            logger.info("[Concurrency] %s circuit closed; limit=%d.", kind, current)
+            logger.info("[Concurrency] %s circuit closed | Limit: %d.", kind, current)
         else:
             logger.info(
                 "[Concurrency] %s limit %d -> %d (%s).",
@@ -479,24 +481,16 @@ def begin_adaptive_concurrency(config, **kwargs):
     controller = AdaptiveConcurrencyController(config, **kwargs)
     token = _current_controller.set(controller)
     logging.getLogger(__name__).info(
-        "[Concurrency] Adaptive mode started: CPU %.2f, memory %.2f GiB; "
-        "initial/ceiling item=%d/%d, TMDb=%d/%d, Fanart.tv=%d/%d, Plex=%d/%d, nested=%d/%d%s.",
-        controller.resources.cpu_cores,
-        controller.resources.memory_gib,
-        controller.current_limit("item"),
-        controller.ceiling("item"),
-        controller.current_limit("tmdb"),
-        controller.ceiling("tmdb"),
-        controller.current_limit("fanart"),
-        controller.ceiling("fanart"),
-        controller.current_limit("plex"),
-        controller.ceiling("plex"),
-        controller.current_limit("nested"),
-        controller.ceiling("nested"),
-        (
-            f"; configured ceiling={_configured_ceiling(config)}"
-            if _configured_ceiling(config)
-            else ""
+        "[Concurrency] Adaptive mode started | %s",
+        format_fields(
+            ("CPU cores", f"{controller.resources.cpu_cores:.2f}"),
+            ("Memory", f"{controller.resources.memory_gib:.2f} GiB"),
+            ("Item limit", f"{controller.current_limit('item')}/{controller.ceiling('item')}"),
+            ("TMDb limit", f"{controller.current_limit('tmdb')}/{controller.ceiling('tmdb')}"),
+            ("Fanart.tv limit", f"{controller.current_limit('fanart')}/{controller.ceiling('fanart')}"),
+            ("Plex limit", f"{controller.current_limit('plex')}/{controller.ceiling('plex')}"),
+            ("Nested limit", f"{controller.current_limit('nested')}/{controller.ceiling('nested')}"),
+            ("Configured ceiling", _configured_ceiling(config) or "Automatic"),
         ),
     )
     return controller, token
@@ -506,15 +500,19 @@ def finish_adaptive_concurrency(controller, token=None):
     snapshot = controller.snapshot()
     lanes = snapshot["lanes"]
     logging.getLogger(__name__).info(
-        "[Concurrency] Final limits item=%d, TMDb=%d, Fanart.tv=%d, Plex=%d, nested=%d; "
-        "adjustments=%d, circuit rejections=%d.",
-        lanes["item"]["final_limit"],
-        lanes["tmdb"]["final_limit"],
-        lanes["fanart"]["final_limit"],
-        lanes["plex"]["final_limit"],
-        lanes["nested"]["final_limit"],
-        len(snapshot["adjustments"]),
-        sum(lane["circuit_rejections"] for lane in lanes.values()),
+        "[Concurrency] Final limits | %s",
+        format_fields(
+            ("Item", lanes["item"]["final_limit"]),
+            ("TMDb", lanes["tmdb"]["final_limit"]),
+            ("Fanart.tv", lanes["fanart"]["final_limit"]),
+            ("Plex", lanes["plex"]["final_limit"]),
+            ("Nested", lanes["nested"]["final_limit"]),
+            ("Adjustments", len(snapshot["adjustments"])),
+            (
+                "Circuit rejections",
+                sum(lane["circuit_rejections"] for lane in lanes.values()),
+            ),
+        ),
     )
     if token is not None:
         _current_controller.reset(token)

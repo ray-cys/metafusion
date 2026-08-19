@@ -42,6 +42,7 @@ from helper.database_maintenance import (
     maintain_databases,
 )
 from helper.diagnostics import (
+    write_adoption_audit_report,
     write_artwork_gap_report,
     write_asset_audit_report,
     write_change_plan_report,
@@ -51,6 +52,7 @@ from helper.diagnostics import (
     write_metadata_audit_report,
     write_release_qualification_report,
     write_support_report,
+    write_unresolved_work_report,
 )
 from helper.fanart import (
     begin_fanart_cache,
@@ -67,11 +69,13 @@ from helper.incremental import (
 from helper.item_explanation import run_item_explanation
 from helper.logging import (
     check_sys_requirements,
+    format_fields,
     get_meta_banner,
     get_setup_logging,
     log_cleanup_event,
     log_final_summary,
     log_main_event,
+    log_section,
     redact_secrets,
 )
 from helper.mapping_diagnostics import run_mapping_diagnosis
@@ -97,6 +101,7 @@ from helper.plex_metadata import (
 )
 from helper.plex_paths import advise_path_mappings
 from helper.provider_credentials import fanart_project_api_key
+from helper.provider_replay import write_sanitized_replay_capture
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
@@ -111,10 +116,12 @@ from helper.state_db import (
     STATE_DATABASE,
     StateDatabaseError,
     load_item_retries,
+    load_unresolved_work,
     maintain_state_database,
     missing_library_inventory,
     recent_job_runs,
     reconcile_library_inventory,
+    reconcile_unresolved_work,
     retry_queue_summary,
 )
 from helper.tmdb import (
@@ -182,6 +189,16 @@ def parse_cli_args(argv=None):
         "--support-report",
         action="store_true",
         help="Write a redacted diagnostic report under /config/reports and exit",
+    )
+    parser.add_argument(
+        "--problems",
+        action="store_true",
+        help="Print the persistent unresolved-work ledger as JSON and exit",
+    )
+    parser.add_argument(
+        "--capture-replay",
+        action="store_true",
+        help="Capture selected items as a sanitized JSON replay for support",
     )
     parser.add_argument(
         "--preflight",
@@ -382,6 +399,9 @@ def override_config_with_cli(config, args):
     if args.explain_item:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
+    if args.capture_replay:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -441,6 +461,8 @@ def override_config_with_cli(config, args):
         execution["identity_inspect"] = True
     if args.explain_item:
         execution["explain_item"] = True
+    if args.capture_replay:
+        execution["capture_replay"] = True
     if args.retry_failed:
         execution["retry_failed"] = True
         execution["retry_status"] = args.retry_status
@@ -564,7 +586,7 @@ async def identity_inspection_connectors(config, rating_keys):
         )
 
 
-async def item_explanation_connectors(config, rating_keys):
+async def item_explanation_connectors(config, rating_keys, *, write_report=True):
     runtime = config.get("runtime", {})
     maximum = concurrency_ceiling(config, "network")
     timeout = aiohttp.ClientTimeout(
@@ -584,6 +606,7 @@ async def item_explanation_connectors(config, rating_keys):
             config,
             rating_keys,
             session=session,
+            write_report=write_report,
         )
 
 
@@ -745,17 +768,21 @@ async def metafusion_main(config, logger):
         get_meta_banner(logger)
         current_build = build_info()
         logger.info(
-            "[Startup] Build | Version=%s | Commit=%s",
-            current_build["version"],
-            current_build["commit"],
+            "[Startup] Build | %s",
+            format_fields(
+                ("Version", current_build["version"]),
+                ("Commit", current_build["commit"]),
+            ),
         )
         check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
             "main_started",
             start_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
+        log_section(logger, "Configuration", "Effective run configuration")
         get_disabled_features(config, logger)
         feature_flags = get_feature_flags(config)
+        log_section(logger, "Processing", "Library processing")
         start_time = datetime.now().astimezone()
         library_item_counts = {}
         runtime_config = config.get("runtime", {})
@@ -1083,7 +1110,7 @@ async def metafusion_main(config, logger):
                     if maintenance_failures:
                         raise RuntimeError("; ".join(maintenance_failures))
                     logger.info(
-                        "[Metadata] Plex maintenance | Action=%s | Items=%d",
+                        "[Metadata] Plex maintenance | Action: %s | Items: %d",
                         maintenance_action,
                         len(found_keys),
                     )
@@ -1124,6 +1151,9 @@ async def metafusion_main(config, logger):
                         )
                         library_config["_metadata_audit_records"] = config.setdefault(
                             "_metadata_audit_records", []
+                        )
+                        library_config["_adoption_audit_records"] = config.setdefault(
+                            "_adoption_audit_records", []
                         )
                         scope = next(
                             candidate
@@ -1171,6 +1201,31 @@ async def metafusion_main(config, logger):
                                     time.monotonic() - library_started,
                                 )
                         successful_sections.append(section)
+                        if section_full_scan:
+                            config.setdefault(
+                                "_successful_full_scan_libraries", []
+                            ).append(section.title)
+                            evaluated_work = set()
+                            if any(
+                                library_flags.get(name, False)
+                                for name in (
+                                    "metadata_basic",
+                                    "metadata_enhanced",
+                                    "plex_metadata",
+                                    "poster",
+                                    "background",
+                                    "season",
+                                )
+                            ):
+                                evaluated_work.add("metadata")
+                            evaluated_work.update(
+                                name
+                                for name in ("poster", "background", "season")
+                                if library_flags.get(name, False)
+                            )
+                            config.setdefault(
+                                "_successful_full_scan_work", {}
+                            )[section.title] = sorted(evaluated_work)
                         summary = metadata_summaries.get(section.title, {})
                         library_summary = summary.get("library_summary", {})
                         failed_items = int(library_summary.get("item_failures", 0))
@@ -1329,6 +1384,9 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_artwork_gaps"] = []
     config["_asset_audit_records"] = []
     config["_library_audit_records"] = []
+    config["_adoption_audit_records"] = []
+    config["_successful_full_scan_libraries"] = []
+    config["_successful_full_scan_work"] = {}
     config["_cleanup_result"] = CleanupResult(
         mode=config.get("settings", {}).get("mode", "kometa")
     )
@@ -1391,15 +1449,39 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     destination_report = write_destination_history_report(
                         load_cache(),
                         retention=retention,
+                        config=config,
                     )
                     if destination_report:
                         logger.info(
                             "[Diagnostics] Artwork destination history saved to %s",
                             destination_report,
                         )
-                except OSError as caught:
+                    ledger = reconcile_unresolved_work(
+                        config.get("_artwork_gaps"),
+                        resolved_work=config.get("_successful_full_scan_work", {}),
+                    )
+                    ledger_report = write_unresolved_work_report(
+                        ledger,
+                        retention=retention,
+                    )
+                    if ledger_report:
+                        logger.info(
+                            "[Diagnostics] Unresolved-work ledger saved to %s",
+                            ledger_report,
+                        )
+                    adoption_report = write_adoption_audit_report(
+                        config.get("_adoption_audit_records"),
+                        retention=retention,
+                    )
+                    if adoption_report:
+                        logger.info(
+                            "[Diagnostics] Post-application adoption audit saved to %s",
+                            adoption_report,
+                        )
+                except (OSError, StateDatabaseError) as caught:
                     logger.warning(
-                        "[Diagnostics] Unable to write artwork gap report: %s", caught
+                        "[Diagnostics] Unable to complete persistent reports: %s",
+                        caught,
                     )
             execution = config.get("_execution", {})
             if (
@@ -1481,12 +1563,13 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     state_maintenance = maintain_state_database()
                     retry_summary = retry_queue_summary()
                     logger.info(
-                        "[Maintenance] SQLite optimization complete; state "
-                        "checkpoint=%s, TMDb checkpoint=%s, Fanart.tv checkpoint=%s, retry queue=%s.",
-                        state_maintenance.get("checkpointed", False),
-                        tmdb_maintenance.get("checkpointed", False),
-                        fanart_response_cache.maintain().get("checkpointed", False),
-                        retry_summary or "empty",
+                        "[Maintenance] SQLite optimization complete | %s",
+                        format_fields(
+                            ("State checkpoint", state_maintenance.get("checkpointed", False)),
+                            ("TMDb checkpoint", tmdb_maintenance.get("checkpointed", False)),
+                            ("Fanart.tv checkpoint", fanart_response_cache.maintain().get("checkpointed", False)),
+                            ("Retry queue", retry_summary or "Empty"),
+                        ),
                     )
                 except Exception as maintenance_error:
                     logger.warning(
@@ -1519,6 +1602,14 @@ def main(argv=None):
     shutdown_requested.clear()
     shutdown_complete.clear()
     args = parse_cli_args(argv)
+    if args.problems:
+        try:
+            records = load_unresolved_work(statuses=["open"], path=STATE_DATABASE)
+        except StateDatabaseError as error:
+            print(f"Unable to read unresolved-work ledger: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps({"open": len(records), "items": records}, indent=2, sort_keys=True))
+        return 0
     audit_commands = sum(
         bool(value)
         for value in (
@@ -1550,6 +1641,7 @@ def main(argv=None):
             args.mapping_diagnose,
             args.identity_inspect,
             args.explain_item,
+            args.capture_replay,
         )
     ):
         print(
@@ -1583,6 +1675,7 @@ def main(argv=None):
                 args.mapping_diagnose,
                 args.identity_inspect,
                 args.explain_item,
+                args.capture_replay,
                 args.retry_failed,
                 args.compatibility_check,
             )
@@ -1651,6 +1744,61 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+    if args.capture_replay and not args.rating_key:
+        print(
+            "Configuration error: --capture-replay requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
+    if sum(
+        bool(value)
+        for value in (
+            args.mapping_diagnose,
+            args.identity_inspect,
+            args.explain_item,
+            args.capture_replay,
+        )
+    ) > 1:
+        print(
+            "Configuration error: choose only one item diagnostic command",
+            file=sys.stderr,
+        )
+        return 2
+    if args.capture_replay and any(
+        (
+            args.metafusion_run,
+            args.schedule,
+            args.run_times is not None,
+            args.run_basic,
+            args.run_enhanced,
+            args.run_poster,
+            args.run_season,
+            args.run_background,
+            args.asset_only,
+            args.metadata_only,
+            args.full_scan,
+            args.explain_selection,
+            args.status,
+            args.doctor,
+            args.support_report,
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.preflight,
+            args.release_check,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+            bool(args.tmdb_id),
+            bool(args.media_type),
+        )
+    ):
+        print(
+            "Configuration error: --capture-replay must run as a standalone diagnostic",
+            file=sys.stderr,
+        )
+        return 2
     if args.mapping_diagnose and any(
         (
             args.asset_audit,
@@ -1664,6 +1812,7 @@ def main(argv=None):
             args.plex_metadata_unlock,
             args.identity_inspect,
             args.explain_item,
+            args.capture_replay,
         )
     ):
         print(
@@ -1780,6 +1929,7 @@ def main(argv=None):
                 or args.mapping_diagnose
                 or args.identity_inspect
                 or args.explain_item
+                or args.capture_replay
                 or args.compatibility_check
                 or args.release_check
             ),
@@ -1864,6 +2014,35 @@ def main(argv=None):
             f"{unresolved} require review."
         )
         print(f"Report saved to {report}")
+        return 0
+    if args.capture_replay:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            records, _explanation_report = asyncio.run(
+                item_explanation_connectors(
+                    config,
+                    config.get("_execution", {}).get("rating_keys", []),
+                    write_report=False,
+                )
+            )
+            report = write_sanitized_replay_capture(
+                records,
+                retention=report_retention(config),
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
+            )
+            print(f"Replay capture failed: {message}", file=sys.stderr)
+            return 1
+        finally:
+            _plex_cache.clear()
+            tmdb_response_cache.reset_memory()
+        print(f"Sanitized replay captured for {len(records)} item(s).")
+        print(f"JSON report saved to {report}")
         return 0
     if args.identity_inspect:
         try:
