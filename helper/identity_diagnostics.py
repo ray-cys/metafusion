@@ -8,9 +8,10 @@ from pathlib import Path
 from helper.build_info import build_info
 from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
 from helper.identity import metadata_key_for_meta, plex_identity_fingerprint
-from helper.io import atomic_write_text
 from helper.plex import get_plex_metadata, load_plex_library_inventory
 from helper.provider_mappings import resolve_split_series_mapping
+from helper.report_identity import item_report_record, item_report_records
+from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import inspect_identity_binding
 from helper.tmdb import (
     resolve_tmdb_id,
@@ -287,34 +288,39 @@ async def diagnose_identity(item, config, session=None, *, identity_counts=None,
     else:
         confidence = "medium"
 
-    return {
-        "status": "accepted" if confidence in {"high", "medium"} else confidence,
-        "library": meta.get("library_name") or "Unknown library",
-        "rating_key": str(meta.get("ratingKey") or "unknown"),
-        "media_type": media_type,
-        "plex": {
-            "localized_title": meta.get("title"),
-            "original_title": getattr(item, "originalTitle", None),
-            "year": meta.get("year"),
-            "guids": _provider_guids(item),
-            "tmdb_id": provider_tmdb_id,
-            "imdb_id": meta.get("imdb_id"),
-            "tvdb_id": meta.get("tvdb_id"),
-            "fingerprint": fingerprint,
-            "edition": meta.get("edition_title"),
+    return item_report_record(
+        {
+            "status": "accepted" if confidence in {"high", "medium"} else confidence,
+            "library": meta.get("library_name") or "Unknown library",
+            "rating_key": str(meta.get("ratingKey") or "unknown"),
+            "media_type": media_type,
+            "plex": {
+                "localized_title": meta.get("title"),
+                "original_title": getattr(item, "originalTitle", None),
+                "year": meta.get("year"),
+                "guids": _provider_guids(item),
+                "tmdb_id": provider_tmdb_id,
+                "imdb_id": meta.get("imdb_id"),
+                "tvdb_id": meta.get("tvdb_id"),
+                "fingerprint": fingerprint,
+                "edition": meta.get("edition_title"),
+            },
+            "selection": {
+                "tmdb_id": tmdb_id,
+                "source": source,
+                "confidence": confidence,
+                "external_id_reason": consensus_reason,
+                "identity_reason": identity_reason,
+            },
+            "tmdb": _tmdb_names(details, media_type),
+            "binding": binding,
+            "metadata_destination": _metadata_destination(config, meta),
+            "artwork_destinations": _artwork_destinations(config, meta),
         },
-        "selection": {
-            "tmdb_id": tmdb_id,
-            "source": source,
-            "confidence": confidence,
-            "external_id_reason": consensus_reason,
-            "identity_reason": identity_reason,
-        },
-        "tmdb": _tmdb_names(details, media_type),
-        "binding": binding,
-        "metadata_destination": _metadata_destination(config, meta),
-        "artwork_destinations": _artwork_destinations(config, meta),
-    }
+        meta,
+        tmdb_id=tmdb_id,
+        identity_source=source,
+    )
 
 
 def _display(value):
@@ -322,13 +328,15 @@ def _display(value):
 
 
 def write_identity_inspection_report(records, *, base_dir=None, retention=10):
+    records = item_report_records(records)
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"identity-inspection-{timestamp}.txt"
     current = build_info()
     lines = [
         "MetaFusion read-only Plex/TMDb identity and binding inspection",
-        f"Generated: {datetime.now(timezone.utc).isoformat()}",
+        f"Generated: {generated.isoformat()}",
         f"Version: {current['version']}",
         f"Commit: {current['commit']}",
         f"Items: {len(records)}",
@@ -421,13 +429,14 @@ def write_identity_inspection_report(records, *, base_dir=None, retention=10):
                 f"reason={_display(event.get('reason'))}"
             )
         lines.append("")
-    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
-    reports = sorted(report_dir.glob("identity-inspection-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)) :]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+    write_diagnostic_report(
+        path,
+        "\n".join(lines).rstrip() + "\n",
+        report_type="identity_inspection",
+        data={"items": records},
+        generated_at=generated,
+    )
+    retain_diagnostic_reports(report_dir, "identity-inspection", retention)
     return path
 
 

@@ -13,10 +13,23 @@ from helper.config import (
     SECRET_FILE_BINDINGS,
     report_retention,
 )
-from helper.io import atomic_write_text
+from helper.io import sha256_file
+from helper.report_identity import item_report_record, item_report_records
+from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import SCHEMA_VERSION as STATE_SCHEMA_VERSION
 from helper.state_db import STATE_DATABASE
 from helper.tmdb_cache import PersistentTTLCache
+
+
+def _write_report(path, lines, report_type, data, retention):
+    path = write_diagnostic_report(
+        path,
+        "\n".join(lines).rstrip() + "\n",
+        report_type=report_type,
+        data=data,
+    )
+    retain_diagnostic_reports(path.parent, path.stem.rsplit("-", 2)[0], retention)
+    return path
 
 
 def _flatten_metadata_fields(value, prefix=()):
@@ -51,6 +64,7 @@ def record_kometa_metadata_audit(
     existing,
     generated,
     diagnostics=None,
+    identity=None,
 ):
     """Record field-level TMDb-to-Kometa comparisons without retaining values."""
     if not config.get("_execution", {}).get("metadata_audit", False):
@@ -71,7 +85,7 @@ def record_kometa_metadata_audit(
             state = "different"
             action = "update"
         records.append(
-            {
+            item_report_record({
                 "library": library,
                 "media_type": media_type,
                 "title": title,
@@ -81,12 +95,12 @@ def record_kometa_metadata_audit(
                 "policy": "kometa_merge",
                 "proposed_action": action,
                 "target": "Kometa YAML",
-            }
+            }, identity)
         )
     removed = int((diagnostics or {}).get("deprecated_removed", 0))
     if removed:
         records.append(
-            {
+            item_report_record({
                 "library": library,
                 "media_type": media_type,
                 "title": title,
@@ -96,7 +110,7 @@ def record_kometa_metadata_audit(
                 "policy": "kometa_schema",
                 "proposed_action": f"remove ({removed})",
                 "target": "Kometa YAML",
-            }
+            }, identity)
         )
     return len(records)
 
@@ -116,7 +130,7 @@ def write_metadata_audit_report(
     path = report_dir / f"metadata-audit-{timestamp}.txt"
     current_build = build_info()
     ordered = sorted(
-        (record for record in (records or []) if isinstance(record, dict)),
+        item_report_records(records),
         key=lambda record: (
             str(record.get("library") or "").casefold(),
             str(record.get("title") or "").casefold(),
@@ -130,9 +144,8 @@ def write_metadata_audit_report(
         counts[state] = counts.get(state, 0) + 1
     relevant_gaps = [
         gap
-        for gap in (gaps or [])
-        if isinstance(gap, dict)
-        and str(gap.get("category") or "").startswith(("identity", "tmdb"))
+        for gap in item_report_records(gaps)
+        if str(gap.get("category") or "").startswith(("identity", "tmdb"))
     ]
     lines = [
         "MetaFusion read-only metadata audit",
@@ -174,26 +187,43 @@ def write_metadata_audit_report(
             f"{gap.get('media_type') or 'Unknown'} | "
             f"{gap.get('title') or 'Unknown title'}{detail}"
         )
-    atomic_write_text(path, "\n".join(lines) + "\n")
-    reports = sorted(report_dir.glob("metadata-audit-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)) :]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
-    return path
-
-
-def _retain_reports(report_dir, pattern, retention):
-    reports = sorted(report_dir.glob(pattern), reverse=True)
-    for stale in reports[max(1, int(retention)) :]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+    return _write_report(
+        path,
+        lines,
+        "metadata_audit",
+        {
+            "mode": mode,
+            "field_decisions": ordered,
+            "identity_source_gaps": relevant_gaps,
+            "summary": counts,
+        },
+        retention,
+    )
 
 
 def _append_artwork_selection_details(lines, candidate, indent="  "):
+    if candidate.get("provider"):
+        lines.append(
+            f"{indent}provider: {candidate.get('provider')}"
+            + (
+                f" | image ID={candidate.get('provider_image_id')}"
+                if candidate.get("provider_image_id")
+                else ""
+            )
+        )
+    if candidate.get("selection_reason"):
+        lines.append(
+            f"{indent}selection reason: {candidate.get('selection_reason')}"
+        )
+    attempts = candidate.get("provider_attempts") or []
+    if attempts:
+        lines.append(f"{indent}providers attempted:")
+        for attempt in attempts:
+            lines.append(
+                f"{indent}- {attempt.get('provider', 'unknown')}: "
+                f"{attempt.get('status', 'unknown')} "
+                f"({attempt.get('candidates', 0)} candidate(s))"
+            )
     components = candidate.get("quality_components") or {}
     if components:
         lines.append(
@@ -234,8 +264,9 @@ def write_change_plan_report(
     timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"change-plan-{timestamp}.txt"
     current_build = build_info()
-    metadata = [item for item in (metadata_records or []) if isinstance(item, dict)]
-    assets = [item for item in (asset_records or []) if isinstance(item, dict)]
+    metadata = item_report_records(metadata_records)
+    assets = item_report_records(asset_records)
+    normalized_gaps = item_report_records(gaps)
     libraries = [item for item in (library_records or []) if isinstance(item, dict)]
     actionable_metadata = sum(
         str(item.get("proposed_action") or "none")
@@ -268,11 +299,16 @@ def write_change_plan_report(
         f"- Libraries inspected: {len(libraries)}",
         f"- Metadata field decisions: {len(metadata)} ({actionable_metadata} actionable)",
         f"- Artwork decisions: {len(assets)} ({actionable_assets} actionable)",
-        f"- Gaps/rejections: {len(gaps or [])}",
+        f"- Gaps/rejections: {len(normalized_gaps)}",
         "- Cleanup candidates: "
         f"titles={cleanup_value('titles')}, seasons={cleanup_value('seasons')}, "
         f"episodes={cleanup_value('episodes')}, assets={cleanup_value('assets')}, "
-        f"cache_entries={cleanup_value('cache_entries')}",
+        f"cache_entries={cleanup_value('cache_entries')}, "
+        f"yaml_entries={cleanup_value('yaml_entries')}, "
+        f"pending_confirmation={cleanup_value('candidates_pending')}, "
+        f"assets_preserved={cleanup_value('assets_preserved')}, "
+        f"assets_unchanged={cleanup_value('assets_skipped')}, "
+        f"failures={cleanup_value('failures')}",
         "",
         "Libraries",
     ]
@@ -330,9 +366,33 @@ def write_change_plan_report(
             f"ownership={record.get('ownership') or 'unknown'}"
         )
         _append_artwork_selection_details(lines, candidate)
-    atomic_write_text(path, "\n".join(lines) + "\n")
-    _retain_reports(report_dir, "change-plan-*.txt", retention)
-    return path
+    return _write_report(
+        path,
+        lines,
+        "change_plan",
+        {
+            "mode": mode,
+            "libraries": libraries,
+            "metadata": metadata,
+            "artwork": assets,
+            "gaps": normalized_gaps,
+            "cleanup": {
+                name: cleanup_value(name)
+                for name in (
+                    "titles",
+                    "seasons",
+                    "episodes",
+                    "assets",
+                    "cache_entries",
+                    "yaml_entries",
+                    "assets_preserved",
+                    "assets_skipped",
+                    "failures",
+                )
+            },
+        },
+        retention,
+    )
 
 
 def write_library_asset_audit_report(
@@ -350,7 +410,8 @@ def write_library_asset_audit_report(
     timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"library-asset-audit-{timestamp}.txt"
     libraries = [item for item in (library_records or []) if isinstance(item, dict)]
-    assets = [item for item in (asset_records or []) if isinstance(item, dict)]
+    assets = item_report_records(asset_records)
+    normalized_gaps = item_report_records(gaps)
     current_build = build_info()
     action_counts = {}
     for record in assets:
@@ -364,7 +425,7 @@ def write_library_asset_audit_report(
         f"Mode: {mode}",
         f"Libraries discovered: {len(libraries)}",
         f"Artwork candidates: {len(assets)}",
-        f"Gaps/rejections: {len(gaps or [])}",
+        f"Gaps/rejections: {len(normalized_gaps)}",
         "No metadata, artwork, cache, ownership, retry, or incremental state was written.",
         "",
         "Libraries",
@@ -404,9 +465,19 @@ def write_library_asset_audit_report(
             f"ownership={record.get('ownership') or 'unknown'}"
         )
         _append_artwork_selection_details(lines, candidate)
-    atomic_write_text(path, "\n".join(lines) + "\n")
-    _retain_reports(report_dir, "library-asset-audit-*.txt", retention)
-    return path
+    return _write_report(
+        path,
+        lines,
+        "library_asset_audit",
+        {
+            "mode": mode,
+            "libraries": libraries,
+            "artwork": assets,
+            "gaps": normalized_gaps,
+            "action_summary": action_counts,
+        },
+        retention,
+    )
 
 
 def write_compatibility_report(result, *, base_dir=None, retention=10):
@@ -439,9 +510,7 @@ def write_compatibility_report(result, *, base_dir=None, retention=10):
     if result.get("warnings"):
         lines.extend(("", "Warnings"))
         lines.extend(f"- {warning}" for warning in result["warnings"])
-    atomic_write_text(path, "\n".join(lines) + "\n")
-    _retain_reports(report_dir, "compatibility-*.txt", retention)
-    return path
+    return _write_report(path, lines, "compatibility", result, retention)
 
 
 def _database_status(path):
@@ -494,7 +563,7 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
             str(gap.get("asset_type") or "metadata"),
             str(gap.get("category") or "unknown"),
         )
-        unique[key] = str(gap.get("detail") or "")
+        unique[key] = item_report_record(gap)
     if not unique:
         return None
 
@@ -512,22 +581,21 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
     ]
     for key in sorted(unique, key=lambda value: tuple(part.casefold() for part in value)):
         library, media_type, title, asset_type, category = key
-        detail = unique[key]
+        detail = unique[key].get("detail") or ""
         line = (
             f"- [{category}] {library} | {media_type} | {title} | {asset_type}"
         )
         if detail:
             line += f" | {detail}"
         lines.append(line)
-    atomic_write_text(path, "\n".join(lines) + "\n")
-
-    reports = sorted(report_dir.glob("artwork-gaps-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)):]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
-    return path
+    records = [record for _key, record in sorted(unique.items())]
+    return _write_report(
+        path,
+        lines,
+        "artwork_gaps",
+        {"entries": records},
+        retention,
+    )
 
 
 def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
@@ -538,7 +606,7 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
     path = report_dir / f"asset-audit-{timestamp}.txt"
     current_build = build_info()
     ordered = sorted(
-        (record for record in (records or []) if isinstance(record, dict)),
+        item_report_records(records),
         key=lambda record: (
             str(record.get("library") or "").casefold(),
             str(record.get("title") or "").casefold(),
@@ -546,13 +614,14 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
             int(record.get("season_number") or -1),
         ),
     )
+    normalized_gaps = item_report_records(gaps)
     lines = [
         "MetaFusion read-only asset audit",
         f"Generated: {generated.isoformat()}",
         f"Version: {current_build['version']}",
         f"Commit: {current_build['commit']}",
         f"Candidates: {len(ordered)}",
-        f"Gaps: {len(gaps or [])}",
+        f"Gaps: {len(normalized_gaps)}",
         "",
         "Candidate decisions",
     ]
@@ -582,11 +651,9 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
         )
         _append_artwork_selection_details(lines, candidate)
     lines.extend(("", "Missing, rejected, and failed candidates"))
-    if not gaps:
+    if not normalized_gaps:
         lines.append("- none")
-    for gap in gaps or []:
-        if not isinstance(gap, dict):
-            continue
+    for gap in normalized_gaps:
         detail = f" | {gap.get('detail')}" if gap.get("detail") else ""
         lines.append(
             f"- [{gap.get('category') or 'unknown'}] "
@@ -595,19 +662,102 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
             f"{gap.get('title') or 'Unknown title'} | "
             f"{gap.get('asset_type') or 'metadata'}{detail}"
         )
-    atomic_write_text(path, "\n".join(lines) + "\n")
-
-    reports = sorted(report_dir.glob("asset-audit-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)):]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
-    return path
+    return _write_report(
+        path,
+        lines,
+        "asset_audit",
+        {"candidates": ordered, "gaps": normalized_gaps},
+        retention,
+    )
 
 
-def write_destination_history_report(cache, base_dir=None, retention=10):
-    """Report renamed artwork destinations without deleting either location."""
+def _managed_asset_roots(config):
+    if not config:
+        return []
+    mode = str(config.get("settings", {}).get("mode", "kometa")).lower()
+    if mode == "kometa":
+        return [
+            (
+                Path(config.get("settings", {}).get("path", ".")) / "assets"
+            ).resolve(strict=False)
+        ]
+    roots = []
+    for mapping in config.get("plex", {}).get("path_mappings", []):
+        _source, separator, destination = str(mapping).partition("=>")
+        if separator and destination.strip():
+            roots.append(Path(destination.strip()).resolve(strict=False))
+    return roots
+
+
+def _current_asset_destinations(cache):
+    destinations = set()
+    for entry in cache.values():
+        if not isinstance(entry, dict):
+            continue
+        paths = [entry.get("poster_path"), entry.get("background_path")]
+        paths.extend(
+            season.get("season_path")
+            for season in (entry.get("seasons") or {}).values()
+            if isinstance(season, dict)
+        )
+        destinations.update(
+            Path(str(path)).resolve(strict=False) for path in paths if path
+        )
+    return destinations
+
+
+def _reconcile_managed_destination(
+    event,
+    config,
+    current_checksum=None,
+    claimed_destinations=None,
+):
+    """Remove only a checksum-proven old managed file inside a configured root."""
+    if not config:
+        return "preserved", "reconciliation was not enabled"
+    if str(config.get("assets", {}).get("update_policy", "managed")).lower() != "managed":
+        return "preserved", "artwork policy is not managed"
+    old_path = Path(str(event.get("previous_destination") or "")).resolve(
+        strict=False
+    )
+    new_path = Path(str(event.get("new_destination") or "")).resolve(strict=False)
+    if old_path == new_path:
+        return "preserved", "old and current destinations resolve to the same file"
+    if old_path in (claimed_destinations or set()):
+        return "preserved", "old destination is still claimed by managed state"
+    roots = _managed_asset_roots(config)
+    if not any(old_path.is_relative_to(root) for root in roots):
+        return "preserved", "old destination is outside configured managed roots"
+    if not new_path.is_file() or new_path.is_symlink():
+        return "preserved", "current destination is not a regular installed file"
+    if not old_path.exists():
+        return "already_absent", "old destination no longer exists"
+    if not old_path.is_file() or old_path.is_symlink():
+        return "preserved", "old destination is not a regular managed file"
+    previous_checksum = str(event.get("previous_checksum") or "")
+    if not previous_checksum:
+        return "preserved", "no prior managed checksum is available"
+    if not current_checksum:
+        return "preserved", "no current managed checksum is available"
+    try:
+        if sha256_file(new_path) != str(current_checksum):
+            return "preserved", "current destination no longer matches managed state"
+        if sha256_file(old_path) != previous_checksum:
+            return "preserved", "old destination was modified after MetaFusion wrote it"
+        old_path.unlink()
+    except OSError as error:
+        return "preserved", f"safe removal failed: {type(error).__name__}"
+    return "removed", "checksum-proven obsolete managed destination"
+
+
+def write_destination_history_report(
+    cache,
+    base_dir=None,
+    retention=10,
+    *,
+    config=None,
+):
+    """Report and safely reconcile checksum-proven renamed managed artwork."""
     pending = []
     for cache_key, entry in cache.items():
         if not isinstance(entry, dict):
@@ -630,9 +780,12 @@ def write_destination_history_report(cache, base_dir=None, retention=10):
         f"Commit: {current_build['commit']}",
         f"Entries: {len(pending)}",
         "",
-        "Old destinations are reported for manual review and are never deleted automatically.",
+        "Only checksum-proven old files inside configured managed roots are removed.",
+        "Modified, unproven, symlinked, or out-of-scope files are preserved.",
         "",
     ]
+    results = []
+    claimed_destinations = _current_asset_destinations(cache)
     for cache_key, entry, _index, event in sorted(
         pending,
         key=lambda value: (
@@ -643,27 +796,156 @@ def write_destination_history_report(cache, base_dir=None, retention=10):
         asset_label = str(event.get("asset_type") or "artwork")
         if event.get("season_number") is not None:
             asset_label += f" season {event['season_number']}"
+        asset_type = str(event.get("asset_type") or "")
+        if asset_type == "season":
+            current_record = (entry.get("seasons") or {}).get(
+                str(event.get("season_number")), {}
+            )
+            current_checksum = current_record.get("season_checksum")
+        else:
+            current_checksum = entry.get(f"{asset_type}_checksum")
+        status, reason = _reconcile_managed_destination(
+            event,
+            config,
+            current_checksum,
+            claimed_destinations,
+        )
+        event["reconciliation_status"] = status
+        event["reconciliation_reason"] = reason
+        event["reconciled_at"] = generated_at
+        results.append(
+            item_report_record({
+                "cache_key": cache_key,
+                "title": entry.get("title") or cache_key,
+                "year": entry.get("year"),
+                "asset_type": event.get("asset_type") or "artwork",
+                "season_number": event.get("season_number"),
+                "previous_destination": event.get("previous_destination"),
+                "new_destination": event.get("new_destination"),
+                "status": status,
+                "reason": reason,
+            }, entry)
+        )
         lines.append(
             f"- {entry.get('title') or cache_key} ({entry.get('year') or 'unknown year'}) "
             f"| {asset_label} | old: {event.get('previous_destination')} "
-            f"| current: {event.get('new_destination')}"
+            f"| current: {event.get('new_destination')} | {status}: {reason}"
         )
-    atomic_write_text(path, "\n".join(lines) + "\n")
 
     changed = {}
-    for cache_key, entry, index, _event in pending:
+    for cache_key, entry, index, event in pending:
         updated = changed.setdefault(cache_key, copy.deepcopy(entry))
         updated["destination_history"][index]["reported_at"] = generated_at
+        updated["destination_history"][index]["reconciled_at"] = event.get(
+            "reconciled_at"
+        )
+        updated["destination_history"][index]["reconciliation_status"] = event.get(
+            "reconciliation_status"
+        )
+        updated["destination_history"][index]["reconciliation_reason"] = event.get(
+            "reconciliation_reason"
+        )
     for cache_key, entry in changed.items():
         cache[cache_key] = entry
+    return _write_report(
+        path,
+        lines,
+        "destination_history",
+        {"entries": results},
+        retention,
+    )
 
-    reports = sorted(report_dir.glob("destination-history-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)):]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
-    return path
+
+def write_unresolved_work_report(records, base_dir=None, retention=10):
+    """Write the durable open/resolved problem ledger without provider secrets."""
+    records = item_report_records(records)
+    if not records:
+        return None
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    path = report_dir / (
+        f"unresolved-work-{generated.strftime('%Y%m%d-%H%M%S%f')}.txt"
+    )
+    open_records = [record for record in records if record.get("status") == "open"]
+    resolved_records = [
+        record for record in records if record.get("status") == "resolved"
+    ]
+    lines = [
+        "MetaFusion persistent unresolved-work ledger",
+        f"Generated: {generated.isoformat()}",
+        f"Open: {len(open_records)}",
+        f"Resolved history: {len(resolved_records)}",
+        "",
+        "Open work",
+    ]
+    if not open_records:
+        lines.append("- none")
+    for record in open_records:
+        lines.append(
+            f"- [{record.get('category')}] {record.get('library_name')} | "
+            f"{record.get('media_type')} | {record.get('title')} | "
+            f"{record.get('asset_type')} | occurrences={record.get('occurrences')} | "
+            f"last seen={record.get('last_seen')}"
+            + (f" | {record.get('detail')}" if record.get("detail") else "")
+        )
+    lines.extend(("", "Recently resolved"))
+    for record in resolved_records[:100]:
+        lines.append(
+            f"- {record.get('library_name')} | {record.get('title')} | "
+            f"{record.get('asset_type')} | resolved={record.get('resolved_at')}"
+        )
+    if not resolved_records:
+        lines.append("- none")
+    return _write_report(
+        path,
+        lines,
+        "unresolved_work",
+        {"entries": records},
+        retention,
+    )
+
+
+def write_adoption_audit_report(records, base_dir=None, retention=10):
+    """Report post-write local installation and ownership verification."""
+    records = item_report_records(records)
+    if not records:
+        return None
+    report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
+    generated = datetime.now(timezone.utc)
+    path = report_dir / (
+        f"adoption-audit-{generated.strftime('%Y%m%d-%H%M%S%f')}.txt"
+    )
+    counts = {}
+    for record in records:
+        status = str(record.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    lines = [
+        "MetaFusion post-application artwork adoption audit",
+        f"Generated: {generated.isoformat()}",
+        f"Entries: {len(records)}",
+        "Plex visibility is reported as pending when normal Plex discovery is still required; no forced refresh is performed.",
+        "",
+        "Summary",
+    ]
+    lines.extend(f"- {status}: {count}" for status, count in sorted(counts.items()))
+    lines.extend(("", "Applied artwork"))
+    for record in records:
+        asset = str(record.get("asset_type") or "artwork")
+        if record.get("season_number") is not None:
+            asset += f" season {record.get('season_number')}"
+        lines.append(
+            f"- [{record.get('status')}] {record.get('library')} | "
+            f"{record.get('title')} | {asset} | provider={record.get('provider')} | "
+            f"Plex visibility={record.get('plex_visibility')} | "
+            f"destination={record.get('destination')}"
+        )
+    return _write_report(
+        path,
+        lines,
+        "adoption_audit",
+        {"summary": counts, "entries": records},
+        retention,
+    )
 
 
 def write_support_report(config, validation_errors=None, base_dir=None, environ=None):
@@ -703,6 +985,7 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
         f"Secret-file bindings set: {', '.join(sorted(secret_file_names)) or 'none'}",
         f"State database: {_database_status(STATE_DATABASE)}",
         f"TMDb cache database: {_tmdb_cache_status(CACHE_DIR / 'tmdb_cache.sqlite3')}",
+        f"Fanart.tv cache database: {_tmdb_cache_status(CACHE_DIR / 'fanart_cache.sqlite3')}",
         "",
         "Configuration validation",
     ]
@@ -717,12 +1000,30 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
         (
             "",
             "Attach this file with the redacted Plex metadata report and relevant log lines.",
-            "Do not attach config.yml, container inspection output, Plex tokens, or TMDb keys.",
+            "Do not attach config.yml, container inspection output, tokens, or API keys.",
         )
     )
-    atomic_write_text(path, "\n".join(lines))
-    _retain_reports(report_dir, "support-report-*.txt", report_retention(config))
-    return path
+    return _write_report(
+        path,
+        lines,
+        "support_report",
+        {
+            "build": current_build,
+            "python": platform.python_version(),
+            "platform": f"{platform.system()} {platform.release()}",
+            "architecture": platform.machine(),
+            "mode": settings.get("mode"),
+            "dry_run": bool(settings.get("dry_run")),
+            "configured_library_count": len(config.get("plex_libraries", [])),
+            "path_mapping_count": len(config.get("plex", {}).get("path_mappings", [])),
+            "plex_metadata_enabled": bool(plex_metadata.get("enabled")),
+            "plex_metadata_policy": plex_metadata.get("policy"),
+            "environment_bindings": sorted(environment_names),
+            "secret_file_bindings": sorted(secret_file_names),
+            "configuration_error_count": len(errors),
+        },
+        report_retention(config),
+    )
 
 
 def write_release_qualification_report(
@@ -741,6 +1042,7 @@ def write_release_qualification_report(
     current_build = build_info(environ)
     state_status = _database_status(STATE_DATABASE)
     cache_status = _tmdb_cache_status(CACHE_DIR / "tmdb_cache.sqlite3")
+    fanart_cache_status = _tmdb_cache_status(CACHE_DIR / "fanart_cache.sqlite3")
     path_advice = (preflight or {}).get("path_advice") or {}
     unresolved = sum(
         record.get("status") == "unresolved"
@@ -770,6 +1072,11 @@ def write_release_qualification_report(
             cache_status == "missing" or "health ok" in cache_status,
             cache_status,
         ),
+        (
+            "Disposable Fanart.tv cache",
+            fanart_cache_status == "missing" or "health ok" in fanart_cache_status,
+            fanart_cache_status,
+        ),
     ]
     passed = all(check[1] for check in checks)
     settings = config.get("settings", {})
@@ -785,6 +1092,7 @@ def write_release_qualification_report(
         f"Run mode: {settings.get('mode')}",
         f"State schema supported: {STATE_SCHEMA_VERSION}",
         f"TMDb cache schema supported: {PersistentTTLCache.SCHEMA_VERSION}",
+        f"Fanart.tv cache schema supported: {PersistentTTLCache.SCHEMA_VERSION}",
         "",
         "Automated checks",
     ]
@@ -802,10 +1110,19 @@ def write_release_qualification_report(
             "This report contains no connector URLs, tokens, keys, library names, or host paths.",
         )
     )
-    atomic_write_text(path, "\n".join(lines) + "\n")
-    _retain_reports(
-        report_dir,
-        "release-qualification-*.txt",
+    report = _write_report(
+        path,
+        lines,
+        "release_qualification",
+        {
+            "passed": passed,
+            "build": current_build,
+            "mode": settings.get("mode"),
+            "checks": [
+                {"name": name, "passed": success, "detail": detail}
+                for name, success, detail in checks
+            ],
+        },
         report_retention(config),
     )
-    return path, passed
+    return report, passed

@@ -58,6 +58,9 @@ assets:
   update_policy: managed
 cleanup:
   run_cleanup: false
+  confirmation_scans: 2
+  grace_hours: 48.0
+  plex_remove_managed_artwork: false
 runtime:
   max_concurrency: 0
   request_timeout: 30.0

@@ -2,6 +2,9 @@
 
 This guide installs MetaFusion with the repository's hardened
 `docker-compose.yml`. For Unraid, use the separate [Unraid guide](unraid.md).
+Review the [operation-mode guide](modes.md) before choosing output paths or
+enabling direct Plex metadata. All guides are listed in the
+[documentation index](index.md).
 
 ## 1. Prepare the project
 
@@ -93,6 +96,9 @@ reachable from the MetaFusion container.
 The complete variable list is in [Configuration](configuration.md). Keep
 `PLEX_TOKEN` and `TMDB_API_KEY` out of screenshots and support attachments.
 The optional `*_FILE` settings can read credentials from mounted secret files.
+
+Fanart.tv artwork fallback uses MetaFusion's bundled project integration key;
+no Fanart.tv environment variable is required.
 
 Run `--preflight` after mounting Plex-mode media. It reports discovered
 libraries and may suggest a `PLEX_PATH_MAPPINGS` value when a sampled Plex path

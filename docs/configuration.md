@@ -2,7 +2,9 @@
 
 MetaFusion supports environment variables, secret files, and
 `/config/config.yml`. The supplied Docker Compose and Unraid templates expose
-the same application settings.
+the same application settings. Choose the intended behavior first in
+[Kometa and Plex operation modes](modes.md); use the
+[documentation index](index.md) for task-oriented guides.
 
 The exhaustive [generated configuration table](configuration.generated.md),
 `.env.example`, `config_template.yml`, Docker Compose environment block, and
@@ -19,8 +21,8 @@ Values are merged in this order, with later sources taking priority:
 4. Non-empty environment variables.
 
 Blank environment bindings are ignored, allowing `config.yml` or defaults to
-supply the value. A non-empty `PLEX_TOKEN` or `TMDB_API_KEY` takes priority over
-its secret file.
+supply the value. A non-empty direct token or API key takes priority over its
+matching secret file.
 
 The container maintains `/config/config_template.yml` as a value-free
 reference. It never copies environment values or secrets into that file and
@@ -54,8 +56,16 @@ effective configuration without contacting Plex or TMDb.
 | `TMDB_EPISODE_OVERRIDES` | `{}` | JSON deterministic Plex-episode to TMDb-episode corrections for verified numbering exceptions. |
 | `KOMETA_PATH` | `/kometa` | Kometa-mode container output root. |
 
-Tokens and keys are redacted from MetaFusion logs. They remain visible to
-Docker or Unraid administrators when supplied as environment variables.
+Tokens and user-supplied keys are redacted from MetaFusion logs. They remain
+visible to Docker or Unraid administrators when supplied as environment
+variables. Fanart.tv fallback uses MetaFusion's bundled application project
+key and needs no user configuration. See [Artwork providers](artwork-providers.md)
+for its source order, reliability behavior, and attribution.
+
+Use Plex's guide for [finding an authentication
+token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+and TMDb's [API documentation](https://developer.themoviedb.org/docs) when
+creating the two required user credentials.
 
 ## Scheduling and processing
 
@@ -78,6 +88,9 @@ Docker or Unraid administrators when supplied as environment variables.
 | `RUN_SEASON` | `True` | Generate season posters, including Specials. |
 | `RUN_BACKGROUND` | `False` | Generate movie and show backgrounds. |
 | `RUN_CLEANUP` | `False` | Enable guarded full-scan cleanup. Always test with dry-run. |
+| `CLEANUP_CONFIRMATION_SCANS` | `2` | Require this many separate authoritative full scans to confirm an absence before cleanup becomes eligible. |
+| `CLEANUP_GRACE_HOURS` | `48` | Keep a cleanup candidate pending for at least this many hours after first detection. |
+| `PLEX_CLEANUP_MANAGED_ARTWORK` | `False` | Plex mode only. Opt in to deleting exact checksum-proven MetaFusion-owned local artwork for confirmed stale items; state-only cleanup remains the default. |
 
 ## Policy controls
 
@@ -108,7 +121,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAX_CONCURRENCY` | `0` | `0` enables cgroup-aware adaptive tuning. A positive value is an optional hard ceiling; Plex, TMDb, nested artwork, and item lanes retain their lower internal safety caps. |
+| `MAX_CONCURRENCY` | `0` | `0` enables cgroup-aware adaptive tuning. A positive value is an optional hard ceiling; Plex, TMDb, Fanart.tv, nested artwork, and item lanes retain their lower internal safety caps. |
 | `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds; must not exceed `REQUEST_TIMEOUT`. |
 | `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |
@@ -140,11 +153,11 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
 | `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
 | `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster adaptive base interval. |
-| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
-| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
-| `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for HTTP 404 results; 429 and 5xx responses are never cached. |
-| `TMDB_CACHE_MAX_ENTRIES` | `0` | Maximum persisted responses; `0` chooses a storage-aware automatic limit. |
-| `TMDB_CACHE_MAX_MB` | `0` | Compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb and Fanart.tv responses in separate SQLite caches. |
+| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb and Fanart.tv response lifetime. |
+| `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for either provider's HTTP 404 results; 429 and 5xx responses are never cached. |
+| `TMDB_CACHE_MAX_ENTRIES` | `0` | Per-provider maximum persisted responses; `0` chooses a storage-aware automatic limit. |
+| `TMDB_CACHE_MAX_MB` | `0` | Per-provider compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
@@ -159,6 +172,11 @@ rechecked sooner and stable unchanged candidates back off automatically; these
 settings are the bases and optional bounds for that behavior. A due interval
 makes an item eligible for evaluation; `ASSET_UPDATE_POLICY` and quality rules
 still determine whether an existing file can be replaced.
+
+When the normal TMDb → Fanart.tv → Plex → best-available chain has no candidate,
+MetaFusion automatically relaxes artwork language selection only for a missing
+destination. This safety fallback has no setting and never replaces an existing
+file, including under `ASSET_UPDATE_POLICY=overwrite`.
 
 The two mapping environment variables must contain JSON objects. Equivalent
 YAML can be placed under `tmdb` in `config.yml`:

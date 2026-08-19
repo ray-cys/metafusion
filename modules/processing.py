@@ -23,7 +23,8 @@ from helper.incremental import child_inventory_fingerprint, plan_items
 from helper.io import sha256_file
 from helper.logging import (
     PlexMetadataProgress,
-    log_library_summary,
+    format_fields,
+    log_item_outcomes,
     log_processing_event,
 )
 from helper.performance import tracker_for
@@ -33,6 +34,8 @@ from helper.state_db import (
     clear_item_retries,
     load_due_item_retries,
     load_identity_binding,
+    load_identity_overrides,
+    load_item_exceptions,
     mark_items_started,
     prune_plex_metadata_library,
     record_item_failure,
@@ -44,6 +47,7 @@ from modules.kometa import (
     validate_metadata_document,
     write_kometa_metadata,
 )
+from modules.utils import get_asset_path
 
 
 class ItemProcessingError(RuntimeError):
@@ -126,6 +130,48 @@ def apply_learned_tmdb_identity(meta, *, touch=True, record_mismatch=False):
     meta["tmdb_id"] = str(learned)
     meta["identity_binding_reused"] = True
     return True
+
+
+def apply_manual_tmdb_identity(meta, config):
+    """Apply one explicit durable override before learned or provider identities."""
+    if not isinstance(meta, dict) or meta.get("ratingKey") is None:
+        return False
+    override = (config.get("_identity_overrides_by_rating_key") or {}).get(
+        str(meta.get("ratingKey"))
+    )
+    if not override:
+        return False
+    actual_type = "tv" if str(meta.get("library_type")).lower() in {"tv", "show"} else "movie"
+    if str(override.get("media_type")) != actual_type:
+        return False
+    current = meta.get("tmdb_id")
+    selected = str(override.get("tmdb_id"))
+    if current and str(current) != selected:
+        meta["plex_tmdb_id"] = str(current)
+    meta["tmdb_id"] = selected
+    meta["identity_source"] = "manual_override"
+    meta["manual_identity_override"] = True
+    meta["identity_override_reason"] = override.get("reason")
+    return True
+
+
+def _item_exception_scopes(config, meta):
+    records = (config.get("_item_exceptions_by_rating_key") or {}).get(
+        str(meta.get("ratingKey")), []
+    )
+    return {str(record.get("output_type") or "").lower() for record in records}
+
+
+def _item_exception_seasons(config, meta):
+    records = (config.get("_item_exceptions_by_rating_key") or {}).get(
+        str(meta.get("ratingKey")), []
+    )
+    return {
+        int(record["season_number"])
+        for record in records
+        if record.get("output_type") == "season"
+        and int(record.get("season_number", -1)) >= 0
+    }
 
 
 def _item_failure_label(item):
@@ -227,6 +273,7 @@ async def process_item(
         return None
 
     meta = await get_plex_metadata(plex_item, _plex_config=config.get("plex", {}))
+    apply_manual_tmdb_identity(meta, config)
     title = meta.get("title", "Unknown")
     year = meta.get("year", "Unknown")
     full_title = f"{title} ({year})"
@@ -236,6 +283,25 @@ async def process_item(
     library_type = meta.get("library_type", "unknown")
 
     effective_flags = dict(feature_flags or {})
+    exception_scopes = _item_exception_scopes(config, meta)
+    if "all" in exception_scopes:
+        exception_scopes.update(
+            {"metadata", "plex_metadata", "poster", "background", "season"}
+        )
+    if "metadata" in exception_scopes:
+        effective_flags["metadata_basic"] = False
+        effective_flags["metadata_enhanced"] = False
+    for output in ("poster", "background", "season"):
+        if output in exception_scopes:
+            effective_flags[output] = False
+    item_config = config
+    if exception_scopes or _item_exception_seasons(config, meta):
+        item_config = dict(config)
+        item_config["plex_metadata"] = dict(config.get("plex_metadata", {}))
+        if {"all", "metadata", "plex_metadata"} & exception_scopes:
+            item_config["plex_metadata"]["enabled"] = False
+            effective_flags["plex_metadata"] = False
+        item_config["_excluded_seasons"] = _item_exception_seasons(config, meta)
     artwork_gaps = config.get("_artwork_gaps")
     gap_start = len(artwork_gaps) if isinstance(artwork_gaps, list) else 0
     if work_reasons is not None:
@@ -260,14 +326,14 @@ async def process_item(
     try:
         if library_type == "movie":
             stats = await build_movie(
-                config, consolidated_metadata,
+                item_config, consolidated_metadata,
                 existing_yaml_data=existing_yaml_data, session=session,
                 ignored_fields=ignored_fields, existing_assets=existing_assets,
                 meta=meta, feature_flags=effective_flags
             )
         elif library_type in ("show", "tv"):
             stats = await build_tv(
-                config, consolidated_metadata,
+                item_config, consolidated_metadata,
                 existing_yaml_data=existing_yaml_data, session=session,
                 ignored_fields=ignored_fields, existing_assets=existing_assets,
                 meta=meta, feature_flags=effective_flags
@@ -310,11 +376,11 @@ async def process_item(
     plex_result = await apply_plex_metadata(
         plex_item,
         stats.pop("plex_candidate", None),
-        config,
+        item_config,
         meta,
     )
     stats["plex_metadata_writes"] = plex_result.get("writes", 0)
-    if feature_flags.get("plex_metadata", False):
+    if effective_flags.get("plex_metadata", False):
         stats["metadata_action"] = (
             "failed"
             if plex_result.get("failures")
@@ -332,7 +398,7 @@ async def process_item(
             if hasattr(updated_at, "isoformat")
             else (str(updated_at) if updated_at is not None else None)
         )
-    if feature_flags.get("plex_metadata", False) and not feature_flags.get(
+    if effective_flags.get("plex_metadata", False) and not effective_flags.get(
         "dry_run", False
     ):
         normalized_type = "tv" if library_type == "show" else library_type
@@ -377,6 +443,52 @@ async def process_item(
             stats["_retry_error"] = stats.get("_retry_error") or (
                 "Builder or Plex metadata action reported a recoverable failure"
             )
+    storage_files = []
+    if not effective_flags.get("dry_run", False):
+        storage_targets = []
+        if effective_flags.get("poster", False):
+            storage_targets.append(
+                ("poster", get_asset_path(item_config, meta, asset_type="poster"))
+            )
+        if effective_flags.get("background", False):
+            storage_targets.append(
+                ("background", get_asset_path(item_config, meta, asset_type="background"))
+            )
+        if effective_flags.get("season", False):
+            for season_number in stats.get("season_poster_actions", {}):
+                if season_number is None:
+                    continue
+                storage_targets.append(
+                    (
+                        "season",
+                        get_asset_path(
+                            item_config,
+                            meta,
+                            asset_type="season",
+                            season_number=int(season_number),
+                        ),
+                    )
+                )
+        for asset_type, path in storage_targets:
+            if path is None:
+                continue
+            try:
+                storage_files.append(
+                    {
+                        "asset_type": asset_type,
+                        "path": str(path.resolve()),
+                        "bytes": path.stat().st_size,
+                    }
+                )
+            except OSError:
+                continue
+    stats["storage_files"] = storage_files
+    log_item_outcomes(
+        library_name,
+        full_title,
+        stats,
+        effective_flags,
+    )
     return stats
 
 plex_metadata_dict = {}
@@ -406,10 +518,14 @@ async def process_library(
     season_count = episode_count = 0
     meta_downloaded = meta_upgraded = meta_skipped = meta_failed = 0
     plex_metadata_writes = 0
-    poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_missing = poster_failed = 0
-    background_downloaded = background_upgraded = background_adopted = background_skipped = background_missing = background_failed = 0
-    season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+    poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_not_due = poster_preserved = poster_missing = poster_deferred = poster_failed = 0
+    background_downloaded = background_upgraded = background_adopted = background_skipped = background_not_due = background_preserved = background_missing = background_deferred = background_failed = 0
+    season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_not_due = season_poster_preserved = season_poster_missing = season_poster_deferred = season_poster_failed = 0
+    artwork_provider_writes = Counter()
     artwork_deferred = 0
+    artwork_storage_files = {}
+    artwork_automatic_relaxed = 0
+    artwork_download_failover = 0
 
     server = getattr(library_section, "_server", None)
     server_id = getattr(server, "machineIdentifier", None) or "unknown"
@@ -427,6 +543,16 @@ async def process_library(
         library_uuid=library_uuid,
         library_name=library_name,
     )
+    exception_records = load_item_exceptions(server_id, library_uuid)
+    config["_item_exceptions_by_rating_key"] = {}
+    for record in exception_records:
+        config["_item_exceptions_by_rating_key"].setdefault(
+            str(record.get("rating_key")), []
+        ).append(record)
+    override_records = load_identity_overrides(server_id, library_uuid)
+    config["_identity_overrides_by_rating_key"] = {
+        str(record.get("rating_key")): record for record in override_records
+    }
 
     try:
         library_name = library_section.title
@@ -485,7 +611,9 @@ async def process_library(
         log_processing_event(
             "processing_library_items",
             library_name=library_name,
+            library_items=total_library_items,
             total_items=total_items,
+            scan_mode="full" if full_scan else "incremental",
         )
         if explain_selection:
             target_keys = {
@@ -516,10 +644,7 @@ async def process_library(
                 selected=len(planned_items),
                 skipped=max(0, candidate_count - len(planned_items)),
                 causes=(
-                    ", ".join(
-                        f"{name}={count}"
-                        for name, count in sorted(cause_counts.items())
-                    )
+                    format_fields(*sorted(cause_counts.items()))
                     or "none"
                 ),
             )
@@ -600,12 +725,14 @@ async def process_library(
             total_items = len(planned_items) + len(metadata_errors)
         cache = load_cache()
         for meta in preloaded_metadata:
-            apply_cached_tmdb_recovery(meta, cache)
-            apply_learned_tmdb_identity(
-                meta,
-                touch=False,
-                record_mismatch=not feature_flags.get("dry_run", False),
-            )
+            overridden = apply_manual_tmdb_identity(meta, config)
+            if not overridden:
+                apply_cached_tmdb_recovery(meta, cache)
+                apply_learned_tmdb_identity(
+                    meta,
+                    touch=False,
+                    record_mismatch=not feature_flags.get("dry_run", False),
+                )
         if feature_flags.get("cleanup", False):
             inventory_errors = cleanup_inventory_errors(
                 preloaded_metadata, feature_flags
@@ -741,10 +868,13 @@ async def process_library(
             nonlocal completed, incomplete, season_count, episode_count
             nonlocal meta_downloaded, meta_upgraded, meta_skipped, meta_failed
             nonlocal plex_metadata_writes
-            nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_missing, poster_failed
-            nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_missing, background_failed
-            nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_missing, season_poster_failed
+            nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_not_due, poster_missing, poster_deferred, poster_failed
+            nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_not_due, background_missing, background_deferred, background_failed
+            nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_not_due, season_poster_missing, season_poster_deferred, season_poster_failed
+            nonlocal poster_preserved, background_preserved, season_poster_preserved
             nonlocal artwork_deferred
+            nonlocal artwork_automatic_relaxed
+            nonlocal artwork_download_failover
 
             item = planned.item
             item_metadata = {"metadata": {}}
@@ -828,6 +958,13 @@ async def process_library(
                         generated_entries
                     )
                 all_stats.append(stats)
+                for storage_file in stats.get("storage_files", []):
+                    path = storage_file.get("path")
+                    if path:
+                        artwork_storage_files[str(path)] = {
+                            "asset_type": storage_file.get("asset_type"),
+                            "bytes": max(0, int(storage_file.get("bytes") or 0)),
+                        }
                 if (
                     incremental_success
                     and not feature_flags.get("dry_run", False)
@@ -867,12 +1004,28 @@ async def process_library(
                     poster_adopted += 1
                 elif action == "skipped":
                     poster_skipped += 1
+                elif action == "not_due":
+                    poster_not_due += 1
+                elif action == "preserved":
+                    poster_preserved += 1
                 elif action == "missing":
                     poster_missing += 1
                 elif action == "failed":
                     poster_failed += 1
                 elif action == "deferred":
+                    poster_deferred += 1
                     artwork_deferred += 1
+                if action in {"downloaded", "upgraded", "adopted"}:
+                    provider = (stats.get("artwork_providers") or {}).get("poster")
+                    artwork_provider_writes[str(provider or "unknown")] += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "poster"
+                    ) == "missing_only_relaxed":
+                        artwork_automatic_relaxed += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "poster"
+                    ) == "missing_only_download_failover":
+                        artwork_download_failover += 1
 
                 action = stats.get("background_action")
                 if action == "downloaded":
@@ -883,15 +1036,31 @@ async def process_library(
                     background_adopted += 1
                 elif action == "skipped":
                     background_skipped += 1
+                elif action == "not_due":
+                    background_not_due += 1
+                elif action == "preserved":
+                    background_preserved += 1
                 elif action == "missing":
                     background_missing += 1
                 elif action == "failed":
                     background_failed += 1
                 elif action == "deferred":
+                    background_deferred += 1
                     artwork_deferred += 1
+                if action in {"downloaded", "upgraded", "adopted"}:
+                    provider = (stats.get("artwork_providers") or {}).get("background")
+                    artwork_provider_writes[str(provider or "unknown")] += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "background"
+                    ) == "missing_only_relaxed":
+                        artwork_automatic_relaxed += 1
+                    if (stats.get("artwork_selection_stages") or {}).get(
+                        "background"
+                    ) == "missing_only_download_failover":
+                        artwork_download_failover += 1
 
                 season_actions = stats.get("season_poster_actions", {})
-                for season_action in season_actions.values():
+                for season_number, season_action in season_actions.items():
                     if season_action == "downloaded":
                         season_poster_downloaded += 1
                     elif season_action == "upgraded":
@@ -900,12 +1069,37 @@ async def process_library(
                         season_poster_adopted += 1
                     elif season_action == "skipped":
                         season_poster_skipped += 1
+                    elif season_action == "not_due":
+                        season_poster_not_due += 1
+                    elif season_action == "preserved":
+                        season_poster_preserved += 1
                     elif season_action == "missing":
                         season_poster_missing += 1
                     elif season_action == "failed":
                         season_poster_failed += 1
                     elif season_action == "deferred":
+                        season_poster_deferred += 1
                         artwork_deferred += 1
+                    if season_action in {"downloaded", "upgraded", "adopted"}:
+                        provider = (stats.get("season_artwork_providers") or {}).get(
+                            season_number
+                        )
+                        if provider is None:
+                            provider = (stats.get("season_artwork_providers") or {}).get(
+                                str(season_number)
+                            )
+                        artwork_provider_writes[str(provider or "unknown")] += 1
+                        stage = (stats.get("season_artwork_selection_stages") or {}).get(
+                            season_number
+                        )
+                        if stage is None:
+                            stage = (
+                                stats.get("season_artwork_selection_stages") or {}
+                            ).get(str(season_number))
+                        if stage == "missing_only_relaxed":
+                            artwork_automatic_relaxed += 1
+                        if stage == "missing_only_download_failover":
+                            artwork_download_failover += 1
 
                 if feature_flags["poster"]:
                     poster_size += stats.get("poster", {}).get("size", 0)
@@ -1033,6 +1227,23 @@ async def process_library(
                 },
             )
 
+        if artwork_storage_files:
+            poster_size = sum(
+                record["bytes"]
+                for record in artwork_storage_files.values()
+                if record["asset_type"] == "poster"
+            )
+            background_size = sum(
+                record["bytes"]
+                for record in artwork_storage_files.values()
+                if record["asset_type"] == "background"
+            )
+            season_poster_size = sum(
+                record["bytes"]
+                for record in artwork_storage_files.values()
+                if record["asset_type"] == "season"
+            )
+            total_asset_size = poster_size + background_size + season_poster_size
         if library_filesize is not None:
             library_filesize[library_name] = total_asset_size
 
@@ -1056,9 +1267,20 @@ async def process_library(
                     library_type=library_type,
                     expected_snapshot=output_snapshot,
                 )
-                log_processing_event("processing_metadata_saved", output_path=output_path)
+                log_processing_event(
+                    "processing_metadata_saved",
+                    library_name=library_name,
+                    output_path=output_path,
+                    changed_items=meta_downloaded + meta_upgraded,
+                    normalized_entries=normalized_metadata_order,
+                )
             except Exception as e:
-                log_processing_event("processing_failed_write_metadata", error=str(e))
+                log_processing_event(
+                    "processing_failed_write_metadata",
+                    library_name=library_name,
+                    output_path=output_path,
+                    error=str(e),
+                )
                 raise LibraryProcessingError(
                     f"Unable to save metadata file: {output_path}"
                 ) from e
@@ -1079,6 +1301,10 @@ async def process_library(
                 media_type,
                 update_timestamp=False,
                 rating_key=meta.get("ratingKey"),
+                imdb_id=meta.get("imdb_id"),
+                tvdb_id=meta.get("tvdb_id"),
+                edition=meta.get("edition_title"),
+                identity_source=meta.get("identity_source"),
                 plex_updated_at=meta.get("updatedAt"),
                 plex_child_fingerprint=plex_child_fingerprint,
                 config_fingerprint=incremental_fingerprint,
@@ -1097,29 +1323,35 @@ async def process_library(
         percent_complete = round((completed / total_items) * 100, 2) if total_items else 100.0
         percent_incomplete = round((incomplete / total_items) * 100, 2) if total_items else 0.0
 
+        metadata_bytes = 0
+        if output_path is not None and output_path.exists():
+            try:
+                metadata_bytes = output_path.stat().st_size
+            except OSError:
+                metadata_bytes = 0
         library_summary = {
             "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded,
             "meta_skipped": meta_skipped, "meta_failed": meta_failed + len(item_errors),
             "plex_metadata_writes": plex_metadata_writes,
-            "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped,
-            "poster_failed": poster_failed, "poster_missing": poster_missing,
-            "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped,
-            "background_failed": background_failed, "background_missing": background_missing,
-            "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_adopted": season_poster_adopted, "season_poster_skipped": season_poster_skipped,
-            "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
+            "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped, "poster_not_due": poster_not_due,
+            "poster_preserved": poster_preserved, "poster_failed": poster_failed, "poster_missing": poster_missing, "poster_deferred": poster_deferred,
+            "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped, "background_not_due": background_not_due,
+            "background_preserved": background_preserved, "background_failed": background_failed, "background_missing": background_missing, "background_deferred": background_deferred,
+            "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_adopted": season_poster_adopted, "season_poster_skipped": season_poster_skipped, "season_poster_not_due": season_poster_not_due,
+            "season_poster_preserved": season_poster_preserved, "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing, "season_poster_deferred": season_poster_deferred,
+            "artwork_provider_writes": dict(sorted(artwork_provider_writes.items())),
             "incremental_skipped": total_library_items - total_items,
             "item_failures": len(item_errors),
             "artwork_deferred": artwork_deferred,
+            "artwork_automatic_relaxed": artwork_automatic_relaxed,
+            "artwork_download_failover": artwork_download_failover,
+            "poster_bytes": poster_size,
+            "background_bytes": background_size,
+            "season_poster_bytes": season_poster_size,
+            "artwork_bytes": total_asset_size,
+            "metadata_bytes": metadata_bytes,
+            "storage_scope": "full inventory" if full_scan else "processed items",
         }
-
-        log_library_summary(
-            library_name=library_name, completed=completed, incomplete=incomplete, total_items=total_items,
-            percent_complete=percent_complete, percent_incomplete=percent_incomplete,
-            poster_size=poster_size, background_size=background_size,
-            season_poster_size=season_poster_size, library_filesize=library_filesize,
-            run_metadata=run_metadata, library_summary=library_summary, library_type=library_type,
-            feature_flags=feature_flags, season_count=season_count, episode_count=episode_count
-        )
 
         if metadata_summaries is not None:
             metadata_summaries[library_name] = {

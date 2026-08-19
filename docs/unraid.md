@@ -3,6 +3,9 @@
 MetaFusion includes an [Unraid Docker template](../unraid/metafusion.xml) with
 all supported environment variables. Basic view shows the required and common
 settings; optional tuning and safety controls are under **Advanced View**.
+Review [Kometa and Plex operation modes](modes.md) before choosing media or
+Kometa path mappings. All guides are listed in the
+[documentation index](index.md).
 
 ## Install the template
 
@@ -51,6 +54,9 @@ Provide these connection and workflow values:
 | Plex Libraries | `PLEX_LIBRARIES` | `auto` discovers all movie/show libraries; exact comma-separated names limit scope |
 | TMDb API Key | `TMDB_API_KEY` | TMDb v3 API key; masked by the template |
 | Appdata Config Path | `/config` | Persistent writable appdata directory |
+
+Fanart.tv artwork fallback uses MetaFusion's bundled project integration key.
+There is no Fanart.tv key field to configure in the Unraid template.
 
 The default appdata mapping is:
 
