@@ -257,6 +257,15 @@ artwork-gap, destination-history, unresolved-work, post-application adoption,
 and Plex-metadata report pairs. See
 [generated output and reports](operations.md#generated-output-and-reports).
 
+Every item-level JSON record uses the same nullable identity fields:
+`plex_rating_key`, `tmdb_id`, `imdb_id`, `tvdb_id`, `edition`,
+`season_number`, and `identity_source`. This applies to artwork gaps,
+unresolved work, asset and metadata audits, change plans, adoption audits,
+Plex metadata results, mapping/identity diagnostics, item explanations, and
+sanitized replay captures. A field is `null` when Plex or the selected provider
+did not expose it safely. Replay captures replace the Plex rating key with a
+deterministic share-safe identifier.
+
 Reports redact connector secrets, but identity, mapping, destination-history,
 and item-explanation reports can contain media titles and computed or actual
 paths. Review every report before sharing it. Never publish `config.yml`,

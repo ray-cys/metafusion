@@ -14,9 +14,10 @@ from urllib.parse import quote
 
 from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
+from helper.report_identity import report_identity
 
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 FILE_MODE = 0o664
 IDENTITY_HISTORY_LIMIT = 10_000
 UNRESOLVED_HISTORY_LIMIT = 10_000
@@ -358,6 +359,13 @@ def _initialize_schema(connection):
             asset_type TEXT NOT NULL,
             category TEXT NOT NULL,
             detail TEXT,
+            plex_rating_key TEXT,
+            tmdb_id TEXT,
+            imdb_id TEXT,
+            tvdb_id TEXT,
+            edition TEXT,
+            season_number INTEGER,
+            identity_source TEXT,
             status TEXT NOT NULL,
             occurrences INTEGER NOT NULL DEFAULT 1,
             first_seen TEXT NOT NULL,
@@ -400,6 +408,22 @@ def _initialize_schema(connection):
     }
     if "summary" not in job_columns:
         connection.execute("ALTER TABLE job_runs ADD COLUMN summary TEXT")
+    unresolved_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(unresolved_work)")
+    }
+    for name, kind in (
+        ("plex_rating_key", "TEXT"),
+        ("tmdb_id", "TEXT"),
+        ("imdb_id", "TEXT"),
+        ("tvdb_id", "TEXT"),
+        ("edition", "TEXT"),
+        ("season_number", "INTEGER"),
+        ("identity_source", "TEXT"),
+    ):
+        if name not in unresolved_columns:
+            connection.execute(
+                f"ALTER TABLE unresolved_work ADD COLUMN {name} {kind}"
+            )
     if version < 3:
         _backfill_asset_ownership(connection)
     connection.execute(
@@ -545,6 +569,7 @@ def reconcile_unresolved_work(
             continue
         fingerprint, fields = _unresolved_fingerprint(record)
         library, media_type, title, asset_type, category = fields
+        identity = report_identity(record)
         normalized[fingerprint] = (
             fingerprint,
             library,
@@ -553,6 +578,13 @@ def reconcile_unresolved_work(
             asset_type,
             category,
             str(record.get("detail") or ""),
+            identity["plex_rating_key"],
+            identity["tmdb_id"],
+            identity["imdb_id"],
+            identity["tvdb_id"],
+            identity["edition"],
+            identity["season_number"],
+            identity["identity_source"],
         )
     resolved_scope = {
         str(value).casefold() for value in (resolved_libraries or []) if str(value)
@@ -573,11 +605,27 @@ def reconcile_unresolved_work(
                     """
                     INSERT INTO unresolved_work(
                         fingerprint, library_name, media_type, title,
-                        asset_type, category, detail, status, occurrences,
-                        first_seen, last_seen, resolved_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?, NULL)
+                        asset_type, category, detail, plex_rating_key, tmdb_id,
+                        imdb_id, tvdb_id, edition, season_number,
+                        identity_source, status, occurrences, first_seen,
+                        last_seen, resolved_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        'open', 1, ?, ?, NULL)
                     ON CONFLICT(fingerprint) DO UPDATE SET
                         detail = excluded.detail,
+                        plex_rating_key = COALESCE(
+                            excluded.plex_rating_key, unresolved_work.plex_rating_key
+                        ),
+                        tmdb_id = COALESCE(excluded.tmdb_id, unresolved_work.tmdb_id),
+                        imdb_id = COALESCE(excluded.imdb_id, unresolved_work.imdb_id),
+                        tvdb_id = COALESCE(excluded.tvdb_id, unresolved_work.tvdb_id),
+                        edition = COALESCE(excluded.edition, unresolved_work.edition),
+                        season_number = COALESCE(
+                            excluded.season_number, unresolved_work.season_number
+                        ),
+                        identity_source = COALESCE(
+                            excluded.identity_source, unresolved_work.identity_source
+                        ),
                         status = 'open',
                         occurrences = unresolved_work.occurrences + 1,
                         last_seen = excluded.last_seen,
@@ -643,10 +691,25 @@ def load_unresolved_work(*, statuses=None, path=None, limit=10_000):
             placeholders = ", ".join("?" for _status in allowed)
             where = f" WHERE status IN ({placeholders})"
             parameters.extend(sorted(allowed))
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(unresolved_work)")
+        }
+        identity_columns = ", ".join(
+            name if name in columns else f"NULL AS {name}"
+            for name in (
+                "plex_rating_key",
+                "tmdb_id",
+                "imdb_id",
+                "tvdb_id",
+                "edition",
+                "season_number",
+                "identity_source",
+            )
+        )
         rows = connection.execute(
             "SELECT fingerprint, library_name, media_type, title, asset_type, "
-            "category, detail, status, occurrences, first_seen, last_seen, "
-            "resolved_at FROM unresolved_work" + where + " ORDER BY "
+            f"category, detail, {identity_columns}, status, occurrences, "
+            "first_seen, last_seen, resolved_at FROM unresolved_work" + where + " ORDER BY "
             "CASE status WHEN 'open' THEN 0 ELSE 1 END, last_seen DESC LIMIT ?",
             (*parameters, max(1, int(limit))),
         ).fetchall()

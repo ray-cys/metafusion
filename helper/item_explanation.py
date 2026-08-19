@@ -17,6 +17,7 @@ from helper.identity_diagnostics import diagnose_identity
 from helper.incremental import config_fingerprint, library_full_scan_decisions, plan_items
 from helper.mapping_diagnostics import diagnose_mapping
 from helper.plex import get_plex_metadata, load_plex_library_inventory
+from helper.report_identity import item_report_record, item_report_records
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import STATE_DATABASE, MediaStateStore, load_item_retries
 
@@ -168,16 +169,19 @@ async def explain_item(
             "explanation": "Episode mapping applies only to TV shows.",
         }
     )
-    return {
-        "status": identity.get("status"),
-        "library": identity.get("library"),
-        "rating_key": identity.get("rating_key"),
-        "media_type": media_type,
-        "identity": identity,
-        "selection": _selection_record(item, meta, effective),
-        "policies": _policy_record(effective, media_type),
-        "episode_mapping": mapping,
-    }
+    return item_report_record(
+        {
+            "status": identity.get("status"),
+            "library": identity.get("library"),
+            "rating_key": identity.get("rating_key"),
+            "media_type": media_type,
+            "identity": identity,
+            "selection": _selection_record(item, meta, effective),
+            "policies": _policy_record(effective, media_type),
+            "episode_mapping": mapping,
+        },
+        identity,
+    )
 
 
 def _display(value):
@@ -191,6 +195,7 @@ def _display(value):
 
 
 def write_item_explanation_report(records, *, base_dir=None, retention=10):
+    records = item_report_records(records)
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
     generated = datetime.now(timezone.utc)
     path = report_dir / f"item-explanation-{generated.strftime('%Y%m%d-%H%M%S%f')}.txt"

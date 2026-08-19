@@ -939,6 +939,7 @@ async def get_plex_metadata(
         "edition_title": edition_title,
         "plex_provider_tmdb_id": tmdb_id,
         "tmdb_id": tmdb_id,
+        "identity_source": "plex_tmdb_guid" if tmdb_id else None,
         "imdb_id": imdb_id,
         "tvdb_id": tvdb_id,
         "movie_path": movie_path,

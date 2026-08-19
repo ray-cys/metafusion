@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from helper.build_info import build_info
 from helper.config import BASE_CONFIG_DIR
+from helper.report_identity import item_report_records
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 
 _SECRET_KEYS = {
@@ -41,6 +42,7 @@ _IDENTIFIER_KEYS = {
     "libraryuuid",
     "machine_identifier",
     "machineidentifier",
+    "plex_rating_key",
     "rating_key",
     "ratingkey",
     "server_id",
@@ -174,7 +176,7 @@ def write_sanitized_replay_capture(records, *, base_dir=None, retention=10):
             "schema": 1,
             "description": "Sanitized MetaFusion item replay capture",
             "build": build_info(),
-            "items": list(records or []),
+            "items": item_report_records(records),
         }
     )
     issues = provider_replay_issues(document)

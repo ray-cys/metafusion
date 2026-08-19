@@ -7,6 +7,7 @@ from pathlib import Path
 
 from helper.concurrency import runtime_slot
 from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
+from helper.report_identity import item_report_record
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import (
     load_plex_metadata_ownership,
@@ -78,12 +79,15 @@ class PlexMetadataReporter:
         self.retention = report_retention(config)
         self.counts = Counter()
         self.entries = []
+        self.item_entries = []
         self.max_details = 10000
         self._writes = 0
         self._library_writes = Counter()
         self._lock = threading.Lock()
 
-    def record(self, library, title, child_key, field, action, detail=""):
+    def record(
+        self, library, title, child_key, field, action, detail="", *, identity=None
+    ):
         with self._lock:
             self.counts[action] += 1
             if self.audit_mode:
@@ -99,7 +103,7 @@ class PlexMetadataReporter:
                     "failed": "none",
                 }.get(action, action)
                 self.audit_records.append(
-                    {
+                    item_report_record({
                         "library": str(library),
                         "media_type": "Plex item",
                         "title": str(title),
@@ -110,7 +114,7 @@ class PlexMetadataReporter:
                         "proposed_action": proposed,
                         "detail": str(detail or ""),
                         "target": "Plex API",
-                    }
+                    }, identity)
                 )
             if action in {"unchanged", "source_missing"} and not self.audit_mode:
                 return
@@ -126,6 +130,16 @@ class PlexMetadataReporter:
                     action,
                     detail,
                 )
+            )
+            self.item_entries.append(
+                item_report_record({
+                    "library": str(library),
+                    "title": str(title),
+                    "child": str(child_key or "item"),
+                    "field": str(field),
+                    "action": action,
+                    "detail": detail,
+                }, identity)
             )
 
     def claim_write(self, library, limit=None):
@@ -190,17 +204,7 @@ class PlexMetadataReporter:
                 "writes": self.writes,
                 "write_limit": self.max_writes,
                 "summary": dict(self.counts),
-                "items": [
-                    {
-                        "library": library,
-                        "title": title,
-                        "child": child,
-                        "field": field,
-                        "action": action,
-                        "detail": detail,
-                    }
-                    for library, title, child, field, action, detail in self.entries
-                ],
+                "items": self.item_entries,
             },
         )
         retain_diagnostic_reports(report_dir, "plex-metadata", self.retention)
@@ -360,25 +364,28 @@ def _apply_object(
     records = []
     library = identity.get("library_name")
 
+    def report(field, action, detail=""):
+        reporter.record(
+            library, title, child_key, field, action, detail, identity=identity
+        )
+
     for field, desired_raw in candidate.get("fields", {}).items():
         if not _field_enabled(field, settings):
-            reporter.record(
-                library, title, child_key, field, "policy_excluded"
-            )
+            report(field, "policy_excluded")
             continue
         desired = _clean_scalar(desired_raw)
         current = _clean_scalar(getattr(obj, field, ""))
         owner = ownership.get((child_key, field))
         locked = bool(obj.isLocked(field)) if hasattr(obj, "isLocked") else False
         if current == desired:
-            reporter.record(library, title, child_key, field, "unchanged")
+            report(field, "unchanged")
             continue
         if (
             locked
             and not (owner and owner.get("metafusion_locked"))
             and policy != "overwrite"
         ):
-            reporter.record(library, title, child_key, field, "locked_skipped")
+            report(field, "locked_skipped")
             continue
         allowed = False
         target_value = desired
@@ -391,7 +398,7 @@ def _apply_object(
                 if allowed and not desired:
                     target_value = _clean_scalar(owner["original_value"].get("value"))
             else:
-                reporter.record(library, title, child_key, field, "conflict")
+                report(field, "conflict")
                 records.append(
                     {
                         "_delete_key": (
@@ -408,7 +415,7 @@ def _apply_object(
             allowed = bool(desired and not current)
         if not allowed:
             action = "source_missing" if not desired else "existing_skipped"
-            reporter.record(library, title, child_key, field, action)
+            report(field, action)
             continue
         target_lock = bool(lock_writes or (owner and owner.get("metafusion_locked")))
         changes.append(("field", field, target_value, target_lock, False))
@@ -428,9 +435,7 @@ def _apply_object(
 
     for field, desired_raw in candidate.get("tags", {}).items():
         if not _field_enabled(field, settings):
-            reporter.record(
-                library, title, child_key, field, "policy_excluded"
-            )
+            report(field, "policy_excluded")
             continue
         desired = _clean_tags(desired_raw)
         attribute = TAG_ATTRIBUTES.get(field, f"{field}s")
@@ -445,7 +450,7 @@ def _apply_object(
             and not (owner and owner.get("metafusion_locked"))
             and policy != "overwrite"
         ):
-            reporter.record(library, title, child_key, field, "locked_skipped")
+            report(field, "locked_skipped")
             continue
         additions = _missing_tags(current, desired)
         if relinquished:
@@ -472,14 +477,7 @@ def _apply_object(
                     for value in additions
                     if value.casefold() not in removed_folded
                 ]
-                reporter.record(
-                    library,
-                    title,
-                    child_key,
-                    field,
-                    "conflict",
-                    "manually removed managed tag retained",
-                )
+                report(field, "conflict", "manually removed managed tag retained")
             retained_owned = [
                 value
                 for value in previously_owned
@@ -487,7 +485,7 @@ def _apply_object(
             ]
             removals = _missing_tags(desired, retained_owned)
         if not additions and not removals:
-            reporter.record(library, title, child_key, field, "unchanged")
+            report(field, "unchanged")
             if owner and policy == "managed" and manually_removed:
                 records.append(
                     _record_payload(
@@ -547,10 +545,7 @@ def _apply_object(
     if dry_run:
         for kind, field, values, _locked, remove in changes:
             action = "would_remove" if remove else "would_fill"
-            reporter.record(
-                library,
-                title,
-                child_key,
+            report(
                 field,
                 action,
                 f"{len(values) if kind == 'tag' else 1} value(s)",
@@ -560,7 +555,7 @@ def _apply_object(
         library, settings.get("max_writes_per_run", reporter.max_writes)
     ):
         for _kind, field, _values, _locked, _remove in changes:
-            reporter.record(library, title, child_key, field, "write_limit")
+            report(field, "write_limit")
         return 0, []
 
     obj.batchEdits()
@@ -584,7 +579,7 @@ def _apply_object(
             raise RuntimeError(f"Plex did not retain the {field} tag update")
     for kind, field, _value, _locked, remove in changes:
         action = "removed" if remove else ("tags_added" if kind == "tag" else "filled")
-        reporter.record(library, title, child_key, field, action)
+        report(field, action)
     return 1, records
 
 
@@ -623,6 +618,11 @@ def _apply_candidate(item, candidate, config, meta, reporter):
         "library_name": meta.get("library_name") or "Unknown",
         "rating_key": meta.get("ratingKey") or getattr(item, "ratingKey", "unknown"),
         "media_type": meta.get("library_type") or getattr(item, "type", "unknown"),
+        "tmdb_id": meta.get("tmdb_id"),
+        "imdb_id": meta.get("imdb_id"),
+        "tvdb_id": meta.get("tvdb_id"),
+        "edition": meta.get("edition_title"),
+        "identity_source": meta.get("identity_source"),
     }
     ownership = load_plex_metadata_ownership(
         identity["server_id"], identity["library_uuid"], identity["rating_key"]
@@ -642,6 +642,7 @@ def _apply_candidate(item, candidate, config, meta, reporter):
             "children",
             "failed",
             type(error).__name__,
+            identity=identity,
         )
         return {"writes": 0, "failures": 1}
     pending_records = []
@@ -682,6 +683,7 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 "item",
                 "failed",
                 type(error).__name__,
+                identity=identity,
             )
             logging.getLogger(__name__).error(
                 "[Metadata] Plex | %s | Failed %s | Error type: %s",
@@ -717,6 +719,7 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 "ownership",
                 "failed",
                 type(error).__name__,
+                identity=identity,
             )
     result = {"writes": writes, "failures": failures}
     deferred = max(
@@ -814,7 +817,25 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
         "rating_key": str(
             meta.get("ratingKey") or getattr(item, "ratingKey", "unknown")
         ),
+        "library_name": meta.get("library_name") or "Unknown",
+        "media_type": meta.get("library_type") or getattr(item, "type", "unknown"),
+        "tmdb_id": meta.get("tmdb_id"),
+        "imdb_id": meta.get("imdb_id"),
+        "tvdb_id": meta.get("tvdb_id"),
+        "edition": meta.get("edition_title"),
+        "identity_source": meta.get("identity_source"),
     }
+
+    def report(child_key, field, action, detail=""):
+        reporter.record(
+            identity["library_name"],
+            meta.get("title"),
+            child_key,
+            field,
+            action,
+            detail,
+            identity=identity,
+        )
     ownership = load_plex_metadata_ownership(
         identity["server_id"], identity["library_uuid"], identity["rating_key"]
     )
@@ -841,14 +862,7 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
                 current = _clean_scalar(getattr(child, field, ""))
                 applied = _clean_scalar(record["applied_value"].get("value"))
                 if current != applied:
-                    reporter.record(
-                        meta.get("library_name"),
-                        meta.get("title"),
-                        child_key,
-                        field,
-                        "conflict",
-                        "manual value retained",
-                    )
+                    report(child_key, field, "conflict", "manual value retained")
                     continue
                 value = (
                     current
@@ -856,13 +870,7 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
                     else _clean_scalar(record["original_value"].get("value"))
                 )
                 if unlock_only and not record.get("metafusion_locked"):
-                    reporter.record(
-                        meta.get("library_name"),
-                        meta.get("title"),
-                        child_key,
-                        field,
-                        "unchanged",
-                    )
+                    report(child_key, field, "unchanged")
                     continue
                 changes.append(("field", field, value, original_locked, False))
             else:
@@ -872,24 +880,11 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
                 if {value.casefold() for value in current} != {
                     value.casefold() for value in applied
                 }:
-                    reporter.record(
-                        meta.get("library_name"),
-                        meta.get("title"),
-                        child_key,
-                        field,
-                        "conflict",
-                        "manual tag change retained",
-                    )
+                    report(child_key, field, "conflict", "manual tag change retained")
                     continue
                 if unlock_only:
                     if not record.get("metafusion_locked"):
-                        reporter.record(
-                            meta.get("library_name"),
-                            meta.get("title"),
-                            child_key,
-                            field,
-                            "unchanged",
-                        )
+                        report(child_key, field, "unchanged")
                         continue
                     changes.append(("tag", field, [], original_locked, False))
                 else:
@@ -911,9 +906,7 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
             continue
         if config.get("settings", {}).get("dry_run", False):
             for record in successful_records:
-                reporter.record(
-                    meta.get("library_name"),
-                    meta.get("title"),
+                report(
                     child_key,
                     record["field_name"],
                     "would_unlock" if unlock_only else "would_restore",
@@ -924,13 +917,7 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
             config.get("plex_metadata", {}).get("max_writes_per_run", 100),
         ):
             for record in successful_records:
-                reporter.record(
-                    meta.get("library_name"),
-                    meta.get("title"),
-                    child_key,
-                    record["field_name"],
-                    "write_limit",
-                )
+                report(child_key, record["field_name"], "write_limit")
             continue
         try:
             child.batchEdits()
@@ -972,9 +959,7 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
                         )
             writes += 1
             for record in successful_records:
-                reporter.record(
-                    meta.get("library_name"),
-                    meta.get("title"),
+                report(
                     child_key,
                     record["field_name"],
                     "unlocked" if unlock_only else "restored",
@@ -995,14 +980,7 @@ def _restore_candidate(item, config, meta, reporter, unlock_only=False):
                     deleted.append(key)
         except Exception as error:
             failures += 1
-            reporter.record(
-                meta.get("library_name"),
-                meta.get("title"),
-                child_key,
-                "item",
-                "failed",
-                type(error).__name__,
-            )
+            report(child_key, "item", "failed", type(error).__name__)
     if updates or deleted:
         save_plex_metadata_ownership(updates, deleted=deleted)
     return {"writes": writes, "failures": failures}

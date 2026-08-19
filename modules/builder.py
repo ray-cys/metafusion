@@ -24,6 +24,7 @@ from helper.provider_mappings import (
     resolve_episode_overrides,
     resolve_split_series_mapping,
 )
+from helper.report_identity import item_report_record
 from helper.runtime import DiskPressureError
 from helper.state_db import save_identity_binding
 from helper.tmdb import (
@@ -601,20 +602,58 @@ def _record_artwork_gap(
     full_title,
     asset_type="metadata",
     detail=None,
+    identity=None,
 ):
     gaps = config.get("_artwork_gaps")
     if gaps is None:
         return
+    identity = identity or config.get("_item_report_identities", {}).get(
+        (str(media_type), str(full_title))
+    )
+    asset_parts = str(asset_type).split()
+    season_number = (
+        int(asset_parts[1])
+        if len(asset_parts) > 1
+        and asset_parts[0].casefold() == "season"
+        and asset_parts[1].lstrip("-").isdigit()
+        else None
+    )
     gaps.append(
-        {
+        item_report_record({
             "library": config.get("_library_name"),
             "category": category,
             "media_type": media_type,
             "title": full_title,
             "asset_type": asset_type,
             "detail": detail,
-        }
+        }, identity, season_number=season_number)
     )
+
+
+def _remember_item_report_identity(config, media_type, full_title, meta):
+    if isinstance(meta, dict):
+        config.setdefault("_item_report_identities", {})[
+            (str(media_type), str(full_title))
+        ] = meta
+
+
+def _identity_source_hint(meta, tmdb_id, imdb_id=None, tvdb_id=None):
+    if isinstance(meta, dict) and meta.get("identity_source"):
+        return str(meta["identity_source"])
+    provider_tmdb_id = (meta or {}).get("plex_provider_tmdb_id")
+    if tmdb_id:
+        return (
+            "plex_tmdb_guid"
+            if provider_tmdb_id and str(provider_tmdb_id) == str(tmdb_id)
+            else "tmdb_id"
+        )
+    if imdb_id and tvdb_id:
+        return "external_id_resolution"
+    if imdb_id:
+        return "imdb_external_id"
+    if tvdb_id:
+        return "tvdb_external_id"
+    return "title_year_search"
 
 
 def _asset_audit_enabled(config):
@@ -680,7 +719,7 @@ async def _audit_asset_candidate(
     """Record a value-safe, read-only assessment of one selected candidate."""
     if not _asset_audit_enabled(config):
         return
-    record = {
+    record = item_report_record({
         "library": config.get("_library_name") or "Unknown library",
         "media_type": media_type,
         "title": full_title,
@@ -689,7 +728,7 @@ async def _audit_asset_candidate(
         "candidate": _candidate_summary(
             config, candidate, asset_type, candidate_pool=candidate_pool
         ),
-    }
+    }, meta, season_number=season_number)
     asset_path = get_asset_path(
         config,
         meta,
@@ -1018,6 +1057,7 @@ def _mark_asset_verified(
     checksum=None,
     full_title=None,
     provider=None,
+    identity=None,
 ):
     verified_checksum = _asset_registry(config).mark_verified(
         cache_key,
@@ -1041,7 +1081,7 @@ def _mark_asset_verified(
     except OSError:
         status = "verification_failed"
     config.setdefault("_adoption_audit_records", []).append(
-        {
+        item_report_record({
             "library": config.get("_library_name") or "Unknown library",
             "title": full_title or str(cache_key),
             "media_type": media_type,
@@ -1056,7 +1096,7 @@ def _mark_asset_verified(
                 if mode_check(config, "plex") and status == "filesystem_verified"
                 else "not_applicable"
             ),
-        }
+        }, identity, tmdb_id=tmdb_id, season_number=season_number)
     )
     return verified_checksum
 
@@ -1297,6 +1337,7 @@ async def adopt_exact_tmdb_asset(
             checksum=existing_checksum,
             full_title=full_title,
             provider=_provider_label(candidate),
+            identity=meta,
         )
         await _record_asset_observation(
             cache_key,
@@ -1522,6 +1563,7 @@ async def _build_movie(
     title = meta.get("title", "Unknown") if meta else None
     year = meta.get("year", "Unknown") if meta else None
     full_title = metadata_key_for_meta(meta)
+    _remember_item_report_identity(config, "Movie", full_title, meta)
     cache_key = cache_key_for_meta(meta)
     movie_path = meta.get("movie_path") if meta else None
     tmdb_id = meta.get("tmdb_id") if meta else None
@@ -1531,6 +1573,7 @@ async def _build_movie(
         else (meta.get("plex_tmdb_id") if meta is not None else None)
     )
     imdb_id = meta.get("imdb_id") if meta else None
+    identity_source = _identity_source_hint(meta, tmdb_id, imdb_id)
     tmdb_id = await resolve_tmdb_id(
         config,
         "movie",
@@ -1542,6 +1585,8 @@ async def _build_movie(
     )
     if meta is not None and tmdb_id:
         meta["tmdb_id"] = tmdb_id
+        if not meta.get("identity_source"):
+            meta["identity_source"] = identity_source
     if not tmdb_id:
         log_builder_event(
             "builder_no_tmdb_id", media_type="Movie", full_title=full_title
@@ -1618,6 +1663,7 @@ async def _build_movie(
         if meta is not None:
             meta["plex_tmdb_id"] = str(recovery_source_id)
             meta["tmdb_id"] = tmdb_id
+            meta["identity_source"] = "stale_identity_recovery"
         mapping_id = int(tmdb_id)
         log_builder_event(
             "builder_tmdb_id_recovered",
@@ -1805,6 +1851,7 @@ async def _build_movie(
                 existing=existing_metadata,
                 generated=generated_entry,
                 diagnostics=diagnostics,
+                identity=meta,
             )
         changes = recursive_season_diff(existing_metadata, merged_entry)
         if changes:
@@ -2066,6 +2113,7 @@ async def _build_movie(
                         asset_type="poster", source_path=best.get("file_path"),
                         checksum=asset_checksum, full_title=full_title,
                         provider=_provider_label(best),
+                        identity=meta,
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
@@ -2317,6 +2365,7 @@ async def _build_movie(
                         asset_type="background", source_path=best.get("file_path"),
                         checksum=asset_checksum, full_title=full_title,
                         provider=_provider_label(best),
+                        identity=meta,
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
@@ -2450,6 +2499,7 @@ async def _build_tv(
     title = meta.get("title", "Unknown") if meta else None
     year = meta.get("year", "Unknown") if meta else None
     full_title = metadata_key_for_meta(meta)
+    _remember_item_report_identity(config, "TV Show", full_title, meta)
     cache_key = cache_key_for_meta(meta)
     show_path = meta.get("show_path") if meta else None
     seasons_episodes = meta.get("seasons_episodes") if meta else None
@@ -2461,6 +2511,7 @@ async def _build_tv(
     )
     tvdb_id = meta.get("tvdb_id") if meta else None
     imdb_id = meta.get("imdb_id") if meta else None
+    identity_source = _identity_source_hint(meta, tmdb_id, imdb_id, tvdb_id)
     tmdb_id = await resolve_tmdb_id(
         config,
         "tv",
@@ -2473,6 +2524,8 @@ async def _build_tv(
     )
     if meta is not None and tmdb_id:
         meta["tmdb_id"] = tmdb_id
+        if not meta.get("identity_source"):
+            meta["identity_source"] = identity_source
     if not tmdb_id:
         log_builder_event(
             "builder_no_tmdb_id", media_type="TV Show", full_title=full_title
@@ -2536,6 +2589,7 @@ async def _build_tv(
         if meta is not None:
             meta["plex_tmdb_id"] = str(recovery_source_id)
             meta["tmdb_id"] = tmdb_id
+            meta["identity_source"] = "stale_identity_recovery"
         log_builder_event(
             "builder_tmdb_id_recovered",
             media_type="TV Show",
@@ -3079,6 +3133,7 @@ async def _build_tv(
                 existing=existing_metadata,
                 generated=generated_entry,
                 diagnostics=diagnostics,
+                identity=meta,
             )
         changes = recursive_season_diff(existing_metadata, merged_entry)
         if changes:
@@ -3325,6 +3380,7 @@ async def _build_tv(
                         asset_type="poster", source_path=best.get("file_path"),
                         checksum=asset_checksum, full_title=full_title,
                         provider=_provider_label(best),
+                        identity=meta,
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
@@ -3560,6 +3616,7 @@ async def _build_tv(
                         asset_type="background", source_path=best.get("file_path"),
                         checksum=asset_checksum, full_title=full_title,
                         provider=_provider_label(best),
+                        identity=meta,
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
@@ -3818,6 +3875,7 @@ async def _build_tv(
                         asset_type="season", source_path=best.get("file_path"),
                         season_number=season_number, checksum=asset_checksum,
                         full_title=full_title, provider=_provider_label(best),
+                        identity=meta,
                     )
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",

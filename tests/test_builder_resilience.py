@@ -1675,10 +1675,17 @@ def test_movie_builder_rejects_a_resolved_but_inconsistent_tmdb_identity(
             "category": "identity_rejected",
             "media_type": "Movie",
             "title": "Example Movie (2020)",
-            "asset_type": "metadata",
-            "detail": "forced title and year mismatch",
-        }
-    ]
+                "asset_type": "metadata",
+                "detail": "forced title and year mismatch",
+                "plex_rating_key": "m1",
+                "tmdb_id": "100",
+                "imdb_id": "tt100",
+                "tvdb_id": None,
+                "edition": None,
+                "season_number": None,
+                "identity_source": "tmdb_id",
+            }
+        ]
 
 
 def test_movie_builder_persists_a_recovered_tmdb_identity(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@ from helper.config import (
     report_retention,
 )
 from helper.io import sha256_file
+from helper.report_identity import item_report_record, item_report_records
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import SCHEMA_VERSION as STATE_SCHEMA_VERSION
 from helper.state_db import STATE_DATABASE
@@ -63,6 +64,7 @@ def record_kometa_metadata_audit(
     existing,
     generated,
     diagnostics=None,
+    identity=None,
 ):
     """Record field-level TMDb-to-Kometa comparisons without retaining values."""
     if not config.get("_execution", {}).get("metadata_audit", False):
@@ -83,7 +85,7 @@ def record_kometa_metadata_audit(
             state = "different"
             action = "update"
         records.append(
-            {
+            item_report_record({
                 "library": library,
                 "media_type": media_type,
                 "title": title,
@@ -93,12 +95,12 @@ def record_kometa_metadata_audit(
                 "policy": "kometa_merge",
                 "proposed_action": action,
                 "target": "Kometa YAML",
-            }
+            }, identity)
         )
     removed = int((diagnostics or {}).get("deprecated_removed", 0))
     if removed:
         records.append(
-            {
+            item_report_record({
                 "library": library,
                 "media_type": media_type,
                 "title": title,
@@ -108,7 +110,7 @@ def record_kometa_metadata_audit(
                 "policy": "kometa_schema",
                 "proposed_action": f"remove ({removed})",
                 "target": "Kometa YAML",
-            }
+            }, identity)
         )
     return len(records)
 
@@ -128,7 +130,7 @@ def write_metadata_audit_report(
     path = report_dir / f"metadata-audit-{timestamp}.txt"
     current_build = build_info()
     ordered = sorted(
-        (record for record in (records or []) if isinstance(record, dict)),
+        item_report_records(records),
         key=lambda record: (
             str(record.get("library") or "").casefold(),
             str(record.get("title") or "").casefold(),
@@ -142,9 +144,8 @@ def write_metadata_audit_report(
         counts[state] = counts.get(state, 0) + 1
     relevant_gaps = [
         gap
-        for gap in (gaps or [])
-        if isinstance(gap, dict)
-        and str(gap.get("category") or "").startswith(("identity", "tmdb"))
+        for gap in item_report_records(gaps)
+        if str(gap.get("category") or "").startswith(("identity", "tmdb"))
     ]
     lines = [
         "MetaFusion read-only metadata audit",
@@ -263,8 +264,9 @@ def write_change_plan_report(
     timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"change-plan-{timestamp}.txt"
     current_build = build_info()
-    metadata = [item for item in (metadata_records or []) if isinstance(item, dict)]
-    assets = [item for item in (asset_records or []) if isinstance(item, dict)]
+    metadata = item_report_records(metadata_records)
+    assets = item_report_records(asset_records)
+    normalized_gaps = item_report_records(gaps)
     libraries = [item for item in (library_records or []) if isinstance(item, dict)]
     actionable_metadata = sum(
         str(item.get("proposed_action") or "none")
@@ -297,7 +299,7 @@ def write_change_plan_report(
         f"- Libraries inspected: {len(libraries)}",
         f"- Metadata field decisions: {len(metadata)} ({actionable_metadata} actionable)",
         f"- Artwork decisions: {len(assets)} ({actionable_assets} actionable)",
-        f"- Gaps/rejections: {len(gaps or [])}",
+        f"- Gaps/rejections: {len(normalized_gaps)}",
         "- Cleanup candidates: "
         f"titles={cleanup_value('titles')}, seasons={cleanup_value('seasons')}, "
         f"episodes={cleanup_value('episodes')}, assets={cleanup_value('assets')}, "
@@ -372,7 +374,7 @@ def write_change_plan_report(
             "libraries": libraries,
             "metadata": metadata,
             "artwork": assets,
-            "gaps": list(gaps or []),
+            "gaps": normalized_gaps,
             "cleanup": {
                 name: cleanup_value(name)
                 for name in (
@@ -407,7 +409,8 @@ def write_library_asset_audit_report(
     timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"library-asset-audit-{timestamp}.txt"
     libraries = [item for item in (library_records or []) if isinstance(item, dict)]
-    assets = [item for item in (asset_records or []) if isinstance(item, dict)]
+    assets = item_report_records(asset_records)
+    normalized_gaps = item_report_records(gaps)
     current_build = build_info()
     action_counts = {}
     for record in assets:
@@ -421,7 +424,7 @@ def write_library_asset_audit_report(
         f"Mode: {mode}",
         f"Libraries discovered: {len(libraries)}",
         f"Artwork candidates: {len(assets)}",
-        f"Gaps/rejections: {len(gaps or [])}",
+        f"Gaps/rejections: {len(normalized_gaps)}",
         "No metadata, artwork, cache, ownership, retry, or incremental state was written.",
         "",
         "Libraries",
@@ -469,7 +472,7 @@ def write_library_asset_audit_report(
             "mode": mode,
             "libraries": libraries,
             "artwork": assets,
-            "gaps": list(gaps or []),
+            "gaps": normalized_gaps,
             "action_summary": action_counts,
         },
         retention,
@@ -559,7 +562,7 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
             str(gap.get("asset_type") or "metadata"),
             str(gap.get("category") or "unknown"),
         )
-        unique[key] = str(gap.get("detail") or "")
+        unique[key] = item_report_record(gap)
     if not unique:
         return None
 
@@ -577,24 +580,14 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
     ]
     for key in sorted(unique, key=lambda value: tuple(part.casefold() for part in value)):
         library, media_type, title, asset_type, category = key
-        detail = unique[key]
+        detail = unique[key].get("detail") or ""
         line = (
             f"- [{category}] {library} | {media_type} | {title} | {asset_type}"
         )
         if detail:
             line += f" | {detail}"
         lines.append(line)
-    records = [
-        {
-            "library": key[0],
-            "media_type": key[1],
-            "title": key[2],
-            "asset_type": key[3],
-            "category": key[4],
-            "detail": detail,
-        }
-        for key, detail in sorted(unique.items())
-    ]
+    records = [record for _key, record in sorted(unique.items())]
     return _write_report(
         path,
         lines,
@@ -612,7 +605,7 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
     path = report_dir / f"asset-audit-{timestamp}.txt"
     current_build = build_info()
     ordered = sorted(
-        (record for record in (records or []) if isinstance(record, dict)),
+        item_report_records(records),
         key=lambda record: (
             str(record.get("library") or "").casefold(),
             str(record.get("title") or "").casefold(),
@@ -620,13 +613,14 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
             int(record.get("season_number") or -1),
         ),
     )
+    normalized_gaps = item_report_records(gaps)
     lines = [
         "MetaFusion read-only asset audit",
         f"Generated: {generated.isoformat()}",
         f"Version: {current_build['version']}",
         f"Commit: {current_build['commit']}",
         f"Candidates: {len(ordered)}",
-        f"Gaps: {len(gaps or [])}",
+        f"Gaps: {len(normalized_gaps)}",
         "",
         "Candidate decisions",
     ]
@@ -656,11 +650,9 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
         )
         _append_artwork_selection_details(lines, candidate)
     lines.extend(("", "Missing, rejected, and failed candidates"))
-    if not gaps:
+    if not normalized_gaps:
         lines.append("- none")
-    for gap in gaps or []:
-        if not isinstance(gap, dict):
-            continue
+    for gap in normalized_gaps:
         detail = f" | {gap.get('detail')}" if gap.get("detail") else ""
         lines.append(
             f"- [{gap.get('category') or 'unknown'}] "
@@ -673,7 +665,7 @@ def write_asset_audit_report(records, gaps=None, base_dir=None, retention=10):
         path,
         lines,
         "asset_audit",
-        {"candidates": ordered, "gaps": list(gaps or [])},
+        {"candidates": ordered, "gaps": normalized_gaps},
         retention,
     )
 
@@ -821,7 +813,7 @@ def write_destination_history_report(
         event["reconciliation_reason"] = reason
         event["reconciled_at"] = generated_at
         results.append(
-            {
+            item_report_record({
                 "cache_key": cache_key,
                 "title": entry.get("title") or cache_key,
                 "year": entry.get("year"),
@@ -831,7 +823,7 @@ def write_destination_history_report(
                 "new_destination": event.get("new_destination"),
                 "status": status,
                 "reason": reason,
-            }
+            }, entry)
         )
         lines.append(
             f"- {entry.get('title') or cache_key} ({entry.get('year') or 'unknown year'}) "
@@ -865,7 +857,7 @@ def write_destination_history_report(
 
 def write_unresolved_work_report(records, base_dir=None, retention=10):
     """Write the durable open/resolved problem ledger without provider secrets."""
-    records = [record for record in (records or []) if isinstance(record, dict)]
+    records = item_report_records(records)
     if not records:
         return None
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
@@ -914,7 +906,7 @@ def write_unresolved_work_report(records, base_dir=None, retention=10):
 
 def write_adoption_audit_report(records, base_dir=None, retention=10):
     """Report post-write local installation and ownership verification."""
-    records = [record for record in (records or []) if isinstance(record, dict)]
+    records = item_report_records(records)
     if not records:
         return None
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"

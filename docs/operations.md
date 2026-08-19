@@ -448,6 +448,10 @@ under `managed` policy when the new destination matches current managed state,
 the old file is inside a configured managed root, and its checksum still proves
 MetaFusion ownership. An old path that is still the current destination of
 another managed cache record is retained for that owner.
+Item-level JSON records consistently include nullable `plex_rating_key`,
+`tmdb_id`, `imdb_id`, `tvdb_id`, `edition`, `season_number`, and
+`identity_source` fields so artwork, metadata, cleanup follow-up, and adoption
+results can be correlated without title-only matching.
 Modified, unproven, symlinked, and out-of-scope files are preserved. Plex
 metadata reports identify fields and outcomes. `REPORT_RETENTION` retains the
 newest text/JSON pairs for each report type; its default is `10`.
