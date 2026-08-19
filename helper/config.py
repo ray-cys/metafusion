@@ -117,7 +117,11 @@ SECRET_FILE_BINDINGS = tuple(
     if "secret_file" in setting
 )
 
-SECRET_PATHS = {("plex", "token"), ("tmdb", "api_key")}
+SECRET_PATHS = {
+    ("plex", "token"),
+    ("tmdb", "api_key"),
+    ("fanart", "project_api_key"),
+}
 PLEX_METADATA_FIELDS = {
     "title",
     "originalTitle",

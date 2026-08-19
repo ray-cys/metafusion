@@ -91,7 +91,7 @@ or `config.yml` values.
 | Recovery | `--retry-failed` | None | Immediately process matching durable retry-queue entries, including parked entries when selected. Cleanup stays disabled. |
 | Recovery | `--retry-status` | `all`, `pending`, `parked`, or `running` | Narrow `--retry-failed`; defaults to `all` and is invalid without that command. |
 | SQLite | `--sqlite-maintenance` | `check`, `optimize`, `checkpoint`, `vacuum`, or `backup` | Run one standalone, explicit database operation. Only `check` is read-only. |
-| SQLite | `--sqlite-target` | `all`, `state`, or `tmdb` | Limit `--sqlite-maintenance`; defaults to both databases and is invalid without that command. |
+| SQLite | `--sqlite-target` | `all`, `state`, `tmdb`, or `fanart` | Limit `--sqlite-maintenance`; defaults to every database and is invalid without that command. |
 | Plex maintenance | `--plex-metadata-restore` | None | Restore MetaFusion-owned Plex fields for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-unlock`. |
 | Plex maintenance | `--plex-metadata-unlock` | None | Remove only MetaFusion-created Plex locks for items selected by `--rating-key`. Cannot be combined with `--plex-metadata-restore`. |
 
@@ -375,7 +375,7 @@ rules determine whether the file may actually be replaced.
 
 Under `managed`, a run can also report `Adopted` artwork. This is a one-time
 ownership verification for an existing file that exactly matches the selected
-TMDb bytes; it does not rewrite the destination or alter filesystem ownership
+selected provider bytes; it does not rewrite the destination or alter filesystem ownership
 or permissions. The first verification run can therefore take longer and use
 more TMDb/network I/O than later runs.
 
@@ -425,16 +425,17 @@ metadata dry runs retain one redacted audit report as the deliberate exception.
 
 ## Persistent state and I/O
 
-MetaFusion uses two separate SQLite databases:
+MetaFusion uses separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
 | `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities and bounded transition history, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
+| `/config/cache/fanart_cache.sqlite3` | Compressed Fanart.tv responses when the optional provider is configured | Disposable; it shares the bounded cache policy and is absent when Fanart.tv is disabled. |
 
 Rows are read and updated individually rather than loading and rewriting a
-large JSON cache. TMDb cache expiry or pruning cannot remove durable scan or
-artwork ownership state. After jobs, both databases run bounded optimization;
+large JSON cache. Provider-cache expiry or pruning cannot remove durable scan or
+artwork ownership state. After jobs, active databases run bounded optimization;
 WAL files are truncated only after reaching the maintenance threshold.
 
 ### Explicit SQLite maintenance
@@ -530,6 +531,9 @@ Shared reports and logs are:
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
+They are also the final output when TMDb, Fanart.tv, Plex, and the
+best-available reserve cannot provide a usable candidate. Provider decisions
+and selected source are included in read-only artwork audits.
 Asset-audit reports include the selected candidate's language, dimensions,
 vote score, ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
@@ -542,11 +546,15 @@ reports identify fields and outcomes. Reports are bounded.
 `REPORT_RETENTION` controls how many files are kept for each report type; its
 default is `10`.
 
-At the default `LOG_LEVEL=INFO`, MetaFusion logs confirmed mutations such as
-Kometa YAML writes, Plex API update batches, and artwork downloads or upgrades.
-Routine unchanged checks are available at `DEBUG` to avoid flooding normal
-logs. Plex locked-field, conflict, and write-limit totals are warnings; the
-corresponding `plex-metadata-*.txt` report retains field-level audit details.
+At the default `LOG_LEVEL=INFO`, each changed item uses the same compact
+`Library | Title | Outcome | Source` structure for metadata and artwork.
+Routine unchanged/preserved checks and detailed provider requests remain at
+`DEBUG`; missing, deferred, and failed outcomes are warnings or errors. One
+final report combines only the libraries processed by that run, with metadata,
+artwork, provider, and failure totals. The older standalone per-library summary
+blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
+totals are warnings; the corresponding `plex-metadata-*.txt` report retains
+field-level audit details.
 
 Direct Plex metadata progress is automatic and not configurable. Small
 libraries report every 5 items or 10%, medium libraries every 25 items or 5%,
@@ -557,7 +565,8 @@ shows while their seasons and episodes remain part of each show operation.
 
 Every completed job also logs one local performance summary: total, Plex
 inventory and library-processing time; items per minute; TMDb requests,
-cache hits/misses, retries and rate-limit waits; and the five slowest items by
+cache hits/misses, retries and rate-limit waits; Fanart.tv activity when the
+fallback was used; and the five slowest items by
 library plus Plex rating key. It intentionally omits media paths and metadata
 values. Use it to compare full and incremental runs without adding a metrics
 service.
@@ -565,7 +574,7 @@ service.
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` and an automatic
 1%-of-volume floor (bounded from 256 MiB to 2 GiB) are checked at each artwork
-destination before a download. MetaFusion first prunes disposable TMDb cache
+destination before a download. MetaFusion first prunes disposable provider-cache
 rows when both databases share the pressured volume. If space remains low,
 artwork is deferred to the retry queue while metadata processing continues.
 A missing/unmounted destination still fails safely instead of writing into an

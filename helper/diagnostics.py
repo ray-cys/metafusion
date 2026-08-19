@@ -194,6 +194,28 @@ def _retain_reports(report_dir, pattern, retention):
 
 
 def _append_artwork_selection_details(lines, candidate, indent="  "):
+    if candidate.get("provider"):
+        lines.append(
+            f"{indent}provider: {candidate.get('provider')}"
+            + (
+                f" | image ID={candidate.get('provider_image_id')}"
+                if candidate.get("provider_image_id")
+                else ""
+            )
+        )
+    if candidate.get("selection_reason"):
+        lines.append(
+            f"{indent}selection reason: {candidate.get('selection_reason')}"
+        )
+    attempts = candidate.get("provider_attempts") or []
+    if attempts:
+        lines.append(f"{indent}providers attempted:")
+        for attempt in attempts:
+            lines.append(
+                f"{indent}- {attempt.get('provider', 'unknown')}: "
+                f"{attempt.get('status', 'unknown')} "
+                f"({attempt.get('candidates', 0)} candidate(s))"
+            )
     components = candidate.get("quality_components") or {}
     if components:
         lines.append(
@@ -703,6 +725,7 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
         f"Secret-file bindings set: {', '.join(sorted(secret_file_names)) or 'none'}",
         f"State database: {_database_status(STATE_DATABASE)}",
         f"TMDb cache database: {_tmdb_cache_status(CACHE_DIR / 'tmdb_cache.sqlite3')}",
+        f"Fanart.tv cache database: {_tmdb_cache_status(CACHE_DIR / 'fanart_cache.sqlite3')}",
         "",
         "Configuration validation",
     ]
@@ -717,7 +740,7 @@ def write_support_report(config, validation_errors=None, base_dir=None, environ=
         (
             "",
             "Attach this file with the redacted Plex metadata report and relevant log lines.",
-            "Do not attach config.yml, container inspection output, Plex tokens, or TMDb keys.",
+            "Do not attach config.yml, container inspection output, tokens, or API keys.",
         )
     )
     atomic_write_text(path, "\n".join(lines))
@@ -741,6 +764,7 @@ def write_release_qualification_report(
     current_build = build_info(environ)
     state_status = _database_status(STATE_DATABASE)
     cache_status = _tmdb_cache_status(CACHE_DIR / "tmdb_cache.sqlite3")
+    fanart_cache_status = _tmdb_cache_status(CACHE_DIR / "fanart_cache.sqlite3")
     path_advice = (preflight or {}).get("path_advice") or {}
     unresolved = sum(
         record.get("status") == "unresolved"
@@ -770,6 +794,11 @@ def write_release_qualification_report(
             cache_status == "missing" or "health ok" in cache_status,
             cache_status,
         ),
+        (
+            "Disposable Fanart.tv cache",
+            fanart_cache_status == "missing" or "health ok" in fanart_cache_status,
+            fanart_cache_status,
+        ),
     ]
     passed = all(check[1] for check in checks)
     settings = config.get("settings", {})
@@ -785,6 +814,7 @@ def write_release_qualification_report(
         f"Run mode: {settings.get('mode')}",
         f"State schema supported: {STATE_SCHEMA_VERSION}",
         f"TMDb cache schema supported: {PersistentTTLCache.SCHEMA_VERSION}",
+        f"Fanart.tv cache schema supported: {PersistentTTLCache.SCHEMA_VERSION}",
         "",
         "Automated checks",
     ]

@@ -17,12 +17,14 @@ _loop_controllers = weakref.WeakKeyDictionary()
 _ABSOLUTE_CEILINGS = {
     "item": 12,
     "tmdb": 8,
+    "fanart": 4,
     "plex": 4,
     "nested": 4,
 }
 _HEALTHY_WINDOWS = {
     "item": 12,
     "tmdb": 20,
+    "fanart": 16,
     "plex": 12,
     "nested": 12,
 }
@@ -391,7 +393,7 @@ class AdaptiveConcurrencyController:
         self.adjustments = []
         windows = healthy_windows or {}
         self.lanes = {}
-        for kind in ("item", "tmdb", "plex", "nested"):
+        for kind in ("item", "tmdb", "fanart", "plex", "nested"):
             ceiling = concurrency_ceiling(config, kind, resources=self.resources)
             initial = min(4, ceiling)
             self.lanes[kind] = AdaptiveLane(
@@ -478,13 +480,15 @@ def begin_adaptive_concurrency(config, **kwargs):
     token = _current_controller.set(controller)
     logging.getLogger(__name__).info(
         "[Concurrency] Adaptive mode started: CPU %.2f, memory %.2f GiB; "
-        "initial/ceiling item=%d/%d, TMDb=%d/%d, Plex=%d/%d, nested=%d/%d%s.",
+        "initial/ceiling item=%d/%d, TMDb=%d/%d, Fanart.tv=%d/%d, Plex=%d/%d, nested=%d/%d%s.",
         controller.resources.cpu_cores,
         controller.resources.memory_gib,
         controller.current_limit("item"),
         controller.ceiling("item"),
         controller.current_limit("tmdb"),
         controller.ceiling("tmdb"),
+        controller.current_limit("fanart"),
+        controller.ceiling("fanart"),
         controller.current_limit("plex"),
         controller.ceiling("plex"),
         controller.current_limit("nested"),
@@ -502,10 +506,11 @@ def finish_adaptive_concurrency(controller, token=None):
     snapshot = controller.snapshot()
     lanes = snapshot["lanes"]
     logging.getLogger(__name__).info(
-        "[Concurrency] Final limits item=%d, TMDb=%d, Plex=%d, nested=%d; "
+        "[Concurrency] Final limits item=%d, TMDb=%d, Fanart.tv=%d, Plex=%d, nested=%d; "
         "adjustments=%d, circuit rejections=%d.",
         lanes["item"]["final_limit"],
         lanes["tmdb"]["final_limit"],
+        lanes["fanart"]["final_limit"],
         lanes["plex"]["final_limit"],
         lanes["nested"]["final_limit"],
         len(snapshot["adjustments"]),

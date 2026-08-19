@@ -34,6 +34,8 @@ defaults:
     split_series_show_policy: preserve
     split_series_mappings: {}
     episode_overrides: {}
+  fanart:
+    project_api_key: ''
   metadata:
     run_basic: true
     run_enhanced: true
@@ -300,6 +302,45 @@ settings:
     mask: false
     value: ''
     order: 11
+- name: FANART_PROJECT_API_KEY
+  section: Artwork providers
+  description: Optional Fanart.tv project key used only for artwork fallback after TMDb. It is masked in the Unraid form and redacted from MetaFusion logs.
+  path:
+  - fanart
+  - project_api_key
+  converter: string
+  env_example: ''
+  env_order: 10
+  compose: ${FANART_PROJECT_API_KEY-}
+  compose_order: 11
+  unraid:
+    name: Fanart.tv Project API Key
+    default: ''
+    display: advanced
+    required: false
+    mask: true
+    value: ''
+    order: 12
+- name: FANART_PROJECT_API_KEY_FILE
+  section: Artwork providers
+  description: Optional mounted secret-file path. FANART_PROJECT_API_KEY takes priority when both are set.
+  secret_file:
+    path:
+    - fanart
+    - project_api_key
+    direct_env: FANART_PROJECT_API_KEY
+  env_example: ''
+  env_order: 10
+  compose: ${FANART_PROJECT_API_KEY_FILE-}
+  compose_order: 11
+  unraid:
+    name: Fanart.tv Project Key File
+    default: ''
+    display: advanced
+    required: false
+    mask: false
+    value: ''
+    order: 13
 - name: TMDB_LANGUAGE
   section: Identity, connection, and TMDb
   description: Metadata language and primary artwork language.
@@ -1400,7 +1441,7 @@ settings:
     order: 64
 - name: TMDB_CACHE_ENABLED
   section: Identity, connection, and TMDb
-  description: Persist successful TMDb JSON responses.
+  description: Persist successful TMDb and configured Fanart.tv responses in separate SQLite caches.
   path:
   - tmdb_cache
   - enabled
@@ -1410,7 +1451,7 @@ settings:
   compose: ${TMDB_CACHE_ENABLED-}
   compose_order: 67
   unraid:
-    name: TMDb Cache
+    name: Provider Response Caches
     default: True|False
     display: advanced
     required: false
@@ -1419,7 +1460,7 @@ settings:
     order: 65
 - name: TMDB_CACHE_TTL_HOURS
   section: Identity, connection, and TMDb
-  description: TMDb response lifetime in hours.
+  description: TMDb and Fanart.tv response lifetime in hours.
   path:
   - tmdb_cache
   - ttl_hours
@@ -1429,7 +1470,7 @@ settings:
   compose: ${TMDB_CACHE_TTL_HOURS-}
   compose_order: 68
   unraid:
-    name: TMDb Cache TTL Hours
+    name: Provider Cache TTL Hours
     default: '24'
     display: advanced
     required: false
@@ -1438,7 +1479,7 @@ settings:
     order: 66
 - name: TMDB_CACHE_NEGATIVE_TTL_HOURS
   section: Identity, connection, and TMDb
-  description: Short cache lifetime for HTTP 404 results. Rate limits and server errors are never cached.
+  description: Short TMDb and Fanart.tv cache lifetime for HTTP 404 results. Rate limits and server errors are never cached.
   path:
   - tmdb_cache
   - negative_ttl_hours
@@ -1448,7 +1489,7 @@ settings:
   compose: ${TMDB_CACHE_NEGATIVE_TTL_HOURS-}
   compose_order: 69
   unraid:
-    name: TMDb Negative Cache TTL Hours
+    name: Provider Negative Cache TTL Hours
     default: '12'
     display: advanced
     required: false
@@ -1457,7 +1498,7 @@ settings:
     order: 67
 - name: TMDB_CACHE_MAX_ENTRIES
   section: Identity, connection, and TMDb
-  description: Maximum persisted TMDb responses. Set 0 for automatic storage-aware sizing and pruning.
+  description: Per-provider maximum persisted responses. Set 0 for automatic storage-aware sizing and pruning.
   path:
   - tmdb_cache
   - max_entries
@@ -1467,7 +1508,7 @@ settings:
   compose: ${TMDB_CACHE_MAX_ENTRIES-}
   compose_order: 70
   unraid:
-    name: TMDb Cache Maximum Entries
+    name: Provider Cache Maximum Entries
     default: '0'
     display: advanced
     required: false
@@ -1476,7 +1517,7 @@ settings:
     order: 68
 - name: TMDB_CACHE_MAX_MB
   section: Identity, connection, and TMDb
-  description: Compressed-payload limit in MiB. Set 0 for automatic storage-aware sizing and pruning.
+  description: Per-provider compressed-payload limit in MiB. Set 0 for automatic storage-aware sizing and pruning.
   path:
   - tmdb_cache
   - max_mb
@@ -1486,7 +1527,7 @@ settings:
   compose: ${TMDB_CACHE_MAX_MB-}
   compose_order: 71
   unraid:
-    name: TMDb Cache Maximum MiB
+    name: Provider Cache Maximum MiB
     default: '0'
     display: advanced
     required: false

@@ -120,6 +120,19 @@ def _selection_record(item, meta, config):
             if isinstance(cached, dict)
             else False
         ),
+        "cached_artwork_providers": (
+            {
+                "poster": cached.get("poster_provider"),
+                "background": cached.get("background_provider"),
+                "seasons": {
+                    str(number): season.get("season_provider")
+                    for number, season in (cached.get("seasons") or {}).items()
+                    if isinstance(season, dict) and season.get("season_provider")
+                },
+            }
+            if isinstance(cached, dict)
+            else {}
+        ),
         "retry_status": retries[0].get("status") if retries else None,
         "retry_failure_class": retries[0].get("failure_class") if retries else None,
     }
@@ -224,6 +237,7 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
                 f"- selected work: {_display(scheduled.get('work'))}",
                 f"- durable item state present: {_display(scheduled.get('cache_record_present'))}",
                 f"- cached configuration matches: {_display(scheduled.get('cached_config_matches'))}",
+                f"- cached artwork providers: {_display(scheduled.get('cached_artwork_providers'))}",
                 f"- retry status/class: {_display(scheduled.get('retry_status'))}/{_display(scheduled.get('retry_failure_class'))}",
                 "",
                 "Metadata policy:",

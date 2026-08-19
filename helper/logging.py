@@ -5,6 +5,7 @@ import platform
 import sys
 import textwrap
 import time
+from collections import Counter
 from contextlib import suppress
 from pathlib import Path
 
@@ -134,6 +135,7 @@ def get_setup_logging(config):
         (
             config.get("plex", {}).get("token"),
             config.get("tmdb", {}).get("api_key"),
+            config.get("fanart", {}).get("project_api_key"),
         )
     )
     console_handler.addFilter(secret_filter)
@@ -483,6 +485,56 @@ def log_tmdb_event(event, logger=None, **kwargs):
         logger.error(msg)
     else:
         logger.debug(msg)
+
+
+def log_fanart_event(event, logger=None, **kwargs):
+    """Log value-safe Fanart.tv provider events without exposing credentials."""
+    logger = kwargs.get("logger") or logging.getLogger()
+    messages = {
+        "fanart_disabled": "[Fanart.tv] Artwork fallback is unavailable because no project API key is configured.",
+        "fanart_cache_hit": "[Fanart.tv] Returning cached artwork response for {resource_type}:{resource_id}.",
+        "fanart_negative_cache_hit": "[Fanart.tv] Skipping recently missing artwork for {resource_type}:{resource_id}; cached HTTP 404 is still valid.",
+        "fanart_request_coalesced": "[Fanart.tv] Reusing the in-flight request for {resource_type}:{resource_id}.",
+        "fanart_request": "[Fanart.tv] Requesting artwork for {resource_type}:{resource_id} (attempt {attempt}/{retries}).",
+        "fanart_success": "[Fanart.tv] Artwork response received for {resource_type}:{resource_id}.",
+        "fanart_not_found": "[Fanart.tv] No artwork resource exists for {resource_type}:{resource_id}.",
+        "fanart_authorization_failed": "[Fanart.tv] Project authentication failed; disabling Fanart.tv fallback for this run.",
+        "fanart_rate_limited": "[Fanart.tv] Rate limited; retrying after {retry_after}s.",
+        "fanart_circuit_open": "[Fanart.tv] Provider circuit is open; continuing to Plex/best-available fallback ({retry_after:.1f}s remaining).",
+        "fanart_response_too_large": "[Fanart.tv] Rejected oversized response for {resource_type}:{resource_id}.",
+        "fanart_invalid_response": "[Fanart.tv] Rejected malformed response for {resource_type}:{resource_id}: {error}",
+        "fanart_request_failed": "[Fanart.tv] Request failed for {resource_type}:{resource_id} on attempt {attempt}/{retries}: {error}",
+        "fanart_retrying": "[Fanart.tv] Retrying in {sleep_time}s (attempt {next_attempt}/{retries}).",
+        "fanart_failed": "[Fanart.tv] Provider unavailable after {retries} attempts for {resource_type}:{resource_id}; continuing fallback.",
+        "fanart_cache_stats": "[Fanart.tv] SQLite cache entries: {entries}, compressed: {stored_mib:.1f} MiB, disk: {disk_mib:.1f} MiB, hits: {hits}, misses: {misses}, evictions: {evictions}, recoveries: {recoveries}.",
+        "fanart_cache_degraded": "[Fanart.tv] Persistent cache is degraded; continuing with memory cache: {error}",
+    }
+    levels = {
+        "fanart_disabled": "debug",
+        "fanart_cache_hit": "debug",
+        "fanart_negative_cache_hit": "debug",
+        "fanart_request_coalesced": "debug",
+        "fanart_request": "debug",
+        "fanart_success": "debug",
+        "fanart_not_found": "debug",
+        "fanart_authorization_failed": "warning",
+        "fanart_rate_limited": "warning",
+        "fanart_circuit_open": "warning",
+        "fanart_response_too_large": "warning",
+        "fanart_invalid_response": "warning",
+        "fanart_request_failed": "warning",
+        "fanart_retrying": "debug",
+        "fanart_failed": "warning",
+        "fanart_cache_stats": "info",
+        "fanart_cache_degraded": "warning",
+    }
+    msg = _format_event_message(
+        messages.get(event, "[Fanart.tv] Unknown event"),
+        kwargs,
+        logger,
+        "Fanart.tv",
+    )
+    getattr(logger, levels.get(event, "info"))(msg)
         
 def log_processing_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -534,6 +586,7 @@ def log_processing_event(event, logger=None, **kwargs):
 
 def log_builder_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
+    kwargs.setdefault("provider", "TMDb")
     messages = {
         "builder_missing_tmdb_and_imdb_id": "[{media_type}] Missing TMDb or IMDb ID: {full_title}. Skipping...",
         "builder_missing_tvdb_id_and_tmdb_id": "[{media_type}] Missing TVDb and TMDb ID: {full_title}. Skipping...",
@@ -559,17 +612,17 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_metadata": "[Dry Run] Would build metadata for {media_type}: {full_title}",
         "builder_metadata_cached": "[{media_type}] {full_title} cached as {cache_key}...",
         "builder_dry_run_asset": "[Dry Run] Would build {asset_type} asset for {media_type}: {full_title}",
-        "builder_dry_run_asset_selected": "[Dry Run] Selected TMDb {asset_type} for {media_type}: {full_title} ({source_path})",
-        "builder_artwork_language_fallback": "[{media_type}] Selected unrestricted-language TMDb {asset_type} for {full_title}: {language}.",
-        "builder_reusing_shared_asset": "[{media_type}] Reusing shared TMDb {asset_type} for {full_title} at {destination}.",
-        "builder_asset_ownership_adopted": "[{media_type}] Adopted existing {asset_type} ownership for {full_title} at {destination}; exact TMDb source {source_path} matched without rewriting the file.",
+        "builder_dry_run_asset_selected": "[Dry Run] [Artwork] {media_type} | {full_title} | Selected {asset_type} | Source={provider} | {source_path}",
+        "builder_artwork_language_fallback": "[Artwork] {media_type} | {full_title} | Selected unrestricted-language {asset_type} | Source={provider} | Language={language}",
+        "builder_reusing_shared_asset": "[Artwork] {media_type} | {full_title} | Reused shared {asset_type} | Source={provider} | Destination={destination}",
+        "builder_asset_ownership_adopted": "[Artwork] {media_type} | {full_title} | Adopted existing {asset_type} | Source={provider} | Exact source matched without rewriting",
         "builder_preserving_existing_asset": "[{media_type}] Preserving existing {asset_type} for {full_title} at {destination}: {reason}.",
         "builder_asset_destination_collision": "[{media_type}] Refusing {asset_type} destination collision for {full_title} at {destination}; already claimed by {owner}.",
         "builder_no_asset_path": "[{media_type}] Asset path could not be determined: {full_title} {extra}. Skipping...",
-        "builder_no_suitable_asset": "[{media_type}] No suitable TMDb {asset_type} found: {full_title} {extra}. Skipping...",
-        "builder_downloading_asset": "[{media_type}] Downloading TMDb {asset_type}: {full_title} ({filesize})...",
-        "builder_asset_download_failed": "[{media_type}] Downloading TMDb {asset_type} failed: {full_title} (Status: {status}) Error: {error}",
-        "builder_asset_upgraded": "[{media_type}] Upgrading TMDb {asset_type}: {full_title} ({filesize}), {reason}",
+        "builder_no_suitable_asset": "[Artwork] {media_type} | {full_title} | Missing {asset_type} | No provider candidate was available{extra}",
+        "builder_downloading_asset": "[Artwork] {media_type} | {full_title} | Downloaded {asset_type} | Source={provider} | Size={filesize}",
+        "builder_asset_download_failed": "[Artwork] {media_type} | {full_title} | Failed {asset_type} | Source={provider} | HTTP={status} | {error}",
+        "builder_asset_upgraded": "[Artwork] {media_type} | {full_title} | Upgraded {asset_type} | Source={provider} | Size={filesize} | {reason}",
         "builder_force_upgrade_stale": "[{media_type}] Force upgrade due to stale image: {full_title} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
         "builder_already_up_to_date": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
         "builder_no_upgrade_needed": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
@@ -579,10 +632,10 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_asset_season": "[Dry Run] Would build {asset_type} asset for {media_type} Season {season_number}: {full_title}",
         "builder_no_asset_path_season": "[{media_type}] Asset path could not be determined: {full_title} Season {season_number}. Skipping...",
         "builder_no_season_details": "[{media_type}] No season details in library: {full_title} Season {season_number}. Skipping...",
-        "builder_no_suitable_asset_season": "[{media_type}] No suitable TMDb season {asset_type} found: {full_title} Season {season_number}. Skipping...",
-        "builder_downloading_asset_season": "[{media_type}] Downloading TMDb season {asset_type}: {full_title} Season {season_number} ({filesize})...",
-        "builder_asset_download_failed_season": "[{media_type}] Downloading TMDb season {asset_type} failed: {full_title} Season {season_number} (Status: {status}) Error: {error}",
-        "builder_asset_upgraded_season": "[{media_type}] Upgrading TMDb season {asset_type}: {full_title} Season {season_number} ({filesize}), {reason}",
+        "builder_no_suitable_asset_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Missing {asset_type} | No provider candidate was available",
+        "builder_downloading_asset_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Downloaded {asset_type} | Source={provider} | Size={filesize}",
+        "builder_asset_download_failed_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Failed {asset_type} | Source={provider} | HTTP={status} | {error}",
+        "builder_asset_upgraded_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Upgraded {asset_type} | Source={provider} | Size={filesize} | {reason}",
         "builder_force_upgrade_stale_season": "[{media_type}] Force upgrade due to stale image: {full_title} Season {season_number} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
         "builder_already_up_to_date_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
         "builder_no_upgrade_needed_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
@@ -604,23 +657,23 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_episode_order_unresolved": "warning",
         "builder_metadata_diagnostics": "debug",
         "builder_no_metadata_changes": "debug",
-        "builder_no_existing_metadata": "info",
-        "build_metadata_changed": "info",
+        "builder_no_existing_metadata": "debug",
+        "build_metadata_changed": "debug",
         "builder_plex_candidate_ready": "debug",
         "builder_dry_run_metadata": "info",
         "builder_metadata_cached": "debug",
         "builder_dry_run_asset": "info",
-        "builder_dry_run_asset_selected": "info",
-        "builder_artwork_language_fallback": "info",
-        "builder_reusing_shared_asset": "info",
-        "builder_asset_ownership_adopted": "info",
+        "builder_dry_run_asset_selected": "debug",
+        "builder_artwork_language_fallback": "debug",
+        "builder_reusing_shared_asset": "debug",
+        "builder_asset_ownership_adopted": "debug",
         "builder_preserving_existing_asset": "warning",
         "builder_asset_destination_collision": "error",
         "builder_no_asset_path": "error",
-        "builder_no_suitable_asset": "info",
-        "builder_downloading_asset": "info",
-        "builder_asset_download_failed": "error",
-        "builder_asset_upgraded": "info",
+        "builder_no_suitable_asset": "debug",
+        "builder_downloading_asset": "debug",
+        "builder_asset_download_failed": "debug",
+        "builder_asset_upgraded": "debug",
         "builder_force_upgrade_stale": "info",
         "builder_already_up_to_date": "debug",
         "builder_no_upgrade_needed": "debug",
@@ -630,10 +683,10 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_dry_run_asset_season": "info",
         "builder_no_asset_path_season": "warning",
         "builder_no_season_details": "info",
-        "builder_no_suitable_asset_season": "info",
-        "builder_downloading_asset_season": "info",
-        "builder_asset_download_failed_season": "error",
-        "builder_asset_upgraded_season": "info",
+        "builder_no_suitable_asset_season": "debug",
+        "builder_downloading_asset_season": "debug",
+        "builder_asset_download_failed_season": "debug",
+        "builder_asset_upgraded_season": "debug",
         "builder_force_upgrade_stale_season": "info",
         "builder_already_up_to_date_season": "debug",
         "builder_no_upgrade_needed_season": "debug",
@@ -648,15 +701,15 @@ def log_builder_event(event, logger=None, **kwargs):
         status_code = kwargs.get("status_code")
         context = kwargs.get("context", {})
         if status_code == "UPGRADE_VOTES":
-            reason = f"TMDb vote: {context.get('new_votes')} (Cached: {context.get('cached_votes')})"
+            reason = f"Provider score: {context.get('new_votes')} (Cached: {context.get('cached_votes')})"
         elif status_code == "UPGRADE_STRICT":
-            reason = f"TMDb vote: {context.get('new_votes')} (Cached: {context.get('cached_votes')}, Threshold: {context.get('vote_threshold')})"
+            reason = f"Provider score: {context.get('new_votes')} (Cached: {context.get('cached_votes')}, Threshold: {context.get('vote_threshold')})"
         elif status_code == "UPGRADE_THRESHOLD":
-            reason = f"TMDb vote: {context.get('new_votes')} (Threshold: {context.get('vote_threshold')})"
+            reason = f"Provider score: {context.get('new_votes')} (Threshold: {context.get('vote_threshold')})"
         elif status_code == "UPGRADE_RELAXED":
-            reason = f"TMDb vote: {context.get('new_votes')} (Relaxed: {context.get('vote_relaxed')})"
+            reason = f"Provider score: {context.get('new_votes')} (Relaxed: {context.get('vote_relaxed')})"
         elif status_code == "UPGRADE_DIMENSIONS":
-            reason = f"TMDb dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
+            reason = f"Candidate dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
         else:
             reason = ""
         kwargs["reason"] = reason
@@ -664,17 +717,17 @@ def log_builder_event(event, logger=None, **kwargs):
         status_code = kwargs.get("status_code")
         context = kwargs.get("context", {})
         if status_code == "UPGRADE_VOTES_SEASON":
-            reason = f"TMDb vote: {context.get('new_votes')} (Cached: {context.get('cached_votes')})"
+            reason = f"Provider score: {context.get('new_votes')} (Cached: {context.get('cached_votes')})"
         elif status_code == "UPGRADE_ZERO_VOTE_SEASON":
             reason = f"(Cached: {context.get('cached_votes')}) Upgrade dimensions {context.get('new_width')}x{context.get('new_height')}"
         elif status_code == "UPGRADE_STRICT_SEASON":
-            reason = f"TMDb vote: {context.get('new_votes')} (Cached: {context.get('cached_votes')}, Threshold: {context.get('vote_threshold')})"
+            reason = f"Provider score: {context.get('new_votes')} (Cached: {context.get('cached_votes')}, Threshold: {context.get('vote_threshold')})"
         elif status_code == "UPGRADE_THRESHOLD_SEASON":
-            reason = f"TMDb vote: {context.get('new_votes')} (Threshold: {context.get('vote_threshold')})"
+            reason = f"Provider score: {context.get('new_votes')} (Threshold: {context.get('vote_threshold')})"
         elif status_code == "UPGRADE_RELAXED_SEASON":
-            reason = f"TMDb vote: {context.get('new_votes')} (Relaxed: {context.get('vote_relaxed')})"
+            reason = f"Provider score: {context.get('new_votes')} (Relaxed: {context.get('vote_relaxed')})"
         elif status_code == "UPGRADE_DIMENSIONS_SEASON":
-            reason = f"TMDb dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
+            reason = f"Candidate dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
         else:
             reason = ""
         kwargs["reason"] = reason
@@ -726,6 +779,125 @@ def log_asset_status(
     if season_number is not None:
         kwargs["season_number"] = season_number
     log_builder_event(event, **kwargs)
+
+
+def log_item_outcomes(
+    library_name,
+    full_title,
+    stats,
+    feature_flags,
+    *,
+    logger=None,
+):
+    """Emit consistent metadata/artwork outcomes from the finalized item result."""
+    logger = logger or logging.getLogger()
+    feature_flags = feature_flags or {}
+    stats = stats or {}
+
+    def emit(component, asset, action, source, detail=None):
+        if action in {None, "not_due"}:
+            return
+        labels = {
+            "downloaded": "Created" if component == "Metadata" else "Downloaded",
+            "upgraded": "Updated" if component == "Metadata" else "Upgraded",
+            "adopted": "Adopted",
+            "skipped": "Unchanged",
+            "preserved": "Preserved",
+            "missing": "Missing",
+            "failed": "Failed",
+            "deferred": "Deferred",
+        }
+        outcome = labels.get(action, str(action).replace("_", " ").title())
+        target = f" {asset}" if asset else ""
+        message = (
+            f"[{component}] {library_name} | {full_title} | "
+            f"{outcome}{target} | Source={source}"
+        )
+        if detail:
+            message += f" | {detail}"
+        if action == "failed":
+            logger.error(message)
+        elif action in {"missing", "deferred"}:
+            logger.warning(message)
+        elif action in {"skipped", "preserved"}:
+            logger.debug(message)
+        else:
+            logger.info(message)
+
+    metadata_action = stats.get("metadata_action")
+    if metadata_action != "not_due":
+        mode = "Plex" if feature_flags.get("plex_metadata", False) else "Kometa YAML"
+        try:
+            completeness = f"{float(stats.get('percent') or 0):g}%"
+        except (TypeError, ValueError):
+            completeness = "unknown"
+        emit(
+            "Metadata",
+            "metadata",
+            metadata_action,
+            f"TMDb → {mode}",
+            f"Completeness={completeness}",
+        )
+
+    providers = stats.get("artwork_providers") or {}
+    for asset, action_key in (
+        ("poster", "poster_action"),
+        ("background", "background_action"),
+    ):
+        action = stats.get(action_key)
+        if action == "not_due":
+            continue
+        provider_key = str(providers.get(asset) or "")
+        provider = {
+            "tmdb": "TMDb",
+            "fanart": "Fanart.tv",
+            "plex": "Plex",
+        }.get(provider_key, "Existing/none")
+        emit("Artwork", asset, action, provider)
+
+    season_actions = stats.get("season_poster_actions") or {}
+    if season_actions:
+        action_counts: dict[str, int] = {}
+        provider_counts: dict[str, int] = {}
+        season_providers = stats.get("season_artwork_providers") or {}
+        for season_number, action in season_actions.items():
+            if action == "not_due":
+                continue
+            action_counts[action] = action_counts.get(action, 0) + 1
+            provider_value = season_providers.get(season_number)
+            if provider_value is None:
+                provider_value = season_providers.get(str(season_number))
+            provider_key = str(provider_value or "")
+            label = {
+                "tmdb": "TMDb",
+                "fanart": "Fanart.tv",
+                "plex": "Plex",
+            }.get(provider_key, "Existing/none")
+            provider_counts[label] = provider_counts.get(label, 0) + 1
+        if action_counts:
+            action_detail = ", ".join(
+                f"{name}={count}" for name, count in sorted(action_counts.items())
+            )
+            provider_detail = ", ".join(
+                f"{name}={count}" for name, count in sorted(provider_counts.items())
+            )
+            quiet_actions = set(action_counts).issubset({"skipped", "preserved"})
+            level = (
+                logger.error
+                if action_counts.get("failed")
+                else logger.warning
+                if action_counts.get("missing") or action_counts.get("deferred")
+                else logger.debug
+                if quiet_actions
+                else logger.info
+            )
+            level(
+                "[Artwork] %s | %s | Season posters | %s | Sources=%s",
+                library_name,
+                full_title,
+                action_detail,
+                provider_detail,
+            )
 
 def log_cleanup_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -989,6 +1161,7 @@ def log_library_summary(
             f"Upgraded: {library_summary.get('poster_upgraded', 0)}, "
             f"Adopted: {library_summary.get('poster_adopted', 0)}, "
             f"Skipped: {library_summary.get('poster_skipped', 0)}, "
+            f"Preserved: {library_summary.get('poster_preserved', 0)}, "
             f"Missing: {library_summary.get('poster_missing', 0)}, "
             f"Failed: {library_summary.get('poster_failed', 0)}", box_width))
     if feature_flags and feature_flags.get("background", False) and (library_type in ("movie", "tv", "show")):
@@ -997,6 +1170,7 @@ def log_library_summary(
             f"Upgraded: {library_summary.get('background_upgraded', 0)}, "
             f"Adopted: {library_summary.get('background_adopted', 0)}, "
             f"Skipped: {library_summary.get('background_skipped', 0)}, "
+            f"Preserved: {library_summary.get('background_preserved', 0)}, "
             f"Missing: {library_summary.get('background_missing', 0)}, "
             f"Failed: {library_summary.get('background_failed', 0)}", box_width))
     if (
@@ -1016,6 +1190,7 @@ def log_library_summary(
             f"Upgraded: {library_summary.get('season_poster_upgraded', 0)}, "
             f"Adopted: {library_summary.get('season_poster_adopted', 0)}, "
             f"Skipped: {library_summary.get('season_poster_skipped', 0)}, "
+            f"Preserved: {library_summary.get('season_poster_preserved', 0)}, "
             f"Missing: {library_summary.get('season_poster_missing', 0)}, "
             f"Failed: {library_summary.get('season_poster_failed', 0)}", box_width))
 
@@ -1057,13 +1232,71 @@ def log_final_summary(
     minutes, seconds = divmod(int(elapsed_time), 60)
     run_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     lines.extend(box_line(f"Executed on {run_date} in {minutes} mins {seconds} secs.", box_width))
-    processed_libraries = [lib["title"] for lib in libraries if lib["title"] in selected_libraries]
-    skipped_libraries = [lib["title"] for lib in libraries if lib["title"] not in selected_libraries]
+    processed_libraries = [
+        lib["title"] for lib in libraries if lib["title"] in selected_libraries
+    ]
+    configured_libraries = config.get("plex_libraries", [])
+    auto_discovery = any(
+        str(value).strip().casefold() == "auto" for value in configured_libraries
+    )
+    scope = "Plex automatic discovery" if auto_discovery else "Explicit library selection"
+    lines.extend(box_line(f"Scope - {scope}", box_width))
     lines.extend(box_line(
-        f"Processed - {', '.join(processed_libraries) if processed_libraries else 'None'} ({len(processed_libraries)})"
-        f" | Skipped: {', '.join(skipped_libraries) if skipped_libraries else 'None'} ({len(skipped_libraries)})",
-        box_width
+        f"Processed - {', '.join(processed_libraries) if processed_libraries else 'None'} "
+        f"({len(processed_libraries)})",
+        box_width,
     ))
+
+    summaries = [
+        summary for summary in metadata_summaries.values() if isinstance(summary, dict)
+    ]
+    overall: Counter[str] = Counter()
+    providers: Counter[str] = Counter()
+    for summary in summaries:
+        for key, value in (summary.get("library_summary") or {}).items():
+            if key == "artwork_provider_writes":
+                providers.update(value or {})
+            elif isinstance(value, (int, float)):
+                overall[key] += int(value)
+    total_titles = sum(int(summary.get("total_items", 0)) for summary in summaries)
+    artwork_written = sum(
+        overall[key]
+        for key in (
+            "poster_downloaded", "poster_upgraded", "poster_adopted",
+            "background_downloaded", "background_upgraded", "background_adopted",
+            "season_poster_downloaded", "season_poster_upgraded", "season_poster_adopted",
+        )
+    )
+    artwork_preserved = sum(
+        overall[key]
+        for key in ("poster_preserved", "background_preserved", "season_poster_preserved")
+    )
+    artwork_missing = sum(
+        overall[key]
+        for key in ("poster_missing", "background_missing", "season_poster_missing")
+    )
+    artwork_failed = sum(
+        overall[key]
+        for key in ("poster_failed", "background_failed", "season_poster_failed")
+    )
+    lines.extend(box_line(
+        f"Overall - Titles: {total_titles} | Metadata created/updated: "
+        f"{overall['meta_downloaded'] + overall['meta_upgraded']} | "
+        f"Unchanged: {overall['meta_skipped']} | Failed: {overall['meta_failed']}",
+        box_width,
+    ))
+    lines.extend(box_line(
+        f"Artwork - Written/adopted: {artwork_written} | Preserved: "
+        f"{artwork_preserved} | Missing: {artwork_missing} | Failed: {artwork_failed}",
+        box_width,
+    ))
+    if providers:
+        labels = {"tmdb": "TMDb", "fanart": "Fanart.tv", "plex": "Plex"}
+        provider_text = ", ".join(
+            f"{labels.get(name, name.title())}: {count}"
+            for name, count in sorted(providers.items())
+        )
+        lines.extend(box_line(f"Artwork providers - {provider_text}", box_width))
 
     total_asset_size = sum(library_filesize.values())
     for lib, summary in metadata_summaries.items():
@@ -1105,10 +1338,13 @@ def log_final_summary(
         metadata_summary = metadata_action_summary(libsum, feature_flags)
         if metadata_summary:
             lines.extend(box_line(metadata_summary, box_width))
-        percent_incomplete = summary.get('percent_incomplete', 100 - summary['percent_complete'])
-        lines.extend(box_line(
-            f"Metadata - Complete: {summary['complete']}/{summary['total_items']} ({summary['percent_complete']}%), "
-            f"Incomplete: {summary['incomplete']} ({percent_incomplete}%)", box_width))
+        if summary.get("percent_complete") is not None:
+            percent_incomplete = summary.get("percent_incomplete")
+            if percent_incomplete is None:
+                percent_incomplete = 100 - summary["percent_complete"]
+            lines.extend(box_line(
+                f"Metadata - Complete: {summary['complete']}/{summary['total_items']} ({summary['percent_complete']}%), "
+                f"Incomplete: {summary['incomplete']} ({percent_incomplete}%)", box_width))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
             lines.extend(box_line(
@@ -1116,6 +1352,7 @@ def log_final_summary(
                 f"Upgraded: {libsum.get('poster_upgraded', 0)}, "
                 f"Adopted: {libsum.get('poster_adopted', 0)}, "
                 f"Skipped: {libsum.get('poster_skipped', 0)}, "
+                f"Preserved: {libsum.get('poster_preserved', 0)}, "
                 f"Missing: {libsum.get('poster_missing', 0)}, "
                 f"Failed: {libsum.get('poster_failed', 0)}", box_width))
 
@@ -1125,6 +1362,7 @@ def log_final_summary(
                 f"Upgraded: {libsum.get('background_upgraded', 0)}, "
                 f"Adopted: {libsum.get('background_adopted', 0)}, "
                 f"Skipped: {libsum.get('background_skipped', 0)}, "
+                f"Preserved: {libsum.get('background_preserved', 0)}, "
                 f"Missing: {libsum.get('background_missing', 0)}, "
                 f"Failed: {libsum.get('background_failed', 0)}", box_width))
 
@@ -1136,6 +1374,7 @@ def log_final_summary(
                 libsum.get('season_poster_upgraded', 0) > 0 or
                 libsum.get('season_poster_adopted', 0) > 0 or
                 libsum.get('season_poster_skipped', 0) > 0 or
+                libsum.get('season_poster_preserved', 0) > 0 or
                 libsum.get('season_poster_missing', 0) > 0 or
                 libsum.get('season_poster_failed', 0) > 0
             )
@@ -1145,8 +1384,18 @@ def log_final_summary(
                 f"Upgraded: {libsum.get('season_poster_upgraded', 0)}, "
                 f"Adopted: {libsum.get('season_poster_adopted', 0)}, "
                 f"Skipped: {libsum.get('season_poster_skipped', 0)}, "
+                f"Preserved: {libsum.get('season_poster_preserved', 0)}, "
                 f"Missing: {libsum.get('season_poster_missing', 0)}, "
                 f"Failed: {libsum.get('season_poster_failed', 0)}", box_width))
+
+        library_providers = libsum.get("artwork_provider_writes") or {}
+        if library_providers:
+            labels = {"tmdb": "TMDb", "fanart": "Fanart.tv", "plex": "Plex"}
+            provider_text = ", ".join(
+                f"{labels.get(name, name.title())}: {count}"
+                for name, count in sorted(library_providers.items())
+            )
+            lines.extend(box_line(f"Artwork providers - {provider_text}", box_width))
 
         lines.extend(box_line(
             f"Assets - {human_readable_size(asset_size)} / {human_readable_size(total_asset_size)}", box_width))

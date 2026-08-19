@@ -8,6 +8,7 @@ scanner or metadata agent, and it never modifies video or audio files.
 
 - Reads movies, shows, seasons, Specials/Season 0, and episodes from Plex.
 - Generates Kometa YAML and assets, or writes Plex-compatible local artwork.
+- Selects artwork through a guarded TMDb → Fanart.tv → Plex fallback chain.
 - Can optionally fill selected Plex metadata fields through the Plex API.
 - Skips unchanged items between periodic reconciliation scans.
 - Adapts movie, series, and season artwork rechecks from saved results.
@@ -32,6 +33,7 @@ Choose the guide for your platform:
 - [Unraid installation and permissions](docs/unraid.md)
 - [Complete environment-variable and `config.yml` reference](docs/configuration.md)
 - [Policy behavior and safety rules](docs/policies.md)
+- [Artwork providers, fallback order, and attribution](docs/artwork-providers.md)
 - [Scheduling, maintenance, state, and troubleshooting](docs/operations.md)
 - [Development and release testing](docs/release-testing.md)
 - [Support and version policy](SUPPORT.md)
@@ -103,6 +105,7 @@ PLEX_URL=http://plex:32400
 PLEX_TOKEN=your-token
 PLEX_LIBRARIES=auto              # or exact comma-separated names
 TMDB_API_KEY=your-key
+FANART_PROJECT_API_KEY=your-project-key # optional artwork fallback
 ```
 
 For an environment-only installation, no `config.yml` is created or required.
@@ -114,7 +117,8 @@ Configuration priority, from lowest to highest, is:
 
 1. Built-in defaults.
 2. `/config/config.yml`.
-3. Secret files.
+3. Secret files (`PLEX_TOKEN_FILE`, `TMDB_API_KEY_FILE`, and optional
+   `FANART_PROJECT_API_KEY_FILE`).
 4. Non-empty environment variables.
 
 A missing or blank environment variable falls back to the next available
@@ -150,16 +154,16 @@ difference is what may happen when a file already exists:
 only when its path and current SHA-256 checksum still match the ownership
 record saved when MetaFusion wrote it. If that record is absent or lacks a
 checksum, MetaFusion can adopt the file only when its bytes exactly match the
-currently selected TMDb image. Adoption records ownership without rewriting
+currently selected provider image. Adoption records ownership without rewriting
 the file or changing its owner, permissions, or timestamps; different artwork
 remains protected. `fill_missing` never replaces an existing file. `overwrite`
 bypasses ownership protection but still does not blindly rewrite artwork:
 identical sources are skipped and quality safeguards reject stale candidates
-with lower dimensions or lower TMDb vote scores.
+with lower dimensions or lower saved provider scores.
 
 No artwork policy bypasses destination-collision protection. Different Plex
 items cannot silently overwrite the same path unless they resolve to the same
-TMDb identity and exact TMDb artwork. Cleanup also retains its own checksum
+TMDb identity and exact selected provider artwork. Cleanup also retains its own checksum
 safeguards even when the update policy is `overwrite`.
 
 ### Direct Plex metadata policy
@@ -277,6 +281,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/logs/metafusion.log
 /config/cache/meta_db.sqlite3
 /config/cache/tmdb_cache.sqlite3
+/config/cache/fanart_cache.sqlite3   # only when Fanart.tv is configured
 /config/reports/artwork-gaps-*.txt
 /config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
 /config/reports/change-plan-*.txt       # explicit --plan runs only
@@ -294,8 +299,9 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 `REPORT_RETENTION` keeps the newest files independently for each report type;
 the default is `10`.
 
-The TMDb response cache is disposable and automatically sized, pruned, and
-quarantined if corrupt. Durable inventory, scan, job, retry, learned identity,
+The TMDb and optional Fanart.tv response caches are disposable and
+automatically sized, pruned, and quarantined if corrupt. Durable inventory,
+scan, job, retry, learned identity,
 bounded binding-history, library-discovery, and artwork-ownership state remains isolated in
 `meta_db.sqlite3`. SQLite optimization and bounded WAL checkpoints run after
 jobs. Before a schema upgrade, MetaFusion retains two versioned database
@@ -377,6 +383,7 @@ destinations. It is read-only apart from its retained report.
 - [Kometa metadata files](https://kometa.wiki/en/latest/files/metadata/)
 - [Finding a Plex token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
 - [Plex local TV artwork names](https://support.plex.tv/articles/200220717-local-media-assets-tv-shows/)
+- [Fanart.tv API](https://api.fanart.tv/) and [terms](https://fanart.tv/terms-and-conditions/)
 - [Python-PlexAPI edit and lock methods](https://python-plexapi.readthedocs.io/en/latest/modules/mixins.html)
 - [TMDb API documentation](https://developer.themoviedb.org/docs)
 

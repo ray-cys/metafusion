@@ -3,12 +3,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any
+from urllib.parse import urljoin
 
 from helper.asset_registry import AssetDestinationRegistry, normalize_destination
 from helper.cache import load_cache, meta_cache_async
 from helper.concurrency import bounded_callables, bounded_map
 from helper.config import get_image_upgrade_days, mode_check
 from helper.diagnostics import record_kometa_metadata_audit
+from helper.fanart import fanart_artwork_candidates
 from helper.identity import (
     cache_key_for_meta,
     match_for_meta,
@@ -40,6 +42,7 @@ from modules.kometa import (
     merge_generated_metadata,
 )
 from modules.utils import (
+    artwork_candidate_acceptable,
     artwork_candidate_explanations,
     artwork_quality_score,
     asset_temp_path,
@@ -58,6 +61,235 @@ from modules.utils import (
 
 class AssetDestinationCollisionError(RuntimeError):
     pass
+
+
+def _candidate_provider(candidate):
+    return str((candidate or {}).get("provider") or "tmdb").lower()
+
+
+def _provider_label(candidate):
+    return {
+        "tmdb": "TMDb",
+        "fanart": "Fanart.tv",
+        "plex": "Plex",
+    }.get(_candidate_provider(candidate), "Best available")
+
+
+def _with_provider(candidate, provider="tmdb", **extra):
+    if not candidate:
+        return None
+    normalized = dict(candidate)
+    normalized["provider"] = provider
+    normalized["provider_label"] = {
+        "tmdb": "TMDb",
+        "fanart": "Fanart.tv",
+        "plex": "Plex",
+    }.get(provider, provider.title())
+    normalized.update(extra)
+    return normalized
+
+
+def _best_candidate(config, candidates, asset_type):
+    preferred = str(config.get("tmdb", {}).get("language", "en-US")).split(
+        "-", 1
+    )[0].lower()
+    if asset_type == "background":
+        return get_best_background(config, candidates)
+    if asset_type == "season":
+        return get_best_season(config, candidates, preferred_language=preferred)
+    return get_best_poster(config, candidates, preferred_language=preferred)
+
+
+def _artwork_language_allowed(config, candidate):
+    language = (candidate or {}).get("iso_639_1")
+    if language in {None, "", "00", "null"}:
+        return True
+    tmdb = config.get("tmdb", {})
+    preferred = str(tmdb.get("language") or "en-US").split("-", 1)[0].lower()
+    fallback = tmdb.get("fallback") or []
+    if isinstance(fallback, str):
+        fallback = [fallback]
+    allowed = {
+        preferred,
+        *(str(value).split("-", 1)[0].lower() for value in fallback if value),
+    }
+    return (
+        str(language).lower() in allowed
+        or bool(tmdb.get("artwork_allow_any_language", True))
+    )
+
+
+def _plex_artwork_candidate(config, meta, asset_type, season_number=None):
+    artwork = (meta or {}).get("plex_artwork") or {}
+    if asset_type == "season":
+        path = (artwork.get("seasons") or {}).get(season_number)
+        if path is None:
+            path = (artwork.get("seasons") or {}).get(str(season_number))
+    else:
+        path = artwork.get(asset_type)
+    if not path:
+        return None
+    plex_url = str(config.get("plex", {}).get("url") or "").rstrip("/") + "/"
+    source = str(path)
+    if not source.startswith(("http://", "https://")):
+        source = urljoin(plex_url, source.lstrip("/"))
+    if not source.startswith(plex_url):
+        return None
+    return {
+        "file_path": source,
+        "provider": "plex",
+        "provider_label": "Plex",
+        "provider_image_id": str(path),
+        "iso_639_1": None,
+        "width": 0,
+        "height": 0,
+        "vote_average": 0,
+        "asset_type": asset_type,
+    }
+
+
+async def _select_artwork_with_fallback(
+    config,
+    meta,
+    tmdb_candidates,
+    *,
+    asset_type,
+    media_type,
+    tmdb_id,
+    tvdb_id=None,
+    season_number=None,
+    session=None,
+):
+    """Select TMDb, Fanart.tv, Plex, then the strongest below-minimum reserve."""
+    attempts = []
+    tmdb_pool = [_with_provider(candidate) for candidate in (tmdb_candidates or [])]
+    tmdb_pool = [candidate for candidate in tmdb_pool if candidate]
+    tmdb_best = _best_candidate(config, tmdb_pool, asset_type)
+    if (
+        not artwork_candidate_acceptable(config, tmdb_best, asset_type=asset_type)
+        and config.get("tmdb", {}).get("artwork_allow_any_language", True)
+    ):
+        unfiltered = await tmdb_unfiltered_images(
+            config,
+            media_type,
+            tmdb_id,
+            session=session,
+            season_number=season_number,
+        )
+        key = "backdrops" if asset_type == "background" else "posters"
+        combined = {
+            str(candidate.get("file_path")): candidate
+            for candidate in tmdb_pool
+            if candidate.get("file_path")
+        }
+        for candidate in (unfiltered or {}).get(key, []) or []:
+            normalized = _with_provider(candidate)
+            if normalized and normalized.get("file_path"):
+                combined[str(normalized["file_path"])] = normalized
+        tmdb_pool = list(combined.values())
+        tmdb_best = _best_candidate(config, tmdb_pool, asset_type)
+    tmdb_acceptable = artwork_candidate_acceptable(
+        config, tmdb_best, asset_type=asset_type
+    )
+    attempts.append(
+        {
+            "provider": "TMDb",
+            "status": "selected" if tmdb_acceptable else (
+                "reserve" if tmdb_best else "no_candidates"
+            ),
+            "candidates": len(tmdb_pool),
+        }
+    )
+    if tmdb_acceptable:
+        selected = dict(tmdb_best)
+        selected["selection_reason"] = "primary provider met requirements"
+        selected["provider_attempts"] = attempts
+        selected["candidate_pool"] = tmdb_pool
+        return selected
+
+    fanart_pool = await fanart_artwork_candidates(
+        config,
+        media_type,
+        tmdb_id=tmdb_id,
+        tvdb_id=tvdb_id,
+        asset_type=asset_type,
+        season_number=season_number,
+        session=session,
+    )
+    fanart_pool = [
+        candidate
+        for candidate in fanart_pool
+        if _artwork_language_allowed(config, candidate)
+    ]
+    fanart_best = _best_candidate(config, fanart_pool, asset_type)
+    fanart_acceptable = artwork_candidate_acceptable(
+        config, fanart_best, asset_type=asset_type
+    )
+    attempts.append(
+        {
+            "provider": "Fanart.tv",
+            "status": "selected" if fanart_acceptable else (
+                "reserve" if fanart_best else "no_candidates"
+            ),
+            "candidates": len(fanart_pool),
+        }
+    )
+    if fanart_acceptable:
+        selected = dict(fanart_best)
+        selected["selection_reason"] = "TMDb had no acceptable candidate"
+        selected["provider_attempts"] = attempts
+        selected["candidate_pool"] = fanart_pool
+        return selected
+
+    plex_candidate = _plex_artwork_candidate(
+        config, meta, asset_type, season_number=season_number
+    )
+    attempts.append(
+        {
+            "provider": "Plex",
+            "status": "selected" if plex_candidate else "no_candidate",
+            "candidates": 1 if plex_candidate else 0,
+        }
+    )
+    if plex_candidate:
+        plex_candidate["selection_reason"] = (
+            "TMDb and Fanart.tv had no acceptable candidate"
+        )
+        plex_candidate["provider_attempts"] = attempts
+        plex_candidate["candidate_pool"] = [plex_candidate]
+        return plex_candidate
+
+    reserves = [candidate for candidate in (tmdb_best, fanart_best) if candidate]
+    if reserves:
+        preferred = str(config.get("tmdb", {}).get("language", "en-US")).split(
+            "-", 1
+        )[0].lower()
+        selected = max(
+            reserves,
+            key=lambda candidate: artwork_quality_score(
+                config,
+                candidate,
+                asset_type=asset_type,
+                preferred_language=preferred,
+            )["score"],
+        )
+        selected = dict(selected)
+        selected["selection_reason"] = (
+            "best available candidate; no provider met minimum dimensions"
+        )
+        attempts.append(
+            {
+                "provider": _provider_label(selected),
+                "status": "selected_best_available",
+                "candidates": len(reserves),
+            }
+        )
+        selected["provider_attempts"] = attempts
+        selected["candidate_pool"] = (
+            tmdb_pool if _candidate_provider(selected) == "tmdb" else fanart_pool
+        )
+        return selected
+    return None
 
 
 def _asset_temp_path_or_defer(config, meta):
@@ -180,6 +412,10 @@ def _candidate_summary(config, candidate, asset_type, candidate_pool=None):
         preferred_language=preferred_language,
     )
     summary = {
+        "provider": _provider_label(candidate),
+        "provider_image_id": candidate.get("provider_image_id"),
+        "selection_reason": candidate.get("selection_reason"),
+        "provider_attempts": list(candidate.get("provider_attempts") or []),
         "language": candidate.get("iso_639_1") or "untagged",
         "width": int(candidate.get("width") or 0),
         "height": int(candidate.get("height") or 0),
@@ -407,7 +643,7 @@ def regional_tv_certification(content_ratings, region="US"):
 
 
 def cached_source_matches(cache_key, source_path, asset_path, asset_type, season_number=None):
-    """Avoid downloading a known TMDb source when its managed file still exists."""
+    """Avoid downloading a known provider source when its managed file still exists."""
     if not source_path or not asset_path.exists():
         return False
     cached = load_cache().get(cache_key, {})
@@ -601,6 +837,7 @@ async def _record_asset_observation(
     if asset_type == "poster":
         flags["poster_checked"] = True
         kwargs["poster_average"] = vote
+        kwargs["poster_provider"] = _candidate_provider(candidate)
         kwargs["poster_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
@@ -611,6 +848,7 @@ async def _record_asset_observation(
     elif asset_type == "background":
         flags["background_checked"] = True
         kwargs["bg_average"] = vote
+        kwargs["background_provider"] = _candidate_provider(candidate)
         kwargs["background_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
@@ -622,6 +860,7 @@ async def _record_asset_observation(
         kwargs.update(
             season_number=season_number,
             season_average=vote,
+            season_provider=_candidate_provider(candidate),
         )
         if asset_path is not None and checksum:
             kwargs.update(
@@ -708,6 +947,7 @@ async def adopt_exact_tmdb_asset(
             candidate.get("file_path"),
             temp_path,
             session=session,
+            provider=_candidate_provider(candidate),
         )
         if not success or not temp_path.exists():
             log_builder_event(
@@ -717,7 +957,7 @@ async def adopt_exact_tmdb_asset(
                 full_title=full_title,
                 destination=asset_path,
                 reason=(
-                    "ownership could not be verified against TMDb"
+                    f"ownership could not be verified against {_provider_label(candidate)}"
                     f" (status={status}, error={error})"
                 ),
             )
@@ -766,7 +1006,7 @@ async def adopt_exact_tmdb_asset(
                 asset_type=asset_type,
                 full_title=full_title,
                 destination=asset_path,
-                reason="existing content differs from the selected TMDb source",
+                reason="existing content differs from the selected provider source",
             )
             if asset_type in {"poster", "background"}:
                 await _record_asset_observation(
@@ -994,6 +1234,7 @@ async def _build_movie(
     result = {
         "poster": {"size": 0},
         "background": {"size": 0},
+        "artwork_providers": {},
     }
         
     if not any((run_metadata, run_poster, run_background)):
@@ -1350,20 +1591,6 @@ async def _build_movie(
                     update_timestamp=False
                 )
 
-    unfiltered_images_task = None
-
-    async def all_language_images():
-        nonlocal unfiltered_images_task
-        if not config.get("tmdb", {}).get("artwork_allow_any_language", True):
-            return {}
-        if unfiltered_images_task is None:
-            unfiltered_images_task = asyncio.create_task(
-                tmdb_unfiltered_images(
-                    config, "movie", tmdb_id, session=session
-                )
-            )
-        return await unfiltered_images_task or {}
-
     async def process_poster():
         poster_size = 0
         nonlocal poster_action
@@ -1371,39 +1598,38 @@ async def _build_movie(
             result["poster"]["size"] = poster_size
             poster_action = "not_due"
             return
-        preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(details, "posters", [], path=["images"])
-        candidate_pool = list(images or [])
-        fallback = config["tmdb"].get("fallback", [])
-        best = get_best_poster(config, images, preferred_language=preferred_language, fallback=fallback)
-        if not best:
-            unfiltered = await all_language_images()
-            candidate_pool = list(unfiltered.get("posters", []) or [])
-            best = get_best_poster(
-                config,
-                candidate_pool,
-                preferred_language=preferred_language,
-                fallback=fallback,
-            )
-            if best:
-                log_builder_event(
-                    "builder_artwork_language_fallback", media_type="Movie",
-                    asset_type="poster", full_title=full_title,
-                    language=best.get("iso_639_1") or "untagged",
-                )
+        best = await _select_artwork_with_fallback(
+            config, meta, images, asset_type="poster", media_type="movie",
+            tmdb_id=tmdb_id, session=session,
+        )
+        candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="Movie", asset_type="poster", full_title=full_title, extra="")
+            existing_path = get_asset_path(config, meta, asset_type="poster")
+            preserved = bool(existing_path and existing_path.exists())
             _record_artwork_gap(
-                config, "artwork_missing", "Movie", full_title, "poster"
+                config,
+                "artwork_preserved" if preserved else "artwork_missing",
+                "Movie",
+                full_title,
+                "poster",
+                "No provider supplied a replacement; existing artwork was preserved"
+                if preserved
+                else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "movie",
                     update_timestamp=False, poster_checked=True,
                 )
+            poster_size = existing_path.stat().st_size if preserved else 0
+            if preserved:
+                existing_assets.add(str(existing_path.resolve()))
             result["poster"]["size"] = poster_size
-            poster_action = "missing"
+            poster_action = "preserved" if preserved else "missing"
             return
+        result["artwork_providers"]["poster"] = _candidate_provider(best)
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="Movie",
@@ -1415,7 +1641,7 @@ async def _build_movie(
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="Movie",
                 asset_type="poster", full_title=full_title,
-                source_path=best.get("file_path"),
+                source_path=best.get("file_path"), provider=_provider_label(best),
             )
             result["poster"]["size"] = poster_size
             poster_action = "skipped"
@@ -1451,6 +1677,7 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, poster_checked=True,
                 poster_average=best.get("vote_average", 0),
+                poster_provider=_candidate_provider(best),
                 poster_source_path=source_path,
                 poster_path=str(asset_path.resolve()),
                 poster_checksum=shared_checksum,
@@ -1499,6 +1726,7 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, poster_checked=True,
                 poster_average=best.get("vote_average", 0),
+                poster_provider=_candidate_provider(best),
                 poster_source_path=best.get("file_path"),
             )
             result["poster"]["size"] = poster_size
@@ -1513,15 +1741,19 @@ async def _build_movie(
             poster_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
+            success, status, error = await download_poster(
+                config, best["file_path"], temp_path, session=session,
+                provider=_candidate_provider(best),
+            )
             if not success:
                 log_builder_event(
                     "builder_asset_download_failed", media_type="Movie", asset_type="poster",
-                    full_title=full_title, status=status, error=error
+                    full_title=full_title, status=status, error=error,
+                    provider=_provider_label(best),
                 )
                 _record_artwork_gap(
-                    config, "tmdb_failure", "Movie", full_title, "poster",
-                    "Artwork download failed",
+                    config, "provider_failure", "Movie", full_title, "poster",
+                    f"{_provider_label(best)} artwork download failed: {error}",
                 )
                 poster_action = "failed"
             if success and temp_path.exists():
@@ -1536,6 +1768,7 @@ async def _build_movie(
                     cache_key, tmdb_id, title, year, "movie",
                     update_timestamp=False, poster_checked=True,
                     poster_average=best.get("vote_average", 0),
+                    poster_provider=_candidate_provider(best),
                     poster_source_path=best.get("file_path"),
                 )
                 if should_upgrade:
@@ -1554,6 +1787,7 @@ async def _build_movie(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
                         poster_average=best.get("vote_average", 0),
+                        poster_provider=_candidate_provider(best),
                         poster_path=str(asset_path.resolve()),
                         poster_checksum=asset_checksum,
                         poster_upgraded=True,
@@ -1567,13 +1801,15 @@ async def _build_movie(
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
                             "builder_downloading_asset", media_type="Movie", asset_type="poster",
-                            full_title=full_title, filesize=poster_size
+                            full_title=full_title, filesize=poster_size,
+                            provider=_provider_label(best),
                         )
                         poster_action = "downloaded"
                     else:
                         log_builder_event(
                             "builder_asset_upgraded", media_type="Movie", asset_type="Poster",
-                            full_title=full_title, status_code=status_code, context=context, filesize=poster_size
+                            full_title=full_title, status_code=status_code, context=context,
+                            filesize=poster_size, provider=_provider_label(best),
                         )
                         poster_action = "upgraded"
                     existing_assets.add(str(asset_path.resolve()))
@@ -1599,31 +1835,37 @@ async def _build_movie(
             background_action = "not_due"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
-        candidate_pool = list(images or [])
-        best = get_best_background(config, images)
-        if not best:
-            unfiltered = await all_language_images()
-            candidate_pool = list(unfiltered.get("backdrops", []) or [])
-            best = get_best_background(config, candidate_pool)
-            if best:
-                log_builder_event(
-                    "builder_artwork_language_fallback", media_type="Movie",
-                    asset_type="background", full_title=full_title,
-                    language=best.get("iso_639_1") or "untagged",
-                )
+        best = await _select_artwork_with_fallback(
+            config, meta, images, asset_type="background", media_type="movie",
+            tmdb_id=tmdb_id, session=session,
+        )
+        candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="Movie", asset_type="background", full_title=full_title, extra="")
+            existing_path = get_asset_path(config, meta, asset_type="background")
+            preserved = bool(existing_path and existing_path.exists())
             _record_artwork_gap(
-                config, "artwork_missing", "Movie", full_title, "background"
+                config,
+                "artwork_preserved" if preserved else "artwork_missing",
+                "Movie",
+                full_title,
+                "background",
+                "No provider supplied a replacement; existing artwork was preserved"
+                if preserved
+                else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "movie",
                     update_timestamp=False, background_checked=True,
                 )
+            background_size = existing_path.stat().st_size if preserved else 0
+            if preserved:
+                existing_assets.add(str(existing_path.resolve()))
             result["background"]["size"] = background_size
-            background_action = "missing"
+            background_action = "preserved" if preserved else "missing"
             return
+        result["artwork_providers"]["background"] = _candidate_provider(best)
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="Movie",
@@ -1635,7 +1877,7 @@ async def _build_movie(
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="Movie",
                 asset_type="background", full_title=full_title,
-                source_path=best.get("file_path"),
+                source_path=best.get("file_path"), provider=_provider_label(best),
             )
             result["background"]["size"] = background_size
             background_action = "skipped"
@@ -1671,6 +1913,7 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, background_checked=True,
                 bg_average=best.get("vote_average", 0),
+                background_provider=_candidate_provider(best),
                 background_source_path=source_path,
                 background_path=str(asset_path.resolve()),
                 background_checksum=shared_checksum,
@@ -1719,6 +1962,7 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, background_checked=True,
                 bg_average=best.get("vote_average", 0),
+                background_provider=_candidate_provider(best),
                 background_source_path=best.get("file_path"),
             )
             result["background"]["size"] = background_size
@@ -1733,15 +1977,19 @@ async def _build_movie(
             background_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
+            success, status, error = await download_poster(
+                config, best["file_path"], temp_path, session=session,
+                provider=_candidate_provider(best),
+            )
             if not success:
                 log_builder_event(
                     "builder_asset_download_failed", media_type="Movie", asset_type="background",
-                    full_title=full_title, status=status, error=error
+                    full_title=full_title, status=status, error=error,
+                    provider=_provider_label(best),
                 )
                 _record_artwork_gap(
-                    config, "tmdb_failure", "Movie", full_title, "background",
-                    "Artwork download failed",
+                    config, "provider_failure", "Movie", full_title, "background",
+                    f"{_provider_label(best)} artwork download failed: {error}",
                 )
                 background_action = "failed"
             if success and temp_path.exists():
@@ -1756,6 +2004,7 @@ async def _build_movie(
                     cache_key, tmdb_id, title, year, "movie",
                     update_timestamp=False, background_checked=True,
                     bg_average=best.get("vote_average", 0),
+                    background_provider=_candidate_provider(best),
                     background_source_path=best.get("file_path"),
                 )
                 if should_upgrade:
@@ -1774,6 +2023,7 @@ async def _build_movie(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
                         bg_average=best.get("vote_average", 0),
+                        background_provider=_candidate_provider(best),
                         background_path=str(asset_path.resolve()),
                         background_checksum=asset_checksum,
                         background_upgraded=True,
@@ -1787,13 +2037,15 @@ async def _build_movie(
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
                             "builder_downloading_asset", media_type="Movie", asset_type="background",
-                            full_title=full_title, filesize=background_size
+                            full_title=full_title, filesize=background_size,
+                            provider=_provider_label(best),
                         )
                         background_action = "downloaded"
                     else:
                         log_builder_event(
                         "builder_asset_upgraded", media_type="Movie", asset_type="Background",
-                        full_title=full_title, status_code=status_code, context=context, filesize=background_size
+                        full_title=full_title, status_code=status_code, context=context,
+                        filesize=background_size, provider=_provider_label(best),
                         )
                         background_action = "upgraded"
                     existing_assets.add(str(asset_path.resolve()))
@@ -1875,6 +2127,8 @@ async def _build_tv(
         "background": {"size": 0},
         "season_poster": {"size": 0},
         "season_posters": {}, 
+        "artwork_providers": {},
+        "season_artwork_providers": {},
     }
     if not any((run_metadata, run_poster, run_background, run_season)):
         return {
@@ -2568,32 +2822,6 @@ async def _build_tv(
                 full_title=full_title, cache_key=cache_key,
             )
 
-    unfiltered_images_task = None
-    season_unfiltered_tasks = {}
-
-    async def all_language_images(season_number=None):
-        nonlocal unfiltered_images_task
-        if not config.get("tmdb", {}).get("artwork_allow_any_language", True):
-            return {}
-        if season_number is None:
-            if unfiltered_images_task is None:
-                unfiltered_images_task = asyncio.create_task(
-                    tmdb_unfiltered_images(config, "tv", tmdb_id, session=session)
-                )
-            return await unfiltered_images_task or {}
-        if season_number not in season_unfiltered_tasks:
-            source_tmdb_id, source_season_number = season_source(season_number)
-            season_unfiltered_tasks[season_number] = asyncio.create_task(
-                tmdb_unfiltered_images(
-                    config,
-                    "tv",
-                    source_tmdb_id,
-                    season_number=source_season_number,
-                    session=session,
-                )
-            )
-        return await season_unfiltered_tasks[season_number] or {}
-
     async def process_tv_poster():
         poster_size = 0
         nonlocal poster_action
@@ -2605,39 +2833,40 @@ async def _build_tv(
             result["poster"]["size"] = poster_size
             poster_action = "skipped"
             return
-        preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(details, "posters", [], path=["images"])
-        candidate_pool = list(images or [])
-        fallback = config["tmdb"].get("fallback", [])
-        best = get_best_poster(config, images, preferred_language=preferred_language, fallback=fallback)
-        if not best:
-            unfiltered = await all_language_images()
-            candidate_pool = list(unfiltered.get("posters", []) or [])
-            best = get_best_poster(
-                config,
-                candidate_pool,
-                preferred_language=preferred_language,
-                fallback=fallback,
-            )
-            if best:
-                log_builder_event(
-                    "builder_artwork_language_fallback", media_type="TV Show",
-                    asset_type="poster", full_title=full_title,
-                    language=best.get("iso_639_1") or "untagged",
-                )
+        best = await _select_artwork_with_fallback(
+            config, meta, images, asset_type="poster", media_type="tv",
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
+            session=session,
+        )
+        candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="TV Show", asset_type="poster", full_title=full_title, extra="")
+            existing_path = get_asset_path(config, meta, asset_type="poster")
+            preserved = bool(existing_path and existing_path.exists())
             _record_artwork_gap(
-                config, "artwork_missing", "TV Show", full_title, "poster"
+                config,
+                "artwork_preserved" if preserved else "artwork_missing",
+                "TV Show",
+                full_title,
+                "poster",
+                "No provider supplied a replacement; existing artwork was preserved"
+                if preserved
+                else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "tv",
                     update_timestamp=False, poster_checked=True,
                 )
+            poster_size = existing_path.stat().st_size if preserved else 0
+            if preserved:
+                existing_assets.add(str(existing_path.resolve()))
             result["poster"]["size"] = poster_size
-            poster_action = "missing"
+            poster_action = "preserved" if preserved else "missing"
             return
+        result["artwork_providers"]["poster"] = _candidate_provider(best)
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
@@ -2649,7 +2878,7 @@ async def _build_tv(
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="TV Show",
                 asset_type="poster", full_title=full_title,
-                source_path=best.get("file_path"),
+                source_path=best.get("file_path"), provider=_provider_label(best),
             )
             result["poster"]["size"] = poster_size
             poster_action = "skipped"
@@ -2711,6 +2940,7 @@ async def _build_tv(
                 cache_key, tmdb_id, title, year, "tv",
                 update_timestamp=False, poster_checked=True,
                 poster_average=best.get("vote_average", 0),
+                poster_provider=_candidate_provider(best),
                 poster_source_path=best.get("file_path"),
             )
             result["poster"]["size"] = poster_size
@@ -2725,15 +2955,19 @@ async def _build_tv(
             poster_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
+            success, status, error = await download_poster(
+                config, best["file_path"], temp_path, session=session,
+                provider=_candidate_provider(best),
+            )
             if not success:
                 log_builder_event(
                     "builder_asset_download_failed", media_type="TV Show", asset_type="poster",
-                    full_title=full_title, status=status, error=error
+                    full_title=full_title, status=status, error=error,
+                    provider=_provider_label(best),
                 )
                 _record_artwork_gap(
-                    config, "tmdb_failure", "TV Show", full_title, "poster",
-                    "Artwork download failed",
+                    config, "provider_failure", "TV Show", full_title, "poster",
+                    f"{_provider_label(best)} artwork download failed: {error}",
                 )
                 poster_action = "failed"
             if success and temp_path.exists():
@@ -2748,6 +2982,7 @@ async def _build_tv(
                     cache_key, tmdb_id, title, year, "tv",
                     update_timestamp=False, poster_checked=True,
                     poster_average=best.get("vote_average", 0),
+                    poster_provider=_candidate_provider(best),
                     poster_source_path=best.get("file_path"),
                 )
                 if should_upgrade:
@@ -2766,6 +3001,7 @@ async def _build_tv(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
                         poster_average=best.get("vote_average", 0),
+                        poster_provider=_candidate_provider(best),
                         poster_path=str(asset_path.resolve()),
                         poster_checksum=asset_checksum,
                         poster_upgraded=True,
@@ -2779,13 +3015,15 @@ async def _build_tv(
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
                             "builder_downloading_asset", media_type="TV Show", asset_type="poster",
-                            full_title=full_title, filesize=poster_size
+                            full_title=full_title, filesize=poster_size,
+                            provider=_provider_label(best),
                         )
                         poster_action = "downloaded"
                     else:
                         log_builder_event(
                             "builder_asset_upgraded", media_type="TV Show", asset_type="Poster",
-                            full_title=full_title, status_code=status_code, context=context, filesize=poster_size
+                            full_title=full_title, status_code=status_code, context=context,
+                            filesize=poster_size, provider=_provider_label(best),
                         )
                         poster_action = "upgraded"
                     existing_assets.add(str(asset_path.resolve()))
@@ -2815,31 +3053,39 @@ async def _build_tv(
             background_action = "skipped"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
-        candidate_pool = list(images or [])
-        best = get_best_background(config, images)
-        if not best:
-            unfiltered = await all_language_images()
-            candidate_pool = list(unfiltered.get("backdrops", []) or [])
-            best = get_best_background(config, candidate_pool)
-            if best:
-                log_builder_event(
-                    "builder_artwork_language_fallback", media_type="TV Show",
-                    asset_type="background", full_title=full_title,
-                    language=best.get("iso_639_1") or "untagged",
-                )
+        best = await _select_artwork_with_fallback(
+            config, meta, images, asset_type="background", media_type="tv",
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
+            session=session,
+        )
+        candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
             log_builder_event("builder_no_suitable_asset", media_type="TV Show", asset_type="background", full_title=full_title, extra="")
+            existing_path = get_asset_path(config, meta, asset_type="background")
+            preserved = bool(existing_path and existing_path.exists())
             _record_artwork_gap(
-                config, "artwork_missing", "TV Show", full_title, "background"
+                config,
+                "artwork_preserved" if preserved else "artwork_missing",
+                "TV Show",
+                full_title,
+                "background",
+                "No provider supplied a replacement; existing artwork was preserved"
+                if preserved
+                else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
                     cache_key, tmdb_id, title, year, "tv",
                     update_timestamp=False, background_checked=True,
                 )
+            background_size = existing_path.stat().st_size if preserved else 0
+            if preserved:
+                existing_assets.add(str(existing_path.resolve()))
             result["background"]["size"] = background_size
-            background_action = "missing"
+            background_action = "preserved" if preserved else "missing"
             return
+        result["artwork_providers"]["background"] = _candidate_provider(best)
 
         await _audit_asset_candidate(
             config, meta, cache_key, best, media_type="TV Show",
@@ -2851,7 +3097,7 @@ async def _build_tv(
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="TV Show",
                 asset_type="background", full_title=full_title,
-                source_path=best.get("file_path"),
+                source_path=best.get("file_path"), provider=_provider_label(best),
             )
             result["background"]["size"] = background_size
             background_action = "skipped"
@@ -2913,6 +3159,7 @@ async def _build_tv(
                 cache_key, tmdb_id, title, year, "tv",
                 update_timestamp=False, background_checked=True,
                 bg_average=best.get("vote_average", 0),
+                background_provider=_candidate_provider(best),
                 background_source_path=best.get("file_path"),
             )
             result["background"]["size"] = background_size
@@ -2927,15 +3174,19 @@ async def _build_tv(
             background_action = "deferred"
             return
         try:
-            success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
+            success, status, error = await download_poster(
+                config, best["file_path"], temp_path, session=session,
+                provider=_candidate_provider(best),
+            )
             if not success:
                 log_builder_event(
                     "builder_asset_download_failed", media_type="TV Show", asset_type="background",
-                    full_title=full_title, status=status, error=error
+                    full_title=full_title, status=status, error=error,
+                    provider=_provider_label(best),
                 )
                 _record_artwork_gap(
-                    config, "tmdb_failure", "TV Show", full_title, "background",
-                    "Artwork download failed",
+                    config, "provider_failure", "TV Show", full_title, "background",
+                    f"{_provider_label(best)} artwork download failed: {error}",
                 )
                 background_action = "failed"
             if success and temp_path.exists():
@@ -2950,6 +3201,7 @@ async def _build_tv(
                     cache_key, tmdb_id, title, year, "tv",
                     update_timestamp=False, background_checked=True,
                     bg_average=best.get("vote_average", 0),
+                    background_provider=_candidate_provider(best),
                     background_source_path=best.get("file_path"),
                 )
                 if should_upgrade:
@@ -2968,6 +3220,7 @@ async def _build_tv(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
                         bg_average=best.get("vote_average", 0),
+                        background_provider=_candidate_provider(best),
                         background_path=str(asset_path.resolve()),
                         background_checksum=asset_checksum,
                         background_upgraded=True,
@@ -2981,13 +3234,15 @@ async def _build_tv(
                     elif status_code == "NO_EXISTING_ASSET":
                         log_builder_event(
                             "builder_downloading_asset", media_type="TV Show", asset_type="background",
-                            full_title=full_title, filesize=background_size
+                            full_title=full_title, filesize=background_size,
+                            provider=_provider_label(best),
                         )
                         background_action = "downloaded"
                     else:
                         log_builder_event(
                             "builder_asset_upgraded", media_type="TV Show", asset_type="Background",
-                            full_title=full_title, status_code=status_code, context=context, filesize=background_size
+                            full_title=full_title, status_code=status_code, context=context,
+                            filesize=background_size, provider=_provider_label(best),
                         )
                         background_action = "upgraded"
                     existing_assets.add(str(asset_path.resolve()))
@@ -3024,38 +3279,44 @@ async def _build_tv(
             season_poster_actions[season_number] = "failed"
             return
 
-        preferred_language = config["tmdb"].get("language", "en").split("-")[0]
         images = get_meta_field(season_details, "posters", [], path=["images"])
-        candidate_pool = list(images or [])
-        fallback = config["tmdb"].get("fallback", [])
-        best = get_best_season(config, images, preferred_language=preferred_language, fallback=fallback)
-        if not best:
-            unfiltered = await all_language_images(season_number=season_number)
-            candidate_pool = list(unfiltered.get("posters", []) or [])
-            best = get_best_season(
-                config,
-                candidate_pool,
-                preferred_language=preferred_language,
-                fallback=fallback,
-            )
-            if best:
-                log_builder_event(
-                    "builder_artwork_language_fallback", media_type="TV Show",
-                    asset_type="season poster", full_title=full_title,
-                    language=best.get("iso_639_1") or "untagged",
-                )
+        source_tmdb_id, _source_season_number = season_source(season_number)
+        best = await _select_artwork_with_fallback(
+            config, meta, images, asset_type="season", media_type="tv",
+            tmdb_id=source_tmdb_id,
+            tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
+            season_number=season_number,
+            session=session,
+        )
+        candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
             log_builder_event(
                 "builder_no_suitable_asset_season", media_type="TV Show", asset_type="poster",
                 full_title=full_title, season_number=season_number
             )
+            existing_path = get_asset_path(
+                config, meta, asset_type="season", season_number=season_number
+            )
+            preserved = bool(existing_path and existing_path.exists())
             _record_artwork_gap(
-                config, "artwork_missing", "TV Show", full_title,
+                config,
+                "artwork_preserved" if preserved else "artwork_missing",
+                "TV Show", full_title,
                 f"season {season_number} poster",
+                "No provider supplied a replacement; existing artwork was preserved"
+                if preserved
+                else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
             )
             season_candidate_sources[int(season_number)] = ""
-            season_poster_actions[season_number] = "missing"
+            if preserved:
+                result["season_posters"][season_number] = existing_path.stat().st_size
+                existing_assets.add(str(existing_path.resolve()))
+            season_poster_actions[season_number] = (
+                "preserved" if preserved else "missing"
+            )
             return
+
+        result["season_artwork_providers"][season_number] = _candidate_provider(best)
 
         season_candidate_sources[int(season_number)] = str(
             best.get("file_path") or ""
@@ -3072,7 +3333,7 @@ async def _build_tv(
             log_builder_event(
                 "builder_dry_run_asset_selected", media_type="TV Show",
                 asset_type=f"season {season_number} poster", full_title=full_title,
-                source_path=best.get("file_path"),
+                source_path=best.get("file_path"), provider=_provider_label(best),
             )
             result["season_posters"][season_number] = season_poster_size
             season_poster_actions[season_number] = "skipped"
@@ -3138,6 +3399,7 @@ async def _build_tv(
                 cache_key, tmdb_id, title, year, "tv",
                 update_timestamp=False, season_number=season_number,
                 season_average=best.get("vote_average", 0),
+                season_provider=_candidate_provider(best),
                 season_source_path=best.get("file_path"),
             )
             result["season_posters"][season_number] = season_poster_size
@@ -3152,15 +3414,20 @@ async def _build_tv(
             season_poster_actions[season_number] = "deferred"
             return
         try:
-            success, status, error = await download_poster(config, best["file_path"], temp_path, session=session)
+            success, status, error = await download_poster(
+                config, best["file_path"], temp_path, session=session,
+                provider=_candidate_provider(best),
+            )
             if not success:
                 log_builder_event(
                     "builder_asset_download_failed_season", media_type="TV Show", asset_type="poster",
-                    full_title=full_title, season_number=season_number, status=status, error=error
+                    full_title=full_title, season_number=season_number, status=status,
+                    error=error, provider=_provider_label(best),
                 )
                 _record_artwork_gap(
-                    config, "tmdb_failure", "TV Show", full_title,
-                    f"season {season_number} poster", "Artwork download failed",
+                    config, "provider_failure", "TV Show", full_title,
+                    f"season {season_number} poster",
+                    f"{_provider_label(best)} artwork download failed: {error}",
                 )
                 season_poster_actions[season_number] = "failed"
             if success and temp_path.exists():
@@ -3176,6 +3443,7 @@ async def _build_tv(
                     cache_key, tmdb_id, title, year, "tv",
                     update_timestamp=False, season_number=season_number,
                     season_average=best.get("vote_average", 0),
+                    season_provider=_candidate_provider(best),
                     season_source_path=best.get("file_path"),
                 )
                 if should_upgrade:
@@ -3195,6 +3463,7 @@ async def _build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         season_number=season_number,
                         season_average=best.get("vote_average", 0),
+                        season_provider=_candidate_provider(best),
                         season_path=str(asset_path.resolve()),
                         season_checksum=asset_checksum,
                         season_upgraded=season_number,
@@ -3209,14 +3478,15 @@ async def _build_tv(
                     elif status_code == "NO_EXISTING_ASSET_SEASON":
                         log_builder_event(
                             "builder_downloading_asset_season", media_type="TV Show", asset_type="poster",
-                            full_title=full_title, season_number=season_number, filesize=season_poster_size
+                            full_title=full_title, season_number=season_number,
+                            filesize=season_poster_size, provider=_provider_label(best),
                         )
                         season_poster_actions[season_number] = "downloaded"
                     else:
                         log_builder_event(
                             "builder_asset_upgraded_season", media_type="TV Show", asset_type="poster",
                             full_title=full_title, season_number=season_number, status_code=status_code, context=context,
-                            filesize=season_poster_size
+                            filesize=season_poster_size, provider=_provider_label(best),
                         )
                         season_poster_actions[season_number] = "upgraded" 
                     existing_assets.add(str(asset_path.resolve()))

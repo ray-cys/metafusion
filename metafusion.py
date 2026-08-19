@@ -52,6 +52,11 @@ from helper.diagnostics import (
     write_release_qualification_report,
     write_support_report,
 )
+from helper.fanart import (
+    begin_fanart_cache,
+    fanart_response_cache,
+    flush_fanart_cache,
+)
 from helper.identity_diagnostics import run_identity_inspection
 from helper.incremental import (
     config_fingerprint,
@@ -271,9 +276,9 @@ def parse_cli_args(argv=None):
     )
     parser.add_argument(
         "--sqlite-target",
-        choices=["all", "state", "tmdb"],
+        choices=["all", "state", "tmdb", "fanart"],
         default="all",
-        help="Limit SQLite maintenance to durable state or disposable TMDb cache",
+        help="Limit SQLite maintenance to state, TMDb cache, or Fanart.tv cache",
     )
     parser.add_argument(
         "--compatibility-check",
@@ -1298,6 +1303,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
             writable=not config.get("settings", {}).get("dry_run", False)
         )
         begin_tmdb_cache(config)
+        begin_fanart_cache(config)
         begin_plex_metadata_run(config)
     except Exception:
         if job_lock is not None:
@@ -1341,6 +1347,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
             caught,
             config.get("plex", {}).get("token"),
             config.get("tmdb", {}).get("api_key"),
+            config.get("fanart", {}).get("project_api_key"),
         )
         log_main_event("main_unhandled_exception", error=error, logger=logger)
     finally:
@@ -1451,6 +1458,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
+            flush_fanart_cache()
             if not config.get("settings", {}).get("dry_run", False):
                 try:
                     tmdb_maintenance = tmdb_response_cache.maintain()
@@ -1458,9 +1466,10 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     retry_summary = retry_queue_summary()
                     logger.info(
                         "[Maintenance] SQLite optimization complete; state "
-                        "checkpoint=%s, TMDb checkpoint=%s, retry queue=%s.",
+                        "checkpoint=%s, TMDb checkpoint=%s, Fanart.tv checkpoint=%s, retry queue=%s.",
                         state_maintenance.get("checkpointed", False),
                         tmdb_maintenance.get("checkpointed", False),
+                        fanart_response_cache.maintain().get("checkpointed", False),
                         retry_summary or "empty",
                     )
                 except Exception as maintenance_error:
@@ -1475,6 +1484,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
         finally:
             log_performance_summary(logger, performance_tracker)
             tmdb_response_cache.reset_memory()
+            fanart_response_cache.reset_memory()
         try:
             if runtime_status:
                 runtime_status.run_finished(
@@ -1821,6 +1831,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                config.get("fanart", {}).get("project_api_key"),
             )
             print(f"Mapping diagnosis failed: {message}", file=sys.stderr)
             return 1
@@ -1852,6 +1863,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                config.get("fanart", {}).get("project_api_key"),
             )
             print(f"Identity inspection failed: {message}", file=sys.stderr)
             return 1
@@ -1881,6 +1893,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                config.get("fanart", {}).get("project_api_key"),
             )
             print(f"Item explanation failed: {message}", file=sys.stderr)
             return 1
@@ -1908,6 +1921,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                config.get("fanart", {}).get("project_api_key"),
             )
             print(f"Compatibility check failed: {message}", file=sys.stderr)
             return 1
@@ -1927,6 +1941,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                config.get("fanart", {}).get("project_api_key"),
             )
             print(f"Release qualification failed: {message}", file=sys.stderr)
             return 1
@@ -1942,6 +1957,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                config.get("fanart", {}).get("project_api_key"),
             )
             print(f"Preflight failed: {message}", file=sys.stderr)
             return 1

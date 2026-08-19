@@ -15,12 +15,13 @@ Values are merged in this order, with later sources taking priority:
 
 1. Built-in defaults.
 2. `/config/config.yml`.
-3. `PLEX_TOKEN_FILE` and `TMDB_API_KEY_FILE`.
+3. `PLEX_TOKEN_FILE`, `TMDB_API_KEY_FILE`, and
+   `FANART_PROJECT_API_KEY_FILE`.
 4. Non-empty environment variables.
 
 Blank environment bindings are ignored, allowing `config.yml` or defaults to
-supply the value. A non-empty `PLEX_TOKEN` or `TMDB_API_KEY` takes priority over
-its secret file.
+supply the value. A non-empty direct token or API key takes priority over its
+matching secret file.
 
 The container maintains `/config/config_template.yml` as a value-free
 reference. It never copies environment values or secrets into that file and
@@ -43,6 +44,8 @@ effective configuration without contacting Plex or TMDb.
 | `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations for Plex-mode artwork. Docker mappings are still required. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | Mounted file containing the TMDb key; a non-empty direct key wins. |
+| `FANART_PROJECT_API_KEY` | unset | Optional Fanart.tv project key. Enables artwork fallback after TMDb; it is not used for metadata. |
+| `FANART_PROJECT_API_KEY_FILE` | unset | Mounted file containing the Fanart.tv project key; a non-empty direct key wins. |
 | `TMDB_LANGUAGE` | `en-US` | Metadata language and primary artwork language. |
 | `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered artwork-only fallbacks; metadata text continues to use `TMDB_LANGUAGE`. |
 | `TMDB_REGION` | `US` | Metadata release/certification region, with US fallback behavior. |
@@ -56,6 +59,7 @@ effective configuration without contacting Plex or TMDb.
 
 Tokens and keys are redacted from MetaFusion logs. They remain visible to
 Docker or Unraid administrators when supplied as environment variables.
+See [Artwork providers](artwork-providers.md) before enabling Fanart.tv.
 
 ## Scheduling and processing
 
@@ -108,7 +112,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAX_CONCURRENCY` | `0` | `0` enables cgroup-aware adaptive tuning. A positive value is an optional hard ceiling; Plex, TMDb, nested artwork, and item lanes retain their lower internal safety caps. |
+| `MAX_CONCURRENCY` | `0` | `0` enables cgroup-aware adaptive tuning. A positive value is an optional hard ceiling; Plex, TMDb, Fanart.tv, nested artwork, and item lanes retain their lower internal safety caps. |
 | `REQUEST_TIMEOUT` | `30` | Total TMDb/image request timeout in seconds. |
 | `CONNECT_TIMEOUT` | `10` | HTTP connection timeout in seconds; must not exceed `REQUEST_TIMEOUT`. |
 | `PLEX_TIMEOUT` | `10` | Timeout for each blocking Plex request. |
@@ -140,11 +144,11 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
 | `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
 | `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster adaptive base interval. |
-| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb responses in SQLite. |
-| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb response lifetime. |
-| `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for HTTP 404 results; 429 and 5xx responses are never cached. |
-| `TMDB_CACHE_MAX_ENTRIES` | `0` | Maximum persisted responses; `0` chooses a storage-aware automatic limit. |
-| `TMDB_CACHE_MAX_MB` | `0` | Compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb and configured Fanart.tv responses in separate SQLite caches. |
+| `TMDB_CACHE_TTL_HOURS` | `24` | TMDb and Fanart.tv response lifetime. |
+| `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for either provider's HTTP 404 results; 429 and 5xx responses are never cached. |
+| `TMDB_CACHE_MAX_ENTRIES` | `0` | Per-provider maximum persisted responses; `0` chooses a storage-aware automatic limit. |
+| `TMDB_CACHE_MAX_MB` | `0` | Per-provider compressed-payload limit; `0` chooses 2% of available storage, bounded from 64 MiB to 1 GiB. |
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |

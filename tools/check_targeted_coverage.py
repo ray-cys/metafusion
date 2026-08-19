@@ -8,6 +8,7 @@ from pathlib import Path
 TARGETS = {
     "modules/builder.py": 78.0,
     "helper/tmdb_cache.py": 85.0,
+    "helper/fanart.py": 80.0,
     "helper/logging.py": 85.0,
     "helper/provider_mappings.py": 90.0,
     "metafusion.py": 84.0,

@@ -29,7 +29,7 @@ def test_unchanged_metadata_log_labels_completeness_percentages(caplog):
     assert "(100%/0%) completed" not in caplog.text
 
 
-def test_successful_asset_mutations_are_info_and_noops_are_debug(caplog):
+def test_builder_asset_details_are_debug_to_avoid_duplicate_item_outcomes(caplog):
     with caplog.at_level(logging.INFO):
         log_builder_event(
             "builder_downloading_asset",
@@ -46,11 +46,18 @@ def test_successful_asset_mutations_are_info_and_noops_are_debug(caplog):
             filesize=2048,
         )
 
-    assert "Downloading TMDb poster: Example (2024)" in caplog.text
+    assert "Example (2024)" not in caplog.text
     assert "Unchanged (2024)" not in caplog.text
 
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
+        log_builder_event(
+            "builder_downloading_asset",
+            media_type="Movie",
+            asset_type="poster",
+            full_title="Example (2024)",
+            filesize=2048,
+        )
         log_builder_event(
             "builder_already_up_to_date",
             media_type="Movie",
@@ -58,6 +65,7 @@ def test_successful_asset_mutations_are_info_and_noops_are_debug(caplog):
             full_title="Unchanged (2024)",
             filesize=2048,
         )
+    assert "Downloaded poster" in caplog.text
     assert "No poster changes detected: Unchanged (2024)" in caplog.text
 
 

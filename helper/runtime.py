@@ -66,10 +66,14 @@ def ensure_storage_available(
     minimum_mb, required_bytes = storage_pressure_threshold(config, usage)
     if free_bytes < required_bytes:
         try:
+            from helper.fanart import fanart_response_cache
             from helper.tmdb_cache import tmdb_response_cache
 
-            tmdb_response_cache.relieve_space(target, required_bytes)
-            free_bytes = shutil.disk_usage(target).free
+            for response_cache in (tmdb_response_cache, fanart_response_cache):
+                response_cache.relieve_space(target, required_bytes)
+                free_bytes = shutil.disk_usage(target).free
+                if free_bytes >= required_bytes:
+                    break
         except (ImportError, OSError, AttributeError):
             pass
     if free_bytes < required_bytes:

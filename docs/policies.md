@@ -13,6 +13,14 @@ to another subsystem.
 
 ## Artwork update policies
 
+Artwork source selection is separate from the update policy. MetaFusion tries
+TMDb first, then a configured Fanart.tv project key, then the artwork exposed
+by Plex. If none meets the hard dimension requirements, the highest-scoring
+TMDb/Fanart.tv reserve is used as `best available`; otherwise the destination
+is preserved and the item is reported. This order is identical in Kometa and
+Plex modes. See [Artwork providers](artwork-providers.md) for complete failure,
+privacy, and attribution behavior.
+
 The artwork policy applies in both modes:
 
 - Kometa mode destinations are below `/kometa/assets`.
@@ -47,7 +55,7 @@ The title can still be inventoried or queried when another task makes it due.
 #### `managed`
 
 This is the recommended default. When MetaFusion creates or replaces artwork,
-it records the destination path, SHA-256 checksum, selected TMDb source, vote
+it records the destination path, SHA-256 checksum, selected provider source, score
 score, and upgrade timestamp in durable state.
 
 An existing file is eligible only when:
@@ -62,7 +70,7 @@ it rather than claiming ownership of the new content.
 
 When an existing file has no ownership record, or an older record has a path
 but no checksum, MetaFusion performs a safe ownership check. It downloads the
-currently selected TMDb image to a temporary file and compares SHA-256 values:
+currently selected provider image to a temporary file and compares SHA-256 values:
 
 - An exact byte match is adopted into durable ownership state.
 - The destination file is not replaced, opened for writing, renamed, chmodded,
@@ -70,7 +78,7 @@ currently selected TMDb image to a temporary file and compares SHA-256 values:
 - A different image, symbolic link, download failure, or checksum failure is
   preserved without an ownership claim.
 
-The first managed run after this correction can perform extra TMDb downloads
+The first managed run after this correction can perform extra provider downloads
 for unverified files. Later scheduled runs use the recorded check/ownership
 state. Artwork that was already orphaned before a live Plex title could verify
 it cannot be auto-adopted and remains a manual cleanup decision.
@@ -94,11 +102,12 @@ deterministic 0-100 quality score:
 | Component | Weight | Meaning |
 | --- | ---: | --- |
 | Resolution | 45 | Image area relative to the configured preferred dimensions, capped at full credit. |
-| TMDb vote | 35 | TMDb's normalized artwork vote average, capped at 10. |
+| Provider score | 35 | TMDb vote average or Fanart.tv likes proxy, capped at 10. Plex candidates have no pre-download score. |
 | Aspect ratio | 10 | Closeness to 2:3 for posters/season posters or 16:9 for backgrounds. |
 | Language | 10 | Preferred language gets 10, configured fallback 7, untagged 4, and another language 0. |
 
-The highest score wins; vote, pixel area, and source path provide stable tie
+The highest score wins within the current provider stage; vote, pixel area,
+and source path provide stable tie
 breakers. Scoring does not allow a lower-priority language to jump ahead of an
 available preferred-language tier and does not bypass minimum dimensions or
 vote thresholds. The chosen candidate and component scores appear in explicit
@@ -108,11 +117,11 @@ score it.
 After a policy permits an existing destination to be considered, the artwork
 upgrade engine still decides whether to write:
 
-- The same recorded TMDb source is skipped when the managed file still exists.
+- The same recorded provider source is skipped when the managed file still exists.
 - Byte-identical downloaded artwork is skipped.
 - Before the timed refresh age, better vote scores, configured vote thresholds,
   and improved dimensions can trigger an upgrade.
-- Once stale, a candidate is rejected if its width, height, or TMDb vote score
+- Once stale, a candidate is rejected if its width, height, or saved provider score
   would be lower than the saved/current artwork comparison.
 - A rejected or failed candidate leaves the existing file intact.
 
@@ -132,7 +141,7 @@ Destination protection applies under every artwork policy, including
 
 - Different Plex identities cannot concurrently claim one output path.
 - Editions stored in a shared physical directory can share artwork only when
-  they resolve to the same TMDb title and exact TMDb source image.
+  they resolve to the same TMDb title and exact selected provider source image.
 - Verified shared artwork is downloaded once and its checksum is recorded for
   each qualifying identity.
 - Conflicting TMDb identities or different selected images are rejected and

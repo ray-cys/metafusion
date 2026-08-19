@@ -7,8 +7,10 @@ import tempfile
 import uuid
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from helper.cache import load_cache
+from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.config import mode_check
 from helper.io import atomic_write_bytes, sha256_file
 from helper.runtime import ensure_storage_available
@@ -198,7 +200,7 @@ def artwork_candidate_explanations(
         if quality["resolution"] < selected_quality["resolution"]:
             reasons.append("lower resolution contribution")
         if quality["vote"] < selected_quality["vote"]:
-            reasons.append("lower TMDb vote contribution")
+            reasons.append("lower provider-score contribution")
         if quality["score"] < selected_quality["score"]:
             reasons.append("lower overall quality score")
         if not reasons:
@@ -224,6 +226,26 @@ def artwork_candidate_explanations(
         reverse=True,
     )
     return rejected[: int(limit)]
+
+
+def artwork_candidate_acceptable(config, image, *, asset_type="poster"):
+    """Return whether a provider candidate meets the configured hard dimensions."""
+    if not image or not image.get("file_path"):
+        return False
+    section_name = {
+        "poster": "poster_set",
+        "season": "season_set",
+        "background": "background_set",
+    }.get(asset_type, "poster_set")
+    settings = config.get(section_name, {})
+    try:
+        width = int(image.get("width") or 0)
+        height = int(image.get("height") or 0)
+        minimum_width = int(settings.get("min_width") or 0)
+        minimum_height = int(settings.get("min_height") or 0)
+    except (TypeError, ValueError):
+        return False
+    return width >= minimum_width and height >= minimum_height
 
 
 def _artwork_quality_key(config, image, asset_type, preferred_language=None):
@@ -675,25 +697,143 @@ def smart_season_asset_upgrade(
 
     return False, "NO_UPGRADE_NEEDED_SEASON", context
 
-async def download_poster(config, image_path, save_path, session=None, retries=3):
-    url = f"https://image.tmdb.org/t/p/original{image_path or ''}"
+async def _download_external_artwork(
+    config, url, *, provider, session, retries=3
+):
+    parsed = urlsplit(str(url or ""))
+    plex_base = urlsplit(str(config.get("plex", {}).get("url") or ""))
+    if provider == "fanart":
+        if parsed.scheme != "https" or not (
+            parsed.hostname == "fanart.tv"
+            or str(parsed.hostname or "").endswith(".fanart.tv")
+        ):
+            return None, None, "Rejected untrusted Fanart.tv artwork URL"
+        headers = {}
+        lane = "fanart"
+    elif provider == "plex":
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.scheme != plex_base.scheme
+            or parsed.netloc != plex_base.netloc
+        ):
+            return None, None, "Rejected artwork URL outside the configured Plex server"
+        headers = {"X-Plex-Token": str(config.get("plex", {}).get("token") or "")}
+        lane = "plex"
+    else:
+        return None, None, f"Unsupported external artwork provider: {provider}"
+
+    max_bytes = max(
+        1, int(config.get("runtime", {}).get("max_image_mb", 25))
+    ) * 1024 * 1024
+    last_status = None
+    for attempt in range(1, max(1, int(retries)) + 1):
+        try:
+            async with runtime_slot(config, lane) as concurrency:
+                async with session.get(
+                    url, headers=headers, allow_redirects=False
+                ) as response:
+                    last_status = response.status
+                    if response.status == 200:
+                        content_type = str(response.headers.get("Content-Type") or "")
+                        if content_type and not content_type.lower().startswith("image/"):
+                            return None, response.status, "Response is not an image"
+                        content_length = response.headers.get("Content-Length")
+                        try:
+                            if content_length and int(content_length) > max_bytes:
+                                return None, response.status, "Artwork exceeds MAX_IMAGE_MB"
+                        except (TypeError, ValueError):
+                            pass
+                        chunks = []
+                        total = 0
+                        async for chunk in response.content.iter_chunked(64 * 1024):
+                            total += len(chunk)
+                            if total > max_bytes:
+                                return None, response.status, "Artwork exceeds MAX_IMAGE_MB"
+                            chunks.append(chunk)
+                        return b"".join(chunks), response.status, None
+                    if response.status == 429:
+                        try:
+                            retry_after = min(
+                                60,
+                                max(1, int(response.headers.get("Retry-After", 2))),
+                            )
+                        except (TypeError, ValueError):
+                            retry_after = 2
+                        concurrency.failure("rate_limit", cooldown=retry_after)
+                        if attempt < retries:
+                            await asyncio.sleep(retry_after)
+                            continue
+                    elif response.status >= 500:
+                        concurrency.failure("server_error")
+                    else:
+                        return (
+                            None,
+                            response.status,
+                            f"{provider} artwork returned HTTP {response.status}",
+                        )
+        except CircuitOpenError as error:
+            return None, last_status, str(error)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if attempt >= retries:
+                return None, last_status, str(error)
+        if attempt < retries:
+            await asyncio.sleep(2 ** (attempt - 1))
+    return None, last_status, f"{provider} artwork download failed"
+
+
+async def download_poster(
+    config, image_path, save_path, session=None, retries=3, provider=None
+):
     if session is None:
         return False, None, "HTTP session failed"
     try:
-        response_content = await tmdb_api_request(
-            config,
-            url,
-            raw=True,
-            cache=False,
-            session=session,
-            retries=retries,
-        )
+        source = str(image_path or "")
+        normalized_provider = str(provider or "").strip().lower()
+        if not normalized_provider:
+            hostname = str(urlsplit(source).hostname or "")
+            if hostname == "fanart.tv" or hostname.endswith(".fanart.tv"):
+                normalized_provider = "fanart"
+            elif source.startswith(("http://", "https://")):
+                normalized_provider = "plex"
+            else:
+                normalized_provider = "tmdb"
+        if normalized_provider == "tmdb":
+            url = f"https://image.tmdb.org/t/p/original{source}"
+            response_content = await tmdb_api_request(
+                config,
+                url,
+                raw=True,
+                cache=False,
+                session=session,
+                retries=retries,
+            )
+            status = None
+            request_error = None
+        else:
+            response_content, status, request_error = await _download_external_artwork(
+                config,
+                source,
+                provider=normalized_provider,
+                session=session,
+                retries=retries,
+            )
         if not response_content:
-            return False, None, "Empty or rejected response from TMDb"
+            return (
+                False,
+                status,
+                request_error
+                or (
+                    "Empty or rejected response from TMDb"
+                    if normalized_provider == "tmdb"
+                    else f"Empty or rejected response from {normalized_provider}"
+                ),
+            )
         result, error = await save_poster(response_content, save_path)
         if result is True or result == "ALREADY_UP_TO_DATE":
-            return True, 200, error
-        return False, None, error or "File not saved after download"
+            return True, status or 200, error
+        return False, status, error or "File not saved after download"
     except Exception as error:
         return False, getattr(error, "status", None), str(error)
 

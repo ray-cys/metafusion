@@ -23,7 +23,7 @@ from helper.incremental import child_inventory_fingerprint, plan_items
 from helper.io import sha256_file
 from helper.logging import (
     PlexMetadataProgress,
-    log_library_summary,
+    log_item_outcomes,
     log_processing_event,
 )
 from helper.performance import tracker_for
@@ -377,6 +377,12 @@ async def process_item(
             stats["_retry_error"] = stats.get("_retry_error") or (
                 "Builder or Plex metadata action reported a recoverable failure"
             )
+    log_item_outcomes(
+        library_name,
+        full_title,
+        stats,
+        effective_flags,
+    )
     return stats
 
 plex_metadata_dict = {}
@@ -406,9 +412,10 @@ async def process_library(
     season_count = episode_count = 0
     meta_downloaded = meta_upgraded = meta_skipped = meta_failed = 0
     plex_metadata_writes = 0
-    poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_missing = poster_failed = 0
-    background_downloaded = background_upgraded = background_adopted = background_skipped = background_missing = background_failed = 0
-    season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_missing = season_poster_failed = 0
+    poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_preserved = poster_missing = poster_failed = 0
+    background_downloaded = background_upgraded = background_adopted = background_skipped = background_preserved = background_missing = background_failed = 0
+    season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_preserved = season_poster_missing = season_poster_failed = 0
+    artwork_provider_writes = Counter()
     artwork_deferred = 0
 
     server = getattr(library_section, "_server", None)
@@ -744,6 +751,7 @@ async def process_library(
             nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_missing, poster_failed
             nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_missing, background_failed
             nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_missing, season_poster_failed
+            nonlocal poster_preserved, background_preserved, season_poster_preserved
             nonlocal artwork_deferred
 
             item = planned.item
@@ -867,12 +875,17 @@ async def process_library(
                     poster_adopted += 1
                 elif action == "skipped":
                     poster_skipped += 1
+                elif action == "preserved":
+                    poster_preserved += 1
                 elif action == "missing":
                     poster_missing += 1
                 elif action == "failed":
                     poster_failed += 1
                 elif action == "deferred":
                     artwork_deferred += 1
+                if action in {"downloaded", "upgraded", "adopted"}:
+                    provider = (stats.get("artwork_providers") or {}).get("poster")
+                    artwork_provider_writes[str(provider or "unknown")] += 1
 
                 action = stats.get("background_action")
                 if action == "downloaded":
@@ -883,15 +896,20 @@ async def process_library(
                     background_adopted += 1
                 elif action == "skipped":
                     background_skipped += 1
+                elif action == "preserved":
+                    background_preserved += 1
                 elif action == "missing":
                     background_missing += 1
                 elif action == "failed":
                     background_failed += 1
                 elif action == "deferred":
                     artwork_deferred += 1
+                if action in {"downloaded", "upgraded", "adopted"}:
+                    provider = (stats.get("artwork_providers") or {}).get("background")
+                    artwork_provider_writes[str(provider or "unknown")] += 1
 
                 season_actions = stats.get("season_poster_actions", {})
-                for season_action in season_actions.values():
+                for season_number, season_action in season_actions.items():
                     if season_action == "downloaded":
                         season_poster_downloaded += 1
                     elif season_action == "upgraded":
@@ -900,12 +918,23 @@ async def process_library(
                         season_poster_adopted += 1
                     elif season_action == "skipped":
                         season_poster_skipped += 1
+                    elif season_action == "preserved":
+                        season_poster_preserved += 1
                     elif season_action == "missing":
                         season_poster_missing += 1
                     elif season_action == "failed":
                         season_poster_failed += 1
                     elif season_action == "deferred":
                         artwork_deferred += 1
+                    if season_action in {"downloaded", "upgraded", "adopted"}:
+                        provider = (stats.get("season_artwork_providers") or {}).get(
+                            season_number
+                        )
+                        if provider is None:
+                            provider = (stats.get("season_artwork_providers") or {}).get(
+                                str(season_number)
+                            )
+                        artwork_provider_writes[str(provider or "unknown")] += 1
 
                 if feature_flags["poster"]:
                     poster_size += stats.get("poster", {}).get("size", 0)
@@ -1102,24 +1131,16 @@ async def process_library(
             "meta_skipped": meta_skipped, "meta_failed": meta_failed + len(item_errors),
             "plex_metadata_writes": plex_metadata_writes,
             "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped,
-            "poster_failed": poster_failed, "poster_missing": poster_missing,
+            "poster_preserved": poster_preserved, "poster_failed": poster_failed, "poster_missing": poster_missing,
             "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped,
-            "background_failed": background_failed, "background_missing": background_missing,
+            "background_preserved": background_preserved, "background_failed": background_failed, "background_missing": background_missing,
             "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_adopted": season_poster_adopted, "season_poster_skipped": season_poster_skipped,
-            "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
+            "season_poster_preserved": season_poster_preserved, "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing,
+            "artwork_provider_writes": dict(sorted(artwork_provider_writes.items())),
             "incremental_skipped": total_library_items - total_items,
             "item_failures": len(item_errors),
             "artwork_deferred": artwork_deferred,
         }
-
-        log_library_summary(
-            library_name=library_name, completed=completed, incomplete=incomplete, total_items=total_items,
-            percent_complete=percent_complete, percent_incomplete=percent_incomplete,
-            poster_size=poster_size, background_size=background_size,
-            season_poster_size=season_poster_size, library_filesize=library_filesize,
-            run_metadata=run_metadata, library_summary=library_summary, library_type=library_type,
-            feature_flags=feature_flags, season_count=season_count, episode_count=episode_count
-        )
 
         if metadata_summaries is not None:
             metadata_summaries[library_name] = {
