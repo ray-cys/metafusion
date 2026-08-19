@@ -12,6 +12,7 @@ from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.config import CACHE_DIR
 from helper.logging import log_fanart_event, redact_secrets
 from helper.performance import tracker_for
+from helper.provider_credentials import fanart_project_api_key
 from helper.tmdb_cache import PersistentTTLCache
 
 BASE_URL = "https://webservice.fanart.tv/v3.2"
@@ -29,9 +30,7 @@ _missing_key_logged: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSe
 
 def begin_fanart_cache(config):
     cache_config = config.get("tmdb_cache", {})
-    configured = bool(
-        str(config.get("fanart", {}).get("project_api_key") or "").strip()
-    )
+    configured = bool(fanart_project_api_key())
     fanart_response_cache.configure(
         CACHE_DIR / "fanart_cache.sqlite3",
         ttl_hours=cache_config.get("ttl_hours", 24),
@@ -110,7 +109,7 @@ async def fanart_api_request(
     _coalesced_owner=False,
 ):
     """Return one value-safe Fanart.tv response, or ``None`` on absence/outage."""
-    key = str(config.get("fanart", {}).get("project_api_key") or "").strip()
+    key = fanart_project_api_key()
     loop = asyncio.get_running_loop()
     if not key:
         if loop not in _missing_key_logged:

@@ -96,6 +96,7 @@ from helper.plex_metadata import (
     restore_plex_metadata,
 )
 from helper.plex_paths import advise_path_mappings
+from helper.provider_credentials import fanart_project_api_key
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
@@ -1359,7 +1360,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
             caught,
             config.get("plex", {}).get("token"),
             config.get("tmdb", {}).get("api_key"),
-            config.get("fanart", {}).get("project_api_key"),
+            fanart_project_api_key(),
         )
         log_main_event("main_unhandled_exception", error=error, logger=logger)
     finally:
@@ -1843,7 +1844,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
-                config.get("fanart", {}).get("project_api_key"),
+                fanart_project_api_key(),
             )
             print(f"Mapping diagnosis failed: {message}", file=sys.stderr)
             return 1
@@ -1875,7 +1876,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
-                config.get("fanart", {}).get("project_api_key"),
+                fanart_project_api_key(),
             )
             print(f"Identity inspection failed: {message}", file=sys.stderr)
             return 1
@@ -1905,7 +1906,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
-                config.get("fanart", {}).get("project_api_key"),
+                fanart_project_api_key(),
             )
             print(f"Item explanation failed: {message}", file=sys.stderr)
             return 1
@@ -1933,7 +1934,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
-                config.get("fanart", {}).get("project_api_key"),
+                fanart_project_api_key(),
             )
             print(f"Compatibility check failed: {message}", file=sys.stderr)
             return 1
@@ -1953,7 +1954,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
-                config.get("fanart", {}).get("project_api_key"),
+                fanart_project_api_key(),
             )
             print(f"Release qualification failed: {message}", file=sys.stderr)
             return 1
@@ -1969,7 +1970,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
-                config.get("fanart", {}).get("project_api_key"),
+                fanart_project_api_key(),
             )
             print(f"Preflight failed: {message}", file=sys.stderr)
             return 1

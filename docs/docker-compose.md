@@ -82,7 +82,6 @@ PLEX_URL=http://192.168.1.10:32400
 PLEX_TOKEN=your-token
 PLEX_LIBRARIES=auto
 TMDB_API_KEY=your-key
-FANART_PROJECT_API_KEY=your-project-key # optional artwork fallback
 TZ=Asia/Singapore
 ```
 
@@ -92,9 +91,11 @@ scope. A connection can use an IP address, Docker DNS name, or another URL
 reachable from the MetaFusion container.
 
 The complete variable list is in [Configuration](configuration.md). Keep
-`PLEX_TOKEN`, `TMDB_API_KEY`, and `FANART_PROJECT_API_KEY` out of screenshots
-and support attachments.
+`PLEX_TOKEN` and `TMDB_API_KEY` out of screenshots and support attachments.
 The optional `*_FILE` settings can read credentials from mounted secret files.
+
+Fanart.tv artwork fallback uses MetaFusion's bundled project integration key;
+no Fanart.tv environment variable is required.
 
 Run `--preflight` after mounting Plex-mode media. It reports discovered
 libraries and may suggest a `PLEX_PATH_MAPPINGS` value when a sampled Plex path

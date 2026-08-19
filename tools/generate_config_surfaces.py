@@ -50,7 +50,6 @@ def render_config_template(schema):
     defaults = copy.deepcopy(schema["defaults"])
     defaults["plex"]["token"] = "YOUR_PLEX_TOKEN"
     defaults["tmdb"]["api_key"] = "YOUR_TMDB_API_KEY"
-    defaults["fanart"]["project_api_key"] = ""
     body = yaml.safe_dump(
         defaults,
         sort_keys=False,

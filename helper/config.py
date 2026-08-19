@@ -120,7 +120,6 @@ SECRET_FILE_BINDINGS = tuple(
 SECRET_PATHS = {
     ("plex", "token"),
     ("tmdb", "api_key"),
-    ("fanart", "project_api_key"),
 }
 PLEX_METADATA_FIELDS = {
     "title",

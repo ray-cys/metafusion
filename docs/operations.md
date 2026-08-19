@@ -441,7 +441,7 @@ MetaFusion uses separate SQLite databases:
 | --- | --- | --- |
 | `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities and bounded transition history, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
-| `/config/cache/fanart_cache.sqlite3` | Compressed Fanart.tv responses when the optional provider is configured | Disposable; it shares the bounded cache policy and is absent when Fanart.tv is disabled. |
+| `/config/cache/fanart_cache.sqlite3` | Compressed Fanart.tv artwork responses | Disposable; it shares the bounded provider-cache policy and can be rebuilt automatically. |
 
 Rows are read and updated individually rather than loading and rewriting a
 large JSON cache. Provider-cache expiry or pruning cannot remove durable scan or

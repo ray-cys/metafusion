@@ -5,7 +5,7 @@ season posters, and backgrounds in both Kometa and Plex modes:
 
 1. TMDb candidates in the configured artwork languages, followed by TMDb's
    unfiltered images when `ARTWORK_ALLOW_ANY_LANGUAGE=True`.
-2. Fanart.tv when `FANART_PROJECT_API_KEY` or its secret file is configured.
+2. Fanart.tv using MetaFusion's bundled project integration key.
 3. The current artwork exposed by the configured Plex server.
 4. The highest-scoring TMDb or Fanart.tv candidate below the preferred minimum
    dimensions, labelled `best available`.
@@ -17,32 +17,25 @@ does not replace an acceptable higher-priority candidate simply because its
 score is higher. `ASSET_UPDATE_POLICY` still decides whether the selected
 candidate may replace an existing file.
 
-## Fanart.tv configuration and attribution
+## Fanart.tv integration and attribution
 
-Fanart.tv is optional and supplies artwork only. It never changes TMDb identity
-matching or metadata fields. Configure a project key as a secret:
+Fanart.tv supplies artwork only. It never changes TMDb identity
+matching or metadata fields. MetaFusion bundles its application project key,
+so users do not configure a Fanart.tv project key, environment variable, or
+secret file. The fallback is available automatically in official images and
+source builds. A missing or rejected bundled credential disables only
+Fanart.tv for that run; processing continues to Plex and preservation.
 
-```text
-FANART_PROJECT_API_KEY=your-project-key
-```
-
-For Docker secrets, mount a one-line file and set:
-
-```text
-FANART_PROJECT_API_KEY_FILE=/run/secrets/fanart_project_key
-```
-
-The direct environment value wins when both are set. Never commit or post the
-key in screenshots, logs, support reports, or issues. MetaFusion redacts it
-from normal exception and provider logging, but container administrators can
-still inspect environment values.
+The bundled project key identifies MetaFusion to Fanart.tv. It is not a user
+account credential and does not grant access to a user's Fanart.tv account.
+MetaFusion does not currently accept personal Fanart.tv client keys.
 
 Use of Fanart.tv is subject to the [Fanart.tv terms and
 conditions](https://fanart.tv/terms-and-conditions/) and [API
-documentation](https://api.fanart.tv/). Project keys can receive newly approved
-artwork later than personal API access. MetaFusion is not affiliated with or
-endorsed by Fanart.tv, TMDb, or Plex. Artwork remains subject to its respective
-owner and provider terms.
+documentation](https://api.fanart.tv/). Project-tier access can receive newly
+approved artwork later than personal-key access. MetaFusion is not affiliated
+with or endorsed by Fanart.tv, TMDb, or Plex. Artwork remains subject to its
+respective owner and provider terms.
 
 ## Reliability and safety
 

@@ -14,8 +14,8 @@ to another subsystem.
 ## Artwork update policies
 
 Artwork source selection is separate from the update policy. MetaFusion tries
-TMDb first, then a configured Fanart.tv project key, then the artwork exposed
-by Plex. If none meets the hard dimension requirements, the highest-scoring
+TMDb first, then Fanart.tv through its bundled project key, then the artwork
+exposed by Plex. If none meets the hard dimension requirements, the highest-scoring
 TMDb/Fanart.tv reserve is used as `best available`; otherwise the destination
 is preserved and the item is reported. This order is identical in Kometa and
 Plex modes. See [Artwork providers](artwork-providers.md) for complete failure,

@@ -3,14 +3,15 @@ import json
 import logging
 from pathlib import Path
 
-from helper import fanart
+import pytest
+
+from helper import fanart, provider_credentials
 from helper.logging import log_item_outcomes
 from modules import builder, utils
 
 
 def artwork_config():
     return {
-        "fanart": {"project_api_key": "project-secret"},
         "plex": {"url": "http://plex:32400", "token": "plex-secret"},
         "tmdb": {
             "language": "en-US",
@@ -43,6 +44,17 @@ def artwork_config():
         },
         "runtime": {"max_concurrency": 2, "max_image_mb": 2},
     }
+
+
+@pytest.fixture(autouse=True)
+def bundled_project_key(monkeypatch):
+    monkeypatch.setattr(
+        fanart, "fanart_project_api_key", lambda: "project-secret"
+    )
+
+
+def test_metafusion_bundles_application_project_key():
+    assert provider_credentials.fanart_project_api_key()
 
 
 class ChunkedBody:
@@ -311,7 +323,7 @@ def test_fanart_cache_lifecycle_respects_dry_run_and_missing_key(monkeypatch):
     assert cache.configured[1]["writable"] is False
     assert fanart.flush_fanart_cache() is True
 
-    config["fanart"]["project_api_key"] = ""
+    monkeypatch.setattr(fanart, "fanart_project_api_key", lambda: "")
     fanart.begin_fanart_cache(config)
     assert cache.enabled is False
     assert fanart.flush_fanart_cache() is False
@@ -319,14 +331,16 @@ def test_fanart_cache_lifecycle_respects_dry_run_and_missing_key(monkeypatch):
 
 def test_fanart_optional_and_unexpected_responses_fail_closed(monkeypatch, caplog):
     monkeypatch.setattr(fanart, "fanart_response_cache", MemoryCache())
-    no_key = artwork_config()
-    no_key["fanart"]["project_api_key"] = ""
     wrong_type = Session(Response(200, {}, {"Content-Type": "text/html"}))
     unexpected = Session(Response(418, {}))
 
     async def run():
+        monkeypatch.setattr(fanart, "fanart_project_api_key", lambda: "")
         disabled = await fanart.fanart_api_request(
-            no_key, "movies", 1, session=wrong_type
+            artwork_config(), "movies", 1, session=wrong_type
+        )
+        monkeypatch.setattr(
+            fanart, "fanart_project_api_key", lambda: "project-secret"
         )
         no_session = await fanart.fanart_api_request(
             artwork_config(), "movies", 1, session=None

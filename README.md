@@ -105,7 +105,6 @@ PLEX_URL=http://plex:32400
 PLEX_TOKEN=your-token
 PLEX_LIBRARIES=auto              # or exact comma-separated names
 TMDB_API_KEY=your-key
-FANART_PROJECT_API_KEY=your-project-key # optional artwork fallback
 ```
 
 For an environment-only installation, no `config.yml` is created or required.
@@ -117,8 +116,7 @@ Configuration priority, from lowest to highest, is:
 
 1. Built-in defaults.
 2. `/config/config.yml`.
-3. Secret files (`PLEX_TOKEN_FILE`, `TMDB_API_KEY_FILE`, and optional
-   `FANART_PROJECT_API_KEY_FILE`).
+3. Secret files (`PLEX_TOKEN_FILE` and `TMDB_API_KEY_FILE`).
 4. Non-empty environment variables.
 
 A missing or blank environment variable falls back to the next available
@@ -281,7 +279,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/logs/metafusion.log
 /config/cache/meta_db.sqlite3
 /config/cache/tmdb_cache.sqlite3
-/config/cache/fanart_cache.sqlite3   # only when Fanart.tv is configured
+/config/cache/fanart_cache.sqlite3   # Fanart.tv artwork-response cache
 /config/reports/artwork-gaps-*.txt
 /config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
 /config/reports/change-plan-*.txt       # explicit --plan runs only
@@ -299,7 +297,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 `REPORT_RETENTION` keeps the newest files independently for each report type;
 the default is `10`.
 
-The TMDb and optional Fanart.tv response caches are disposable and
+The TMDb and Fanart.tv response caches are disposable and
 automatically sized, pruned, and quarantined if corrupt. Durable inventory,
 scan, job, retry, learned identity,
 bounded binding-history, library-discovery, and artwork-ownership state remains isolated in

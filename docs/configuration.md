@@ -15,8 +15,7 @@ Values are merged in this order, with later sources taking priority:
 
 1. Built-in defaults.
 2. `/config/config.yml`.
-3. `PLEX_TOKEN_FILE`, `TMDB_API_KEY_FILE`, and
-   `FANART_PROJECT_API_KEY_FILE`.
+3. `PLEX_TOKEN_FILE` and `TMDB_API_KEY_FILE`.
 4. Non-empty environment variables.
 
 Blank environment bindings are ignored, allowing `config.yml` or defaults to
@@ -44,8 +43,6 @@ effective configuration without contacting Plex or TMDb.
 | `PLEX_PATH_MAPPINGS` | unset | Semicolon-separated `PLEX_PATH=>CONTAINER_PATH` translations for Plex-mode artwork. Docker mappings are still required. |
 | `TMDB_API_KEY` | required | TMDb API key. |
 | `TMDB_API_KEY_FILE` | unset | Mounted file containing the TMDb key; a non-empty direct key wins. |
-| `FANART_PROJECT_API_KEY` | unset | Optional Fanart.tv project key. Enables artwork fallback after TMDb; it is not used for metadata. |
-| `FANART_PROJECT_API_KEY_FILE` | unset | Mounted file containing the Fanart.tv project key; a non-empty direct key wins. |
 | `TMDB_LANGUAGE` | `en-US` | Metadata language and primary artwork language. |
 | `TMDB_LANGUAGE_FALLBACK` | `zh,ja` | Ordered artwork-only fallbacks; metadata text continues to use `TMDB_LANGUAGE`. |
 | `TMDB_REGION` | `US` | Metadata release/certification region, with US fallback behavior. |
@@ -57,9 +54,11 @@ effective configuration without contacting Plex or TMDb.
 | `TMDB_EPISODE_OVERRIDES` | `{}` | JSON deterministic Plex-episode to TMDb-episode corrections for verified numbering exceptions. |
 | `KOMETA_PATH` | `/kometa` | Kometa-mode container output root. |
 
-Tokens and keys are redacted from MetaFusion logs. They remain visible to
-Docker or Unraid administrators when supplied as environment variables.
-See [Artwork providers](artwork-providers.md) before enabling Fanart.tv.
+Tokens and user-supplied keys are redacted from MetaFusion logs. They remain
+visible to Docker or Unraid administrators when supplied as environment
+variables. Fanart.tv fallback uses MetaFusion's bundled application project
+key and needs no user configuration. See [Artwork providers](artwork-providers.md)
+for its source order, reliability behavior, and attribution.
 
 ## Scheduling and processing
 
@@ -144,7 +143,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
 | `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
 | `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster adaptive base interval. |
-| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb and configured Fanart.tv responses in separate SQLite caches. |
+| `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb and Fanart.tv responses in separate SQLite caches. |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb and Fanart.tv response lifetime. |
 | `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for either provider's HTTP 404 results; 429 and 5xx responses are never cached. |
 | `TMDB_CACHE_MAX_ENTRIES` | `0` | Per-provider maximum persisted responses; `0` chooses a storage-aware automatic limit. |

@@ -35,8 +35,6 @@ tmdb:
   split_series_show_policy: preserve
   split_series_mappings: {}
   episode_overrides: {}
-fanart:
-  project_api_key: ''
 metadata:
   run_basic: true
   run_enhanced: true

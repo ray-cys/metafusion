@@ -52,9 +52,8 @@ Provide these connection and workflow values:
 | TMDb API Key | `TMDB_API_KEY` | TMDb v3 API key; masked by the template |
 | Appdata Config Path | `/config` | Persistent writable appdata directory |
 
-The advanced **Fanart.tv Project API Key** field is optional. Supplying it
-enables artwork-only fallback after TMDb. It is masked in the form and redacted
-from application logs; omit it to keep the TMDb → Plex behavior.
+Fanart.tv artwork fallback uses MetaFusion's bundled project integration key.
+There is no Fanart.tv key field to configure in the Unraid template.
 
 The default appdata mapping is:
 

@@ -12,6 +12,8 @@ from pathlib import Path
 import psutil
 import requests
 
+from helper.provider_credentials import fanart_project_api_key
+
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
 LOG_FILE = LOGS_DIR / "metafusion.log"
@@ -135,7 +137,7 @@ def get_setup_logging(config):
         (
             config.get("plex", {}).get("token"),
             config.get("tmdb", {}).get("api_key"),
-            config.get("fanart", {}).get("project_api_key"),
+            fanart_project_api_key(),
         )
     )
     console_handler.addFilter(secret_filter)
@@ -491,7 +493,7 @@ def log_fanart_event(event, logger=None, **kwargs):
     """Log value-safe Fanart.tv provider events without exposing credentials."""
     logger = kwargs.get("logger") or logging.getLogger()
     messages = {
-        "fanart_disabled": "[Fanart.tv] Artwork fallback is unavailable because no project API key is configured.",
+        "fanart_disabled": "[Fanart.tv] Artwork fallback is unavailable because the bundled project credential is missing.",
         "fanart_cache_hit": "[Fanart.tv] Returning cached artwork response for {resource_type}:{resource_id}.",
         "fanart_negative_cache_hit": "[Fanart.tv] Skipping recently missing artwork for {resource_type}:{resource_id}; cached HTTP 404 is still valid.",
         "fanart_request_coalesced": "[Fanart.tv] Reusing the in-flight request for {resource_type}:{resource_id}.",
