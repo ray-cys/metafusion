@@ -27,6 +27,10 @@ Include:
 - the report created by `python metafusion.py --support-report`; and
 - clear reproduction steps and the expected result.
 
+Use the [diagnostics guide](docs/diagnostics.md) to choose any additional
+library, artwork, metadata, mapping, identity, or release-qualification report
+that matches the problem. Do not attach every report by default.
+
 Never publish Plex tokens, TMDb keys, `config.yml`, Docker inspection output,
 private host paths, or unredacted metadata values. Support requests for modified
 images or source trees should include the exact changes needed to reproduce the

@@ -21,7 +21,10 @@ def flags(**overrides):
 
 
 def kometa_config(tmp_path):
-    return {"settings": {"mode": "kometa", "path": str(tmp_path)}}
+    return {
+        "settings": {"mode": "kometa", "path": str(tmp_path)},
+        "cleanup": {"confirmation_scans": 1, "grace_hours": 0},
+    }
 
 
 def test_cleanup_reconciles_yaml_cache_and_specials_with_complete_inventory(
@@ -115,6 +118,8 @@ def test_cleanup_reconciles_yaml_cache_and_specials_with_complete_inventory(
     assert removed.titles == 1
     assert removed.seasons == 1
     assert removed.episodes == 1
+    assert removed.cache_entries == 2
+    assert removed.yaml_entries == 3
 
 
 def test_cleanup_removes_only_cache_managed_assets_and_empty_directory(
@@ -180,7 +185,7 @@ def test_cleanup_preserves_asset_confirmed_by_current_run(monkeypatch, tmp_path)
     monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
     monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
 
-    asyncio.run(
+    result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
             kometa_config(tmp_path),
             flags(metadata_basic=False, metadata_enhanced=False),
@@ -192,6 +197,8 @@ def test_cleanup_preserves_asset_confirmed_by_current_run(monkeypatch, tmp_path)
     )
 
     assert poster.read_bytes() == b"managed"
+    assert result.assets == 0
+    assert result.assets_skipped == 1
 
 
 def test_cleanup_malformed_yaml_fails_without_overwriting(monkeypatch, tmp_path):
@@ -202,7 +209,9 @@ def test_cleanup_malformed_yaml_fails_without_overwriting(monkeypatch, tmp_path)
     metadata_file.write_text(original, encoding="utf-8")
     monkeypatch.setattr(cleanup_module, "load_cache", dict)
 
-    with pytest.raises(cleanup_module.CleanupError, match="Failed to clean"):
+    with pytest.raises(
+        cleanup_module.CleanupError, match="Failed to clean"
+    ) as raised:
         asyncio.run(
             cleanup_module.cleanup_title_orphans(
                 kometa_config(tmp_path),
@@ -219,6 +228,8 @@ def test_cleanup_malformed_yaml_fails_without_overwriting(monkeypatch, tmp_path)
         )
 
     assert metadata_file.read_text(encoding="utf-8") == original
+    assert raised.value.result.failures == 1
+    assert raised.value.result.failed_reason
 
 
 def test_cleanup_validates_all_yaml_before_writing_any_file(monkeypatch, tmp_path):
@@ -297,7 +308,9 @@ def test_cleanup_asset_permission_failure_is_recoverable(monkeypatch, tmp_path):
     monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
     monkeypatch.setattr(Path, "unlink", guarded_unlink)
 
-    with pytest.raises(cleanup_module.CleanupError, match="Failed to remove"):
+    with pytest.raises(
+        cleanup_module.CleanupError, match="Failed to remove"
+    ) as raised:
         asyncio.run(
             cleanup_module.cleanup_title_orphans(
                 kometa_config(tmp_path),
@@ -315,6 +328,66 @@ def test_cleanup_asset_permission_failure_is_recoverable(monkeypatch, tmp_path):
 
     assert poster.exists()
     assert "movie:Old Movie:2000" in cache
+    assert raised.value.result.failures == 1
+    assert "poster could not be removed" in raised.value.result.failed_reason
+
+
+def test_cleanup_waits_for_all_asset_results_before_failure_summary(
+    monkeypatch, tmp_path
+):
+    asset_root = tmp_path / "assets"
+    blocked = asset_root / "movie" / "Blocked (2000)" / "poster.jpg"
+    removable = asset_root / "movie" / "Removable (2001)" / "poster.jpg"
+    for path in (blocked, removable):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(path.stem.encode("utf-8"))
+    cache = {
+        "movie:Blocked:2000": {
+            "media_type": "movie",
+            "title": "Blocked",
+            "year": 2000,
+            "poster_path": str(blocked),
+            "poster_checksum": cleanup_module.sha256_file(blocked),
+        },
+        "movie:Removable:2001": {
+            "media_type": "movie",
+            "title": "Removable",
+            "year": 2001,
+            "poster_path": str(removable),
+            "poster_checksum": cleanup_module.sha256_file(removable),
+        },
+    }
+    original_unlink = Path.unlink
+
+    def guarded_unlink(path, *args, **kwargs):
+        if path == blocked:
+            raise PermissionError("read only")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
+    monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+    with pytest.raises(cleanup_module.CleanupError) as raised:
+        asyncio.run(
+            cleanup_module.cleanup_title_orphans(
+                kometa_config(tmp_path),
+                flags(
+                    metadata_basic=False,
+                    metadata_enhanced=False,
+                    season=False,
+                    background=False,
+                ),
+                asset_path=asset_root,
+                preloaded_plex_metadata={},
+                safe_library_types={"movie"},
+            )
+        )
+
+    assert blocked.exists()
+    assert not removable.exists()
+    assert raised.value.result.assets == 1
+    assert raised.value.result.failures == 1
 
 
 def test_cleanup_preserves_managed_path_replaced_by_symlink(
@@ -335,7 +408,7 @@ def test_cleanup_preserves_managed_path_replaced_by_symlink(
     monkeypatch.setattr(cleanup_module, "load_cache", lambda: cache)
     monkeypatch.setattr(cleanup_module, "mark_cache_dirty", lambda: None)
 
-    asyncio.run(
+    result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
             kometa_config(tmp_path),
             flags(
@@ -352,6 +425,7 @@ def test_cleanup_preserves_managed_path_replaced_by_symlink(
 
     assert poster.is_symlink()
     assert external.read_bytes() == b"manual"
+    assert result.assets_preserved == 1
 
 
 def test_cleanup_removes_orphaned_season_poster_from_valid_show(
@@ -446,6 +520,7 @@ def test_cleanup_preserves_manually_replaced_artwork(monkeypatch, tmp_path):
 
     assert poster.read_bytes() == b"manual replacement"
     assert result.assets == 0
+    assert result.assets_preserved == 1
 
 
 def test_cleanup_preserves_legacy_managed_artwork_without_checksum(
@@ -483,6 +558,7 @@ def test_cleanup_preserves_legacy_managed_artwork_without_checksum(
 
     assert poster.read_bytes() == b"legacy generated file"
     assert result.assets == 0
+    assert result.assets_preserved == 1
 
 
 def test_cleanup_scopes_same_named_asset_directories_by_media_type(
@@ -611,7 +687,10 @@ def test_cleanup_plex_mode_removes_only_stale_cache_and_no_yaml(monkeypatch, tmp
 
     asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "plex", "path": str(tmp_path)}},
+            {
+                "settings": {"mode": "plex", "path": str(tmp_path)},
+                "cleanup": {"confirmation_scans": 1, "grace_hours": 0},
+            },
             flags(),
             preloaded_plex_metadata={},
             safe_library_types={"movie"},

@@ -6,11 +6,19 @@ import json
 from pathlib import Path
 
 TARGETS = {
-    "modules/builder.py": 78.0,
+    "modules/builder.py": 80.0,
+    "modules/processing.py": 78.0,
+    "modules/cleanup.py": 85.0,
+    "modules/utils.py": 85.0,
     "helper/tmdb_cache.py": 85.0,
-    "helper/logging.py": 85.0,
+    "helper/fanart.py": 85.0,
+    "helper/logging.py": 90.0,
+    "helper/plex_metadata.py": 85.0,
+    "helper/diagnostics.py": 85.0,
+    "helper/provider_replay.py": 90.0,
+    "helper/reporting.py": 80.0,
     "helper/provider_mappings.py": 90.0,
-    "metafusion.py": 84.0,
+    "metafusion.py": 85.0,
     "helper/state_db.py": 86.0,
     "helper/identity_diagnostics.py": 85.0,
     "helper/item_explanation.py": 85.0,

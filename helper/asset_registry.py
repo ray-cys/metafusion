@@ -91,7 +91,7 @@ class AssetDestinationRegistry:
 
     @staticmethod
     def _same_shared_asset(candidate, record_claim):
-        """Allow one owner to advance a shared TMDb image source safely."""
+        """Allow one owner to advance a shared provider image source safely."""
         return (
             candidate[0] == "movie"
             and record_claim[0] == "movie"

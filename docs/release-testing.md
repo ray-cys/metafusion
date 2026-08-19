@@ -136,8 +136,13 @@ testing should run `--plan` and `--compatibility-check` before a normal job, and
 use `--sqlite-maintenance check` after the soak without overlapping an active
 job.
 
-Phase 22 hardening also enforces focused coverage floors for the builders, TMDb
-cache, logging/provider mappings, main orchestration, and durable state paths.
+Focused coverage floors cover the builders, processing, cleanup,
+download/image utilities, TMDb and Fanart.tv adapters, Plex metadata writer,
+diagnostic/report/replay writers, logging/provider mappings, main
+orchestration, and durable state paths. The highest-risk existing floors were
+raised only after failure-path tests covered missing-only provider failover,
+decoded-image validation, managed destination reconciliation, durable
+unresolved work, post-application adoption, and replay sanitization.
 Fault tests prove that HTTP 429 responses are not cached, a later TMDb request
 can recover, and temporary Plex disconnects retry without duplicating a
 successful mutation. SQLite backups are opened independently, checked, copied
@@ -176,3 +181,12 @@ artwork policies, retry status, TV episode mapping, and computed destinations
 without mutating provider, cache, state, or output. Its focused tests also
 prove that inspecting an installation with no SQLite database does not create
 one.
+
+Retained diagnostic text now has a same-name structured JSON companion and is
+retained as one pair. Routine runs maintain a persistent unresolved-work ledger
+that is resolved only by a later successful full scan of the same library, and
+a post-application artwork audit verifies installed bytes and ownership. The
+support replay command sanitizes credentials, rating keys, private hosts, and
+local paths before retaining a bundle. Managed rename reconciliation removes
+only checksum-proven obsolete artwork inside configured roots; any modified,
+unproven, symlinked, out-of-scope, or still-claimed file remains untouched.

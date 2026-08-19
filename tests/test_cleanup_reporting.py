@@ -1,4 +1,6 @@
-from helper.logging import log_final_summary
+import logging
+
+from helper.logging import log_cleanup_event, log_final_summary
 from modules.cleanup import CleanupResult
 
 
@@ -29,10 +31,26 @@ def render_summary(result, *, cleanup_enabled=True, dry_run=False):
 
 def test_cleanup_summary_reports_each_removed_scope():
     report = render_summary(
-        CleanupResult(titles=0, seasons=1, episodes=3, assets=1)
+        CleanupResult(
+            titles=0,
+            seasons=1,
+            episodes=3,
+            assets=1,
+            cache_entries=2,
+            yaml_entries=4,
+            assets_preserved=5,
+            assets_skipped=6,
+        )
     )
 
-    assert "Cleanup - Removed: Titles: 0, Seasons: 1, Episodes: 3, Assets: 1" in report
+    assert "Cleanup | Status: Completed | Mode: Kometa" in report
+    assert "Cleanup stale inventory | Titles: 0 | Seasons: 1 | Episodes: 3" in report
+    assert "Cleanup records | Action: Removed | Cache: 2 | Kometa YAML: 4" in report
+    assert (
+        "Cleanup artwork | Action: Removed | Assets: 1 | Preserved: 5 | Unchanged: 6"
+        in report
+    )
+    assert "Cleanup failures | Total: 0" in report
 
 
 def test_cleanup_summary_reports_skipped_incremental_run():
@@ -44,18 +62,82 @@ def test_cleanup_summary_reports_skipped_incremental_run():
     )
 
     assert (
-        "Cleanup - Skipped (incremental run; full reconciliation required)"
+        "Cleanup | Status: Skipped | Reason: incremental run; full reconciliation required"
         in report
     )
 
 
 def test_cleanup_summary_labels_dry_run_counts_as_proposed():
     report = render_summary(
-        CleanupResult(titles=1, seasons=2, episodes=3, assets=4, dry_run=True),
+        CleanupResult(
+            titles=1,
+            seasons=2,
+            episodes=3,
+            assets=4,
+            cache_entries=5,
+            yaml_entries=6,
+            dry_run=True,
+        ),
         dry_run=True,
     )
 
-    assert "Cleanup - Would remove: Titles: 1, Seasons: 2" in report
+    assert "Cleanup | Status: Preview | Mode: Kometa" in report
+    assert "Cleanup records | Action: Would remove | Cache: 5 | Kometa YAML: 6" in report
+    assert "Cleanup artwork | Action: Would remove | Assets: 4" in report
+
+
+def test_cleanup_summary_labels_plex_state_only_scope():
+    report = render_summary(
+        CleanupResult(titles=2, cache_entries=2, mode="plex")
+    )
+
+    assert "Cleanup | Status: Completed | Mode: Plex" in report
+    assert "Scope: State only; Kometa YAML" in report
+    assert "artwork preserved" in report
+    assert "Cleanup records | Action: Removed | Cache: 2 | Kometa YAML: 0" in report
+
+
+def test_cleanup_summary_retains_confirmed_results_after_failure():
+    report = render_summary(
+        CleanupResult(
+            titles=1,
+            assets=2,
+            cache_entries=1,
+            yaml_entries=1,
+            assets_preserved=3,
+            failures=1,
+            failed_reason="managed poster could not be removed",
+        )
+    )
+
+    assert "Cleanup | Status: Failed | Mode: Kometa" in report
+    assert "Cleanup confirmed before failure | Titles: 1" in report
+    assert "Cleanup records | Cache: 1 | Kometa YAML: 1" in report
+    assert "Cleanup artwork | Removed: 2 | Preserved: 3" in report
+    assert "Cleanup failures | Total: 1" in report
+
+
+def test_cleanup_item_outcome_matches_component_action_format(caplog):
+    logger = logging.getLogger("cleanup-item-outcome")
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        log_cleanup_event(
+            "cleanup_consolidated_removed",
+            logger=logger,
+            removed_summary={
+                ("Example", 2024): {
+                    "cache": True,
+                    "yaml": True,
+                    "asset": ["poster"],
+                }
+            },
+        )
+
+    assert (
+        "[Cleanup] Inventory | Example (2024) | Removed cache entry, "
+        "Kometa YAML entry, managed poster | "
+        "Reason: Not present in complete Plex inventory"
+    ) in caplog.text
 
 
 def test_final_summary_reports_season_failures_without_other_season_actions():
@@ -84,5 +166,8 @@ def test_final_summary_reports_season_failures_without_other_season_actions():
     )
 
     report = "\n".join(logger.lines)
-    assert "Season - Downloaded: 0, Upgraded: 0, Adopted: 0" in report
+    assert (
+        "Artwork season posters | Downloaded: 0 | Upgraded: 0 | Adopted: 0"
+        in report
+    )
     assert "Failed: 1" in report
