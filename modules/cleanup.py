@@ -14,7 +14,9 @@ from modules.kometa import write_kometa_metadata
 
 
 class CleanupError(RuntimeError):
-    pass
+    def __init__(self, message, *, result=None):
+        super().__init__(message)
+        self.result = result
 
 
 @dataclass
@@ -24,8 +26,14 @@ class CleanupResult:
     episodes: int = 0
     assets: int = 0
     cache_entries: int = 0
+    yaml_entries: int = 0
+    assets_preserved: int = 0
+    assets_skipped: int = 0
+    failures: int = 0
     dry_run: bool = False
     skipped_reason: Optional[str] = None
+    failed_reason: Optional[str] = None
+    mode: str = "kometa"
 
 
 def normalize_library_type(value):
@@ -77,13 +85,17 @@ async def cleanup_title_orphans(
 ):
     mode = config.get("settings", {}).get("mode", "kometa")
     dry_run = feature_flags.get("dry_run", False)
-    result = CleanupResult(dry_run=dry_run)
-    log_cleanup_event("cleanup_start")
+    result = CleanupResult(dry_run=dry_run, mode=mode)
 
     safe_library_types = {
         normalize_library_type(value) for value in (safe_library_types or set())
     }
     safe_library_types &= {"movie", "tv"}
+    log_cleanup_event(
+        "cleanup_start",
+        mode=mode.title(),
+        scope=", ".join(sorted(safe_library_types)) or "none",
+    )
     if preloaded_plex_metadata is None:
         result.skipped_reason = "Plex metadata was unavailable"
         log_cleanup_event("cleanup_error")
@@ -133,7 +145,14 @@ async def cleanup_title_orphans(
             valid_yaml_keys[media_type].add(yaml_key)
             metadata_by_yaml_key[(media_type, yaml_key)] = meta
 
-    cache = load_cache()
+    try:
+        cache = load_cache()
+    except Exception as error:
+        result.failures += 1
+        result.failed_reason = f"state cache could not be loaded: {error}"
+        raise CleanupError(
+            "Failed to load cleanup state cache", result=result
+        ) from error
     managed_assets = {}
     for key, raw_entry in cache.items():
         if not isinstance(raw_entry, dict):
@@ -169,6 +188,7 @@ async def cleanup_title_orphans(
     orphaned_season_asset_paths = set()
     removed_summary = {}
     pending_season_cache_removals = []
+    confirmed_outcomes_logged = False
 
     def record_title(
         identity, removal_type=None, asset_type=None, title_removed=False
@@ -190,6 +210,28 @@ async def cleanup_title_orphans(
             return normalize_library_type(entry.get("media_type"))
         return normalize_library_type(str(key).split(":", 1)[0])
 
+    def refresh_result_counts():
+        result.titles = len(removed_titles)
+        result.seasons = len(removed_seasons)
+        result.episodes = len(removed_episodes)
+        result.assets = len(removed_assets)
+
+    def log_confirmed_outcomes():
+        nonlocal confirmed_outcomes_logged
+        if removed_summary and not dry_run and not confirmed_outcomes_logged:
+            log_cleanup_event(
+                "cleanup_consolidated_removed", removed_summary=removed_summary
+            )
+            confirmed_outcomes_logged = True
+
+    def cleanup_failure(message, reason, *, report_confirmed=True):
+        result.failures += 1
+        result.failed_reason = reason
+        refresh_result_counts()
+        if report_confirmed:
+            log_confirmed_outcomes()
+        return CleanupError(message, result=result)
+
     cache_keys_to_remove = [
         key
         for key in list(cache)
@@ -198,9 +240,9 @@ async def cleanup_title_orphans(
     ]
     for key in cache_keys_to_remove:
         identity = _cache_identity(key, cache.get(key))
-        record_title(identity, removal_type="cache", title_removed=True)
-        result.cache_entries += 1
         if dry_run:
+            record_title(identity, removal_type="cache", title_removed=True)
+            result.cache_entries += 1
             log_cleanup_event("cleanup_dry_run", description="cache entry", path=key)
 
     for meta in safe_metadata:
@@ -225,11 +267,11 @@ async def cleanup_title_orphans(
             season_entry = cache_entry["seasons"][cached_season_keys[season_number]]
             if isinstance(season_entry, dict) and season_entry.get("season_path"):
                 orphaned_season_asset_paths.add(_path_key(season_entry["season_path"]))
-            if identity:
-                removed_seasons.add((*identity, season_number))
-                record_title(identity, removal_type="cache")
-            result.cache_entries += 1
             if dry_run:
+                if identity:
+                    removed_seasons.add((*identity, season_number))
+                    record_title(identity, removal_type="cache")
+                result.cache_entries += 1
                 log_cleanup_event(
                     "cleanup_dry_run",
                     description="season cache entry",
@@ -246,15 +288,18 @@ async def cleanup_title_orphans(
                     }
                 )
 
-    def apply_cache_changes():
+    def _apply_cache_changes():
         if dry_run:
             return
         changed = False
         for key in cache_keys_to_remove:
             if key in cache:
-                log_cleanup_event("cleanup_removed_cache_entry", key=key)
+                identity = _cache_identity(key, cache.get(key))
                 del cache[key]
+                result.cache_entries += 1
+                record_title(identity, removal_type="cache", title_removed=True)
                 changed = True
+                log_cleanup_event("cleanup_removed_cache_entry", key=key)
         for removal in pending_season_cache_removals:
             cache_entry = cache.get(removal["cache_key"])
             seasons = cache_entry.get("seasons") if isinstance(cache_entry, dict) else None
@@ -262,6 +307,11 @@ async def cleanup_title_orphans(
                 continue
             del seasons[removal["season_key"]]
             cache[removal["cache_key"]] = cache_entry
+            identity = (removal["show"], safe_int(removal["year"]))
+            if identity[0] and identity[1] is not None:
+                removed_seasons.add((*identity, str(removal["season"])))
+                record_title(identity, removal_type="cache")
+            result.cache_entries += 1
             changed = True
             log_cleanup_event(
                 "cleanup_removed_orphaned_season_cache",
@@ -272,23 +322,19 @@ async def cleanup_title_orphans(
         if changed:
             mark_cache_dirty()
 
+    def apply_cache_changes():
+        try:
+            _apply_cache_changes()
+        except Exception as error:
+            log_cleanup_event("cleanup_failed_cache", error=str(error))
+            raise cleanup_failure(
+                "Failed to update cleanup state cache",
+                "state cache changes could not be committed",
+            ) from error
+
     def finish():
-        result.titles = len(removed_titles)
-        result.seasons = len(removed_seasons)
-        result.episodes = len(removed_episodes)
-        result.assets = len(removed_assets)
-        if removed_summary and not dry_run:
-            log_cleanup_event(
-                "cleanup_consolidated_removed", removed_summary=removed_summary
-            )
-        log_cleanup_event(
-            "cleanup_totals",
-            action="Would remove" if dry_run else "Removed",
-            titles=result.titles,
-            seasons=result.seasons,
-            episodes=result.episodes,
-            assets=result.assets,
-        )
+        refresh_result_counts()
+        log_confirmed_outcomes()
         return result
 
     if mode == "plex":
@@ -335,8 +381,9 @@ async def cleanup_title_orphans(
                     filename=metadata_file,
                     error=str(error),
                 )
-                raise CleanupError(
-                    f"Failed to clean metadata file: {metadata_file}"
+                raise cleanup_failure(
+                    f"Failed to clean metadata file: {metadata_file}",
+                    f"Kometa YAML could not be read: {metadata_file.name}",
                 ) from error
 
         for (
@@ -346,6 +393,11 @@ async def cleanup_title_orphans(
             output_snapshot,
         ) in metadata_documents:
             try:
+                pending_yaml_records = []
+                pending_seasons = []
+                pending_episodes = []
+                pending_yaml_events = []
+                pending_yaml_entries = 0
                 file_media_type = normalize_library_type(
                     metadata_file.name.split("_", 1)[0]
                 )
@@ -359,22 +411,22 @@ async def cleanup_title_orphans(
                 orphaned_titles = set(metadata_entries) - set(cleaned_metadata)
                 for yaml_key in orphaned_titles:
                     identity = extract_title_year(yaml_key)
-                    if identity[1] is not None:
-                        record_title(
-                            identity, removal_type="yaml", title_removed=True
-                        )
                     if dry_run:
+                        if identity[1] is not None:
+                            record_title(
+                                identity, removal_type="yaml", title_removed=True
+                            )
+                        result.yaml_entries += 1
                         log_cleanup_event(
                             "cleanup_dry_run",
                             description="metadata title",
                             path=f"{metadata_file.name}: {yaml_key}",
                         )
+                    else:
+                        pending_yaml_entries += 1
+                        if identity[1] is not None:
+                            pending_yaml_records.append((identity, True))
                 if orphaned_titles and not dry_run:
-                    log_cleanup_event(
-                        "cleanup_removed_orphans",
-                        orphans_in_file=len(orphaned_titles),
-                        filename=metadata_file.name,
-                    )
                     yaml_changed = True
 
                 for yaml_key, yaml_entry in cleaned_metadata.items():
@@ -402,21 +454,29 @@ async def cleanup_title_orphans(
                     }
                     valid_seasons = {str(number) for number in inventory}
                     for season_number in set(yaml_season_keys) - valid_seasons:
-                        if identity:
-                            removed_seasons.add((*identity, season_number))
-                            record_title(identity, removal_type="yaml")
                         if dry_run:
+                            if identity:
+                                removed_seasons.add((*identity, season_number))
+                                record_title(identity, removal_type="yaml")
+                            result.yaml_entries += 1
                             log_cleanup_event(
                                 "cleanup_dry_run",
                                 description="season metadata",
                                 path=f"{yaml_key} season {season_number}",
                             )
                         else:
-                            log_cleanup_event(
-                                "cleanup_removed_orphaned_season_yaml",
-                                show=identity[0] if identity else yaml_key,
-                                year=identity[1] if identity else "unknown",
-                                season=season_number,
+                            pending_yaml_entries += 1
+                            pending_seasons.append((identity, season_number))
+                            pending_yaml_records.append((identity, False))
+                            pending_yaml_events.append(
+                                (
+                                    "cleanup_removed_orphaned_season_yaml",
+                                    {
+                                        "show": identity[0] if identity else yaml_key,
+                                        "year": identity[1] if identity else "unknown",
+                                        "season": season_number,
+                                    },
+                                )
                             )
                             del yaml_seasons[yaml_season_keys[season_number]]
                             yaml_changed = True
@@ -439,12 +499,13 @@ async def cleanup_title_orphans(
                             for number in inventory[inventory_keys[season_number]]
                         }
                         for episode_number in set(episode_keys) - valid_episodes:
-                            if identity:
-                                removed_episodes.add(
-                                    (*identity, season_number, episode_number)
-                                )
-                                record_title(identity, removal_type="yaml")
                             if dry_run:
+                                if identity:
+                                    removed_episodes.add(
+                                        (*identity, season_number, episode_number)
+                                    )
+                                    record_title(identity, removal_type="yaml")
+                                result.yaml_entries += 1
                                 log_cleanup_event(
                                     "cleanup_dry_run",
                                     description="episode metadata",
@@ -454,12 +515,27 @@ async def cleanup_title_orphans(
                                     ),
                                 )
                             else:
-                                log_cleanup_event(
-                                    "cleanup_removed_orphaned_episode_yaml",
-                                    show=identity[0] if identity else yaml_key,
-                                    year=identity[1] if identity else "unknown",
-                                    season=season_number,
-                                    episode=episode_number,
+                                pending_yaml_entries += 1
+                                pending_episodes.append(
+                                    (identity, season_number, episode_number)
+                                )
+                                pending_yaml_records.append((identity, False))
+                                pending_yaml_events.append(
+                                    (
+                                        "cleanup_removed_orphaned_episode_yaml",
+                                        {
+                                            "show": (
+                                                identity[0] if identity else yaml_key
+                                            ),
+                                            "year": (
+                                                identity[1]
+                                                if identity
+                                                else "unknown"
+                                            ),
+                                            "season": season_number,
+                                            "episode": episode_number,
+                                        },
+                                    )
                                 )
                                 del episodes[episode_keys[episode_number]]
                                 yaml_changed = True
@@ -475,14 +551,40 @@ async def cleanup_title_orphans(
                         library_type=file_media_type,
                         expected_snapshot=output_snapshot,
                     )
+                    result.yaml_entries += pending_yaml_entries
+                    for identity, title_removed in pending_yaml_records:
+                        record_title(
+                            identity,
+                            removal_type="yaml",
+                            title_removed=title_removed,
+                        )
+                    for identity, season_number in pending_seasons:
+                        if identity:
+                            removed_seasons.add((*identity, season_number))
+                    for identity, season_number, episode_number in pending_episodes:
+                        if identity:
+                            removed_episodes.add(
+                                (*identity, season_number, episode_number)
+                            )
+                    if orphaned_titles:
+                        log_cleanup_event(
+                            "cleanup_removed_orphans",
+                            orphans_in_file=len(orphaned_titles),
+                            filename=metadata_file.name,
+                        )
+                    for event, event_kwargs in pending_yaml_events:
+                        log_cleanup_event(event, **event_kwargs)
             except Exception as error:
+                if isinstance(error, CleanupError):
+                    raise
                 log_cleanup_event(
                     "cleanup_failed_remove_metadata",
                     filename=metadata_file,
                     error=str(error),
                 )
-                raise CleanupError(
-                    f"Failed to clean metadata file: {metadata_file}"
+                raise cleanup_failure(
+                    f"Failed to clean metadata file: {metadata_file}",
+                    f"Kometa YAML could not be updated: {metadata_file.name}",
                 ) from error
 
     if asset_path:
@@ -510,11 +612,13 @@ async def cleanup_title_orphans(
             except (ValueError, IndexError):
                 asset_library_type = ""
             if path_key in existing_asset_keys:
+                result.assets_skipped += 1
                 log_cleanup_event(
                     "cleanup_skipping_valid_asset", description=description, path=path
                 )
                 return
             if not records:
+                result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_skipping_valid_asset",
                     description=f"unmanaged {description}",
@@ -525,8 +629,10 @@ async def cleanup_title_orphans(
                 path.parent.name in valid_asset_dirs.get(asset_library_type, set())
                 and not allow_valid_title
             ):
+                result.assets_skipped += 1
                 return
             if path.is_symlink():
+                result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
                     description=description,
@@ -540,6 +646,7 @@ async def cleanup_title_orphans(
                 if record.get("checksum")
             }
             if not expected_checksums:
+                result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
                     description=description,
@@ -550,6 +657,7 @@ async def cleanup_title_orphans(
             try:
                 current_checksum = await asyncio.to_thread(sha256_file, path)
             except OSError as error:
+                result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
                     description=description,
@@ -558,6 +666,7 @@ async def cleanup_title_orphans(
                 )
                 return
             if current_checksum not in expected_checksums:
+                result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
                     description=description,
@@ -571,12 +680,12 @@ async def cleanup_title_orphans(
                     "cleanup_dry_run", description=description, path=path
                 )
             else:
-                log_cleanup_event(
-                    "cleanup_removing_asset", description=description, path=path
-                )
                 try:
                     await asyncio.to_thread(path.unlink)
                     deleted_dirs.add(_path_key(path.parent))
+                    log_cleanup_event(
+                        "cleanup_removing_asset", description=description, path=path
+                    )
                 except Exception as error:
                     log_cleanup_event(
                         "cleanup_failed_remove_asset",
@@ -584,8 +693,10 @@ async def cleanup_title_orphans(
                         path=path,
                         error=str(error),
                     )
-                    raise CleanupError(
-                        f"Failed to remove managed asset: {path}"
+                    raise cleanup_failure(
+                        f"Failed to remove managed asset: {path}",
+                        f"managed {description} could not be removed: {path}",
+                        report_confirmed=False,
                     ) from error
             removed_assets.add(path_key)
             for record in records:
@@ -631,14 +742,38 @@ async def cleanup_title_orphans(
             )
         if run_background:
             tasks.extend(remove_asset(path, "background") for path in backgrounds)
-        await asyncio.gather(*tasks)
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+        cancelled = next(
+            (
+                outcome
+                for outcome in task_results
+                if isinstance(outcome, asyncio.CancelledError)
+            ),
+            None,
+        )
+        if cancelled is not None:
+            raise cancelled
+        task_errors = [
+            outcome for outcome in task_results if isinstance(outcome, Exception)
+        ]
+        if task_errors:
+            refresh_result_counts()
+            log_confirmed_outcomes()
+            first_error = task_errors[0]
+            if isinstance(first_error, CleanupError):
+                first_error.result = result
+                raise first_error
+            raise cleanup_failure(
+                "Failed to reconcile managed artwork",
+                f"managed artwork reconciliation failed: {first_error}",
+            ) from first_error
 
         for directory_path in deleted_dirs:
             directory = Path(directory_path)
             try:
                 if await asyncio.to_thread(_directory_is_empty, directory):
-                    log_cleanup_event("cleanup_removing_empty_dir", parent=directory)
                     await asyncio.to_thread(directory.rmdir)
+                    log_cleanup_event("cleanup_removing_empty_dir", parent=directory)
             except Exception as error:
                 log_cleanup_event(
                     "cleanup_failed_remove_asset",
@@ -646,8 +781,9 @@ async def cleanup_title_orphans(
                     path=directory,
                     error=str(error),
                 )
-                raise CleanupError(
-                    f"Failed to remove empty asset directory: {directory}"
+                raise cleanup_failure(
+                    f"Failed to remove empty asset directory: {directory}",
+                    f"empty managed asset directory could not be removed: {directory}",
                 ) from error
 
     apply_cache_changes()

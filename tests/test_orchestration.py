@@ -540,6 +540,81 @@ def test_cleanup_is_disabled_after_a_library_failure(monkeypatch, tmp_path):
     assert cleanup_scopes == [set()]
 
 
+def test_cleanup_failure_is_retained_in_final_summary(monkeypatch, tmp_path):
+    movie = Section("Movies", "movie")
+    summaries = []
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def process_successfully(**_kwargs):
+        return None
+
+    async def fail_cleanup(**_kwargs):
+        result = metafusion.CleanupResult(
+            assets=1,
+            failures=1,
+            failed_reason="managed poster could not be removed",
+            mode="kometa",
+        )
+        raise metafusion.CleanupError("cleanup failed", result=result)
+
+    async def fake_preflight(_config, _session):
+        return object()
+
+    monkeypatch.setattr(metafusion, "get_meta_banner", lambda *_args: None)
+    monkeypatch.setattr(
+        metafusion, "check_sys_requirements", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(metafusion, "get_disabled_features", lambda *_args: None)
+    monkeypatch.setattr(
+        metafusion,
+        "log_final_summary",
+        lambda _logger, _elapsed, _metadata, _sizes, cleanup, *_args: summaries.append(
+            cleanup
+        ),
+    )
+    monkeypatch.setattr(metafusion, "preflight_connectors", fake_preflight)
+    monkeypatch.setattr(
+        metafusion,
+        "connect_plex_library",
+        lambda _config, plex=None: (
+            [movie],
+            ["Movies"],
+            [{"title": "Movies", "type": "movie"}],
+        ),
+    )
+    monkeypatch.setattr(metafusion, "process_library", process_successfully)
+    monkeypatch.setattr(metafusion, "cleanup_title_orphans", fail_cleanup)
+    monkeypatch.setattr(
+        metafusion.aiohttp, "ClientSession", lambda **_kwargs: FakeSession()
+    )
+    monkeypatch.setattr(
+        metafusion.aiohttp, "TCPConnector", lambda **_kwargs: object()
+    )
+
+    config = {
+        "settings": {"mode": "kometa", "path": str(tmp_path)},
+        "runtime": {},
+        "cleanup": {"run_cleanup": True},
+        "metadata": {},
+        "assets": {},
+        "plex": {},
+        "tmdb": {},
+    }
+    with pytest.raises(RuntimeError, match="Cleanup: cleanup failed"):
+        asyncio.run(metafusion.metafusion_main(config, logging.getLogger("main-test")))
+
+    assert len(summaries) == 1
+    assert summaries[0].failed_reason == "managed poster could not be removed"
+    assert summaries[0].assets == 1
+    assert config["_cleanup_result"] is summaries[0]
+
+
 def test_plex_metadata_maintenance_uses_plex_only_and_selected_rating_keys(
     monkeypatch, tmp_path
 ):

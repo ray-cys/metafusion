@@ -122,7 +122,7 @@ from helper.tmdb import (
     tmdb_api_request,
     tmdb_response_cache,
 )
-from modules.cleanup import CleanupResult, cleanup_title_orphans
+from modules.cleanup import CleanupError, CleanupResult, cleanup_title_orphans
 from modules.processing import plex_metadata_dict, process_library
 
 shutdown_requested = threading.Event()
@@ -1212,7 +1212,9 @@ async def metafusion_main(config, logger):
                             ),
                         }
 
-            cleanup_result = CleanupResult()
+            cleanup_result = CleanupResult(
+                mode=config.get("settings", {}).get("mode", "kometa")
+            )
             if run_feature_flags.get("cleanup", False):
                 safe_library_types = set()
                 if not failures:
@@ -1221,13 +1223,21 @@ async def metafusion_main(config, logger):
                     )
                 kometa_root = config.get("settings", {}).get("path", ".")
                 asset_path = Path(kometa_root) / "assets"
-                cleanup_result = await cleanup_title_orphans(
-                    config=config,
-                    asset_path=asset_path,
-                    preloaded_plex_metadata=plex_metadata_dict,
-                    feature_flags=run_feature_flags,
-                    safe_library_types=safe_library_types,
-                )
+                try:
+                    cleanup_result = await cleanup_title_orphans(
+                        config=config,
+                        asset_path=asset_path,
+                        preloaded_plex_metadata=plex_metadata_dict,
+                        feature_flags=run_feature_flags,
+                        safe_library_types=safe_library_types,
+                    )
+                except CleanupError as error:
+                    cleanup_result = error.result or CleanupResult(
+                        failures=1,
+                        failed_reason=str(error),
+                        mode=config.get("settings", {}).get("mode", "kometa"),
+                    )
+                    failures.append(f"Cleanup: {error}")
             elif cleanup_skip_reason:
                 cleanup_result.skipped_reason = cleanup_skip_reason
                 log_cleanup_event(
@@ -1318,7 +1328,9 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_artwork_gaps"] = []
     config["_asset_audit_records"] = []
     config["_library_audit_records"] = []
-    config["_cleanup_result"] = CleanupResult()
+    config["_cleanup_result"] = CleanupResult(
+        mode=config.get("settings", {}).get("mode", "kometa")
+    )
     performance_tracker = PerformanceTracker()
 
     async def run_active_job():

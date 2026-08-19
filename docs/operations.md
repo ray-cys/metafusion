@@ -423,6 +423,16 @@ Run one job and review the final report. Restore normal values afterward. A
 dry run does not update YAML, artwork, cache, or durable state. Direct Plex
 metadata dry runs retain one redacted audit report as the deliberate exception.
 
+Cleanup uses the same outcome-oriented logging style as metadata and artwork.
+At the normal INFO level, each affected title receives one consolidated
+`[Cleanup] Inventory | title | outcome | reason` record. The final report
+separates stale title/season/episode scope, cache and Kometa YAML entries,
+managed artwork removed, protected artwork preserved, unchanged valid artwork,
+and failures. Dry-run removals are listed individually as `Would remove`.
+Enable DEBUG only when exact cache keys, YAML season/episode entries, asset
+paths, or preserved unmanaged files are needed. In Plex mode the report labels
+cleanup as state-only; Kometa YAML, artwork, and Plex media remain untouched.
+
 ## Persistent state and I/O
 
 MetaFusion uses separate SQLite databases:

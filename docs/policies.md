@@ -341,6 +341,11 @@ incremental-only run, or targeted run.
 Cleanup removes stale MetaFusion state records only. It does not delete local
 artwork, Kometa YAML/assets, or any Plex media file.
 
+The final cleanup summary explicitly labels this as state-only and reports
+cache records separately from Kometa YAML and artwork outcomes. A failed
+cleanup retains confirmed pre-failure counts in the final report instead of
+silently losing the cleanup summary.
+
 The cleanup checksum rule is independent of `ASSET_UPDATE_POLICY`. Even when
 artwork updates use `overwrite`, cleanup cannot delete an unverified manual
 file.

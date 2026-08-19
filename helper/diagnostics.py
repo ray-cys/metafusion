@@ -294,7 +294,11 @@ def write_change_plan_report(
         "- Cleanup candidates: "
         f"titles={cleanup_value('titles')}, seasons={cleanup_value('seasons')}, "
         f"episodes={cleanup_value('episodes')}, assets={cleanup_value('assets')}, "
-        f"cache_entries={cleanup_value('cache_entries')}",
+        f"cache_entries={cleanup_value('cache_entries')}, "
+        f"yaml_entries={cleanup_value('yaml_entries')}, "
+        f"assets_preserved={cleanup_value('assets_preserved')}, "
+        f"assets_unchanged={cleanup_value('assets_skipped')}, "
+        f"failures={cleanup_value('failures')}",
         "",
         "Libraries",
     ]
