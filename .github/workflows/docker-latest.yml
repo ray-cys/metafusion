@@ -126,13 +126,11 @@ jobs:
           set -euo pipefail
           for image in "${BASELINE_IMAGE}" "${CURRENT_IMAGE}"; do
             for contract in tests/golden/kometa_contract_corpus/*.yml; do
-              filename="$(basename "${contract}")"
               docker run --rm \
-                --volume "${PWD}/tests/golden/kometa_contract_corpus:/contract:ro" \
-                --tmpfs /contract/logs:rw,noexec,nosuid,size=16m \
+                --volume "${PWD}/${contract}:/contract/metadata.yml:ro" \
                 "${image}" \
-                --config "/contract/${filename}" \
-                --validate-file "/contract/${filename}"
+                --config /contract/metadata.yml \
+                --validate-file /contract/metadata.yml
             done
           done
 
@@ -187,7 +185,7 @@ jobs:
 
       - name: Preserve the performance report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: performance-regression-${{ github.sha }}
           path: performance-report.json
