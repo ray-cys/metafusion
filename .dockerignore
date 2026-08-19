@@ -51,9 +51,8 @@ tools
 .coveragerc
 pyproject.toml
 requirements-dev.in
-requirements-dev.lock
+requirements-dev.txt
 requirements.in
-requirements.txt
 
 # Editors, operating-system files, and unrelated build output
 **/.classpath

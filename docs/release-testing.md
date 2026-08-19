@@ -79,6 +79,29 @@ operator's explicit `--compatibility-check` and Unraid soak test.
 The provider-maintenance script itself has an enforced 85% targeted coverage
 floor so release automation cannot silently lose its failure-path tests.
 
+## Python dependency manifests
+
+`requirements.in` and `requirements-dev.in` are the human-maintained direct
+dependency inputs. `requirements.txt` and `requirements-dev.txt` are the
+generated, fully resolved, hash-verified manifests used by Docker and CI. The
+runtime `requirements.txt` must remain self-contained: do not replace it with a
+`-r` reference to another filename, because GitHub evaluates that standard
+manifest in an isolated dependency-graph workspace.
+
+Regenerate both manifests after changing either input:
+
+```bash
+uv pip compile --universal --python-version 3.10 --generate-hashes \
+  requirements.in -o requirements.txt
+uv pip compile --universal --python-version 3.10 --generate-hashes \
+  requirements-dev.in -o requirements-dev.txt
+```
+
+The repository test suite verifies that both generated files are
+self-contained, every declared direct pin is represented, development includes
+the runtime graph, and every resolved package retains SHA-256 hashes. Docker
+continues to install only `requirements.txt` with `--require-hashes`.
+
 ## Required release gate
 
 Before promoting `develop` to `main`:
