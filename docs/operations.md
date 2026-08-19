@@ -67,18 +67,18 @@ or `config.yml` values.
 | Configuration | `--run_season` | None | Enable season artwork processing. |
 | Configuration | `--run_background` | None | Enable background processing. |
 | Diagnostics | `--doctor`, `--check-config` | None | Validate configuration and show value sources without running a job. Both names perform the same action. |
-| Diagnostics | `--preflight` | None | Check Plex, TMDb, selected libraries, mappings, and storage without processing content. |
+| Diagnostics | `--preflight` | None | Contact Plex and TMDb, check selected libraries, mappings, and required storage, print guidance, and exit without retaining a report. |
 | Diagnostics | `--release-check` | None | Run the complete read-only preflight and SQLite health checks, write a redacted release-qualification report, and exit nonzero when an automated gate fails. |
-| Diagnostics | `--asset-audit` | None | Perform a read-only, full artwork selection and ownership/quality audit and write a report. |
+| Diagnostics | `--asset-audit` | None | Perform a read-only full artwork selection and ownership/quality audit through TMDb, Fanart.tv, and Plex fallback stages, then write a report. |
 | Diagnostics | `--metadata-audit` | None | Perform a read-only full metadata comparison against TMDb and write field-level proposed actions. Artwork and cleanup are disabled. |
-| Diagnostics | `--plan` | None | Produce one read-only full-scan plan for metadata, artwork, and eligible cleanup. The report is the only deliberate output. |
-| Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork in either output mode without applying changes. |
-| Diagnostics | `--mapping-diagnose` | None | Compare one or more Plex TV inventories with TMDb standard ordering, configured overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
-| Diagnostics | `--identity-inspect` | None | Explain the current Plex-to-TMDb identity, active learned binding, bounded history, warning reasons, edition, and computed destinations. Requires `--rating-key`; writes only a report. |
-| Diagnostics | `--explain-item` | None | Produce one unified item report covering identity/binding, normal scheduled selection, effective metadata and artwork policies, TV episode mapping, retries, and computed destinations. Requires `--rating-key`; writes only the report. |
+| Diagnostics | `--plan` | None | Produce one read-only full-scan plan for metadata, provider-aware artwork, and eligible cleanup reconciliation. The report is the only deliberate output. |
+| Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork, provider attempts, ownership, quality, and rejected candidates in either output mode. |
+| Diagnostics | `--mapping-diagnose` | None | Run a standalone comparison of Plex TV inventory with TMDb ordering, overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
+| Diagnostics | `--identity-inspect` | None | Run a standalone explanation of Plex-to-TMDb identity, learned binding/history, warnings, edition, and destinations. Requires `--rating-key`; writes only a report. |
+| Diagnostics | `--explain-item` | None | Run a standalone unified item explanation covering identity, scheduled selection, policies, TV mapping, retries, cached artwork source, and destinations. Requires `--rating-key`; writes only a report. |
 | Diagnostics | `--compatibility-check` | None | Test connectors, paths, and the configured Kometa/Plex output contract, write a compatibility report, and exit. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
-| Diagnostics | `--support-report` | None | Write a value-free diagnostic report under `/config/reports`, then exit. |
+| Diagnostics | `--support-report` | None | Perform a local value-free configuration/build/state inventory, write it under `/config/reports`, and exit without contacting providers. |
 | Compatibility | `--compatibility-profile` | `auto`, `kometa-2.4`, or `plex-api-v1` | Override `COMPATIBILITY_PROFILE` for this command or run. An explicit profile must match `RUN_MODE`. |
 | Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
 | Targeting | `--rating-key` | Plex rating key | Process only the named item. Repeat the option or use comma-separated keys. Targeted runs disable cleanup. |
@@ -98,134 +98,19 @@ or `config.yml` values.
 `--healthcheck` belongs to the container entrypoint and is reserved for the
 image's Docker health check; it is not a public `metafusion.py` option.
 
-## Validate and inspect
+## Diagnostics
 
-```bash
-# Validate configuration and show value sources without contacting connectors
-python metafusion.py --doctor
-
-# Contact Plex and TMDb, verify selected libraries and inspect mapped storage
-# without creating or changing configuration, metadata, artwork, or state
-python metafusion.py --preflight
-
-# Run connector, path, storage, architecture, and SQLite release qualification
-python metafusion.py --release-check
-
-# Perform a read-only full artwork selection and ownership/quality audit
-python metafusion.py --asset-audit
-
-# Compare TMDb with current Kometa/Plex metadata without applying changes
-python metafusion.py --metadata-audit
-
-# Preview metadata, artwork, and cleanup decisions in one report
-python metafusion.py --plan
-
-# Inventory every Plex movie/show library and enabled artwork destination
-python metafusion.py --library-audit
-
-# Explain difficult TV episode ordering without changing any mapping or metadata
-python metafusion.py --mapping-diagnose --rating-key 12345
-
-# Explain how a Plex item became associated with TMDb without changing it
-python metafusion.py --identity-inspect --rating-key 12345
-
-# Explain one item's identity, scheduling, policies, mapping, and destinations
-python metafusion.py --explain-item --rating-key 12345
-
-# Confirm the configured output contract and required connector/path support
-python metafusion.py --compatibility-check
-
-# Show live scheduler state, effective build, library counts, and recent jobs
-python metafusion.py --status
-
-# Write a value-free diagnostic report under /config/reports
-python metafusion.py --support-report
-```
+Use the [diagnostics and support reports guide](diagnostics.md) to choose a
+local check, connector preflight, full library audit, or item-level explanation.
+That guide documents provider contact, deliberate report writes, privacy,
+standalone-command rules, and the difference between cached item explanation
+and live provider artwork scoring. The table above remains the authoritative
+inventory of public flags.
 
 Public CLI exit codes are `0` for success, `1` for an operational or connector
 failure, and `2` for invalid configuration or command combinations. Docker can
 forward public options directly, for example `docker run --rm IMAGE --help` or
 `docker run --rm IMAGE --version`.
-
-Preflight fails when authentication, explicitly selected library names, mapping
-roots, or required storage are unavailable. With `PLEX_LIBRARIES=auto`, it
-prints the discovered movie/show libraries. It samples only a few Plex media
-paths and, when one visible container mount is an unambiguous suffix match,
-prints a proposed `PLEX_PATH_MAPPINGS` value. This is guidance only: Docker
-mounts and filesystem ownership remain manual safety decisions. Preflight does
-not create missing directories or probe files. The asset audit contacts Plex
-and TMDb and can take about as long as a full artwork evaluation, but it does
-not update YAML, artwork, ownership, incremental state, or TMDb cache. Its
-deliberate output is a value-safe `asset-audit-*.txt` report.
-
-The metadata audit always uses a dry-run full scan and writes
-`/config/reports/metadata-audit-*.txt`. In Kometa mode it compares generated
-TMDb fields with current YAML; in Plex mode it compares supported TMDb
-candidates with current Plex fields and reports locks, policy exclusions,
-conflicts, missing source values, differences, and proposed actions. It does
-not write Plex fields, Kometa YAML, artwork, cache entries, ownership records,
-or incremental markers. Metadata values are omitted from the report.
-
-`--plan` combines the metadata and artwork evaluations with cleanup candidate
-calculation when cleanup is configured and the inventory is complete. It uses
-the same selection, ownership, schema, policy, and cleanup gates as a real run,
-but forces dry-run behavior. It does not write Kometa YAML, Plex fields,
-artwork, caches, ownership, retry state, or incremental markers. Its only
-intentional persistent output is `/config/reports/change-plan-*.txt`. A target
-option disables cleanup in the plan because a partial library/item scope cannot
-prove an orphan.
-
-`--library-audit` works in Kometa and Plex modes. It lists discovered and
-selected movie/show libraries, item counts, artwork ownership outcomes,
-candidate dimensions, and the normalized 0-100 artwork quality score. It also
-lists the highest-scoring rejected candidates, their score components, and
-whether language priority, dimensions, vote threshold, aspect ratio, downgrade
-protection against the existing file, or a deterministic tie-break determined
-the reported action. It
-writes `/config/reports/library-asset-audit-*.txt` and does not modify either
-output mode. Like the asset audit, it can take about as long as full artwork
-evaluation because it contacts Plex and TMDb.
-
-`--mapping-diagnose` accepts one or more TV show rating keys. It compares the
-complete Plex season/episode inventory with TMDb standard ordering, configured
-`TMDB_EPISODE_OVERRIDES`, split-series mappings, and available TMDb episode
-groups. When one complete one-step numbering offset is uniquely provable, the
-report includes a proposed configuration snippet for review. It never applies
-that proposal, changes a learned identity, writes Plex or Kometa metadata, or
-downloads artwork. Results are written to
-`/config/reports/mapping-diagnosis-*.txt`; an unresolved result is a successful
-diagnostic outcome rather than a mutation failure.
-
-`--identity-inspect` works for movies and shows in either output mode. For each
-requested Plex rating key it reports Plex GUIDs and external IDs, localized and
-original titles, year, edition, selected TMDb ID, resolution source, match
-confidence, warning/rejection reasons, active learned binding, and the newest
-50 binding-history events. It also computes the Kometa YAML entry or Plex API
-target and poster, background, and season artwork destinations. Provider
-response caching is disabled and SQLite is read in query-only mode. Its sole
-deliberate write is `/config/reports/identity-inspection-*.txt`; it does not
-touch bindings, caches, provider fields, YAML, artwork, ownership, incremental
-markers, or cleanup. History begins when the identity-history extension is
-installed. An older active binding remains visible, but earlier transitions
-cannot be reconstructed. The extension remains schema-4 rollback compatible;
-older MetaFusion images ignore its nullable columns and additional table.
-
-`--explain-item` is the single starting point for an item-level investigation.
-It includes the identity and learned-binding decision, then evaluates what a
-normal scheduled run would do using the current SQLite state, full-scan timing,
-configuration fingerprint, Plex update marker, TV child inventory marker, and
-retry status. It records the effective library override, metadata target and
-policy, artwork policy and recheck cadence, TV mapping outcome, and computed
-metadata/artwork destinations. TMDb requests bypass the persistent response
-cache and SQLite is opened read-only. The only deliberate write is
-`/config/reports/item-explanation-*.txt`; no normal processing, cleanup, cache,
-binding, metadata, artwork, ownership, or incremental state is changed. Use
-`--library-audit` when the investigation also needs live artwork candidate
-scores and rejection details.
-
-The support report contains image version/commit, configuration binding names,
-state and cache health, platform details, and validation status. It does not
-include configuration values, tokens, API keys, or metadata summaries.
 
 ## Targeted repairs
 
@@ -528,6 +413,7 @@ Shared reports and logs are:
 /config/logs/metafusion.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
 /config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
+/config/reports/metadata-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/change-plan-YYYYMMDD-HHMMSS.txt
 /config/reports/library-asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/mapping-diagnosis-YYYYMMDD-HHMMSS.txt

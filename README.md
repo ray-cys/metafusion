@@ -34,6 +34,7 @@ Choose the guide for your platform:
 - [Complete environment-variable and `config.yml` reference](docs/configuration.md)
 - [Policy behavior and safety rules](docs/policies.md)
 - [Artwork providers, fallback order, and attribution](docs/artwork-providers.md)
+- [Diagnostics, audits, and support reports](docs/diagnostics.md)
 - [Scheduling, maintenance, state, and troubleshooting](docs/operations.md)
 - [Development and release testing](docs/release-testing.md)
 - [Support and version policy](SUPPORT.md)
@@ -282,6 +283,7 @@ Both modes use `/config` for configuration, reports, logs, and SQLite state:
 /config/cache/fanart_cache.sqlite3   # Fanart.tv artwork-response cache
 /config/reports/artwork-gaps-*.txt
 /config/reports/asset-audit-*.txt       # explicit --asset-audit runs only
+/config/reports/metadata-audit-*.txt    # explicit --metadata-audit runs only
 /config/reports/change-plan-*.txt       # explicit --plan runs only
 /config/reports/library-asset-audit-*.txt # explicit --library-audit runs only
 /config/reports/mapping-diagnosis-*.txt # explicit --mapping-diagnose runs only
@@ -326,55 +328,23 @@ unchanged. Platform-specific update steps are in the
 
 ## Support and diagnostics
 
-Useful commands inside the container are:
+Start with a local configuration check, then test the configured connectors:
 
 ```bash
 python metafusion.py --doctor
 python metafusion.py --preflight
-python metafusion.py --asset-audit
-python metafusion.py --metadata-audit
-python metafusion.py --plan
-python metafusion.py --library-audit
-python metafusion.py --mapping-diagnose --rating-key 12345
-python metafusion.py --identity-inspect --rating-key 12345
-python metafusion.py --explain-item --rating-key 12345
-python metafusion.py --compatibility-check
-python metafusion.py --status
-python metafusion.py --support-report
 ```
 
-`--preflight` performs a read-only connector, selected-library, mapping, and
-storage check. `--asset-audit` performs a full read-only artwork selection pass
-and writes `/config/reports/asset-audit-*.txt` with missing, unmanaged,
-lower-resolution, collision, and rejected-identity decisions. Reports redact
-connector secrets and the asset audit omits host paths. Do not publish
-`config.yml`, Docker
-inspection output, tokens, API keys, or unredacted host paths. For operational
-checks and common symptoms, see
-[Scheduling, maintenance, state, and troubleshooting](docs/operations.md).
+Use `python metafusion.py --support-report` when preparing a GitHub issue. For
+library audits, provider-aware artwork decisions, cleanup plans, item identity,
+TV episode mapping, report files, privacy, and command-selection guidance, see
+[Diagnostics and support reports](docs/diagnostics.md). The authoritative list
+of every public flag remains the
+[command-line reference](docs/operations.md#command-line-reference).
 
-`--metadata-audit` performs a full read-only TMDb comparison. It reports
-missing, different, unchanged, locked, policy-excluded, unsupported, and
-identity-rejected metadata plus the proposed action, without writing metadata,
-artwork, cache state, or ownership records.
-
-`--plan` combines metadata, artwork, and eligible cleanup decisions in one
-read-only report. `--library-audit` provides a cross-mode inventory and artwork
-health report. Targeted processing, selective retries, artwork score details,
-SQLite maintenance actions, and `COMPATIBILITY_PROFILE` contracts are documented in the
-[complete CLI and operations guide](docs/operations.md#command-line-reference).
-
-`--identity-inspect` explains the current Plex GUIDs, selected TMDb identity,
-confidence and warning reasons, learned binding history, edition, and computed
-metadata/artwork destinations for one or more `--rating-key` values. It writes
-only its report: no binding, cache, Plex field, Kometa YAML, artwork, ownership,
-incremental, or cleanup state is changed. History begins when this extension is
-installed and cannot reconstruct earlier transitions.
-
-Use `--explain-item --rating-key KEY` when one report should combine that
-identity/binding evidence with the normal scheduled-run decision, effective
-metadata and artwork policies, TV mapping outcome, retry state, and computed
-destinations. It is read-only apart from its retained report.
+Never publish `config.yml`, Docker inspection output, tokens, API keys, or
+unredacted private paths. See the [support policy](SUPPORT.md) before attaching
+logs or diagnostic reports.
 
 ## References
 

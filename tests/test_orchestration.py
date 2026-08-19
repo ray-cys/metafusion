@@ -44,6 +44,36 @@ def test_operations_document_every_public_cli_option(capsys):
     assert "`-h`" in operations
 
 
+def test_diagnostics_guide_covers_commands_reports_and_navigation():
+    root = Path(__file__).parents[1]
+    guide = (root / "docs" / "diagnostics.md").read_text(encoding="utf-8")
+    operations = (root / "docs" / "operations.md").read_text(encoding="utf-8")
+    diagnostic_options = set()
+    for cell in re.findall(r"^\| Diagnostics \| ([^|]+)", operations, re.MULTILINE):
+        diagnostic_options.update(re.findall(r"--[a-z][a-z0-9_-]*", cell))
+    report_patterns = {
+        "asset-audit-*.txt",
+        "metadata-audit-*.txt",
+        "change-plan-*.txt",
+        "library-asset-audit-*.txt",
+        "mapping-diagnosis-*.txt",
+        "identity-inspection-*.txt",
+        "item-explanation-*.txt",
+        "compatibility-*.txt",
+        "support-report-*.txt",
+        "release-qualification-*.txt",
+    }
+
+    assert diagnostic_options
+    assert sorted(
+        option for option in diagnostic_options if f"`{option}`" not in guide
+    ) == []
+    assert sorted(pattern for pattern in report_patterns if pattern not in guide) == []
+    assert "docs/diagnostics.md" in (root / "README.md").read_text(encoding="utf-8")
+    assert "docs/diagnostics.md" in (root / "SUPPORT.md").read_text(encoding="utf-8")
+    assert "diagnostics.md" in operations
+
+
 def test_version_command_reports_runtime_and_database_schema(capsys):
     with pytest.raises(SystemExit, match="0"):
         metafusion.parse_cli_args(["--version"])

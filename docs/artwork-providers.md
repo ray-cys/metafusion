@@ -66,8 +66,9 @@ only libraries processed in the run. Detailed request/cache activity is
 available at `LOG_LEVEL=DEBUG`; authorization, rate limiting, malformed
 responses, and provider exhaustion are warnings.
 
-`--asset-audit`, `--library-audit`, `--plan`, and item explanation reports show
-the selected provider, provider image ID when available, selection reason,
-candidate count, and the provider stages attempted. When every stage fails,
-`/config/reports/artwork-gaps-*.txt` retains the bounded missing/preserved
-entry. Reports never include API keys.
+`--asset-audit`, `--library-audit`, and `--plan` reports show the selected
+provider, provider image ID when available, selection reason, candidate count,
+and provider stages attempted. `--explain-item` reports the saved provider and
+destinations but does not perform live candidate scoring. When every stage
+fails, `/config/reports/artwork-gaps-*.txt` retains the bounded
+missing/preserved entry. Reports never include API keys.
