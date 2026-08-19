@@ -605,6 +605,61 @@ def test_unresolved_problem_and_replay_cli_paths_are_read_only(
     assert str(destination) in output
 
 
+def test_item_explanation_connector_uses_bounded_shared_session(monkeypatch):
+    config = {
+        "runtime": {"request_timeout": 12, "connect_timeout": 4},
+        "performance": {"network_concurrency": 3},
+    }
+    plex = object()
+    section = object()
+    calls = []
+
+    class Session:
+        async def __aenter__(self):
+            calls.append("enter")
+            return self
+
+        async def __aexit__(self, *_args):
+            calls.append("exit")
+            return False
+
+    async def preflight(received_config, session):
+        assert received_config is config
+        assert isinstance(session, Session)
+        return plex
+
+    async def explain(
+        sections, received_config, rating_keys, *, session=None, write_report=True
+    ):
+        assert sections == [section]
+        assert received_config is config
+        assert rating_keys == ["10"]
+        assert isinstance(session, Session)
+        assert write_report is False
+        return ([{"status": "accepted"}], None)
+
+    monkeypatch.setattr(metafusion.aiohttp, "ClientSession", lambda **_kwargs: Session())
+    monkeypatch.setattr(metafusion.aiohttp, "TCPConnector", lambda **_kwargs: object())
+    monkeypatch.setattr(metafusion, "preflight_connectors", preflight)
+    monkeypatch.setattr(
+        metafusion,
+        "connect_plex_library",
+        lambda received_config, plex=None: ([section], ["Movies"], []),
+    )
+    monkeypatch.setattr(metafusion, "run_item_explanation", explain)
+
+    records, report = asyncio.run(
+        metafusion.item_explanation_connectors(
+            config,
+            ["10"],
+            write_report=False,
+        )
+    )
+    assert records == [{"status": "accepted"}]
+    assert report is None
+    assert calls == ["enter", "exit"]
+
+
 def test_log_labels_and_sections_reject_joined_legacy_names():
     fields = logging_module.format_fields(
         ("RAM used", "12.39 GB"),
