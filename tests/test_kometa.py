@@ -7,8 +7,22 @@ from helper.tmdb import tmdb_response_cache
 from modules import builder as builder_module
 from modules.kometa import build_episode_metadata, validate_metadata_document
 from modules.utils import smart_meta_update
+from tools.generate_kometa_contract_corpus import generate, generated_documents
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
+
+
+def test_generated_contract_corpus_is_current_and_structurally_valid(tmp_path):
+    documents = generated_documents()
+    assert set(documents) == {"movies.yml", "shows.yml"}
+    assert all(validate_metadata_document(document) for document in documents.values())
+    assert generate(GOLDEN_DIR / "kometa_contract_corpus", check=True) == []
+
+    assert len(generate(tmp_path)) == 2
+    assert generate(tmp_path, check=True) == []
+    assert (tmp_path / "movies.yml").read_text(encoding="utf-8").startswith(
+        "metadata:"
+    )
 
 
 def test_episode_metadata_matches_kometa_schema_golden_file():
@@ -120,18 +134,20 @@ def test_specials_are_emitted_as_season_zero(monkeypatch):
 
     monkeypatch.setattr(builder_module, "meta_cache_async", no_cache_write)
     tmdb_response_cache.clear()
-    tmdb_response_cache["tv/123"] = {
+    responses = {}
+    responses["tv/123"] = {
         "content_ratings": {"results": []},
         "genres": [],
         "networks": [],
         "origin_country": [],
         "credits": {"crew": []},
+        "external_ids": {"tvdb_id": 456},
         "images": {"posters": [], "backdrops": []},
         "seasons": [{"season_number": 0}],
         "first_air_date": "2020-01-01",
         "overview": "A show with specials.",
     }
-    tmdb_response_cache["tv/123/season/0"] = {
+    responses["tv/123/season/0"] = {
         "air_date": "2019-12-01",
         "credits": {"crew": []},
         "images": {"posters": []},
@@ -151,7 +167,7 @@ def test_specials_are_emitted_as_season_zero(monkeypatch):
     }
 
     async def cached_request(_config, endpoint, **_kwargs):
-        return tmdb_response_cache.get(endpoint)
+        return responses.get(endpoint)
 
     monkeypatch.setattr(builder_module, "tmdb_api_request", cached_request)
     config = {

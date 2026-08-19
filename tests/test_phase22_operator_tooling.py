@@ -223,6 +223,11 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
         "vote": 28.0,
         "aspect": 10.0,
         "language": 10.0,
+        "content": 0.0,
+        "blank_penalty": 0.0,
+        "perceptual_hash": None,
+        "validated_width": None,
+        "validated_height": None,
     }
     fallback = artwork_quality_score(
         config,

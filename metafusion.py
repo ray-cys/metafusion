@@ -37,11 +37,13 @@ from helper.config import (
     report_retention,
     validate_config,
 )
+from helper.config_impact import write_config_impact_report
 from helper.database_maintenance import (
     format_maintenance_results,
     maintain_databases,
 )
 from helper.diagnostics import (
+    write_adoption_audit_report,
     write_artwork_gap_report,
     write_asset_audit_report,
     write_change_plan_report,
@@ -51,6 +53,12 @@ from helper.diagnostics import (
     write_metadata_audit_report,
     write_release_qualification_report,
     write_support_report,
+    write_unresolved_work_report,
+)
+from helper.fanart import (
+    begin_fanart_cache,
+    fanart_response_cache,
+    flush_fanart_cache,
 )
 from helper.identity_diagnostics import run_identity_inspection
 from helper.incremental import (
@@ -59,16 +67,25 @@ from helper.incremental import (
     mark_library_scan_complete,
     mark_library_scan_started,
 )
+from helper.item_explanation import run_item_explanation
 from helper.logging import (
     check_sys_requirements,
+    format_fields,
     get_meta_banner,
     get_setup_logging,
     log_cleanup_event,
     log_final_summary,
     log_main_event,
+    log_section,
     redact_secrets,
 )
 from helper.mapping_diagnostics import run_mapping_diagnosis
+from helper.output_management import (
+    OutputManagementError,
+    apply_output_management,
+    plan_output_management,
+    write_output_management_report,
+)
 from helper.performance import (
     PerformanceTracker,
     begin_performance_tracking,
@@ -84,12 +101,23 @@ from helper.plex import (
     get_plex_metadata,
     load_plex_library_inventory,
 )
+from helper.plex_artwork_verification import (
+    verify_plex_artwork,
+    write_plex_artwork_verification_report,
+)
 from helper.plex_metadata import (
     begin_plex_metadata_run,
     finish_plex_metadata_run,
     restore_plex_metadata,
 )
 from helper.plex_paths import advise_path_mappings
+from helper.provider_credentials import fanart_project_api_key
+from helper.provider_replay import write_sanitized_replay_capture
+from helper.recovery import (
+    RecoveryBundleError,
+    create_recovery_bundle,
+    verify_recovery_bundle,
+)
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
@@ -103,12 +131,31 @@ from helper.state_db import (
 from helper.state_db import (
     STATE_DATABASE,
     StateDatabaseError,
+    apply_library_rebinding,
+    find_media_state,
+    load_identity_overrides,
+    load_identity_reviews,
+    load_item_exceptions,
     load_item_retries,
+    load_unresolved_work,
     maintain_state_database,
     missing_library_inventory,
+    plan_library_rebinding,
     recent_job_runs,
+    reconcile_identity_reviews,
     reconcile_library_inventory,
+    reconcile_unresolved_work,
+    remove_identity_override,
+    remove_item_exception,
     retry_queue_summary,
+    save_identity_override,
+    save_item_exception,
+)
+from helper.state_reporting import (
+    write_cleanup_history_report,
+    write_identity_review_report,
+    write_rebinding_report,
+    write_state_report,
 )
 from helper.tmdb import (
     begin_tmdb_cache,
@@ -116,7 +163,7 @@ from helper.tmdb import (
     tmdb_api_request,
     tmdb_response_cache,
 )
-from modules.cleanup import CleanupResult, cleanup_title_orphans
+from modules.cleanup import CleanupError, CleanupResult, cleanup_title_orphans
 from modules.processing import plex_metadata_dict, process_library
 
 shutdown_requested = threading.Event()
@@ -177,6 +224,16 @@ def parse_cli_args(argv=None):
         help="Write a redacted diagnostic report under /config/reports and exit",
     )
     parser.add_argument(
+        "--problems",
+        action="store_true",
+        help="Print the persistent unresolved-work ledger as JSON and exit",
+    )
+    parser.add_argument(
+        "--capture-replay",
+        action="store_true",
+        help="Capture selected items as a sanitized JSON replay for support",
+    )
+    parser.add_argument(
         "--preflight",
         action="store_true",
         help="Check Plex, TMDb, libraries, mappings, and storage without processing",
@@ -215,6 +272,11 @@ def parse_cli_args(argv=None):
         "--identity-inspect",
         action="store_true",
         help="Explain Plex-to-TMDb identity and binding history without changing it",
+    )
+    parser.add_argument(
+        "--explain-item",
+        action="store_true",
+        help="Unify identity, schedule, policy, mapping, and destination diagnostics",
     )
     parser.add_argument(
         "--library",
@@ -265,9 +327,9 @@ def parse_cli_args(argv=None):
     )
     parser.add_argument(
         "--sqlite-target",
-        choices=["all", "state", "tmdb"],
+        choices=["all", "state", "tmdb", "fanart"],
         default="all",
-        help="Limit SQLite maintenance to durable state or disposable TMDb cache",
+        help="Limit SQLite maintenance to state, TMDb cache, or Fanart.tv cache",
     )
     parser.add_argument(
         "--compatibility-check",
@@ -288,6 +350,105 @@ def parse_cli_args(argv=None):
         "--plex-metadata-unlock",
         action="store_true",
         help="Remove only MetaFusion-created Plex locks selected by --rating-key",
+    )
+    parser.add_argument(
+        "--state-report",
+        action="store_true",
+        help="Generate a human-readable and JSON report from SQLite only",
+    )
+    parser.add_argument(
+        "--state-section",
+        choices=["all", "database", "libraries", "jobs", "ownership", "problems", "items"],
+        default="all",
+        help="Limit --state-report to one report section",
+    )
+    parser.add_argument(
+        "--include-state-items",
+        action="store_true",
+        help="Include item-level rows in --state-report",
+    )
+    parser.add_argument(
+        "--cleanup-history-report",
+        action="store_true",
+        help="Generate cleanup history and pending-candidate reports from SQLite",
+    )
+    parser.add_argument(
+        "--history-source",
+        action="append",
+        choices=["automated", "manual"],
+        help="Filter cleanup history by source; repeat to select both",
+    )
+    parser.add_argument(
+        "--output-action",
+        choices=["preview", "remove", "forget", "rebuild"],
+        help="Safely inspect or manage output for exactly one recorded item",
+    )
+    parser.add_argument(
+        "--output-type",
+        choices=["all", "metadata", "poster", "background", "season"],
+        default="all",
+        help="Limit targeted output management to one output type",
+    )
+    parser.add_argument(
+        "--season-number",
+        type=int,
+        help="Limit a season exception or output action to this season number",
+    )
+    parser.add_argument(
+        "--acknowledge-metadata-loss",
+        action="store_true",
+        help="Confirm whole-entry Kometa YAML removal for output management",
+    )
+    parser.add_argument(
+        "--exception-action",
+        choices=["list", "add", "remove"],
+        help="List or maintain durable per-item output exceptions",
+    )
+    parser.add_argument(
+        "--exception-output",
+        choices=["all", "metadata", "plex_metadata", "poster", "background", "season", "cleanup"],
+        help="Output lane controlled by --exception-action",
+    )
+    parser.add_argument(
+        "--identity-override-action",
+        choices=["list", "set", "remove"],
+        help="List or maintain an explicit Plex-item to TMDb identity override",
+    )
+    parser.add_argument(
+        "--identity-review-queue",
+        action="store_true",
+        help="Generate the persistent identity review queue report",
+    )
+    parser.add_argument(
+        "--reason",
+        help="Operator reason stored with an exception or identity override",
+    )
+    parser.add_argument(
+        "--library-rebind",
+        choices=["plan", "apply"],
+        help="Plan or apply safe durable-state rebinding between two scanned libraries",
+    )
+    parser.add_argument("--from-library", help="Source library name or UUID for rebinding")
+    parser.add_argument("--to-library", help="Destination library name or UUID for rebinding")
+    parser.add_argument(
+        "--recovery-bundle",
+        action="store_true",
+        help="Create a redacted disaster-recovery bundle without artwork or provider caches",
+    )
+    parser.add_argument(
+        "--verify-recovery",
+        metavar="BUNDLE",
+        help="Offline-verify a MetaFusion disaster-recovery bundle",
+    )
+    parser.add_argument(
+        "--config-impact",
+        metavar="CONFIG_YML",
+        help="Compare current and proposed effective configuration without processing",
+    )
+    parser.add_argument(
+        "--plex-artwork-verify",
+        action="store_true",
+        help="Verify whether Plex currently selects recorded MetaFusion artwork",
     )
     return parser.parse_args(argv)
 
@@ -367,6 +528,12 @@ def override_config_with_cli(config, args):
     if args.identity_inspect:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
+    if args.explain_item:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
+    if args.capture_replay:
+        config["settings"]["dry_run"] = True
+        config["cleanup"]["run_cleanup"] = False
     if args.preflight:
         config["settings"]["dry_run"] = True
         config["cleanup"]["run_cleanup"] = False
@@ -424,6 +591,10 @@ def override_config_with_cli(config, args):
         execution["mapping_diagnose"] = True
     if args.identity_inspect:
         execution["identity_inspect"] = True
+    if args.explain_item:
+        execution["explain_item"] = True
+    if args.capture_replay:
+        execution["capture_replay"] = True
     if args.retry_failed:
         execution["retry_failed"] = True
         execution["retry_status"] = args.retry_status
@@ -544,6 +715,30 @@ async def identity_inspection_connectors(config, rating_keys):
             config,
             rating_keys,
             session=session,
+        )
+
+
+async def item_explanation_connectors(config, rating_keys, *, write_report=True):
+    runtime = config.get("runtime", {})
+    maximum = concurrency_ceiling(config, "network")
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(limit=maximum, limit_per_host=maximum)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session)
+        sections, _selected, _available = await asyncio.to_thread(
+            connect_plex_library,
+            config,
+            plex=plex,
+        )
+        return await run_item_explanation(
+            sections,
+            config,
+            rating_keys,
+            session=session,
+            write_report=write_report,
         )
 
 
@@ -705,17 +900,21 @@ async def metafusion_main(config, logger):
         get_meta_banner(logger)
         current_build = build_info()
         logger.info(
-            "[MetaFusion] Version %s (commit %s)",
-            current_build["version"],
-            current_build["commit"],
+            "[Startup] Build | %s",
+            format_fields(
+                ("Version", current_build["version"]),
+                ("Commit", current_build["commit"]),
+            ),
         )
         check_sys_requirements(logger, config=config, check_network=False)
         log_main_event(
             "main_started",
             start_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
+        log_section(logger, "Configuration", "Effective run configuration")
         get_disabled_features(config, logger)
         feature_flags = get_feature_flags(config)
+        log_section(logger, "Processing", "Library processing")
         start_time = datetime.now().astimezone()
         library_item_counts = {}
         runtime_config = config.get("runtime", {})
@@ -1043,7 +1242,7 @@ async def metafusion_main(config, logger):
                     if maintenance_failures:
                         raise RuntimeError("; ".join(maintenance_failures))
                     logger.info(
-                        "[Plex Metadata] %s completed for %d item(s)",
+                        "[Metadata] Plex maintenance | Action: %s | Items: %d",
                         maintenance_action,
                         len(found_keys),
                     )
@@ -1084,6 +1283,9 @@ async def metafusion_main(config, logger):
                         )
                         library_config["_metadata_audit_records"] = config.setdefault(
                             "_metadata_audit_records", []
+                        )
+                        library_config["_adoption_audit_records"] = config.setdefault(
+                            "_adoption_audit_records", []
                         )
                         scope = next(
                             candidate
@@ -1131,6 +1333,31 @@ async def metafusion_main(config, logger):
                                     time.monotonic() - library_started,
                                 )
                         successful_sections.append(section)
+                        if section_full_scan:
+                            config.setdefault(
+                                "_successful_full_scan_libraries", []
+                            ).append(section.title)
+                            evaluated_work = set()
+                            if any(
+                                library_flags.get(name, False)
+                                for name in (
+                                    "metadata_basic",
+                                    "metadata_enhanced",
+                                    "plex_metadata",
+                                    "poster",
+                                    "background",
+                                    "season",
+                                )
+                            ):
+                                evaluated_work.add("metadata")
+                            evaluated_work.update(
+                                name
+                                for name in ("poster", "background", "season")
+                                if library_flags.get(name, False)
+                            )
+                            config.setdefault(
+                                "_successful_full_scan_work", {}
+                            )[section.title] = sorted(evaluated_work)
                         summary = metadata_summaries.get(section.title, {})
                         library_summary = summary.get("library_summary", {})
                         failed_items = int(library_summary.get("item_failures", 0))
@@ -1173,7 +1400,9 @@ async def metafusion_main(config, logger):
                             ),
                         }
 
-            cleanup_result = CleanupResult()
+            cleanup_result = CleanupResult(
+                mode=config.get("settings", {}).get("mode", "kometa")
+            )
             if run_feature_flags.get("cleanup", False):
                 safe_library_types = set()
                 if not failures:
@@ -1182,13 +1411,21 @@ async def metafusion_main(config, logger):
                     )
                 kometa_root = config.get("settings", {}).get("path", ".")
                 asset_path = Path(kometa_root) / "assets"
-                cleanup_result = await cleanup_title_orphans(
-                    config=config,
-                    asset_path=asset_path,
-                    preloaded_plex_metadata=plex_metadata_dict,
-                    feature_flags=run_feature_flags,
-                    safe_library_types=safe_library_types,
-                )
+                try:
+                    cleanup_result = await cleanup_title_orphans(
+                        config=config,
+                        asset_path=asset_path,
+                        preloaded_plex_metadata=plex_metadata_dict,
+                        feature_flags=run_feature_flags,
+                        safe_library_types=safe_library_types,
+                    )
+                except CleanupError as error:
+                    cleanup_result = error.result or CleanupResult(
+                        failures=1,
+                        failed_reason=str(error),
+                        mode=config.get("settings", {}).get("mode", "kometa"),
+                    )
+                    failures.append(f"Cleanup: {error}")
             elif cleanup_skip_reason:
                 cleanup_result.skipped_reason = cleanup_skip_reason
                 log_cleanup_event(
@@ -1264,6 +1501,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
             writable=not config.get("settings", {}).get("dry_run", False)
         )
         begin_tmdb_cache(config)
+        begin_fanart_cache(config)
         begin_plex_metadata_run(config)
     except Exception:
         if job_lock is not None:
@@ -1278,7 +1516,12 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_artwork_gaps"] = []
     config["_asset_audit_records"] = []
     config["_library_audit_records"] = []
-    config["_cleanup_result"] = CleanupResult()
+    config["_adoption_audit_records"] = []
+    config["_successful_full_scan_libraries"] = []
+    config["_successful_full_scan_work"] = {}
+    config["_cleanup_result"] = CleanupResult(
+        mode=config.get("settings", {}).get("mode", "kometa")
+    )
     performance_tracker = PerformanceTracker()
 
     async def run_active_job():
@@ -1307,6 +1550,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
             caught,
             config.get("plex", {}).get("token"),
             config.get("tmdb", {}).get("api_key"),
+            fanart_project_api_key(),
         )
         log_main_event("main_unhandled_exception", error=error, logger=logger)
     finally:
@@ -1316,7 +1560,10 @@ def run_metafusion_job(config, logger, runtime_status=None):
             try:
                 report_path = finish_plex_metadata_run(config)
                 if report_path:
-                    logger.info("[Plex Metadata] Report saved to %s", report_path)
+                    logger.info(
+                        "[Diagnostics] Plex metadata report saved to %s",
+                        report_path,
+                    )
             except Exception as caught:
                 success = False
                 error = f"Failed to write Plex metadata report: {caught}"
@@ -1334,15 +1581,51 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     destination_report = write_destination_history_report(
                         load_cache(),
                         retention=retention,
+                        config=config,
                     )
                     if destination_report:
                         logger.info(
                             "[Diagnostics] Artwork destination history saved to %s",
                             destination_report,
                         )
-                except OSError as caught:
+                    ledger = reconcile_unresolved_work(
+                        config.get("_artwork_gaps"),
+                        resolved_work=config.get("_successful_full_scan_work", {}),
+                    )
+                    identity_reviews = reconcile_identity_reviews(
+                        config.get("_artwork_gaps")
+                    )
+                    if identity_reviews:
+                        review_report = write_identity_review_report(
+                            load_identity_reviews(statuses=["open"]),
+                            retention=retention,
+                        )
+                        logger.info(
+                            "[Diagnostics] Identity review queue saved to %s",
+                            review_report,
+                        )
+                    ledger_report = write_unresolved_work_report(
+                        ledger,
+                        retention=retention,
+                    )
+                    if ledger_report:
+                        logger.info(
+                            "[Diagnostics] Unresolved-work ledger saved to %s",
+                            ledger_report,
+                        )
+                    adoption_report = write_adoption_audit_report(
+                        config.get("_adoption_audit_records"),
+                        retention=retention,
+                    )
+                    if adoption_report:
+                        logger.info(
+                            "[Diagnostics] Post-application adoption audit saved to %s",
+                            adoption_report,
+                        )
+                except (OSError, StateDatabaseError) as caught:
                     logger.warning(
-                        "[Diagnostics] Unable to write artwork gap report: %s", caught
+                        "[Diagnostics] Unable to complete persistent reports: %s",
+                        caught,
                     )
             execution = config.get("_execution", {})
             if (
@@ -1417,17 +1700,20 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     logger.error("[Diagnostics] %s", error)
             flush_cache()
             flush_tmdb_cache()
+            flush_fanart_cache()
             if not config.get("settings", {}).get("dry_run", False):
                 try:
                     tmdb_maintenance = tmdb_response_cache.maintain()
                     state_maintenance = maintain_state_database()
                     retry_summary = retry_queue_summary()
                     logger.info(
-                        "[Maintenance] SQLite optimization complete; state "
-                        "checkpoint=%s, TMDb checkpoint=%s, retry queue=%s.",
-                        state_maintenance.get("checkpointed", False),
-                        tmdb_maintenance.get("checkpointed", False),
-                        retry_summary or "empty",
+                        "[Maintenance] SQLite optimization complete | %s",
+                        format_fields(
+                            ("State checkpoint", state_maintenance.get("checkpointed", False)),
+                            ("TMDb checkpoint", tmdb_maintenance.get("checkpointed", False)),
+                            ("Fanart.tv checkpoint", fanart_response_cache.maintain().get("checkpointed", False)),
+                            ("Retry queue", retry_summary or "Empty"),
+                        ),
                     )
                 except Exception as maintenance_error:
                     logger.warning(
@@ -1441,6 +1727,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
         finally:
             log_performance_summary(logger, performance_tracker)
             tmdb_response_cache.reset_memory()
+            fanart_response_cache.reset_memory()
         try:
             if runtime_status:
                 runtime_status.run_finished(
@@ -1454,11 +1741,391 @@ def run_metafusion_job(config, logger, runtime_status=None):
     return success
 
 
+def _cli_values(values):
+    flattened = []
+    for value in values or []:
+        flattened.extend(part.strip() for part in str(value).split(",") if part.strip())
+    return flattened
+
+
+def _state_target(args, *, include_tmdb=True):
+    media_types = ["tv" if value == "show" else value for value in (args.media_type or [])]
+    records = find_media_state(
+        libraries=_cli_values(args.library),
+        rating_keys=_cli_values(args.rating_key),
+        tmdb_ids=_cli_values(args.tmdb_id) if include_tmdb else None,
+        media_types=media_types,
+    )
+    if len(records) != 1:
+        raise ValueError(
+            "The command requires exactly one recorded item; add --library and --rating-key"
+        )
+    return records[0]
+
+
+async def plex_artwork_verification_connectors(config, rating_keys):
+    runtime = config.get("runtime", {})
+    maximum = concurrency_ceiling(config, "network")
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(limit=maximum, limit_per_host=maximum)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session, require_tmdb=False)
+        sections, _selected, _available = await asyncio.to_thread(
+            connect_plex_library, config, plex=plex
+        )
+        return await verify_plex_artwork(sections, config, rating_keys, session)
+
+
+def _handle_sqlite_only_command(args):
+    if args.state_report:
+        report = write_state_report(
+            libraries=_cli_values(args.library),
+            rating_keys=_cli_values(args.rating_key),
+            tmdb_ids=_cli_values(args.tmdb_id),
+            media_types=["tv" if value == "show" else value for value in (args.media_type or [])],
+            section=args.state_section,
+            include_items=args.include_state_items,
+        )
+        print(f"SQLite state report saved to {report}")
+        return 0
+    if args.cleanup_history_report:
+        report = write_cleanup_history_report(
+            libraries=_cli_values(args.library),
+            rating_keys=_cli_values(args.rating_key),
+            sources=args.history_source,
+        )
+        print(f"Cleanup history report saved to {report}")
+        return 0
+    if args.identity_review_queue:
+        records = load_identity_reviews(
+            libraries=_cli_values(args.library),
+            rating_keys=_cli_values(args.rating_key),
+        )
+        report = write_identity_review_report(records)
+        print(f"Identity review report saved to {report}")
+        return 0
+    if args.verify_recovery:
+        result = verify_recovery_bundle(args.verify_recovery)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("valid") else 1
+    return None
+
+
+def _handle_operator_command(args, config):
+    retention = report_retention(config)
+    if args.exception_action:
+        if args.exception_action == "list":
+            records = load_item_exceptions(
+                libraries=_cli_values(args.library),
+                rating_keys=_cli_values(args.rating_key),
+            )
+            print(json.dumps({"items": records}, indent=2, sort_keys=True))
+            return 0
+        item = _state_target(args)
+        if not args.exception_output:
+            raise ValueError("--exception-output is required when adding or removing an exception")
+        if args.exception_output == "season" and args.season_number is None:
+            raise ValueError("A season exception requires --season-number")
+        lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        lock.acquire()
+        try:
+            if args.exception_action == "add":
+                save_item_exception(
+                    item.get("server_id"), item.get("library_uuid"), item.get("rating_key"),
+                    args.exception_output, library_name=item.get("library_name"),
+                    season_number=args.season_number, reason=args.reason,
+                )
+                changed = 1
+            else:
+                changed = remove_item_exception(
+                    item.get("server_id"), item.get("library_uuid"), item.get("rating_key"),
+                    args.exception_output, season_number=args.season_number,
+                )
+        finally:
+            lock.release()
+        print(f"Persistent item exception {args.exception_action}: {changed} record(s).")
+        return 0
+    if args.identity_override_action:
+        if args.identity_override_action == "list":
+            records = load_identity_overrides(
+                libraries=_cli_values(args.library),
+                rating_keys=_cli_values(args.rating_key),
+                include_inactive=True,
+            )
+            print(json.dumps({"items": records}, indent=2, sort_keys=True))
+            return 0
+        item = _state_target(
+            args, include_tmdb=args.identity_override_action != "set"
+        )
+        lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        lock.acquire()
+        try:
+            if args.identity_override_action == "set":
+                tmdb_ids = _cli_values(args.tmdb_id)
+                if len(tmdb_ids) != 1:
+                    raise ValueError("Setting an identity override requires exactly one --tmdb-id")
+                save_identity_override(
+                    item.get("server_id"), item.get("library_uuid"), item.get("rating_key"),
+                    item.get("media_type"), tmdb_ids[0], library_name=item.get("library_name"),
+                    reason=args.reason,
+                )
+                changed = 1
+            else:
+                changed = remove_identity_override(
+                    item.get("server_id"), item.get("library_uuid"), item.get("rating_key")
+                )
+        finally:
+            lock.release()
+        print(f"Identity override {args.identity_override_action}: {changed} record(s).")
+        return 0
+    if args.library_rebind:
+        if not args.from_library or not args.to_library:
+            raise ValueError("--library-rebind requires --from-library and --to-library")
+        plan = plan_library_rebinding(args.from_library, args.to_library)
+        records = plan
+        if args.library_rebind == "apply":
+            lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+            lock.acquire()
+            try:
+                records = apply_library_rebinding(plan)
+            finally:
+                lock.release()
+        report = write_rebinding_report(
+            records, applied=args.library_rebind == "apply", retention=retention
+        )
+        print(f"Library rebinding {args.library_rebind} saved to {report}")
+        return 0
+    if args.recovery_bundle:
+        lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        lock.acquire()
+        try:
+            bundle = create_recovery_bundle(config)
+        finally:
+            lock.release()
+        print(f"Disaster-recovery bundle saved to {bundle}")
+        return 0
+    if args.config_impact:
+        proposed_path = Path(args.config_impact)
+        if not proposed_path.is_file():
+            raise ValueError(
+                f"Proposed configuration does not exist: {proposed_path}"
+            )
+        proposed, _sources = load_config_file(
+            config_file=proposed_path,
+            environ={},
+            create_if_missing=False,
+            return_sources=True,
+        )
+        _result, report = write_config_impact_report(
+            config,
+            proposed,
+            proposed_path=proposed_path,
+            retention=retention,
+        )
+        print(f"Configuration impact report saved to {report}")
+        return 0
+    if args.plex_artwork_verify:
+        records = asyncio.run(
+            plex_artwork_verification_connectors(
+                config, config.get("_execution", {}).get("rating_keys", [])
+            )
+        )
+        report = write_plex_artwork_verification_report(records, retention=retention)
+        mismatches = sum(
+            record.get("status") not in {"selected"} for record in records
+        )
+        print(f"Plex artwork verification saved to {report}; {mismatches} entry(s) need review.")
+        return 0
+    if args.output_action:
+        item = _state_target(args)
+        decisions = plan_output_management(
+            config,
+            item,
+            action=args.output_action,
+            output_type=args.output_type,
+            season_number=args.season_number,
+        )
+        records = decisions
+        if args.output_action != "preview":
+            lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+            lock.acquire()
+            try:
+                records = apply_output_management(
+                    config,
+                    item,
+                    decisions,
+                    action=args.output_action,
+                    acknowledge_metadata_loss=args.acknowledge_metadata_loss,
+                )
+            finally:
+                lock.release()
+        report = write_output_management_report(
+            item, records, action=args.output_action, retention=retention
+        )
+        print(f"Targeted output report saved to {report}")
+        protected = sum(record.get("status") == "protected" for record in records)
+        if protected and args.output_action != "preview":
+            print(
+                f"Targeted output action was blocked for {protected} protected output(s).",
+                file=sys.stderr,
+            )
+            return 1
+        if args.output_action != "rebuild":
+            return 0
+        config["metafusion_run"] = True
+        config["settings"]["schedule"] = False
+        config["cleanup"]["run_cleanup"] = False
+        config["plex_libraries"] = [item.get("library_name")]
+        config["_execution"].update(
+            rating_keys=[str(item.get("rating_key"))], targeted=True, full_scan=True
+        )
+        requested = args.output_type
+        metadata = requested in {"all", "metadata"}
+        config["metadata"]["run_basic"] = metadata
+        config["metadata"]["run_enhanced"] = metadata
+        if mode_check(config, "plex") and metadata:
+            config["plex_metadata"]["enabled"] = True
+        config["assets"]["run_poster"] = requested in {"all", "poster"}
+        config["assets"]["run_background"] = requested in {"all", "background"}
+        config["assets"]["run_season"] = requested in {"all", "season"}
+        return None
+    return None
+
+
 def main(argv=None):
     global _shutdown_timeout
     shutdown_requested.clear()
     shutdown_complete.clear()
     args = parse_cli_args(argv)
+    new_primary_commands = [
+        args.state_report,
+        args.cleanup_history_report,
+        args.output_action,
+        args.exception_action,
+        args.identity_override_action,
+        args.identity_review_queue,
+        args.library_rebind,
+        args.recovery_bundle,
+        args.verify_recovery,
+        args.config_impact,
+        args.plex_artwork_verify,
+    ]
+    if sum(bool(value) for value in new_primary_commands) > 1:
+        print(
+            "Configuration error: choose only one lifecycle, report, or recovery command",
+            file=sys.stderr,
+        )
+        return 2
+    if any(new_primary_commands) and any(
+        (
+            args.metafusion_run,
+            args.schedule,
+            args.run_times is not None,
+            args.dry_run,
+            args.mode is not None,
+            args.run_basic,
+            args.run_enhanced,
+            args.run_poster,
+            args.run_season,
+            args.run_background,
+            args.asset_only,
+            args.metadata_only,
+            args.full_scan,
+            args.explain_selection,
+            args.status,
+            args.doctor,
+            args.support_report,
+            args.problems,
+            args.capture_replay,
+            args.preflight,
+            args.release_check,
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.mapping_diagnose,
+            args.identity_inspect,
+            args.explain_item,
+            args.retry_failed,
+            args.sqlite_maintenance,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+        )
+    ):
+        print(
+            "Configuration error: lifecycle, report, and recovery commands must run standalone",
+            file=sys.stderr,
+        )
+        return 2
+    if args.history_source and not args.cleanup_history_report:
+        print(
+            "Configuration error: --history-source requires --cleanup-history-report",
+            file=sys.stderr,
+        )
+        return 2
+    if args.include_state_items and not args.state_report:
+        print(
+            "Configuration error: --include-state-items requires --state-report",
+            file=sys.stderr,
+        )
+        return 2
+    if (args.from_library or args.to_library) and not args.library_rebind:
+        print(
+            "Configuration error: --from-library and --to-library require --library-rebind",
+            file=sys.stderr,
+        )
+        return 2
+    if args.season_number is not None and not (
+        args.output_action or args.exception_action
+    ):
+        print(
+            "Configuration error: --season-number requires --output-action or --exception-action",
+            file=sys.stderr,
+        )
+        return 2
+    if args.acknowledge_metadata_loss and not args.output_action:
+        print(
+            "Configuration error: --acknowledge-metadata-loss requires --output-action",
+            file=sys.stderr,
+        )
+        return 2
+    if args.exception_output and not args.exception_action:
+        print(
+            "Configuration error: --exception-output requires --exception-action",
+            file=sys.stderr,
+        )
+        return 2
+    if args.reason and not (
+        args.exception_action or args.identity_override_action
+    ):
+        print(
+            "Configuration error: --reason requires an exception or identity override action",
+            file=sys.stderr,
+        )
+        return 2
+    sqlite_only = any(
+        (args.state_report, args.cleanup_history_report, args.identity_review_queue, args.verify_recovery)
+    )
+    if sqlite_only:
+        try:
+            result = _handle_sqlite_only_command(args)
+        except (OSError, ValueError, StateDatabaseError, RecoveryBundleError) as error:
+            print(f"Diagnostic command failed: {error}", file=sys.stderr)
+            return 1
+        if result is not None:
+            return result
+    if args.problems:
+        try:
+            records = load_unresolved_work(statuses=["open"], path=STATE_DATABASE)
+        except StateDatabaseError as error:
+            print(f"Unable to read unresolved-work ledger: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps({"open": len(records), "items": records}, indent=2, sort_keys=True))
+        return 0
     audit_commands = sum(
         bool(value)
         for value in (
@@ -1489,6 +2156,8 @@ def main(argv=None):
             args.library_audit,
             args.mapping_diagnose,
             args.identity_inspect,
+            args.explain_item,
+            args.capture_replay,
         )
     ):
         print(
@@ -1521,6 +2190,8 @@ def main(argv=None):
                 args.library_audit,
                 args.mapping_diagnose,
                 args.identity_inspect,
+                args.explain_item,
+                args.capture_replay,
                 args.retry_failed,
                 args.compatibility_check,
             )
@@ -1583,6 +2254,67 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+    if args.explain_item and not args.rating_key:
+        print(
+            "Configuration error: --explain-item requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
+    if args.capture_replay and not args.rating_key:
+        print(
+            "Configuration error: --capture-replay requires --rating-key",
+            file=sys.stderr,
+        )
+        return 2
+    if sum(
+        bool(value)
+        for value in (
+            args.mapping_diagnose,
+            args.identity_inspect,
+            args.explain_item,
+            args.capture_replay,
+        )
+    ) > 1:
+        print(
+            "Configuration error: choose only one item diagnostic command",
+            file=sys.stderr,
+        )
+        return 2
+    if args.capture_replay and any(
+        (
+            args.metafusion_run,
+            args.schedule,
+            args.run_times is not None,
+            args.run_basic,
+            args.run_enhanced,
+            args.run_poster,
+            args.run_season,
+            args.run_background,
+            args.asset_only,
+            args.metadata_only,
+            args.full_scan,
+            args.explain_selection,
+            args.status,
+            args.doctor,
+            args.support_report,
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.preflight,
+            args.release_check,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+            bool(args.tmdb_id),
+            bool(args.media_type),
+        )
+    ):
+        print(
+            "Configuration error: --capture-replay must run as a standalone diagnostic",
+            file=sys.stderr,
+        )
+        return 2
     if args.mapping_diagnose and any(
         (
             args.asset_audit,
@@ -1595,6 +2327,8 @@ def main(argv=None):
             args.plex_metadata_restore,
             args.plex_metadata_unlock,
             args.identity_inspect,
+            args.explain_item,
+            args.capture_replay,
         )
     ):
         print(
@@ -1624,6 +2358,7 @@ def main(argv=None):
             args.plan,
             args.library_audit,
             args.mapping_diagnose,
+            args.explain_item,
             args.preflight,
             args.release_check,
             args.compatibility_check,
@@ -1635,6 +2370,43 @@ def main(argv=None):
     ):
         print(
             "Configuration error: --identity-inspect must run as a standalone diagnostic",
+            file=sys.stderr,
+        )
+        return 2
+    if args.explain_item and any(
+        (
+            args.metafusion_run,
+            args.schedule,
+            args.run_times is not None,
+            args.run_basic,
+            args.run_enhanced,
+            args.run_poster,
+            args.run_season,
+            args.run_background,
+            args.asset_only,
+            args.metadata_only,
+            args.full_scan,
+            args.explain_selection,
+            args.status,
+            args.doctor,
+            args.support_report,
+            args.asset_audit,
+            args.metadata_audit,
+            args.plan,
+            args.library_audit,
+            args.mapping_diagnose,
+            args.identity_inspect,
+            args.preflight,
+            args.release_check,
+            args.compatibility_check,
+            args.plex_metadata_restore,
+            args.plex_metadata_unlock,
+            bool(args.tmdb_id),
+            bool(args.media_type),
+        )
+    ):
+        print(
+            "Configuration error: --explain-item must run as a standalone diagnostic",
             file=sys.stderr,
         )
         return 2
@@ -1672,8 +2444,11 @@ def main(argv=None):
                 or args.library_audit
                 or args.mapping_diagnose
                 or args.identity_inspect
+                or args.explain_item
+                or args.capture_replay
                 or args.compatibility_check
                 or args.release_check
+                or any(new_primary_commands)
             ),
             return_sources=True,
         )
@@ -1700,6 +2475,38 @@ def main(argv=None):
         if used:
             sources[path] = "CLI"
 
+    database_operator = any(
+        (
+            args.exception_action,
+            args.identity_override_action,
+            args.library_rebind,
+            args.recovery_bundle,
+            args.config_impact,
+        )
+    )
+    if database_operator:
+        try:
+            operator_result = _handle_operator_command(args, config)
+        except (
+            ConfigError,
+            JobAlreadyRunningError,
+            OSError,
+            OutputManagementError,
+            RecoveryBundleError,
+            StateDatabaseError,
+            ValueError,
+        ) as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
+            )
+            print(f"Operator command failed: {message}", file=sys.stderr)
+            return 1
+        if operator_result is not None:
+            return operator_result
+
     validation_errors = validate_config(config)
     if args.support_report:
         try:
@@ -1724,6 +2531,27 @@ def main(argv=None):
         for error in validation_errors:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    try:
+        operator_result = _handle_operator_command(args, config)
+    except (
+        ConfigError,
+        JobAlreadyRunningError,
+        OSError,
+        OutputManagementError,
+        RecoveryBundleError,
+        StateDatabaseError,
+        ValueError,
+    ) as error:
+        message = redact_secrets(
+            error,
+            config.get("plex", {}).get("token"),
+            config.get("tmdb", {}).get("api_key"),
+            fanart_project_api_key(),
+        )
+        print(f"Operator command failed: {message}", file=sys.stderr)
+        return 1
+    if operator_result is not None:
+        return operator_result
     if args.mapping_diagnose:
         try:
             validate_preflight_paths(config, BASE_CONFIG_DIR)
@@ -1739,6 +2567,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
             )
             print(f"Mapping diagnosis failed: {message}", file=sys.stderr)
             return 1
@@ -1756,6 +2585,35 @@ def main(argv=None):
         )
         print(f"Report saved to {report}")
         return 0
+    if args.capture_replay:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            records, _explanation_report = asyncio.run(
+                item_explanation_connectors(
+                    config,
+                    config.get("_execution", {}).get("rating_keys", []),
+                    write_report=False,
+                )
+            )
+            report = write_sanitized_replay_capture(
+                records,
+                retention=report_retention(config),
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
+            )
+            print(f"Replay capture failed: {message}", file=sys.stderr)
+            return 1
+        finally:
+            _plex_cache.clear()
+            tmdb_response_cache.reset_memory()
+        print(f"Sanitized replay captured for {len(records)} item(s).")
+        print(f"JSON report saved to {report}")
+        return 0
     if args.identity_inspect:
         try:
             validate_preflight_paths(config, BASE_CONFIG_DIR)
@@ -1770,6 +2628,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
             )
             print(f"Identity inspection failed: {message}", file=sys.stderr)
             return 1
@@ -1781,6 +2640,34 @@ def main(argv=None):
         )
         print(
             f"Identity inspection completed for {len(records)} item(s); "
+            f"{review} require review."
+        )
+        print(f"Report saved to {report}")
+        return 0
+    if args.explain_item:
+        try:
+            validate_preflight_paths(config, BASE_CONFIG_DIR)
+            records, report = asyncio.run(
+                item_explanation_connectors(
+                    config,
+                    config.get("_execution", {}).get("rating_keys", []),
+                )
+            )
+        except Exception as error:
+            message = redact_secrets(
+                error,
+                config.get("plex", {}).get("token"),
+                config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
+            )
+            print(f"Item explanation failed: {message}", file=sys.stderr)
+            return 1
+        finally:
+            _plex_cache.clear()
+            tmdb_response_cache.reset_memory()
+        review = sum(record.get("status") != "accepted" for record in records)
+        print(
+            f"Item explanation completed for {len(records)} item(s); "
             f"{review} require review."
         )
         print(f"Report saved to {report}")
@@ -1799,6 +2686,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
             )
             print(f"Compatibility check failed: {message}", file=sys.stderr)
             return 1
@@ -1818,6 +2706,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
             )
             print(f"Release qualification failed: {message}", file=sys.stderr)
             return 1
@@ -1833,6 +2722,7 @@ def main(argv=None):
                 error,
                 config.get("plex", {}).get("token"),
                 config.get("tmdb", {}).get("api_key"),
+                fanart_project_api_key(),
             )
             print(f"Preflight failed: {message}", file=sys.stderr)
             return 1

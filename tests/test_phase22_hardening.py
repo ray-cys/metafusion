@@ -352,25 +352,6 @@ def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
         "season": True,
         "cleanup": True,
     }
-    logging_module.log_library_summary(
-        "TV Shows",
-        3,
-        1,
-        4,
-        75,
-        25,
-        poster_size=1024,
-        background_size=2048,
-        season_poster_size=512,
-        feature_flags=flags,
-        library_filesize={"TV Shows": 3584},
-        run_metadata=True,
-        library_summary=counts,
-        logger=logger,
-        library_type="show",
-        season_count=2,
-        episode_count=12,
-    )
     logging_module.log_final_summary(
         logger,
         65,
@@ -397,7 +378,9 @@ def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
         feature_flags=flags,
     )
 
-    assert "Season - Downloaded" in (tmp_path / "metafusion.log").read_text(
+    assert "Artwork season posters | Downloaded: " in (
+        tmp_path / "metafusion.log"
+    ).read_text(
         encoding="utf-8"
     )
     for handler in list(logger.handlers):

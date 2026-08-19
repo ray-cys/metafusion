@@ -16,6 +16,7 @@ from helper.tmdb_cache import PersistentTTLCache
 DATABASES = {
     "state": (STATE_DATABASE, STATE_SCHEMA_VERSION),
     "tmdb": (CACHE_DIR / "tmdb_cache.sqlite3", PersistentTTLCache.SCHEMA_VERSION),
+    "fanart": (CACHE_DIR / "fanart_cache.sqlite3", PersistentTTLCache.SCHEMA_VERSION),
 }
 FILE_MODE = 0o664
 
@@ -117,7 +118,7 @@ def maintain_databases(
     backup_dir=None,
     retention=3,
 ):
-    """Inspect or explicitly maintain one or both SQLite databases."""
+    """Inspect or explicitly maintain MetaFusion's SQLite databases."""
     if action not in {"check", "optimize", "checkpoint", "vacuum", "backup"}:
         raise ValueError(f"Unsupported SQLite maintenance action: {action}")
     results = []

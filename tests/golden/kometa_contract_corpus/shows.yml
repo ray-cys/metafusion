@@ -1,0 +1,44 @@
+metadata:
+  MetaFusion Contract Show (2021):
+    match:
+      title: MetaFusion Contract Show
+      year: 2021
+      mapping_id: 456
+    collection:
+    - Manual collection
+    sort_title: MetaFusion Contract Show
+    original_title: Original Contract Show
+    originally_available: '2021-02-03'
+    content_rating: TV-14
+    studio: Contract Network
+    tagline: Contract show tagline.
+    summary: Contract show summary.
+    genre:
+    - Drama
+    seasons:
+      0:
+        title: Specials
+        summary: Contract specials.
+        episodes:
+          1:
+            title: Contract Special
+            sort_title: Contract Special
+            originally_available: '2021-02-03'
+            summary: Contract special summary.
+            director:
+            - Example Director
+            writer:
+            - Example Writer
+      1:
+        title: Season 1
+        summary: Contract first season.
+        episodes:
+          1:
+            title: Contract Premiere
+            sort_title: Contract Premiere
+            originally_available: '2021-02-10'
+            summary: Contract episode summary.
+            director:
+            - Example Director
+            writer:
+            - Example Writer

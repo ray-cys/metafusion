@@ -145,6 +145,27 @@ def test_secondary_shared_claim_never_rewrites_under_overwrite_policy(tmp_path):
     ) == (False, "shared")
 
 
+def test_automatic_relaxed_candidate_never_replaces_existing_artwork(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"manual-artwork")
+    config = {"assets": {"update_policy": "overwrite"}}
+
+    allowed = builder.protected_asset_destination(
+        config,
+        "movie:plex:1",
+        destination,
+        "poster",
+        media_type="Movie",
+        full_title="Example (2024)",
+        tmdb_id="100",
+        source_path="/relaxed-poster.jpg",
+        automatic_relaxed=True,
+    )
+
+    assert allowed == (False, "automatic_relaxed_existing_protected")
+    assert destination.read_bytes() == b"manual-artwork"
+
+
 def test_exact_tmdb_asset_adoption_preserves_existing_file(monkeypatch, tmp_path):
     config = build_config(tmp_path)
     config["assets"]["update_policy"] = "managed"
@@ -1222,6 +1243,81 @@ def test_tv_builder_writes_specials_episodes_and_all_assets(monkeypatch, tmp_pat
     assert len(existing_assets) == 4
 
 
+def test_tv_builder_limits_season_artwork_to_authoritative_plex_inventory(
+    monkeypatch, tmp_path
+):
+    install_successful_asset_mocks(monkeypatch)
+    details = tv_details()
+    details["seasons"] = [
+        {"season_number": 0},
+        {"season_number": 1},
+        {"season_number": 2},
+    ]
+    tmdb_response_cache["tv/200"] = details
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    meta = tv_meta()
+    meta["plex_seasons"] = [1]
+    meta["seasons_episodes"] = {1: [1]}
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                poster=False,
+                background=False,
+                season=True,
+            ),
+            existing_assets=set(),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["season_poster_actions"] == {1: "downloaded"}
+    assert set(result["season_posters"]) == {1}
+
+
+def test_tv_builder_uses_plex_season_artwork_when_tmdb_season_is_unavailable(
+    monkeypatch, tmp_path
+):
+    install_successful_asset_mocks(monkeypatch)
+    tmdb_response_cache["tv/200"] = tv_details()
+
+    async def no_fanart(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(builder, "fanart_artwork_candidates", no_fanart)
+    meta = tv_meta()
+    meta["plex_seasons"] = [0]
+    meta["seasons_episodes"] = {0: [1]}
+    meta["plex_artwork"] = {
+        "seasons": {0: "/library/metadata/season-0/thumb"}
+    }
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                poster=False,
+                background=False,
+                season=True,
+            ),
+            existing_assets=set(),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["season_poster_actions"] == {0: "downloaded"}
+    assert result["season_artwork_providers"] == {0: "plex"}
+
+
 def test_episode_crew_uses_only_episode_credits_and_preserves_missing_values(
     monkeypatch, tmp_path
 ):
@@ -1574,15 +1670,25 @@ def test_movie_builder_rejects_a_resolved_but_inconsistent_tmdb_identity(
     assert result["is_complete"] is False
     assert result["metadata_action"] == "failed"
     assert gaps == [
-        {
-            "library": None,
-            "category": "identity_rejected",
-            "media_type": "Movie",
-            "title": "Example Movie (2020)",
-            "asset_type": "metadata",
-            "detail": "forced title and year mismatch",
-        }
-    ]
+            {
+                "library": None,
+                "server_id": None,
+                "library_uuid": None,
+                "category": "identity_rejected",
+                "media_type": "Movie",
+                "title": "Example Movie (2020)",
+                "year": 2020,
+                "asset_type": "metadata",
+                "detail": "forced title and year mismatch",
+                "plex_rating_key": "m1",
+                "tmdb_id": "100",
+                "imdb_id": "tt100",
+                "tvdb_id": None,
+                "edition": None,
+                "season_number": None,
+                "identity_source": "tmdb_id",
+            }
+        ]
 
 
 def test_movie_builder_persists_a_recovered_tmdb_identity(monkeypatch, tmp_path):

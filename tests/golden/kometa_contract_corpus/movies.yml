@@ -1,0 +1,39 @@
+metadata:
+  MetaFusion Contract Movie (2020):
+    match:
+      title: MetaFusion Contract Movie
+      year: 2020
+      mapping_id: 123
+    label:
+    - Manual label is preserved
+    tagline: A manually supplied fallback tagline.
+    sort_title: MetaFusion Contract Movie
+    original_title: Original Contract Movie
+    originally_available: '2020-01-02'
+    content_rating: PG-13
+    studio: Contract Studio
+    summary: Contract movie summary.
+    country:
+    - United States of America
+    genre:
+    - Science Fiction
+    director:
+    - Example Director
+    writer:
+    - Example Writer
+    producer:
+    - Example Producer
+  MetaFusion Edition Contract (2022) [Director's Cut]:
+    match:
+      title: MetaFusion Edition Contract
+      year: 2022
+      mapping_id: 789
+      edition: Director's Cut
+    sort_title: MetaFusion Edition Contract
+    original_title: MetaFusion Edition Contract
+    originally_available: '2022-03-04'
+    content_rating: R
+    studio: Contract Studio
+    summary: Edition-aware contract entry.
+    genre.sync:
+    - Drama

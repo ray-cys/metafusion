@@ -96,6 +96,27 @@ def log_performance_summary(logger, tracker):
         float(counters.get("tmdb_rate_limit_wait_seconds", 0.0)),
         int(counters.get("tmdb_circuit_rejections", 0)),
     )
+    fanart_activity = sum(
+        int(counters.get(name, 0))
+        for name in (
+            "fanart_requests",
+            "fanart_cache_hits",
+            "fanart_cache_misses",
+            "fanart_rate_limits",
+            "fanart_circuit_rejections",
+        )
+    )
+    if fanart_activity:
+        logger.info(
+            "[Performance] Fanart.tv requests %d; cache hits %d; misses %d; "
+            "coalesced %d; rate limits %d; circuit rejections %d.",
+            int(counters.get("fanart_requests", 0)),
+            int(counters.get("fanart_cache_hits", 0)),
+            int(counters.get("fanart_cache_misses", 0)),
+            int(counters.get("fanart_coalesced_waits", 0)),
+            int(counters.get("fanart_rate_limits", 0)),
+            int(counters.get("fanart_circuit_rejections", 0)),
+        )
     for seconds, library, rating_key in data["slow_items"]:
         logger.info(
             "[Performance] Slow item: library %s, rating key %s, %.1fs.",

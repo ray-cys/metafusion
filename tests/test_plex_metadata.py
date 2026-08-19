@@ -412,7 +412,9 @@ def test_dry_run_report_contains_actions_but_not_metadata_values(tmp_path, monke
     assert not (tmp_path / "meta_db.sqlite3").exists()
 
 
-def test_successful_plex_api_update_is_logged_at_info(tmp_path, monkeypatch, caplog):
+def test_successful_plex_api_update_detail_is_debug_to_avoid_duplicate_info(
+    tmp_path, monkeypatch, caplog
+):
     monkeypatch.setattr(state_db, "STATE_DATABASE", tmp_path / "meta_db.sqlite3")
     config = plex_config()
     monkeypatch.setattr(
@@ -420,7 +422,7 @@ def test_successful_plex_api_update_is_logged_at_info(tmp_path, monkeypatch, cap
     )
     item = EditableItem(title="Example", summary="")
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         result = asyncio.run(
             apply_plex_metadata(
                 item,
@@ -431,7 +433,7 @@ def test_successful_plex_api_update_is_logged_at_info(tmp_path, monkeypatch, cap
         )
 
     assert result == {"writes": 1, "failures": 0}
-    assert "[Plex Metadata] Updated Example using 1 API batch(es)" in caplog.text
+    assert "[Metadata] Plex | Example | Applied 1 API batch(es)" in caplog.text
 
 
 def test_plex_report_logs_summary_and_safety_decisions(
@@ -464,7 +466,7 @@ def test_plex_report_logs_summary_and_safety_decisions(
         report = reporter.write(base_dir=tmp_path)
 
     assert report.exists()
-    assert "[Plex Metadata] Summary - API batches: 0/10" in caplog.text
+    assert "[Metadata] Plex summary | API batches: 0/10" in caplog.text
     assert "existing values preserved: 1" in caplog.text
     assert "locked fields: 1" in caplog.text
 

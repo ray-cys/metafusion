@@ -19,10 +19,13 @@ Dependencies and GitHub Actions are opened against `develop`. Python 3.10 and
 3.13 remain the supported test matrix for the first stable release; a base
 Python upgrade is a separate compatibility change, not an automatic merge.
 
-CI also validates representative generated YAML with the official Kometa
-2.4.8 container pinned by digest. Release-tag guards accept supported semantic
-or RC `v…` tags only when their commit is the exact current `main` HEAD; the tag
-workflow's own test and security jobs must then pass before an image publishes.
+CI regenerates a representative Kometa contract corpus through MetaFusion's
+real merge and serialization code, then validates every document with both the
+supported baseline and current official Kometa containers pinned by immutable
+digests in `.github/provider-contracts.json`. Release-tag
+guards accept supported semantic or RC `v…` tags only when their commit is the
+exact current `main` HEAD; the tag workflow's own test and security jobs must
+then pass before an image publishes.
 
 Published images include SBOM and maximum-mode build-provenance attestations.
 Registry publication is serialized so overlapping branch and tag workflows
@@ -45,6 +48,37 @@ protected; only untagged, unreferenced versions older than 30 days are eligible,
 and the newest 50 untagged versions are retained. Manual runs default to
 report-only mode.
 
+## Provider compatibility automation
+
+`.github/provider-contracts.json` is the single source of truth for the Kometa
+support-floor and current releases, immutable image digests, metadata-schema
+checksums, PlexAPI version source, and focused Plex replay suite. The support
+floor prevents a new upstream release from silently dropping compatibility
+with the oldest supported 2.4 release. The weekly provider workflow runs from
+the default branch, checks out `develop`, and queries stable upstream releases.
+It never uses Kometa nightly builds and never accesses a private Plex server.
+
+For a new Kometa release, the workflow resolves the release-specific image
+digest, verifies and compares the old and candidate JSON schemas, regenerates
+the movie/edition/show/Specials/season/episode corpus, runs the candidate's own
+`--validate-file` command for every document, and opens a draft PR against
+`develop`. It never auto-merges. The PR keeps MetaFusion's existing output
+profile unless a reviewed code change deliberately adopts new schema features.
+A failed candidate remains visible for diagnosis instead of silently changing
+production output. The bot explicitly dispatches the normal qualification
+workflow because GitHub suppresses recursive workflow events created with its
+built-in token.
+
+PlexAPI package and lockfile updates remain owned by weekly Dependabot PRs
+against `develop`. Every such PR must pass the named `plex-contract` job, which
+runs the sanitized provider replays, Plex metadata writer and locking policies,
+path discovery, identity inspection, provider mappings, pagination, and
+temporary-disconnect tests. The scheduled workflow also runs that replay suite
+weekly. Actual Plex credentials and server behavior remain covered by an
+operator's explicit `--compatibility-check` and Unraid soak test.
+The provider-maintenance script itself has an enforced 85% targeted coverage
+floor so release automation cannot silently lose its failure-path tests.
+
 ## Required release gate
 
 Before promoting `develop` to `main`:
@@ -66,9 +100,13 @@ Before promoting `develop` to `main`:
     release, confirm `latest`, the exact version, and `sha-<commit>` resolve to
     the manifest verified by the tag workflow.
 
-The Phase 16 synthetic inventory test models 2,000 movies, 300 shows, 1,000
-seasons, and 8,000 episodes. It is a deterministic regression fixture, not a
-replacement for the Unraid soak test against a real Plex server.
+The performance-regression CI job models 2,000 movies, 300 shows, 1,000
+seasons, and 8,000 episodes using real batched SQLite state writes, targeted
+reads, Kometa corpus generation, validation, and YAML rendering. It records
+wall-clock sections, throughput, peak traced memory, and database size in a
+30-day workflow artifact and fails when a committed conservative budget is
+exceeded. It is a deterministic regression signal, not a replacement for the
+Unraid soak test against a real Plex server.
 
 ## Fault-injection coverage
 
@@ -98,8 +136,13 @@ testing should run `--plan` and `--compatibility-check` before a normal job, and
 use `--sqlite-maintenance check` after the soak without overlapping an active
 job.
 
-Phase 22 hardening also enforces focused coverage floors for the builders, TMDb
-cache, logging/provider mappings, main orchestration, and durable state paths.
+Focused coverage floors cover the builders, processing, cleanup,
+download/image utilities, TMDb and Fanart.tv adapters, Plex metadata writer,
+diagnostic/report/replay writers, logging/provider mappings, main
+orchestration, and durable state paths. The highest-risk existing floors were
+raised only after failure-path tests covered missing-only provider failover,
+decoded-image validation, managed destination reconciliation, durable
+unresolved work, post-application adoption, and replay sanitization.
 Fault tests prove that HTTP 429 responses are not cached, a later TMDb request
 can recover, and temporary Plex disconnects retry without duplicating a
 successful mutation. SQLite backups are opened independently, checked, copied
@@ -131,3 +174,19 @@ artwork paths including Specials, stale-ID recovery, unresolved identities,
 and the focused identity-diagnostics coverage floor. `REPORT_RETENTION`
 uniformly bounds every report type, including Plex metadata, support, and
 release-qualification reports.
+
+The unified `--explain-item` diagnostic combines identity/binding history,
+normal incremental/full-scan selection, effective per-library metadata and
+artwork policies, retry status, TV episode mapping, and computed destinations
+without mutating provider, cache, state, or output. Its focused tests also
+prove that inspecting an installation with no SQLite database does not create
+one.
+
+Retained diagnostic text now has a same-name structured JSON companion and is
+retained as one pair. Routine runs maintain a persistent unresolved-work ledger
+that is resolved only by a later successful full scan of the same library, and
+a post-application artwork audit verifies installed bytes and ownership. The
+support replay command sanitizes credentials, rating keys, private hosts, and
+local paths before retaining a bundle. Managed rename reconciliation removes
+only checksum-proven obsolete artwork inside configured roots; any modified,
+unproven, symlinked, out-of-scope, or still-claimed file remains untouched.

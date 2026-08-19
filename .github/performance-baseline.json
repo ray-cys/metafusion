@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "workload": {
+    "movies": 2000,
+    "shows": 300,
+    "seasons": 1000,
+    "episodes": 8000,
+    "targeted_reads": 250,
+    "corpus_render_iterations": 200
+  },
+  "maximum": {
+    "total_seconds": 12.0,
+    "state_write_seconds": 8.0,
+    "targeted_read_seconds": 1.0,
+    "corpus_render_seconds": 4.0,
+    "peak_memory_mib": 128.0,
+    "database_mib": 8.0
+  }
+}

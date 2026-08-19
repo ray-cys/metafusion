@@ -7,12 +7,13 @@ import yaml
 
 from helper.build_info import build_info
 from helper.config import BASE_CONFIG_DIR, report_retention
-from helper.io import atomic_write_text
 from helper.plex import get_plex_metadata, load_plex_library_inventory
 from helper.provider_mappings import (
     resolve_episode_overrides,
     resolve_split_series_mapping,
 )
+from helper.report_identity import item_report_record, item_report_records
+from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.tmdb import (
     resolve_episode_group_mapping,
     resolve_tmdb_id,
@@ -46,6 +47,7 @@ async def _standard_episode_pairs(config, tmdb_id, plex_inventory, session):
             config,
             f"tv/{tmdb_id}/season/{season_number}",
             session=session,
+            cache=False,
         )
         for episode in details.get("episodes", []) if isinstance(details, dict) else []:
             try:
@@ -75,6 +77,7 @@ async def _split_series_pairs(
             config,
             f"tv/{source_tmdb_id}/season/{source_season}",
             session=session,
+            cache=False,
         )
         for episode in details.get("episodes", []) if isinstance(details, dict) else []:
             try:
@@ -113,13 +116,16 @@ async def diagnose_mapping(item, config, session=None):
         _runtime_config=config.get("runtime", {}),
         _plex_config=config.get("plex", {}),
     )
-    record = {
-        "library": meta.get("library_name") or "Unknown library",
-        "rating_key": str(meta.get("ratingKey") or "unknown"),
-        "title": meta.get("title") or "Unknown title",
-        "year": meta.get("year"),
-        "media_type": meta.get("library_type") or "unknown",
-    }
+    record = item_report_record(
+        {
+            "library": meta.get("library_name") or "Unknown library",
+            "rating_key": str(meta.get("ratingKey") or "unknown"),
+            "title": meta.get("title") or "Unknown title",
+            "year": meta.get("year"),
+            "media_type": meta.get("library_type") or "unknown",
+        },
+        meta,
+    )
     if str(record["media_type"]).lower() not in {"show", "tv"}:
         record.update(
             status="unsupported",
@@ -136,6 +142,7 @@ async def diagnose_mapping(item, config, session=None):
         title=meta.get("title"),
         year=meta.get("year"),
         session=session,
+        cache=False,
     )
     record["tmdb_id"] = tmdb_id
     if not tmdb_id:
@@ -216,6 +223,7 @@ async def diagnose_mapping(item, config, session=None):
         plex_inventory,
         episode_ordering=meta.get("episode_ordering"),
         session=session,
+        cache=False,
     )
     if episode_group:
         record.update(
@@ -251,13 +259,15 @@ async def diagnose_mapping(item, config, session=None):
 
 
 def write_mapping_diagnosis_report(records, *, base_dir=None, retention=10):
+    records = item_report_records(records)
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
+    generated = datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y%m%d-%H%M%S%f")
     path = report_dir / f"mapping-diagnosis-{timestamp}.txt"
     current = build_info()
     lines = [
         "MetaFusion read-only Plex/TMDb mapping diagnosis",
-        f"Generated: {datetime.now(timezone.utc).isoformat()}",
+        f"Generated: {generated.isoformat()}",
         f"Version: {current['version']}",
         f"Commit: {current['commit']}",
         f"Items: {len(records)}",
@@ -296,14 +306,14 @@ def write_mapping_diagnosis_report(records, *, base_dir=None, retention=10):
                 )
             )
         lines.append("")
-    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
-
-    reports = sorted(report_dir.glob("mapping-diagnosis-*.txt"), reverse=True)
-    for stale in reports[max(1, int(retention)) :]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+    write_diagnostic_report(
+        path,
+        "\n".join(lines).rstrip() + "\n",
+        report_type="mapping_diagnosis",
+        data={"items": records},
+        generated_at=generated,
+    )
+    retain_diagnostic_reports(report_dir, "mapping-diagnosis", retention)
     return path
 
 
