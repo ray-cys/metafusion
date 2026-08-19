@@ -3,6 +3,13 @@ import asyncio
 from modules import cleanup as cleanup_module
 
 
+def cleanup_config(mode, tmp_path):
+    return {
+        "settings": {"mode": mode, "path": str(tmp_path)},
+        "cleanup": {"confirmation_scans": 1, "grace_hours": 0},
+    }
+
+
 def test_cleanup_preserves_disabled_and_unmanaged_assets(monkeypatch, tmp_path):
     asset_root = tmp_path / "assets"
     disabled_poster = asset_root / "movie" / "Old Movie (2000)" / "poster.jpg"
@@ -24,7 +31,7 @@ def test_cleanup_preserves_disabled_and_unmanaged_assets(monkeypatch, tmp_path):
 
     result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "kometa", "path": str(tmp_path)}},
+            cleanup_config("kometa", tmp_path),
             {
                 "dry_run": False,
                 "metadata_basic": False,
@@ -59,7 +66,7 @@ def test_cleanup_dry_run_does_not_persist_cache(monkeypatch, tmp_path):
 
     result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "kometa", "path": str(tmp_path)}},
+            cleanup_config("kometa", tmp_path),
             {
                 "dry_run": True,
                 "metadata_basic": False,
@@ -89,7 +96,7 @@ def test_cleanup_requires_an_explicit_complete_inventory(monkeypatch, tmp_path):
 
     removed = asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "plex", "path": str(tmp_path)}},
+            cleanup_config("plex", tmp_path),
             {"dry_run": False},
             preloaded_plex_metadata={},
         )
@@ -111,7 +118,7 @@ def test_cleanup_only_removes_cache_for_safe_library_types(monkeypatch, tmp_path
 
     result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "plex", "path": str(tmp_path)}},
+            cleanup_config("plex", tmp_path),
             {"dry_run": False},
             preloaded_plex_metadata={},
             safe_library_types={"movie"},
@@ -153,7 +160,7 @@ def test_cleanup_handles_shared_canonical_asset_owners(monkeypatch, tmp_path):
 
     result = asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "kometa", "path": str(tmp_path)}},
+            cleanup_config("kometa", tmp_path),
             {
                 "dry_run": False,
                 "metadata_basic": False,

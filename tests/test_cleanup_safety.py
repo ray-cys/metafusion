@@ -21,7 +21,10 @@ def flags(**overrides):
 
 
 def kometa_config(tmp_path):
-    return {"settings": {"mode": "kometa", "path": str(tmp_path)}}
+    return {
+        "settings": {"mode": "kometa", "path": str(tmp_path)},
+        "cleanup": {"confirmation_scans": 1, "grace_hours": 0},
+    }
 
 
 def test_cleanup_reconciles_yaml_cache_and_specials_with_complete_inventory(
@@ -684,7 +687,10 @@ def test_cleanup_plex_mode_removes_only_stale_cache_and_no_yaml(monkeypatch, tmp
 
     asyncio.run(
         cleanup_module.cleanup_title_orphans(
-            {"settings": {"mode": "plex", "path": str(tmp_path)}},
+            {
+                "settings": {"mode": "plex", "path": str(tmp_path)},
+                "cleanup": {"confirmation_scans": 1, "grace_hours": 0},
+            },
             flags(),
             preloaded_plex_metadata={},
             safe_library_types={"movie"},

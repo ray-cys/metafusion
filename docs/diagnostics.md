@@ -25,10 +25,20 @@ for every public flag and supported value.
 | Explain how one Plex item is bound to TMDb | `--identity-inspect --rating-key KEY` | Plex and TMDb | `identity-inspection-*.txt` |
 | Explain identity, scheduling, policy, mapping, retry, and destinations together | `--explain-item --rating-key KEY` | Plex and TMDb | `item-explanation-*.txt` |
 | Capture sanitized item evidence for a reproducible support case | `--capture-replay --rating-key KEY` | Plex and TMDb | `provider-replay-capture-*.txt` |
+| Inspect durable state without opening raw SQLite | `--state-report` | None | `state-report-*.txt` and `.json` |
+| Review pending and completed cleanup actions | `--cleanup-history-report` | None | `cleanup-history-*.txt` and `.json` |
+| Review unresolved identity work | `--identity-review-queue` | None | `identity-review-*.txt` and `.json` |
+| Verify whether Plex selected managed local artwork | `--plex-artwork-verify` | Plex only | `plex-artwork-verification-*.txt` and `.json` |
+| Compare a proposed configuration with the current effective one | `--config-impact /path/config.yml` | None | `configuration-impact-*.txt` and `.json` |
 
 The full artwork audits can take about as long as normal artwork evaluation.
 They exercise the configured source order rather than merely checking whether
 an API endpoint responds.
+
+SQLite-only reports describe recorded evidence, not current Plex/provider or
+filesystem truth. Plex artwork verification is the live read-only check for
+adoption. Detailed command examples and report limitations are in
+[Lifecycle management](lifecycle-management.md).
 
 ## Local checks and support
 

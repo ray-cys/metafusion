@@ -1670,11 +1670,14 @@ def test_movie_builder_rejects_a_resolved_but_inconsistent_tmdb_identity(
     assert result["is_complete"] is False
     assert result["metadata_action"] == "failed"
     assert gaps == [
-        {
-            "library": None,
-            "category": "identity_rejected",
-            "media_type": "Movie",
-            "title": "Example Movie (2020)",
+            {
+                "library": None,
+                "server_id": None,
+                "library_uuid": None,
+                "category": "identity_rejected",
+                "media_type": "Movie",
+                "title": "Example Movie (2020)",
+                "year": 2020,
                 "asset_type": "metadata",
                 "detail": "forced title and year mismatch",
                 "plex_rating_key": "m1",

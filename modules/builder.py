@@ -26,7 +26,7 @@ from helper.provider_mappings import (
 )
 from helper.report_identity import item_report_record
 from helper.runtime import DiskPressureError
-from helper.state_db import save_identity_binding
+from helper.state_db import resolve_identity_reviews, save_identity_binding
 from helper.tmdb import (
     artwork_language_codes,
     resolve_episode_group_mapping,
@@ -541,6 +541,8 @@ def _identity_binding_source(
     split_mapping=False,
     consensus_reason=None,
 ):
+    if (meta or {}).get("manual_identity_override"):
+        return "manual_override"
     if recovered:
         return "stale_tmdb_recovery"
     provider_tmdb_id = (meta or {}).get("plex_provider_tmdb_id")
@@ -574,6 +576,14 @@ async def _save_high_confidence_identity(
         or not server_id
         or server_id == "unknown"
     ):
+        return False
+    await asyncio.to_thread(
+        resolve_identity_reviews,
+        server_id,
+        meta.get("library_uuid") or meta.get("library_name") or "unknown",
+        meta.get("ratingKey"),
+    )
+    if meta.get("manual_identity_override"):
         return False
     fingerprint = plex_identity_fingerprint(meta)
     if not fingerprint:
@@ -621,9 +631,12 @@ def _record_artwork_gap(
     gaps.append(
         item_report_record({
             "library": config.get("_library_name"),
+            "server_id": identity.get("server_id") if isinstance(identity, dict) else None,
+            "library_uuid": identity.get("library_uuid") if isinstance(identity, dict) else None,
             "category": category,
             "media_type": media_type,
             "title": full_title,
+            "year": identity.get("year") if isinstance(identity, dict) else None,
             "asset_type": asset_type,
             "detail": detail,
         }, identity, season_number=season_number)
@@ -1437,6 +1450,7 @@ async def tmdb_details_with_recovery(
     year=None,
     params=None,
     session=None,
+    authoritative=False,
 ):
     """Fetch details and safely replace a stale Plex-supplied TMDb ID."""
     normalized_type = "tv" if str(media_type).lower() in {"tv", "show"} else "movie"
@@ -1450,6 +1464,8 @@ async def tmdb_details_with_recovery(
         )
 
     details = await fetch(tmdb_id)
+    if authoritative:
+        return str(tmdb_id), details, None
     if details:
         split_mapping = resolve_split_series_mapping(
             config,
@@ -1637,6 +1653,7 @@ async def _build_movie(
             "include_image_language": artwork_language_codes(config),
         },
         session=session,
+        authoritative=bool(meta and meta.get("manual_identity_override")),
     )
     if not details:
         log_builder_event("builder_invalid_tmdb_id", media_type="Movie", full_title=full_title)
@@ -1672,16 +1689,21 @@ async def _build_movie(
             old_id=recovered_from_tmdb_id,
             new_id=tmdb_id,
         )
-    consensus_ok, consensus_trusted, consensus_reason = tmdb_external_id_consensus(
-        "movie", details, imdb_id=imdb_id
-    )
-    if not consensus_ok:
-        identity_ok, identity_reason = False, consensus_reason
+    if meta and meta.get("manual_identity_override"):
+        consensus_ok, consensus_trusted = True, True
+        consensus_reason = "explicit manual override"
+        identity_ok, identity_reason = True, consensus_reason
     else:
-        identity_ok, identity_reason = tmdb_identity_consistent(
-            "movie", title, year, details,
-            trusted_external_id=consensus_trusted,
+        consensus_ok, consensus_trusted, consensus_reason = tmdb_external_id_consensus(
+            "movie", details, imdb_id=imdb_id
         )
+        if not consensus_ok:
+            identity_ok, identity_reason = False, consensus_reason
+        else:
+            identity_ok, identity_reason = tmdb_identity_consistent(
+                "movie", title, year, details,
+                trusted_external_id=consensus_trusted,
+            )
     if not identity_ok:
         log_builder_event(
             "builder_tmdb_identity_mismatch",
@@ -2560,6 +2582,7 @@ async def _build_tv(
             "include_image_language": artwork_language_codes(config),
         },
         session=session,
+        authoritative=bool(meta and meta.get("manual_identity_override")),
     )
     if not details:
         log_builder_event("builder_invalid_tmdb_id", media_type="TV Show", full_title=full_title)
@@ -2603,20 +2626,25 @@ async def _build_tv(
         tvdb_id=tvdb_id,
         imdb_id=imdb_id,
     )
-    consensus_ok, consensus_trusted, consensus_reason = tmdb_external_id_consensus(
-        "tv",
-        details,
-        imdb_id=imdb_id,
-        tvdb_id=tvdb_id,
-        allow_tvdb_mismatch=bool(series_mapping),
-    )
-    if not consensus_ok:
-        identity_ok, identity_reason = False, consensus_reason
+    if meta and meta.get("manual_identity_override"):
+        consensus_ok, consensus_trusted = True, True
+        consensus_reason = "explicit manual override"
+        identity_ok, identity_reason = True, consensus_reason
     else:
-        identity_ok, identity_reason = tmdb_identity_consistent(
-            "tv", title, year, details,
-            trusted_external_id=consensus_trusted or bool(series_mapping),
+        consensus_ok, consensus_trusted, consensus_reason = tmdb_external_id_consensus(
+            "tv",
+            details,
+            imdb_id=imdb_id,
+            tvdb_id=tvdb_id,
+            allow_tvdb_mismatch=bool(series_mapping),
         )
+        if not consensus_ok:
+            identity_ok, identity_reason = False, consensus_reason
+        else:
+            identity_ok, identity_reason = tmdb_identity_consistent(
+                "tv", title, year, details,
+                trusted_external_id=consensus_trusted or bool(series_mapping),
+            )
     if not identity_ok:
         log_builder_event(
             "builder_tmdb_identity_mismatch",
@@ -3667,6 +3695,9 @@ async def _build_tv(
         if season_number is None:
             nonlocal season_poster_actions
             season_poster_actions[season_number] = "skipped"
+            return
+        if int(season_number) in set(config.get("_excluded_seasons", set())):
+            season_poster_actions[season_number] = "not_due"
             return
         
         season_details = await get_season_details(season_number) or {}

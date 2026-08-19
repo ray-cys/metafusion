@@ -88,6 +88,9 @@ creating the two required user credentials.
 | `RUN_SEASON` | `True` | Generate season posters, including Specials. |
 | `RUN_BACKGROUND` | `False` | Generate movie and show backgrounds. |
 | `RUN_CLEANUP` | `False` | Enable guarded full-scan cleanup. Always test with dry-run. |
+| `CLEANUP_CONFIRMATION_SCANS` | `2` | Require this many separate authoritative full scans to confirm an absence before cleanup becomes eligible. |
+| `CLEANUP_GRACE_HOURS` | `48` | Keep a cleanup candidate pending for at least this many hours after first detection. |
+| `PLEX_CLEANUP_MANAGED_ARTWORK` | `False` | Plex mode only. Opt in to deleting exact checksum-proven MetaFusion-owned local artwork for confirmed stale items; state-only cleanup remains the default. |
 
 ## Policy controls
 

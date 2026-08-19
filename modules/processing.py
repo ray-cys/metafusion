@@ -34,6 +34,8 @@ from helper.state_db import (
     clear_item_retries,
     load_due_item_retries,
     load_identity_binding,
+    load_identity_overrides,
+    load_item_exceptions,
     mark_items_started,
     prune_plex_metadata_library,
     record_item_failure,
@@ -128,6 +130,48 @@ def apply_learned_tmdb_identity(meta, *, touch=True, record_mismatch=False):
     meta["tmdb_id"] = str(learned)
     meta["identity_binding_reused"] = True
     return True
+
+
+def apply_manual_tmdb_identity(meta, config):
+    """Apply one explicit durable override before learned or provider identities."""
+    if not isinstance(meta, dict) or meta.get("ratingKey") is None:
+        return False
+    override = (config.get("_identity_overrides_by_rating_key") or {}).get(
+        str(meta.get("ratingKey"))
+    )
+    if not override:
+        return False
+    actual_type = "tv" if str(meta.get("library_type")).lower() in {"tv", "show"} else "movie"
+    if str(override.get("media_type")) != actual_type:
+        return False
+    current = meta.get("tmdb_id")
+    selected = str(override.get("tmdb_id"))
+    if current and str(current) != selected:
+        meta["plex_tmdb_id"] = str(current)
+    meta["tmdb_id"] = selected
+    meta["identity_source"] = "manual_override"
+    meta["manual_identity_override"] = True
+    meta["identity_override_reason"] = override.get("reason")
+    return True
+
+
+def _item_exception_scopes(config, meta):
+    records = (config.get("_item_exceptions_by_rating_key") or {}).get(
+        str(meta.get("ratingKey")), []
+    )
+    return {str(record.get("output_type") or "").lower() for record in records}
+
+
+def _item_exception_seasons(config, meta):
+    records = (config.get("_item_exceptions_by_rating_key") or {}).get(
+        str(meta.get("ratingKey")), []
+    )
+    return {
+        int(record["season_number"])
+        for record in records
+        if record.get("output_type") == "season"
+        and int(record.get("season_number", -1)) >= 0
+    }
 
 
 def _item_failure_label(item):
@@ -229,6 +273,7 @@ async def process_item(
         return None
 
     meta = await get_plex_metadata(plex_item, _plex_config=config.get("plex", {}))
+    apply_manual_tmdb_identity(meta, config)
     title = meta.get("title", "Unknown")
     year = meta.get("year", "Unknown")
     full_title = f"{title} ({year})"
@@ -238,6 +283,25 @@ async def process_item(
     library_type = meta.get("library_type", "unknown")
 
     effective_flags = dict(feature_flags or {})
+    exception_scopes = _item_exception_scopes(config, meta)
+    if "all" in exception_scopes:
+        exception_scopes.update(
+            {"metadata", "plex_metadata", "poster", "background", "season"}
+        )
+    if "metadata" in exception_scopes:
+        effective_flags["metadata_basic"] = False
+        effective_flags["metadata_enhanced"] = False
+    for output in ("poster", "background", "season"):
+        if output in exception_scopes:
+            effective_flags[output] = False
+    item_config = config
+    if exception_scopes or _item_exception_seasons(config, meta):
+        item_config = dict(config)
+        item_config["plex_metadata"] = dict(config.get("plex_metadata", {}))
+        if {"all", "metadata", "plex_metadata"} & exception_scopes:
+            item_config["plex_metadata"]["enabled"] = False
+            effective_flags["plex_metadata"] = False
+        item_config["_excluded_seasons"] = _item_exception_seasons(config, meta)
     artwork_gaps = config.get("_artwork_gaps")
     gap_start = len(artwork_gaps) if isinstance(artwork_gaps, list) else 0
     if work_reasons is not None:
@@ -262,14 +326,14 @@ async def process_item(
     try:
         if library_type == "movie":
             stats = await build_movie(
-                config, consolidated_metadata,
+                item_config, consolidated_metadata,
                 existing_yaml_data=existing_yaml_data, session=session,
                 ignored_fields=ignored_fields, existing_assets=existing_assets,
                 meta=meta, feature_flags=effective_flags
             )
         elif library_type in ("show", "tv"):
             stats = await build_tv(
-                config, consolidated_metadata,
+                item_config, consolidated_metadata,
                 existing_yaml_data=existing_yaml_data, session=session,
                 ignored_fields=ignored_fields, existing_assets=existing_assets,
                 meta=meta, feature_flags=effective_flags
@@ -312,11 +376,11 @@ async def process_item(
     plex_result = await apply_plex_metadata(
         plex_item,
         stats.pop("plex_candidate", None),
-        config,
+        item_config,
         meta,
     )
     stats["plex_metadata_writes"] = plex_result.get("writes", 0)
-    if feature_flags.get("plex_metadata", False):
+    if effective_flags.get("plex_metadata", False):
         stats["metadata_action"] = (
             "failed"
             if plex_result.get("failures")
@@ -334,7 +398,7 @@ async def process_item(
             if hasattr(updated_at, "isoformat")
             else (str(updated_at) if updated_at is not None else None)
         )
-    if feature_flags.get("plex_metadata", False) and not feature_flags.get(
+    if effective_flags.get("plex_metadata", False) and not effective_flags.get(
         "dry_run", False
     ):
         normalized_type = "tv" if library_type == "show" else library_type
@@ -384,11 +448,11 @@ async def process_item(
         storage_targets = []
         if effective_flags.get("poster", False):
             storage_targets.append(
-                ("poster", get_asset_path(config, meta, asset_type="poster"))
+                ("poster", get_asset_path(item_config, meta, asset_type="poster"))
             )
         if effective_flags.get("background", False):
             storage_targets.append(
-                ("background", get_asset_path(config, meta, asset_type="background"))
+                ("background", get_asset_path(item_config, meta, asset_type="background"))
             )
         if effective_flags.get("season", False):
             for season_number in stats.get("season_poster_actions", {}):
@@ -398,7 +462,7 @@ async def process_item(
                     (
                         "season",
                         get_asset_path(
-                            config,
+                            item_config,
                             meta,
                             asset_type="season",
                             season_number=int(season_number),
@@ -479,6 +543,16 @@ async def process_library(
         library_uuid=library_uuid,
         library_name=library_name,
     )
+    exception_records = load_item_exceptions(server_id, library_uuid)
+    config["_item_exceptions_by_rating_key"] = {}
+    for record in exception_records:
+        config["_item_exceptions_by_rating_key"].setdefault(
+            str(record.get("rating_key")), []
+        ).append(record)
+    override_records = load_identity_overrides(server_id, library_uuid)
+    config["_identity_overrides_by_rating_key"] = {
+        str(record.get("rating_key")): record for record in override_records
+    }
 
     try:
         library_name = library_section.title
@@ -651,12 +725,14 @@ async def process_library(
             total_items = len(planned_items) + len(metadata_errors)
         cache = load_cache()
         for meta in preloaded_metadata:
-            apply_cached_tmdb_recovery(meta, cache)
-            apply_learned_tmdb_identity(
-                meta,
-                touch=False,
-                record_mismatch=not feature_flags.get("dry_run", False),
-            )
+            overridden = apply_manual_tmdb_identity(meta, config)
+            if not overridden:
+                apply_cached_tmdb_recovery(meta, cache)
+                apply_learned_tmdb_identity(
+                    meta,
+                    touch=False,
+                    record_mismatch=not feature_flags.get("dry_run", False),
+                )
         if feature_flags.get("cleanup", False):
             inventory_errors = cleanup_inventory_errors(
                 preloaded_metadata, feature_flags

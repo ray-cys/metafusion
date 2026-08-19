@@ -1589,7 +1589,8 @@ def log_final_summary(
                 "Cleanup confirmed before failure | "
                 f"Titles: {cleanup_result.titles} | "
                 f"Seasons: {cleanup_result.seasons} | "
-                f"Episodes: {cleanup_result.episodes}",
+                f"Episodes: {cleanup_result.episodes} | "
+                f"Pending confirmation: {getattr(cleanup_result, 'candidates_pending', 0)}",
                 box_width,
             )
         )
@@ -1627,7 +1628,13 @@ def log_final_summary(
             status = "Preview" if cleanup_result.dry_run else "Completed"
             cleanup_mode = str(getattr(cleanup_result, "mode", "unknown")).title()
             scope = (
-                "State only; Kometa YAML and artwork preserved"
+                (
+                    "State and checksum-proven managed artwork"
+                    if config.get("cleanup", {}).get(
+                        "plex_remove_managed_artwork", False
+                    )
+                    else "State only; Kometa YAML and artwork preserved"
+                )
                 if cleanup_mode.lower() == "plex"
                 else "Generated Kometa output and state"
             )
@@ -1641,7 +1648,8 @@ def log_final_summary(
                 box_line(
                     f"Cleanup stale inventory | Titles: {cleanup_result.titles} | "
                     f"Seasons: {cleanup_result.seasons} | "
-                    f"Episodes: {cleanup_result.episodes}",
+                    f"Episodes: {cleanup_result.episodes} | "
+                    f"Pending confirmation: {getattr(cleanup_result, 'candidates_pending', 0)}",
                     box_width,
                 )
             )

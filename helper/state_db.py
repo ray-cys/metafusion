@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 import threading
+from collections import Counter
 from collections.abc import MutableMapping
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -17,10 +18,13 @@ from helper.config import CACHE_DIR
 from helper.report_identity import report_identity
 
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 FILE_MODE = 0o664
 IDENTITY_HISTORY_LIMIT = 10_000
 UNRESOLVED_HISTORY_LIMIT = 10_000
+CLEANUP_HISTORY_LIMIT = 20_000
+IDENTITY_REVIEW_LIMIT = 10_000
+REBIND_HISTORY_LIMIT = 10_000
 _database_setup_lock = threading.Lock()
 _initialized_databases: set[tuple[str, int, int]] = set()
 _integrity_checked_databases: set[tuple[str, int, int]] = set()
@@ -392,6 +396,147 @@ def _initialize_schema(connection):
 
         CREATE INDEX IF NOT EXISTS artwork_analysis_content
             ON artwork_analysis(content_sha256);
+
+        CREATE TABLE IF NOT EXISTS cleanup_candidates (
+            candidate_key TEXT PRIMARY KEY,
+            server_id TEXT,
+            library_uuid TEXT,
+            library_name TEXT,
+            rating_key TEXT,
+            cache_key TEXT,
+            media_type TEXT NOT NULL,
+            title TEXT,
+            year INTEGER,
+            tmdb_id TEXT,
+            imdb_id TEXT,
+            tvdb_id TEXT,
+            edition TEXT,
+            scope TEXT NOT NULL,
+            season_number INTEGER,
+            episode_number INTEGER,
+            first_missing_at TEXT NOT NULL,
+            last_confirmed_at TEXT NOT NULL,
+            eligible_after TEXT NOT NULL,
+            confirmations INTEGER NOT NULL DEFAULT 1,
+            last_observation_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reason TEXT
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS cleanup_candidates_scope
+            ON cleanup_candidates(status, server_id, library_uuid, media_type);
+
+        CREATE TABLE IF NOT EXISTS cleanup_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL,
+            server_id TEXT,
+            library_uuid TEXT,
+            library_name TEXT,
+            rating_key TEXT,
+            cache_key TEXT,
+            media_type TEXT,
+            title TEXT,
+            year INTEGER,
+            tmdb_id TEXT,
+            imdb_id TEXT,
+            tvdb_id TEXT,
+            edition TEXT,
+            output_type TEXT,
+            season_number INTEGER,
+            episode_number INTEGER,
+            destination TEXT,
+            checksum TEXT,
+            reason TEXT,
+            details TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS cleanup_history_item
+            ON cleanup_history(library_name, rating_key, id DESC);
+        CREATE INDEX IF NOT EXISTS cleanup_history_source
+            ON cleanup_history(source, occurred_at DESC);
+
+        CREATE TABLE IF NOT EXISTS item_exceptions (
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT,
+            rating_key TEXT NOT NULL,
+            output_type TEXT NOT NULL,
+            season_number INTEGER NOT NULL DEFAULT -1,
+            reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (
+                server_id, library_uuid, rating_key, output_type, season_number
+            )
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS item_exceptions_library
+            ON item_exceptions(server_id, library_uuid, rating_key);
+
+        CREATE TABLE IF NOT EXISTS identity_overrides (
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT,
+            rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            tmdb_id TEXT NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (server_id, library_uuid, rating_key)
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS identity_overrides_tmdb
+            ON identity_overrides(media_type, tmdb_id);
+
+        CREATE TABLE IF NOT EXISTS identity_review_queue (
+            review_key TEXT PRIMARY KEY,
+            server_id TEXT,
+            library_uuid TEXT,
+            library_name TEXT,
+            rating_key TEXT,
+            media_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            year INTEGER,
+            proposed_tmdb_id TEXT,
+            imdb_id TEXT,
+            tvdb_id TEXT,
+            category TEXT NOT NULL,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            resolved_at TEXT
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS identity_review_status
+            ON identity_review_queue(status, library_name, last_seen DESC);
+
+        CREATE TABLE IF NOT EXISTS library_rebinding_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            source_server_id TEXT,
+            source_library_uuid TEXT NOT NULL,
+            source_library_name TEXT,
+            source_rating_key TEXT NOT NULL,
+            destination_server_id TEXT,
+            destination_library_uuid TEXT NOT NULL,
+            destination_library_name TEXT,
+            destination_rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            tmdb_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT,
+            details TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS library_rebinding_recent
+            ON library_rebinding_history(occurred_at DESC, id DESC);
         """
     )
     binding_columns = {
@@ -2328,6 +2473,1049 @@ def inspect_identity_binding(
         "history_available": history_table is not None,
         "schema_version": schema_version,
     }
+
+
+def find_media_state(
+    *,
+    libraries=None,
+    rating_keys=None,
+    tmdb_ids=None,
+    media_types=None,
+    path=None,
+    limit=100_000,
+):
+    """Return normalized durable item records without touching their timestamps."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = []
+    values: list[Any] = []
+    filters = (
+        ("library_name", libraries),
+        ("rating_key", rating_keys),
+        ("tmdb_id", tmdb_ids),
+        ("media_type", media_types),
+    )
+    for column, requested in filters:
+        normalized = [str(value) for value in (requested or []) if str(value).strip()]
+        if normalized:
+            clauses.append(f"{column} IN ({','.join('?' for _ in normalized)})")
+            values.extend(normalized)
+    query = "SELECT * FROM media_state"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY library_name, media_type, title, year, rating_key LIMIT ?"
+    values.append(max(1, min(1_000_000, int(limit))))
+    try:
+        rows = connection.execute(query, values).fetchall()
+        results = []
+        for row in rows:
+            record = dict(row)
+            payload = _json_load(record.pop("payload"), "media state")
+            record["payload"] = payload
+            for key in ("imdb_id", "tvdb_id", "edition", "identity_source"):
+                record[key] = payload.get(key)
+            results.append(record)
+        return results
+    finally:
+        connection.close()
+
+
+def load_asset_ownership(cache_keys=None, *, path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    requested = [str(value) for value in (cache_keys or []) if str(value).strip()]
+    query = "SELECT * FROM asset_ownership"
+    parameters = []
+    if requested:
+        query += f" WHERE cache_key IN ({','.join('?' for _ in requested)})"
+        parameters.extend(requested)
+    query += " ORDER BY cache_key, asset_type, season_number"
+    try:
+        return [dict(row) for row in connection.execute(query, parameters).fetchall()]
+    finally:
+        connection.close()
+
+
+def remove_asset_ownership(cache_key, asset_type, season_number=None, *, path=None):
+    """Forget one artwork claim while retaining the media's incremental state."""
+    normalized_type = str(asset_type).lower()
+    normalized_season = "" if season_number is None else str(int(season_number))
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            row = connection.execute(
+                "SELECT payload FROM media_state WHERE cache_key = ?",
+                (str(cache_key),),
+            ).fetchone()
+            if row is None:
+                return False
+            payload = _json_load(row[0], "media state")
+            if normalized_type in {"poster", "background"}:
+                for suffix in (
+                    "path", "checksum", "provider", "source_path", "average",
+                    "candidate_source_path", "candidate_fingerprint",
+                ):
+                    payload.pop(f"{normalized_type}_{suffix}", None)
+            elif normalized_type == "season":
+                season = (payload.get("seasons") or {}).get(normalized_season)
+                if isinstance(season, dict):
+                    for key in list(season):
+                        if key.startswith("season_") and key not in {
+                            "season_last_checked", "season_last_upgraded"
+                        }:
+                            season.pop(key, None)
+            else:
+                raise ValueError(f"Unsupported artwork output type: {asset_type}")
+            connection.execute(
+                "DELETE FROM asset_ownership WHERE cache_key = ? "
+                "AND asset_type = ? AND season_number = ?",
+                (str(cache_key), normalized_type, normalized_season),
+            )
+            connection.execute(
+                "UPDATE media_state SET payload = ? WHERE cache_key = ?",
+                (_json_dump(payload), str(cache_key)),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def load_item_exceptions(
+    server_id=None,
+    library_uuid=None,
+    *,
+    libraries=None,
+    rating_keys=None,
+    path=None,
+):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = []
+    values: list[Any] = []
+    for column, value in (("server_id", server_id), ("library_uuid", library_uuid)):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            values.append(str(value))
+    for column, requested in (("library_name", libraries), ("rating_key", rating_keys)):
+        normalized = [str(value) for value in (requested or []) if str(value).strip()]
+        if normalized:
+            clauses.append(f"{column} IN ({','.join('?' for _ in normalized)})")
+            values.extend(normalized)
+    query = "SELECT * FROM item_exceptions"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY library_name, rating_key, output_type, season_number"
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_exceptions'"
+        ).fetchone()
+        if table is None:
+            return []
+        return [dict(row) for row in connection.execute(query, values).fetchall()]
+    finally:
+        connection.close()
+
+
+def save_item_exception(
+    server_id,
+    library_uuid,
+    rating_key,
+    output_type,
+    *,
+    library_name=None,
+    season_number=None,
+    reason=None,
+    path=None,
+    now=None,
+):
+    current = _as_utc(now).isoformat()
+    output = str(output_type).lower()
+    if output not in {"all", "metadata", "plex_metadata", "poster", "background", "season", "cleanup"}:
+        raise ValueError(f"Unsupported exception output: {output_type}")
+    season = -1 if season_number is None else int(season_number)
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO item_exceptions(
+                    server_id, library_uuid, library_name, rating_key,
+                    output_type, season_number, reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(server_id, library_uuid, rating_key, output_type, season_number)
+                DO UPDATE SET library_name = excluded.library_name,
+                    reason = excluded.reason, updated_at = excluded.updated_at
+                """,
+                (
+                    str(server_id or "unknown"), str(library_uuid), library_name,
+                    str(rating_key), output, season, reason, current, current,
+                ),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def remove_item_exception(
+    server_id,
+    library_uuid,
+    rating_key,
+    output_type=None,
+    *,
+    season_number=None,
+    path=None,
+):
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            if output_type is None:
+                cursor = connection.execute(
+                    "DELETE FROM item_exceptions WHERE server_id = ? "
+                    "AND library_uuid = ? AND rating_key = ?",
+                    (str(server_id or "unknown"), str(library_uuid), str(rating_key)),
+                )
+            else:
+                season = -1 if season_number is None else int(season_number)
+                cursor = connection.execute(
+                    "DELETE FROM item_exceptions WHERE server_id = ? "
+                    "AND library_uuid = ? AND rating_key = ? AND output_type = ? "
+                    "AND season_number = ?",
+                    (
+                        str(server_id or "unknown"), str(library_uuid), str(rating_key),
+                        str(output_type).lower(), season,
+                    ),
+                )
+        return int(cursor.rowcount)
+    finally:
+        connection.close()
+
+
+def load_identity_overrides(
+    server_id=None,
+    library_uuid=None,
+    *,
+    libraries=None,
+    rating_keys=None,
+    include_inactive=False,
+    path=None,
+):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = [] if include_inactive else ["active = 1"]
+    values = []
+    for column, value in (("server_id", server_id), ("library_uuid", library_uuid)):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            values.append(str(value))
+    for column, requested in (("library_name", libraries), ("rating_key", rating_keys)):
+        normalized = [str(value) for value in (requested or []) if str(value).strip()]
+        if normalized:
+            clauses.append(f"{column} IN ({','.join('?' for _ in normalized)})")
+            values.extend(normalized)
+    query = "SELECT * FROM identity_overrides"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY library_name, rating_key"
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity_overrides'"
+        ).fetchone()
+        if table is None:
+            return []
+        return [dict(row) for row in connection.execute(query, values).fetchall()]
+    finally:
+        connection.close()
+
+
+def save_identity_override(
+    server_id,
+    library_uuid,
+    rating_key,
+    media_type,
+    tmdb_id,
+    *,
+    library_name=None,
+    reason=None,
+    path=None,
+    now=None,
+):
+    normalized_type = "tv" if str(media_type).lower() in {"show", "shows", "tv"} else "movie"
+    if not str(tmdb_id).isdigit():
+        raise ValueError("Identity override TMDb ID must be numeric")
+    current = _as_utc(now).isoformat()
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO identity_overrides(
+                    server_id, library_uuid, library_name, rating_key,
+                    media_type, tmdb_id, reason, created_at, updated_at, active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(server_id, library_uuid, rating_key) DO UPDATE SET
+                    library_name = excluded.library_name,
+                    media_type = excluded.media_type,
+                    tmdb_id = excluded.tmdb_id,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at,
+                    active = 1
+                """,
+                (
+                    str(server_id or "unknown"), str(library_uuid), library_name,
+                    str(rating_key), normalized_type, str(tmdb_id), reason,
+                    current, current,
+                ),
+            )
+            connection.execute(
+                "UPDATE identity_review_queue SET status='resolved', resolved_at=? "
+                "WHERE server_id=? AND library_uuid=? AND rating_key=? "
+                "AND status='open'",
+                (
+                    current,
+                    str(server_id or "unknown"),
+                    str(library_uuid),
+                    str(rating_key),
+                ),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def remove_identity_override(server_id, library_uuid, rating_key, *, path=None):
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            cursor = connection.execute(
+                "DELETE FROM identity_overrides WHERE server_id=? "
+                "AND library_uuid=? AND rating_key=?",
+                (str(server_id or "unknown"), str(library_uuid), str(rating_key)),
+            )
+        return int(cursor.rowcount)
+    finally:
+        connection.close()
+
+
+def reconcile_identity_reviews(gaps, *, path=None, now=None):
+    """Persist identity failures as a bounded human review queue."""
+    current = _as_utc(now).isoformat()
+    relevant = []
+    for gap in gaps or []:
+        if not isinstance(gap, dict) or gap.get("category") not in {
+            "identity_rejected", "tmdb_missing", "tmdb_failure"
+        }:
+            continue
+        identity = {
+            "server_id": gap.get("server_id"),
+            "library_uuid": gap.get("library_uuid"),
+            "library_name": gap.get("library") or gap.get("library_name"),
+            "rating_key": gap.get("plex_rating_key"),
+            "media_type": str(gap.get("media_type") or "unknown").lower(),
+            "title": str(gap.get("title") or "Unknown title"),
+            "year": gap.get("year"),
+            "proposed_tmdb_id": gap.get("tmdb_id"),
+            "imdb_id": gap.get("imdb_id"),
+            "tvdb_id": gap.get("tvdb_id"),
+            "category": str(gap.get("category")),
+            "reason": gap.get("detail"),
+        }
+        raw_key = "\0".join(
+            str(identity.get(name) or "")
+            for name in ("library_name", "rating_key", "media_type", "title", "category")
+        )
+        identity["review_key"] = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        relevant.append(identity)
+    if not relevant:
+        return []
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            for record in relevant:
+                connection.execute(
+                    """
+                    INSERT INTO identity_review_queue(
+                        review_key, server_id, library_uuid, library_name,
+                        rating_key, media_type, title, year, proposed_tmdb_id,
+                        imdb_id, tvdb_id, category, reason, status,
+                        occurrences, first_seen, last_seen, resolved_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?, NULL)
+                    ON CONFLICT(review_key) DO UPDATE SET
+                        proposed_tmdb_id=excluded.proposed_tmdb_id,
+                        imdb_id=COALESCE(excluded.imdb_id, identity_review_queue.imdb_id),
+                        tvdb_id=COALESCE(excluded.tvdb_id, identity_review_queue.tvdb_id),
+                        reason=excluded.reason,
+                        status='open', occurrences=identity_review_queue.occurrences + 1,
+                        last_seen=excluded.last_seen, resolved_at=NULL
+                    """,
+                    (
+                        record["review_key"], record["server_id"],
+                        record["library_uuid"], record["library_name"],
+                        record["rating_key"], record["media_type"], record["title"],
+                        record["year"], record["proposed_tmdb_id"],
+                        record["imdb_id"], record["tvdb_id"], record["category"],
+                        record["reason"], current, current,
+                    ),
+                )
+            connection.execute(
+                "DELETE FROM identity_review_queue WHERE review_key NOT IN "
+                "(SELECT review_key FROM identity_review_queue ORDER BY last_seen DESC LIMIT ?)",
+                (IDENTITY_REVIEW_LIMIT,),
+            )
+        return load_identity_reviews(path=path)
+    finally:
+        connection.close()
+
+
+def load_identity_reviews(*, statuses=None, libraries=None, rating_keys=None, path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = []
+    values = []
+    for column, requested in (
+        ("status", statuses), ("library_name", libraries), ("rating_key", rating_keys)
+    ):
+        normalized = [str(value) for value in (requested or []) if str(value).strip()]
+        if normalized:
+            clauses.append(f"{column} IN ({','.join('?' for _ in normalized)})")
+            values.extend(normalized)
+    query = "SELECT * FROM identity_review_queue"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY status, last_seen DESC"
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity_review_queue'"
+        ).fetchone()
+        if table is None:
+            return []
+        return [dict(row) for row in connection.execute(query, values).fetchall()]
+    finally:
+        connection.close()
+
+
+def resolve_identity_reviews(
+    server_id,
+    library_uuid,
+    rating_key,
+    *,
+    reason="identity validated successfully",
+    path=None,
+    now=None,
+):
+    """Close open review entries only after this exact Plex identity validates."""
+    connection = _connect(path, writable=True)
+    current = _as_utc(now).isoformat()
+    try:
+        with connection:
+            cursor = connection.execute(
+                "UPDATE identity_review_queue SET status='resolved', "
+                "resolved_at=?, reason=COALESCE(reason, ?) WHERE server_id=? "
+                "AND library_uuid=? AND rating_key=? AND status='open'",
+                (
+                    current,
+                    reason,
+                    str(server_id or "unknown"),
+                    str(library_uuid),
+                    str(rating_key),
+                ),
+            )
+        return int(cursor.rowcount)
+    finally:
+        connection.close()
+
+
+def observe_cleanup_candidate(
+    candidate_key,
+    record,
+    scope,
+    *,
+    season_number=None,
+    episode_number=None,
+    confirmations_required=2,
+    grace_hours=48.0,
+    observation_id=None,
+    path=None,
+    now=None,
+    writable=True,
+):
+    """Record one authoritative absence and return its current eligibility."""
+    current_dt = _as_utc(now)
+    current = current_dt.isoformat()
+    required = max(1, int(confirmations_required))
+    grace = max(0.0, float(grace_hours))
+    connection = _connect(path, writable=writable)
+    if connection is None:
+        first = current_dt
+        confirmations = 1
+        eligible_after = (first + timedelta(hours=grace)).isoformat()
+        return {
+            "candidate_key": str(candidate_key), "confirmations": confirmations,
+            "eligible_after": eligible_after,
+            "eligible": confirmations >= required and current >= eligible_after,
+            "status": "preview",
+        }
+    try:
+        row = connection.execute(
+            "SELECT * FROM cleanup_candidates WHERE candidate_key=?",
+            (str(candidate_key),),
+        ).fetchone()
+        if row is None:
+            first = current_dt
+            confirmations = 1
+            eligible_after = (first + timedelta(hours=grace)).isoformat()
+            candidate = {
+                "candidate_key": str(candidate_key),
+                "first_missing_at": current,
+                "last_confirmed_at": current,
+                "eligible_after": eligible_after,
+                "confirmations": confirmations,
+                "last_observation_id": observation_id,
+                "status": "pending",
+            }
+            if writable:
+                with connection:
+                    connection.execute(
+                        """
+                        INSERT INTO cleanup_candidates(
+                            candidate_key, server_id, library_uuid, library_name,
+                            rating_key, cache_key, media_type, title, year,
+                            tmdb_id, imdb_id, tvdb_id, edition, scope,
+                            season_number, episode_number, first_missing_at,
+                            last_confirmed_at, eligible_after, confirmations,
+                            last_observation_id, status, reason
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                        """,
+                        (
+                            str(candidate_key), record.get("server_id"),
+                            record.get("library_uuid"), record.get("library_name"),
+                            record.get("rating_key"), record.get("cache_key"),
+                            str(record.get("media_type") or "unknown"),
+                            record.get("title"), record.get("year"),
+                            record.get("tmdb_id"), record.get("imdb_id"),
+                            record.get("tvdb_id"), record.get("edition"), str(scope),
+                            season_number, episode_number, current, current,
+                            eligible_after, confirmations, observation_id,
+                            record.get("reason"),
+                        ),
+                    )
+        else:
+            candidate = dict(row)
+            confirmations = int(candidate.get("confirmations") or 0)
+            eligible_after = (
+                _as_utc(candidate.get("first_missing_at"))
+                + timedelta(hours=grace)
+            ).isoformat()
+            if observation_id is None or candidate.get("last_observation_id") != observation_id:
+                confirmations += 1
+            candidate.update(
+                confirmations=confirmations,
+                last_confirmed_at=current,
+                eligible_after=eligible_after,
+                last_observation_id=observation_id,
+                status="pending",
+            )
+            if writable:
+                with connection:
+                    connection.execute(
+                        "UPDATE cleanup_candidates SET last_confirmed_at=?, "
+                        "confirmations=?, last_observation_id=?, status='pending', "
+                        "eligible_after=?, reason=? WHERE candidate_key=?",
+                        (
+                            current, confirmations, observation_id, eligible_after,
+                            record.get("reason"), str(candidate_key),
+                        ),
+                    )
+        candidate["eligible"] = bool(
+            int(candidate.get("confirmations") or 0) >= required
+            and current_dt >= _as_utc(candidate.get("eligible_after"))
+        )
+        candidate["confirmations_required"] = required
+        return candidate
+    finally:
+        connection.close()
+
+
+def record_cleanup_history(
+    source,
+    action,
+    status,
+    record=None,
+    *,
+    output_type=None,
+    season_number=None,
+    episode_number=None,
+    destination=None,
+    checksum=None,
+    reason=None,
+    details=None,
+    path=None,
+    now=None,
+):
+    record = record or {}
+    current = _as_utc(now).isoformat()
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO cleanup_history(
+                    occurred_at, source, action, status, server_id, library_uuid,
+                    library_name, rating_key, cache_key, media_type, title, year,
+                    tmdb_id, imdb_id, tvdb_id, edition, output_type,
+                    season_number, episode_number, destination, checksum, reason,
+                    details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    current, str(source), str(action), str(status),
+                    record.get("server_id"), record.get("library_uuid"),
+                    record.get("library_name"), record.get("rating_key"),
+                    record.get("cache_key"), record.get("media_type"),
+                    record.get("title"), record.get("year"), record.get("tmdb_id"),
+                    record.get("imdb_id"), record.get("tvdb_id"),
+                    record.get("edition"), output_type, season_number,
+                    episode_number, None if destination is None else str(destination),
+                    checksum, reason,
+                    None if details is None else _json_dump(details),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM cleanup_history WHERE id NOT IN "
+                "(SELECT id FROM cleanup_history ORDER BY id DESC LIMIT ?)",
+                (CLEANUP_HISTORY_LIMIT,),
+            )
+        return True
+    finally:
+        connection.close()
+
+
+def complete_cleanup_candidate(candidate_key, *, path=None):
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            cursor = connection.execute(
+                "DELETE FROM cleanup_candidates WHERE candidate_key=?",
+                (str(candidate_key),),
+            )
+        return int(cursor.rowcount)
+    finally:
+        connection.close()
+
+
+def cancel_cleanup_candidate(candidate_key, *, reason="media returned", path=None, now=None):
+    connection = _connect(path, writable=True)
+    try:
+        row = connection.execute(
+            "SELECT * FROM cleanup_candidates WHERE candidate_key=?",
+            (str(candidate_key),),
+        ).fetchone()
+        if row is None:
+            return False
+        record = dict(row)
+    finally:
+        connection.close()
+    record_cleanup_history(
+        "automated", "candidate_cancelled", "cancelled", record,
+        output_type=record.get("scope"), season_number=record.get("season_number"),
+        episode_number=record.get("episode_number"), reason=reason, path=path, now=now,
+    )
+    complete_cleanup_candidate(candidate_key, path=path)
+    return True
+
+
+def load_cleanup_candidates(*, statuses=None, libraries=None, rating_keys=None, path=None):
+    return _load_cleanup_rows(
+        "cleanup_candidates", statuses=statuses, libraries=libraries,
+        rating_keys=rating_keys, path=path,
+    )
+
+
+def load_cleanup_history(*, sources=None, libraries=None, rating_keys=None, limit=1000, path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = []
+    values: list[Any] = []
+    for column, requested in (
+        ("source", sources), ("library_name", libraries), ("rating_key", rating_keys)
+    ):
+        normalized = [str(value) for value in (requested or []) if str(value).strip()]
+        if normalized:
+            clauses.append(f"{column} IN ({','.join('?' for _ in normalized)})")
+            values.extend(normalized)
+    query = "SELECT * FROM cleanup_history"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id DESC LIMIT ?"
+    values.append(max(1, min(CLEANUP_HISTORY_LIMIT, int(limit))))
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cleanup_history'"
+        ).fetchone()
+        if table is None:
+            return []
+        results = []
+        for row in connection.execute(query, values).fetchall():
+            record = dict(row)
+            if record.get("details"):
+                record["details"] = _json_load(record["details"], "cleanup history")
+            results.append(record)
+        return results
+    finally:
+        connection.close()
+
+
+def _load_cleanup_rows(table_name, *, statuses=None, libraries=None, rating_keys=None, path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = []
+    values = []
+    for column, requested in (
+        ("status", statuses), ("library_name", libraries), ("rating_key", rating_keys)
+    ):
+        normalized = [str(value) for value in (requested or []) if str(value).strip()]
+        if normalized:
+            clauses.append(f"{column} IN ({','.join('?' for _ in normalized)})")
+            values.extend(normalized)
+    query = f"SELECT * FROM {table_name}"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY last_confirmed_at DESC"
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        if table is None:
+            return []
+        return [dict(row) for row in connection.execute(query, values).fetchall()]
+    finally:
+        connection.close()
+
+
+def plan_library_rebinding(source_library, destination_library, *, path=None):
+    """Match already-inventoried libraries by unambiguous provider identity."""
+    records = find_media_state(path=path)
+
+    def selected(record, selector):
+        return str(record.get("library_uuid")) == str(selector) or str(
+            record.get("library_name")
+        ) == str(selector)
+
+    sources = [record for record in records if selected(record, source_library)]
+    destinations = [
+        record for record in records if selected(record, destination_library)
+    ]
+    destination_index: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for record in destinations:
+        key = (
+            str(record.get("media_type") or ""),
+            str(record.get("tmdb_id") or ""),
+            str(record.get("edition") or "").casefold(),
+        )
+        destination_index.setdefault(key, []).append(record)
+    ownership_counts = Counter(
+        row["cache_key"] for row in load_asset_ownership(path=path)
+    )
+    plan = []
+    for source in sources:
+        key = (
+            str(source.get("media_type") or ""),
+            str(source.get("tmdb_id") or ""),
+            str(source.get("edition") or "").casefold(),
+        )
+        matches = destination_index.get(key, []) if key[1] else []
+        if not key[1]:
+            status, reason, destination = (
+                "unmatched", "source has no durable TMDb identity", None
+            )
+        elif len(matches) == 1:
+            destination = matches[0]
+            status, reason = "ready", "unique media type, TMDb ID, and edition match"
+        elif len(matches) > 1:
+            destination = None
+            status, reason = "ambiguous", "multiple destination records share the identity"
+        else:
+            destination = None
+            status, reason = "unmatched", "no destination record shares the identity"
+        plan.append(
+            {
+                "status": status,
+                "reason": reason,
+                "media_type": source.get("media_type"),
+                "tmdb_id": source.get("tmdb_id"),
+                "title": source.get("title"),
+                "year": source.get("year"),
+                "edition": source.get("edition"),
+                "asset_claims": int(ownership_counts.get(source["cache_key"], 0)),
+                "source": {
+                    key: source.get(key)
+                    for key in (
+                        "server_id", "library_uuid", "library_name", "rating_key",
+                        "cache_key",
+                    )
+                },
+                "destination": None if destination is None else {
+                    key: destination.get(key)
+                    for key in (
+                        "server_id", "library_uuid", "library_name", "rating_key",
+                        "cache_key",
+                    )
+                },
+            }
+        )
+    return plan
+
+
+def _merge_rebound_payload(source, destination):
+    merged = copy.deepcopy(destination)
+    for prefix in ("poster_", "background_"):
+        for key, value in source.items():
+            if key.startswith(prefix) and value not in (None, ""):
+                merged.setdefault(key, copy.deepcopy(value))
+    if source.get("destination_history"):
+        history = list(merged.get("destination_history") or [])
+        for event in source["destination_history"]:
+            if event not in history:
+                history.append(copy.deepcopy(event))
+        merged["destination_history"] = history[-100:]
+    source_seasons = source.get("seasons") or {}
+    destination_seasons = merged.setdefault("seasons", {})
+    for season_number, source_season in source_seasons.items():
+        if not isinstance(source_season, dict):
+            continue
+        destination_season = destination_seasons.setdefault(str(season_number), {})
+        if not isinstance(destination_season, dict):
+            destination_season = {}
+            destination_seasons[str(season_number)] = destination_season
+        for key, value in source_season.items():
+            if key.startswith("season_") and value not in (None, ""):
+                destination_season.setdefault(key, copy.deepcopy(value))
+    return merged
+
+
+def apply_library_rebinding(plan, *, path=None, now=None):
+    """Transfer only non-conflicting durable ownership to new Plex identities."""
+    current = _as_utc(now).isoformat()
+    connection = _connect(path, writable=True)
+    results = []
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for proposal in plan or []:
+                result = copy.deepcopy(proposal)
+                source = proposal.get("source") or {}
+                destination = proposal.get("destination") or {}
+                if proposal.get("status") != "ready" or not destination:
+                    result["applied"] = False
+                    results.append(result)
+                    continue
+                source_row = connection.execute(
+                    "SELECT payload FROM media_state WHERE cache_key=?",
+                    (source.get("cache_key"),),
+                ).fetchone()
+                destination_row = connection.execute(
+                    "SELECT payload FROM media_state WHERE cache_key=?",
+                    (destination.get("cache_key"),),
+                ).fetchone()
+                if source_row is None or destination_row is None:
+                    result.update(
+                        applied=False,
+                        status="stale_plan",
+                        reason="source or destination state changed after planning",
+                    )
+                    results.append(result)
+                    continue
+                source_assets = connection.execute(
+                    "SELECT * FROM asset_ownership WHERE cache_key=?",
+                    (source["cache_key"],),
+                ).fetchall()
+                conflict = None
+                for asset in source_assets:
+                    existing = connection.execute(
+                        "SELECT destination, checksum FROM asset_ownership "
+                        "WHERE cache_key=? AND asset_type=? AND season_number=?",
+                        (
+                            destination["cache_key"], asset["asset_type"],
+                            asset["season_number"],
+                        ),
+                    ).fetchone()
+                    if existing is not None and (
+                        normalize_destination(existing["destination"])
+                        != normalize_destination(asset["destination"])
+                        or str(existing["checksum"] or "") != str(asset["checksum"] or "")
+                    ):
+                        conflict = (
+                            f"destination already owns different {asset['asset_type']} "
+                            f"season {asset['season_number'] or 'root'}"
+                        )
+                        break
+                if conflict:
+                    result.update(applied=False, status="conflict", reason=conflict)
+                    results.append(result)
+                    continue
+                merged_payload = _merge_rebound_payload(
+                    _json_load(source_row[0], "source media state"),
+                    _json_load(destination_row[0], "destination media state"),
+                )
+                connection.execute(
+                    "UPDATE media_state SET payload=? WHERE cache_key=?",
+                    (_json_dump(merged_payload), destination["cache_key"]),
+                )
+                for asset in source_assets:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO asset_ownership(
+                            cache_key, media_type, tmdb_id, asset_type,
+                            season_number, source_path, destination, checksum
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            destination["cache_key"], asset["media_type"],
+                            asset["tmdb_id"], asset["asset_type"],
+                            asset["season_number"], asset["source_path"],
+                            asset["destination"], asset["checksum"],
+                        ),
+                    )
+                for table in ("item_exceptions", "identity_overrides"):
+                    rows = connection.execute(
+                        f"SELECT * FROM {table} WHERE server_id=? AND library_uuid=? "
+                        "AND rating_key=?",
+                        (
+                            source.get("server_id"), source.get("library_uuid"),
+                            source.get("rating_key"),
+                        ),
+                    ).fetchall()
+                    for row in rows:
+                        values = dict(row)
+                        values.update(
+                            server_id=destination.get("server_id"),
+                            library_uuid=destination.get("library_uuid"),
+                            library_name=destination.get("library_name"),
+                            rating_key=destination.get("rating_key"),
+                            updated_at=current,
+                        )
+                        columns = list(values)
+                        connection.execute(
+                            f"INSERT OR IGNORE INTO {table} "
+                            f"({','.join(columns)}) VALUES "
+                            f"({','.join('?' for _ in columns)})",
+                            [values[column] for column in columns],
+                        )
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE server_id=? AND library_uuid=? "
+                        "AND rating_key=?",
+                        (
+                            source.get("server_id"), source.get("library_uuid"),
+                            source.get("rating_key"),
+                        ),
+                    )
+                connection.execute(
+                    "UPDATE unresolved_work SET library_name=?, plex_rating_key=? "
+                    "WHERE library_name=? AND plex_rating_key=?",
+                    (
+                        destination.get("library_name"), destination.get("rating_key"),
+                        source.get("library_name"), source.get("rating_key"),
+                    ),
+                )
+                connection.execute(
+                    "UPDATE identity_review_queue SET library_name=?, library_uuid=?, "
+                    "server_id=?, rating_key=? WHERE library_name=? AND rating_key=?",
+                    (
+                        destination.get("library_name"), destination.get("library_uuid"),
+                        destination.get("server_id"), destination.get("rating_key"),
+                        source.get("library_name"), source.get("rating_key"),
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM item_retry_queue WHERE server_id=? AND library_uuid=? "
+                    "AND rating_key=?",
+                    (
+                        source.get("server_id"), source.get("library_uuid"),
+                        source.get("rating_key"),
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM identity_bindings WHERE server_id=? AND library_uuid=? "
+                    "AND rating_key=?",
+                    (
+                        source.get("server_id"), source.get("library_uuid"),
+                        source.get("rating_key"),
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM cleanup_candidates WHERE cache_key=?",
+                    (source.get("cache_key"),),
+                )
+                connection.execute(
+                    "DELETE FROM media_state WHERE cache_key=?",
+                    (source.get("cache_key"),),
+                )
+                details = {
+                    "asset_claims_transferred": len(source_assets),
+                    "plex_metadata_ownership_transferred": False,
+                    "active_identity_binding_transferred": False,
+                }
+                connection.execute(
+                    """
+                    INSERT INTO library_rebinding_history(
+                        occurred_at, source_server_id, source_library_uuid,
+                        source_library_name, source_rating_key,
+                        destination_server_id, destination_library_uuid,
+                        destination_library_name, destination_rating_key,
+                        media_type, tmdb_id, status, reason, details
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?)
+                    """,
+                    (
+                        current, source.get("server_id"), source.get("library_uuid"),
+                        source.get("library_name"), source.get("rating_key"),
+                        destination.get("server_id"), destination.get("library_uuid"),
+                        destination.get("library_name"), destination.get("rating_key"),
+                        proposal.get("media_type"), proposal.get("tmdb_id"),
+                        proposal.get("reason"), _json_dump(details),
+                    ),
+                )
+                result.update(applied=True, status="applied", details=details)
+                results.append(result)
+            connection.execute(
+                "DELETE FROM library_rebinding_history WHERE id NOT IN "
+                "(SELECT id FROM library_rebinding_history ORDER BY id DESC LIMIT ?)",
+                (REBIND_HISTORY_LIMIT,),
+            )
+        return results
+    finally:
+        connection.close()
+
+
+def load_library_rebinding_history(*, limit=1000, path=None):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='library_rebinding_history'"
+        ).fetchone()
+        if table is None:
+            return []
+        results = []
+        for row in connection.execute(
+            "SELECT * FROM library_rebinding_history ORDER BY id DESC LIMIT ?",
+            (max(1, min(REBIND_HISTORY_LIMIT, int(limit))),),
+        ).fetchall():
+            record = dict(row)
+            if record.get("details"):
+                record["details"] = _json_load(record["details"], "rebinding history")
+            results.append(record)
+        return results
+    finally:
+        connection.close()
 
 
 def maintain_state_database(path=None, wal_threshold_mb=8):

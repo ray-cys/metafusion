@@ -330,6 +330,13 @@ completes successfully. It is skipped when there is a missing library,
 incomplete season/episode inventory, item failure, invalid YAML, write failure,
 incremental-only run, or targeted run.
 
+An absence first becomes a durable pending candidate. By default, deletion
+requires two distinct authoritative full scans and a 48-hour grace period
+(`CLEANUP_CONFIRMATION_SCANS=2`, `CLEANUP_GRACE_HOURS=48`). Repeated checks in
+one job count once. If the item returns before eligibility, the candidate is
+cancelled. Both cancellation and completed changes are retained in SQLite
+cleanup history with Plex/TMDb/IMDb/TVDB identities where available.
+
 ### Kometa mode
 
 - Removes generated movie/show entries that no longer exist in Plex.
@@ -347,6 +354,12 @@ incremental-only run, or targeted run.
 
 Cleanup removes stale MetaFusion state records only. It does not delete local
 artwork, Kometa YAML/assets, or any Plex media file.
+
+`PLEX_CLEANUP_MANAGED_ARTWORK=True` is a separate, advanced opt-in. It can
+remove only an exact local artwork destination recorded for an eligible stale
+item when the current checksum still proves MetaFusion ownership. Modified,
+unmanaged, checksum-less, or symbolic-link files remain protected. Video and
+audio files are never candidates.
 
 The final cleanup summary explicitly labels this as state-only and reports
 cache records separately from Kometa YAML and artwork outcomes. A failed

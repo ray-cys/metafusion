@@ -65,6 +65,7 @@ modes](docs/modes.md) before choosing paths or enabling direct Plex metadata.
 | `PLEX_METADATA_POLICY` | `fill_missing` | Fill empty supported Plex fields without replacing existing values or crossing locks. |
 | `KOMETA_TAG_POLICY` | `append` | Add supported generated tags while preserving existing tags. |
 | `RUN_CLEANUP` | `False` | Do not reconcile stale generated output until explicitly enabled and dry-run reviewed. |
+| Cleanup confirmation | 2 scans plus 48 hours | Keep a missing item pending before any eligible state/output removal. |
 
 Keep these defaults for the first full run and use `DRY_RUN=True` before
 enabling cleanup or aggressive metadata/artwork replacement. The
@@ -82,6 +83,7 @@ Common destinations:
 - [Artwork fallback and attribution](docs/artwork-providers.md)
 - [Scheduling, incremental processing, SQLite, and troubleshooting](docs/operations.md)
 - [Diagnostics, audits, and reports](docs/diagnostics.md)
+- [Targeted lifecycle management, cleanup history, and recovery](docs/lifecycle-management.md)
 - [Support and version policy](SUPPORT.md)
 
 For production, pin an exact stable version. Use `develop` only for testing;

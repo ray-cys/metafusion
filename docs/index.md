@@ -27,6 +27,7 @@ a short project overview and first-run entry point.
 | --- | --- |
 | Choose a local check, connector preflight, audit, plan, or item explanation | [Diagnostics and support reports](diagnostics.md) |
 | Find every supported command-line flag | [CLI reference](operations.md#command-line-reference) |
+| Manage one item's output, exceptions, identity review, migrations, cleanup history, or recovery | [Lifecycle management](lifecycle-management.md) |
 | Report a problem and confirm the supported release lane | [Support and version policy](../SUPPORT.md) |
 
 ## Develop and release

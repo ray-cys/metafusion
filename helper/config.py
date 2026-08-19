@@ -639,6 +639,20 @@ def validate_config(config):
     except (TypeError, ValueError):
         pass
 
+    cleanup = config.get("cleanup", {})
+    try:
+        confirmations = int(cleanup.get("confirmation_scans", 2))
+        if confirmations < 1 or confirmations > 100:
+            errors.append("cleanup.confirmation_scans must be between 1 and 100")
+    except (TypeError, ValueError):
+        errors.append("cleanup.confirmation_scans must be an integer")
+    try:
+        grace_hours = float(cleanup.get("grace_hours", 48.0))
+        if grace_hours < 0 or grace_hours > 8760:
+            errors.append("cleanup.grace_hours must be between 0 and 8760")
+    except (TypeError, ValueError):
+        errors.append("cleanup.grace_hours must be numeric")
+
     metadata = config.get("metadata", {})
     assets = config.get("assets", {})
     asset_policy = str(assets.get("update_policy", "managed")).strip().lower()

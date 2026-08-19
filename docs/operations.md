@@ -81,6 +81,27 @@ or `config.yml` values.
 | Diagnostics | `--problems` | None | Print the persistent open unresolved-work ledger as JSON without contacting Plex or an artwork provider. |
 | Diagnostics | `--support-report` | None | Perform a local value-free configuration/build/state inventory, write it under `/config/reports`, and exit without contacting providers. |
 | Diagnostics | `--capture-replay` | None | Capture sanitized support data for items selected by `--rating-key`; writes a text manifest and JSON companion without changing metadata, artwork, or state. |
+| SQLite reports | `--state-report` | None | Generate human-readable and JSON reports entirely from recorded SQLite state; no provider, Plex, YAML, or artwork access occurs. |
+| SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
+| SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
+| SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
+| SQLite reports | `--history-source` | `automated` or `manual` | Filter `--cleanup-history-report`; repeat to select both. |
+| Output lifecycle | `--output-action` | `preview`, `remove`, `forget`, or `rebuild` | Inspect or manage only the checksum-proven output of exactly one recorded item. Requires a unique target. |
+| Output lifecycle | `--output-type` | `all`, `metadata`, `poster`, `background`, or `season` | Limit `--output-action`; defaults to `all`. |
+| Output lifecycle | `--season-number` | Integer | Limit season output management or a season exception to one Plex season, including `0` for Specials. |
+| Output lifecycle | `--acknowledge-metadata-loss` | None | Acknowledge that removing/rebuilding one Kometa YAML entry can also remove manual fields within that entry. |
+| Exceptions | `--exception-action` | `list`, `add`, or `remove` | Maintain a durable per-item processing exception selected by library/rating key. |
+| Exceptions | `--exception-output` | `all`, `metadata`, `plex_metadata`, `poster`, `background`, `season`, or `cleanup` | Select the output lane affected by `--exception-action add/remove`. |
+| Identity | `--identity-override-action` | `list`, `set`, or `remove` | Maintain an explicit durable Plex-item to TMDb binding. `set` uses exactly one `--tmdb-id`. |
+| Identity | `--identity-review-queue` | None | Generate text/JSON reports of persistent unresolved identity work from SQLite only. |
+| Audit trail | `--reason` | Text | Store an operator explanation with an added exception or identity override. |
+| Migration | `--library-rebind` | `plan` or `apply` | Safely transfer non-conflicting durable ownership after a library migration; always run `plan` first. |
+| Migration | `--from-library` | Library name or UUID | Select the already-recorded source for `--library-rebind`. |
+| Migration | `--to-library` | Library name or UUID | Select the already-scanned destination for `--library-rebind`. |
+| Recovery | `--recovery-bundle` | None | Create a redacted, verified bundle of durable state, configuration, ownership, and Kometa YAML; artwork/provider caches are excluded. |
+| Recovery | `--verify-recovery` | Bundle path | Offline-verify archive paths, hashes, manifest, and SQLite integrity. |
+| Configuration | `--config-impact` | Proposed `config.yml` path | Compare current and proposed effective values and explain affected behavior without processing. |
+| Plex artwork | `--plex-artwork-verify` | None | Read Plex's currently selected images and compare them with checksum-proven local artwork; never refreshes or changes Plex. |
 | Compatibility | `--compatibility-profile` | `auto`, `kometa-2.4`, or `plex-api-v1` | Override `COMPATIBILITY_PROFILE` for this command or run. An explicit profile must match `RUN_MODE`. |
 | Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
 | Targeting | `--rating-key` | Plex rating key | Process only the named item. Repeat the option or use comma-separated keys. Targeted runs disable cleanup. |
@@ -108,6 +129,11 @@ That guide documents provider contact, deliberate report writes, privacy,
 standalone-command rules, and the difference between cached item explanation
 and live provider artwork scoring. The table above remains the authoritative
 inventory of public flags.
+
+The [lifecycle management guide](lifecycle-management.md) provides complete
+workflows for targeted output management, exceptions, identity review,
+cleanup history, library rebinding, recovery bundles, SQLite reporting,
+configuration comparison, and Plex artwork adoption verification.
 
 Public CLI exit codes are `0` for success, `1` for an operational or connector
 failure, and `2` for invalid configuration or command combinations. Docker can
@@ -318,7 +344,10 @@ managed artwork removed, protected artwork preserved, unchanged valid artwork,
 and failures. Dry-run removals are listed individually as `Would remove`.
 Enable DEBUG only when exact cache keys, YAML season/episode entries, asset
 paths, or preserved unmanaged files are needed. In Plex mode the report labels
-cleanup as state-only; Kometa YAML, artwork, and Plex media remain untouched.
+cleanup as state-only by default. The advanced
+`PLEX_CLEANUP_MANAGED_ARTWORK=True` opt-in is documented in
+[Lifecycle management](lifecycle-management.md); Plex media files remain
+untouched in every case.
 
 ## Persistent state and I/O
 
@@ -326,7 +355,7 @@ MetaFusion uses separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
-| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities and bounded transition history, discovered-library inventory, artwork ownership, per-library full scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
+| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities/history, review queue and overrides, item exceptions, cleanup candidates/history, library rebinding history, discovered-library inventory, artwork ownership, per-library scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
 | `/config/cache/fanart_cache.sqlite3` | Compressed Fanart.tv artwork responses | Disposable; it shares the bounded provider-cache policy and can be rebuilt automatically. |
 
@@ -429,6 +458,13 @@ Shared reports and logs are:
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/support-report-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/release-qualification-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/state-report-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/cleanup-history-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/identity-review-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/output-management-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/library-rebinding-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/configuration-impact-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/plex-artwork-verification-YYYYMMDD-HHMMSSffffff.txt
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.

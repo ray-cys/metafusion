@@ -57,6 +57,9 @@ defaults:
     update_policy: managed
   cleanup:
     run_cleanup: false
+    confirmation_scans: 2
+    grace_hours: 48.0
+    plex_remove_managed_artwork: false
   runtime:
     max_concurrency: 0
     request_timeout: 30.0
@@ -1019,6 +1022,63 @@ settings:
     mask: false
     value: 'False'
     order: 47
+- name: CLEANUP_CONFIRMATION_SCANS
+  section: Scheduling and processing
+  description: Consecutive authoritative full scans that must confirm an item is absent before cleanup can act.
+  path:
+  - cleanup
+  - confirmation_scans
+  converter: safe_int
+  env_example: '2'
+  env_order: 102
+  compose: ${CLEANUP_CONFIRMATION_SCANS-}
+  compose_order: 100
+  unraid:
+    name: Cleanup Confirmation Scans
+    default: '2'
+    display: advanced
+    required: false
+    mask: false
+    value: '2'
+    order: 100
+- name: CLEANUP_GRACE_HOURS
+  section: Scheduling and processing
+  description: Minimum time an absent item remains pending after first detection before cleanup can act.
+  path:
+  - cleanup
+  - grace_hours
+  converter: safe_float
+  env_example: '48'
+  env_order: 103
+  compose: ${CLEANUP_GRACE_HOURS-}
+  compose_order: 101
+  unraid:
+    name: Cleanup Grace Period (Hours)
+    default: '48'
+    display: advanced
+    required: false
+    mask: false
+    value: '48'
+    order: 101
+- name: PLEX_CLEANUP_MANAGED_ARTWORK
+  section: Scheduling and processing
+  description: Opt in to deleting only checksum-verified MetaFusion-owned local artwork for Plex items confirmed absent; state-only cleanup is the default.
+  path:
+  - cleanup
+  - plex_remove_managed_artwork
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 104
+  compose: ${PLEX_CLEANUP_MANAGED_ARTWORK-}
+  compose_order: 102
+  unraid:
+    name: Plex Cleanup Managed Artwork
+    default: False|True
+    display: advanced
+    required: false
+    mask: false
+    value: 'False'
+    order: 102
 - name: MAX_CONCURRENCY
   section: Runtime, incremental, cache, and output
   description: Keep 0 for cgroup-aware automatic tuning. A positive value is an optional maximum for troubleshooting constrained
