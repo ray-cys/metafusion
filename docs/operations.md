@@ -260,7 +260,7 @@ rules determine whether the file may actually be replaced.
 
 Under `managed`, a run can also report `Adopted` artwork. This is a one-time
 ownership verification for an existing file that exactly matches the selected
-selected provider bytes; it does not rewrite the destination or alter filesystem ownership
+provider bytes; it does not rewrite the destination or alter filesystem ownership
 or permissions. The first verification run can therefore take longer and use
 more TMDb/network I/O than later runs.
 

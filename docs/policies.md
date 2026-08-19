@@ -55,7 +55,7 @@ The title can still be inventoried or queried when another task makes it due.
 #### `managed`
 
 This is the recommended default. When MetaFusion creates or replaces artwork,
-it records the destination path, SHA-256 checksum, selected provider source, score
+it records the destination path, SHA-256 checksum, selected provider source,
 score, and upgrade timestamp in durable state.
 
 An existing file is eligible only when:

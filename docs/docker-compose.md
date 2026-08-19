@@ -2,6 +2,9 @@
 
 This guide installs MetaFusion with the repository's hardened
 `docker-compose.yml`. For Unraid, use the separate [Unraid guide](unraid.md).
+Review the [operation-mode guide](modes.md) before choosing output paths or
+enabling direct Plex metadata. All guides are listed in the
+[documentation index](index.md).
 
 ## 1. Prepare the project
 

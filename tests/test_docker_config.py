@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -221,15 +222,66 @@ def test_deployment_docs_document_exact_image_pinning_and_rollback():
             readme,
             (REPO_ROOT / "docs" / "docker-compose.md").read_text(encoding="utf-8"),
             (REPO_ROOT / "docs" / "unraid.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "release-testing.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "SUPPORT.md").read_text(encoding="utf-8"),
         )
     )
 
-    assert "## Docker image tags and rollback" in readme
-    assert "docs/docker-compose.md#update-or-roll-back" in readme
-    assert "docs/unraid.md#update-or-roll-back" in readme
+    assert "docs/release-testing.md" in readme
+    assert "## CI and image lanes" in deployment_docs
+    assert "## Update or roll back" in deployment_docs
     assert "ghcr.io/ray-cys/metafusion:1.2.3" in deployment_docs
     assert "METAFUSION_IMAGE" in deployment_docs
     assert "sha-<full-commit>" in deployment_docs
+
+
+def test_readme_remains_a_concise_documentation_landing_page():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    required_links = {
+        "docs/index.md",
+        "docs/modes.md",
+        "docs/docker-compose.md",
+        "docs/unraid.md",
+        "docs/configuration.md",
+        "docs/policies.md",
+        "docs/operations.md",
+        "docs/diagnostics.md",
+        "docs/release-testing.md",
+        "SUPPORT.md",
+    }
+
+    assert len(readme.splitlines()) <= 150
+    assert len(readme.split()) <= 900
+    assert sorted(link for link in required_links if link not in readme) == []
+    assert "## Scheduling and incremental processing" not in readme
+    assert "## Output and persistent state" not in readme
+    assert "## Docker image tags and rollback" not in readme
+
+    index = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+    for guide in (
+        "modes.md",
+        "configuration.md",
+        "policies.md",
+        "artwork-providers.md",
+        "operations.md",
+        "diagnostics.md",
+        "release-testing.md",
+    ):
+        assert guide in index
+
+    for document in (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "docs" / "index.md",
+        REPO_ROOT / "docs" / "modes.md",
+    ):
+        text = document.read_text(encoding="utf-8")
+        for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
+            path = target.split("#", 1)[0]
+            if not path or "://" in path:
+                continue
+            assert (document.parent / path).resolve().exists(), (
+                f"Broken local documentation link in {document}: {target}"
+            )
 
 
 def test_docker_build_embeds_version_and_commit():

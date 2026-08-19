@@ -2,7 +2,9 @@
 
 MetaFusion supports environment variables, secret files, and
 `/config/config.yml`. The supplied Docker Compose and Unraid templates expose
-the same application settings.
+the same application settings. Choose the intended behavior first in
+[Kometa and Plex operation modes](modes.md); use the
+[documentation index](index.md) for task-oriented guides.
 
 The exhaustive [generated configuration table](configuration.generated.md),
 `.env.example`, `config_template.yml`, Docker Compose environment block, and
@@ -59,6 +61,11 @@ visible to Docker or Unraid administrators when supplied as environment
 variables. Fanart.tv fallback uses MetaFusion's bundled application project
 key and needs no user configuration. See [Artwork providers](artwork-providers.md)
 for its source order, reliability behavior, and attribution.
+
+Use Plex's guide for [finding an authentication
+token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+and TMDb's [API documentation](https://developer.themoviedb.org/docs) when
+creating the two required user credentials.
 
 ## Scheduling and processing
 

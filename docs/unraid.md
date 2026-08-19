@@ -3,6 +3,9 @@
 MetaFusion includes an [Unraid Docker template](../unraid/metafusion.xml) with
 all supported environment variables. Basic view shows the required and common
 settings; optional tuning and safety controls are under **Advanced View**.
+Review [Kometa and Plex operation modes](modes.md) before choosing media or
+Kometa path mappings. All guides are listed in the
+[documentation index](index.md).
 
 ## Install the template
 
