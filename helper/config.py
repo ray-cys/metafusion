@@ -174,6 +174,7 @@ def get_feature_flags(config):
         "enabled", False
     )
     feature_flags = {
+        "mode": str(config.get("settings", {}).get("mode", "kometa")).lower(),
         "dry_run": config.get("settings", {}).get("dry_run", False),
         "metadata_basic": config.get("metadata", {}).get("run_basic", True)
         and (not mode_check(config, "plex") or direct_plex_metadata),

@@ -112,9 +112,9 @@ def test_plex_metadata_progress_logs_start_and_completion(
             )
         )
 
-    assert "[Plex Metadata] Movies: 0/3 checked (0.0%)" in caplog.text
-    assert "[Plex Metadata] Movies: 3/3 checked (100.0%)" in caplog.text
-    assert "items changed: 0, API batches: 0, unchanged: 3, failed: 0" in caplog.text
+    assert "[Metadata] Plex progress | Movies | Checked=0/3 (0.0%)" in caplog.text
+    assert "[Metadata] Plex progress | Movies | Checked=3/3 (100.0%)" in caplog.text
+    assert "Changed=0 | APIBatches=0 | Unchanged=3 | Failed=0" in caplog.text
 
 
 def test_process_library_propagates_item_failures(monkeypatch, tmp_path):

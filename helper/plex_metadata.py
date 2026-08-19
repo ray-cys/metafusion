@@ -190,7 +190,7 @@ class PlexMetadataReporter:
             expired.unlink()
         logger = logging.getLogger(__name__)
         logger.info(
-            "[Plex Metadata] Summary - API batches: %d/%d, fields filled: %d, "
+            "[Metadata] Plex summary | API batches: %d/%d, fields filled: %d, "
             "tags added: %d, values removed: %d, unchanged: %d, "
             "existing values preserved: %d, source missing: %d, failed: %d.",
             self.writes,
@@ -210,7 +210,7 @@ class PlexMetadataReporter:
         }
         if any(safety_counts.values()):
             logger.warning(
-                "[Plex Metadata] Safety decisions - %s. See %s for field details.",
+                "[Metadata] Plex safety | %s | Report=%s",
                 ", ".join(
                     f"{name}: {count}" for name, count in safety_counts.items()
                 ),
@@ -218,7 +218,7 @@ class PlexMetadataReporter:
             )
         if self.dry_run:
             logger.info(
-                "[Plex Metadata] Dry run - would fill: %d, would remove: %d.",
+                "[Dry Run] [Metadata] Plex | Would fill: %d, would remove: %d",
                 self.counts.get("would_fill", 0),
                 self.counts.get("would_remove", 0),
             )
@@ -668,9 +668,9 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                 type(error).__name__,
             )
             logging.getLogger(__name__).error(
-                "[Plex Metadata] Failed %s for %s (%s)",
-                child_key or "item",
+                "[Metadata] Plex | %s | Failed %s | ErrorType=%s",
                 meta.get("title") or getattr(item, "title", "Unknown"),
+                child_key or "item",
                 type(error).__name__,
             )
     if not config.get("settings", {}).get("dry_run", False):
@@ -691,7 +691,7 @@ def _apply_candidate(item, candidate, config, meta, reporter):
                     _rollback_untracked_write(child, records)
                 except Exception:
                     logging.getLogger(__name__).exception(
-                        "[Plex Metadata] Failed to roll back an untracked write"
+                        "[Metadata] Plex | Failed to roll back an untracked write"
                     )
             failures += 1
             reporter.record(
@@ -734,21 +734,21 @@ async def apply_plex_metadata(item, candidate, config, meta):
         total_writes += result.get("writes", 0)
         if not result.get("failures"):
             if total_writes:
-                logging.getLogger(__name__).info(
-                    "[Plex Metadata] Updated %s using %d API batch(es); "
-                    "field details are recorded in the run report.",
+                logging.getLogger(__name__).debug(
+                    "[Metadata] Plex | %s | Applied %d API batch(es) | "
+                    "Field details are recorded in the run report",
                     title,
                     total_writes,
                 )
             elif config.get("settings", {}).get("dry_run", False):
                 logging.getLogger(__name__).debug(
-                    "[Plex Metadata] Dry-run evaluation completed for %s; "
+                    "[Dry Run] [Metadata] Plex | %s | Evaluation completed; "
                     "planned field actions are recorded in the run report.",
                     title,
                 )
             else:
                 logging.getLogger(__name__).debug(
-                    "[Plex Metadata] No API metadata changes required for %s.",
+                    "[Metadata] Plex | %s | No API changes required",
                     title,
                 )
             response = {"writes": total_writes, "failures": 0}
@@ -757,8 +757,8 @@ async def apply_plex_metadata(item, candidate, config, meta):
             return response
         if attempt < retries and delay:
             await asyncio.sleep(delay * attempt)
-    logging.getLogger(__name__).error(
-        "[Plex Metadata] Failed to complete metadata updates for %s after %d attempt(s).",
+    logging.getLogger(__name__).debug(
+        "[Metadata] Plex | %s | API update attempts exhausted | Attempts=%d",
         title,
         retries,
     )

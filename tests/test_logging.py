@@ -22,8 +22,8 @@ def test_unchanged_metadata_log_labels_completeness_percentages(caplog):
         )
 
     assert (
-        "[Kometa Metadata] No changes for Movie: 1917 (2019). "
-        "Completeness: 100% present, 0% missing."
+        "[Metadata] Kometa | Movie | 1917 (2019) | Unchanged | "
+        "FieldCoverage=100% | MissingFields=0%"
         in caplog.text
     )
     assert "(100%/0%) completed" not in caplog.text
@@ -66,16 +66,62 @@ def test_builder_asset_details_are_debug_to_avoid_duplicate_item_outcomes(caplog
             filesize=2048,
         )
     assert "Downloaded poster" in caplog.text
-    assert "No poster changes detected: Unchanged (2024)" in caplog.text
+    assert "Unchanged (2024) | Unchanged poster" in caplog.text
 
 
 def test_successful_kometa_yaml_write_is_info(caplog):
     with caplog.at_level(logging.INFO):
         log_processing_event(
-            "processing_metadata_saved", output_path="/config/metadata/movie.yml"
+            "processing_metadata_saved",
+            library_name="Movies",
+            output_path="/config/metadata/movie.yml",
+            changed_items=2,
+            normalized_entries=0,
         )
 
-    assert "YAML successfully saved" in caplog.text
+    assert "[Metadata] Movies | Saved Kometa YAML" in caplog.text
+    assert "ChangedItems=2 | NormalizedEntries=0" in caplog.text
+
+
+def test_routine_identity_and_mapping_outcomes_are_debug(caplog):
+    with caplog.at_level(logging.INFO):
+        log_builder_event(
+            "builder_tmdb_identity_alias",
+            media_type="TV Show",
+            full_title="Example (2024)",
+            reason="trusted external ID",
+        )
+        log_builder_event(
+            "builder_split_series_mapping",
+            media_type="TV Show",
+            full_title="Example (2024)",
+            seasons="1, 2",
+        )
+    assert "Example (2024)" not in caplog.text
+
+    with caplog.at_level(logging.DEBUG):
+        log_builder_event(
+            "builder_tmdb_identity_alias",
+            media_type="TV Show",
+            full_title="Example (2024)",
+            reason="trusted external ID",
+        )
+    assert "[Identity] TV Show | Example (2024) | Accepted alias" in caplog.text
+
+
+def test_artwork_failures_always_use_artwork_component(caplog):
+    with caplog.at_level(logging.ERROR):
+        log_builder_event(
+            "builder_asset_destination_collision",
+            media_type="Movie",
+            full_title="Example (2024)",
+            asset_type="poster",
+            destination="/assets/poster.jpg",
+            owner="movie:2",
+        )
+
+    assert "[Artwork] Movie | Example (2024)" in caplog.text
+    assert "Refused poster destination collision" in caplog.text
 
 
 def test_metadata_summaries_are_mode_specific():
@@ -148,11 +194,11 @@ def test_plex_progress_rate_limits_items_and_emits_heartbeat_and_final():
         force=True,
     ) is True
 
-    assert "Movies: 0/50 checked (0.0%)" in logger.lines[0]
-    assert "Movies: 5/50 checked (10.0%)" in logger.lines[1]
-    assert "Movies: 5/50 checked (10.0%)" in logger.lines[2]
-    assert "Movies: 50/50 checked (100.0%)" in logger.lines[3]
-    assert "items changed: 2, API batches: 3, unchanged: 47, failed: 1" in logger.lines[3]
+    assert "Movies | Checked=0/50 (0.0%)" in logger.lines[0]
+    assert "Movies | Checked=5/50 (10.0%)" in logger.lines[1]
+    assert "Movies | Checked=5/50 (10.0%)" in logger.lines[2]
+    assert "Movies | Checked=50/50 (100.0%)" in logger.lines[3]
+    assert "Changed=2 | APIBatches=3 | Unchanged=47 | Failed=1" in logger.lines[3]
 
 
 def test_banner_supports_logger_and_console_and_malformed_events_are_safe(capsys):

@@ -398,6 +398,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_missing_ids": "[Plex] Missing IDs for {title} ({year}): {missing_ids}. Extracted: {found_ids}",
         "plex_failed_extract_movie_path": "[Plex] Failed to extract movie path for {title} ({year}): {error}",
         "plex_failed_extract_show_path": "[Plex] Failed to extract show path for {title} ({year}): {error}",
+        "plex_failed_extract_seasons": "[Plex] Failed to extract explicit season inventory for {title} ({year}); episode-derived inventory will be used: {error}",
         "plex_failed_extract_seasons_episodes": "[Plex] Failed to extract seasons/episodes for {title} ({year}): {error}",
         "plex_operation_failed": "[Plex] {description} failed (attempt {attempt}/{retries}): {error}",
         "plex_circuit_open": "[Plex] {description} skipped while the provider circuit cools down ({retry_after:.1f}s remaining).",
@@ -418,6 +419,7 @@ def log_plex_event(event, logger=None, **kwargs):
         "plex_missing_ids": "debug",
         "plex_failed_extract_movie_path": "warning",
         "plex_failed_extract_show_path": "warning",
+        "plex_failed_extract_seasons": "warning",
         "plex_failed_extract_seasons_episodes": "warning",
         "plex_operation_failed": "warning",
         "plex_circuit_open": "warning",
@@ -471,7 +473,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
         "tmdb_non_200": "warning",
         "tmdb_response_too_large": "error",
         "tmdb_request_failed": "warning",
-        "tmdb_retrying": "info",
+        "tmdb_retrying": "debug",
         "tmdb_failed": "error",
         "tmdb_cache_stats": "debug",
         "tmdb_cache_degraded": "warning",
@@ -527,7 +529,7 @@ def log_fanart_event(event, logger=None, **kwargs):
         "fanart_request_failed": "warning",
         "fanart_retrying": "debug",
         "fanart_failed": "warning",
-        "fanart_cache_stats": "info",
+        "fanart_cache_stats": "debug",
         "fanart_cache_degraded": "warning",
     }
     msg = _format_event_message(
@@ -543,14 +545,14 @@ def log_processing_event(event, logger=None, **kwargs):
     messages = {
         "processing_no_item": "[Processing] No item found. Skipping...",
         "processing_unsupported_type": "[Processing] Unsupported library type for {full_title}. Skipping...",
-        "processing_failed_item": "[Processing] Failed to process {full_title}: {error}",
-        "processing_library_items": "[Processing] {library_name} library with {total_items} items detected.",
-        "processing_failed_metadata": "[Processing] Failed to process {media_type} for {title} ({year}): {error}",
-        "processing_failed_parse_yaml": "[Processing] Failed to parse YAML file: {output_path} ({error})",
-        "processing_metadata_saved": "[Processing] YAML successfully saved to {output_path}",
+        "processing_failed_item": "[Processing] Item | {full_title} | Failed | Error={error}",
+        "processing_library_items": "[Inventory] {library_name} | Available={library_items} | Selected={total_items} | Scan={scan_mode}",
+        "processing_failed_metadata": "[Metadata] {media_type} | {title} ({year}) | Failed to read Plex metadata | Error={error}",
+        "processing_failed_parse_yaml": "[Metadata] Kometa YAML | Failed to parse | Destination={output_path} | Error={error}",
+        "processing_metadata_saved": "[Metadata] {library_name} | Saved Kometa YAML | Destination={output_path} | ChangedItems={changed_items} | NormalizedEntries={normalized_entries}",
         "processing_cache_saved": "[Processing] Cache files saved.",
-        "processing_failed_write_metadata": "[Processing] Failed to write YAML: {error}",
-        "processing_metadata_dry_run": "[Dry Run] Metadata for {library_name} generated but not saved.",
+        "processing_failed_write_metadata": "[Metadata] {library_name} | Failed to write Kometa YAML | Destination={output_path} | Error={error}",
+        "processing_metadata_dry_run": "[Dry Run] [Metadata] {library_name} | Evaluated Kometa YAML | No file written",
         "processing_failed_library": "[Processing] Failed to process library '{library_name}': {error}",
         "processing_selection_reason": "[Processing] Selected {title} (rating key {rating_key}) from {library_name}: cause={causes}; work={work}",
         "processing_selection_summary": "[Processing] Selection summary for {library_name}: selected={selected}, unchanged/not due={skipped}, causes: {causes}",
@@ -590,60 +592,60 @@ def log_builder_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
     kwargs.setdefault("provider", "TMDb")
     messages = {
-        "builder_missing_tmdb_and_imdb_id": "[{media_type}] Missing TMDb or IMDb ID: {full_title}. Skipping...",
-        "builder_missing_tvdb_id_and_tmdb_id": "[{media_type}] Missing TVDb and TMDb ID: {full_title}. Skipping...",
-        "builder_missing_tvdb_id_and_imdb_id": "[{media_type}] Missing TVDb and IMDb ID: {full_title}. Skipping...",
-        "builder_no_tmdb_id": "[{media_type}] No TMDb identity could be resolved for {full_title}. Skipping...",
-        "builder_invalid_tmdb_id": "[{media_type}] TMDb returned no data for {full_title}. Skipping...",
-        "builder_tmdb_id_recovered": "[{media_type}] Recovered stale TMDb identity for {full_title}: {old_id} -> {new_id}.",
-        "builder_tmdb_identity_mismatch": "[{media_type}] Rejected TMDb identity for {full_title}: {reason}.",
-        "builder_tmdb_identity_warning": "[{media_type}] TMDb identity warning for {full_title}: {reason}.",
-        "builder_tmdb_identity_alias": "[{media_type}] Accepted TMDb identity alias for {full_title}: {reason}.",
-        "builder_no_tmdb_season_data": "[{media_type}] Missing TMDb data: {full_title} of Season {season_number}. Skipping...",
-        "builder_episode_group_fallback": "[{media_type}] Resolved alternate episode ordering for {full_title} with TMDb group {group_id}.",
-        "builder_split_series_mapping": "[{media_type}] Applied cross-provider season mapping for {full_title}: Plex season(s) {seasons}.",
-        "builder_split_series_show_preserved": "[{media_type}] Preserving top-level metadata and artwork for split series {full_title}; mapped season and episode updates remain enabled.",
-        "builder_episode_overrides": "[{media_type}] Applied {count} configured episode-number override(s) for {full_title}.",
-        "builder_episode_metadata_pending": "[{media_type}] TMDb metadata is not available yet for {count} Plex episode(s) in {full_title} ({episodes}); existing metadata is preserved.",
-        "builder_episode_order_unresolved": "[{media_type}] Could not safely map {count} Plex episode(s) for {full_title} ({episodes}); existing metadata is preserved.",
-        "builder_metadata_diagnostics": "[{media_type}] Metadata diagnostics for {full_title}: {diagnostics}",
-        "builder_no_metadata_changes": "[Kometa Metadata] No changes for {media_type}: {full_title}. Completeness: {percent}% present, {incomplete_percent}% missing.",
-        "build_metadata_changed": "[Kometa Metadata] Updated {media_type} entry prepared: {full_title} ({percent}% complete), TMDb ID: {tmdb_id}, {changes}",
-        "builder_no_existing_metadata": "[Kometa Metadata] New {media_type} entry prepared: {full_title}, TMDb ID: {tmdb_id}.",
-        "builder_plex_candidate_ready": "[Plex Metadata] Prepared TMDb candidate for {full_title}. Completeness: {percent}% present, {incomplete_percent}% missing.",
-        "builder_dry_run_metadata": "[Dry Run] Would build metadata for {media_type}: {full_title}",
-        "builder_metadata_cached": "[{media_type}] {full_title} cached as {cache_key}...",
-        "builder_dry_run_asset": "[Dry Run] Would build {asset_type} asset for {media_type}: {full_title}",
+        "builder_missing_tmdb_and_imdb_id": "[Identity] {media_type} | {full_title} | Missing required external ID | Expected=TMDb or IMDb",
+        "builder_missing_tvdb_id_and_tmdb_id": "[Identity] {media_type} | {full_title} | Missing required external ID | Expected=TVDb or TMDb",
+        "builder_missing_tvdb_id_and_imdb_id": "[Identity] {media_type} | {full_title} | Missing required external ID | Expected=TVDb or IMDb",
+        "builder_no_tmdb_id": "[Identity] {media_type} | {full_title} | TMDb identity unresolved | Action=Skipped",
+        "builder_invalid_tmdb_id": "[Identity] {media_type} | {full_title} | TMDb resource unavailable | Action=Skipped",
+        "builder_tmdb_id_recovered": "[Identity] {media_type} | {full_title} | Recovered stale TMDb identity | Old={old_id} | New={new_id}",
+        "builder_tmdb_identity_mismatch": "[Identity] {media_type} | {full_title} | Rejected TMDb identity | Reason={reason}",
+        "builder_tmdb_identity_warning": "[Identity] {media_type} | {full_title} | Identity requires review | Reason={reason}",
+        "builder_tmdb_identity_alias": "[Identity] {media_type} | {full_title} | Accepted alias | Reason={reason}",
+        "builder_no_tmdb_season_data": "[Metadata] {media_type} | {full_title} | Season {season_number} unavailable from TMDb | Existing values preserved",
+        "builder_episode_group_fallback": "[Mapping] {media_type} | {full_title} | Applied alternate episode ordering | TMDbGroup={group_id}",
+        "builder_split_series_mapping": "[Mapping] {media_type} | {full_title} | Applied cross-provider season mapping | PlexSeasons={seasons}",
+        "builder_split_series_show_preserved": "[Mapping] {media_type} | {full_title} | Preserved top-level metadata and artwork | Season and episode updates remain enabled",
+        "builder_episode_overrides": "[Mapping] {media_type} | {full_title} | Applied episode-number overrides | Count={count}",
+        "builder_episode_metadata_pending": "[Metadata] {media_type} | {full_title} | Episode metadata pending from TMDb | Count={count} | Episodes={episodes} | Existing values preserved",
+        "builder_episode_order_unresolved": "[Mapping] {media_type} | {full_title} | Episode mapping unresolved | Count={count} | Episodes={episodes} | Existing values preserved",
+        "builder_metadata_diagnostics": "[Metadata] {media_type} | {full_title} | Diagnostics={diagnostics}",
+        "builder_no_metadata_changes": "[Metadata] Kometa | {media_type} | {full_title} | Unchanged | FieldCoverage={percent}% | MissingFields={incomplete_percent}%",
+        "build_metadata_changed": "[Metadata] Kometa | {media_type} | {full_title} | Prepared update | FieldCoverage={percent}% | TMDbID={tmdb_id} | Changes={changes}",
+        "builder_no_existing_metadata": "[Metadata] Kometa | {media_type} | {full_title} | Prepared new entry | TMDbID={tmdb_id}",
+        "builder_plex_candidate_ready": "[Metadata] Plex | {full_title} | Prepared TMDb candidate | FieldCoverage={percent}% | MissingFields={incomplete_percent}%",
+        "builder_dry_run_metadata": "[Dry Run] [Metadata] {media_type} | {full_title} | Would evaluate metadata",
+        "builder_metadata_cached": "[Cache] {media_type} | {full_title} | Updated metadata state | Key={cache_key}",
+        "builder_dry_run_asset": "[Dry Run] [Artwork] {media_type} | {full_title} | Would evaluate {asset_type}",
         "builder_dry_run_asset_selected": "[Dry Run] [Artwork] {media_type} | {full_title} | Selected {asset_type} | Source={provider} | {source_path}",
         "builder_artwork_language_fallback": "[Artwork] {media_type} | {full_title} | Selected unrestricted-language {asset_type} | Source={provider} | Language={language}",
         "builder_reusing_shared_asset": "[Artwork] {media_type} | {full_title} | Reused shared {asset_type} | Source={provider} | Destination={destination}",
         "builder_asset_ownership_adopted": "[Artwork] {media_type} | {full_title} | Adopted existing {asset_type} | Source={provider} | Exact source matched without rewriting",
-        "builder_preserving_existing_asset": "[{media_type}] Preserving existing {asset_type} for {full_title} at {destination}: {reason}.",
-        "builder_asset_destination_collision": "[{media_type}] Refusing {asset_type} destination collision for {full_title} at {destination}; already claimed by {owner}.",
-        "builder_no_asset_path": "[{media_type}] Asset path could not be determined: {full_title} {extra}. Skipping...",
+        "builder_preserving_existing_asset": "[Artwork] {media_type} | {full_title} | Preserved {asset_type} | Destination={destination} | Reason={reason}",
+        "builder_asset_destination_collision": "[Artwork] {media_type} | {full_title} | Refused {asset_type} destination collision | Destination={destination} | Owner={owner}",
+        "builder_no_asset_path": "[Artwork] {media_type} | {full_title} | Missing {asset_type} destination | Detail={extra}",
         "builder_no_suitable_asset": "[Artwork] {media_type} | {full_title} | Missing {asset_type} | No provider candidate was available{extra}",
         "builder_downloading_asset": "[Artwork] {media_type} | {full_title} | Downloaded {asset_type} | Source={provider} | Size={filesize}",
         "builder_asset_download_failed": "[Artwork] {media_type} | {full_title} | Failed {asset_type} | Source={provider} | HTTP={status} | {error}",
         "builder_asset_upgraded": "[Artwork] {media_type} | {full_title} | Upgraded {asset_type} | Source={provider} | Size={filesize} | {reason}",
-        "builder_force_upgrade_stale": "[{media_type}] Force upgrade due to stale image: {full_title} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
-        "builder_already_up_to_date": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
-        "builder_no_upgrade_needed": "[{media_type}] No {asset_type} changes detected: {full_title} ({filesize}). Skipping...",
-        "builder_stale_candidate_downgrade": "[{media_type}] Preserving higher-quality {asset_type} for {full_title}; the stale replacement candidate is lower quality.",
-        "builder_no_image_for_compare": "[{media_type}] No image comparison: {full_title} {extra}. Skipping...",
-        "builder_error_image_compare": "[{media_type}] Failed to compare temp image checksum: {full_title} {extra}, {error}",
-        "builder_dry_run_asset_season": "[Dry Run] Would build {asset_type} asset for {media_type} Season {season_number}: {full_title}",
-        "builder_no_asset_path_season": "[{media_type}] Asset path could not be determined: {full_title} Season {season_number}. Skipping...",
-        "builder_no_season_details": "[{media_type}] No season details in library: {full_title} Season {season_number}. Skipping...",
+        "builder_force_upgrade_stale": "[Artwork] {media_type} | {full_title} | Stale {asset_type} selected for upgrade | Size={filesize} | LastUpgrade={last_upgraded} | AgeDays={stale_days}",
+        "builder_already_up_to_date": "[Artwork] {media_type} | {full_title} | Unchanged {asset_type} | Size={filesize}",
+        "builder_no_upgrade_needed": "[Artwork] {media_type} | {full_title} | Unchanged {asset_type} | Size={filesize}",
+        "builder_stale_candidate_downgrade": "[Artwork] {media_type} | {full_title} | Preserved higher-quality {asset_type} | Reason=Replacement candidate scored lower",
+        "builder_no_image_for_compare": "[Artwork] {media_type} | {full_title} | Image comparison unavailable | Detail={extra}",
+        "builder_error_image_compare": "[Artwork] {media_type} | {full_title} | Image comparison failed | Detail={extra} | Error={error}",
+        "builder_dry_run_asset_season": "[Dry Run] [Artwork] {media_type} | {full_title} | Would evaluate Season {season_number} {asset_type}",
+        "builder_no_asset_path_season": "[Artwork] {media_type} | {full_title} | Missing Season {season_number} poster destination",
+        "builder_no_season_details": "[Artwork] {media_type} | {full_title} | Season {season_number} details unavailable",
         "builder_no_suitable_asset_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Missing {asset_type} | No provider candidate was available",
         "builder_downloading_asset_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Downloaded {asset_type} | Source={provider} | Size={filesize}",
         "builder_asset_download_failed_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Failed {asset_type} | Source={provider} | HTTP={status} | {error}",
         "builder_asset_upgraded_season": "[Artwork] {media_type} | {full_title} Season {season_number} | Upgraded {asset_type} | Source={provider} | Size={filesize} | {reason}",
-        "builder_force_upgrade_stale_season": "[{media_type}] Force upgrade due to stale image: {full_title} Season {season_number} ({filesize}), Last upgraded: {last_upgraded} on {stale_days} days ago",
-        "builder_already_up_to_date_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
-        "builder_no_upgrade_needed_season": "[{media_type}] No season {asset_type} changes detected: {full_title} Season {season_number} ({filesize}). Skipping...",
-        "builder_stale_candidate_downgrade_season": "[{media_type}] Preserving higher-quality season {asset_type} for {full_title} Season {season_number}; the stale replacement candidate is lower quality.",
-        "builder_no_image_for_compare_season": "[{media_type}] No image comparison: {full_title} Season {season_number}. Skipping...",
-        "builder_error_image_compare_season": "[{media_type}] Failed to compare temp image checksum: {full_title} Season {season_number}: {error}",
+        "builder_force_upgrade_stale_season": "[Artwork] {media_type} | {full_title} | Season {season_number} poster selected for stale upgrade | Size={filesize} | LastUpgrade={last_upgraded} | AgeDays={stale_days}",
+        "builder_already_up_to_date_season": "[Artwork] {media_type} | {full_title} | Unchanged Season {season_number} {asset_type} | Size={filesize}",
+        "builder_no_upgrade_needed_season": "[Artwork] {media_type} | {full_title} | Unchanged Season {season_number} {asset_type} | Size={filesize}",
+        "builder_stale_candidate_downgrade_season": "[Artwork] {media_type} | {full_title} | Preserved higher-quality Season {season_number} {asset_type} | Reason=Replacement candidate scored lower",
+        "builder_no_image_for_compare_season": "[Artwork] {media_type} | {full_title} | Season {season_number} image comparison unavailable",
+        "builder_error_image_compare_season": "[Artwork] {media_type} | {full_title} | Season {season_number} image comparison failed | Error={error}",
     }
     levels = {
         "builder_missing_tmdb_and_imdb_id": "warning",
@@ -654,8 +656,13 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_tmdb_id_recovered": "warning",
         "builder_tmdb_identity_mismatch": "error",
         "builder_tmdb_identity_warning": "warning",
+        "builder_tmdb_identity_alias": "debug",
         "builder_no_tmdb_season_data": "warning",
-        "builder_episode_group_fallback": "info",
+        "builder_episode_group_fallback": "debug",
+        "builder_split_series_mapping": "debug",
+        "builder_split_series_show_preserved": "debug",
+        "builder_episode_overrides": "debug",
+        "builder_episode_metadata_pending": "debug",
         "builder_episode_order_unresolved": "warning",
         "builder_metadata_diagnostics": "debug",
         "builder_no_metadata_changes": "debug",
@@ -676,7 +683,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_downloading_asset": "debug",
         "builder_asset_download_failed": "debug",
         "builder_asset_upgraded": "debug",
-        "builder_force_upgrade_stale": "info",
+        "builder_force_upgrade_stale": "debug",
         "builder_already_up_to_date": "debug",
         "builder_no_upgrade_needed": "debug",
         "builder_stale_candidate_downgrade": "warning",
@@ -684,12 +691,12 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_error_image_compare": "error",
         "builder_dry_run_asset_season": "info",
         "builder_no_asset_path_season": "warning",
-        "builder_no_season_details": "info",
+        "builder_no_season_details": "debug",
         "builder_no_suitable_asset_season": "debug",
         "builder_downloading_asset_season": "debug",
         "builder_asset_download_failed_season": "debug",
         "builder_asset_upgraded_season": "debug",
-        "builder_force_upgrade_stale_season": "info",
+        "builder_force_upgrade_stale_season": "debug",
         "builder_already_up_to_date_season": "debug",
         "builder_no_upgrade_needed_season": "debug",
         "builder_stale_candidate_downgrade_season": "warning",
@@ -796,7 +803,7 @@ def log_item_outcomes(
     feature_flags = feature_flags or {}
     stats = stats or {}
 
-    def emit(component, asset, action, source, detail=None):
+    def emit(component, subject, action, source, target=None, detail=None):
         if action in {None, "not_due"}:
             return
         labels = {
@@ -810,11 +817,14 @@ def log_item_outcomes(
             "deferred": "Deferred",
         }
         outcome = labels.get(action, str(action).replace("_", " ").title())
-        target = f" {asset}" if asset else ""
+        if subject:
+            outcome = f"{str(subject).title()} {outcome.lower()}"
         message = (
             f"[{component}] {library_name} | {full_title} | "
-            f"{outcome}{target} | Source={source}"
+            f"{outcome} | Source={source}"
         )
+        if target:
+            message += f" | Target={target}"
         if detail:
             message += f" | {detail}"
         if action == "failed":
@@ -833,15 +843,31 @@ def log_item_outcomes(
             completeness = f"{float(stats.get('percent') or 0):g}%"
         except (TypeError, ValueError):
             completeness = "unknown"
-        emit(
-            "Metadata",
-            "metadata",
-            metadata_action,
-            f"TMDb → {mode}",
-            f"Completeness={completeness}",
-        )
+        details = [f"FieldCoverage={completeness}"]
+        if feature_flags.get("plex_metadata", False):
+            details.append(f"APIBatches={int(stats.get('plex_metadata_writes', 0))}")
+        emit("Metadata", None, metadata_action, "TMDb", mode, " | ".join(details))
 
     providers = stats.get("artwork_providers") or {}
+    artwork_target = (
+        "Plex local media"
+        if feature_flags.get("mode") == "plex"
+        else "Kometa assets"
+    )
+
+    def provider_label(provider_value, action):
+        provider_key = str(provider_value or "")
+        known = {
+            "tmdb": "TMDb",
+            "fanart": "Fanart.tv",
+            "plex": "Plex",
+        }.get(provider_key)
+        if known:
+            return known
+        if action in {"skipped", "preserved"}:
+            return "Existing"
+        return "None"
+
     for asset, action_key in (
         ("poster", "poster_action"),
         ("background", "background_action"),
@@ -849,13 +875,8 @@ def log_item_outcomes(
         action = stats.get(action_key)
         if action == "not_due":
             continue
-        provider_key = str(providers.get(asset) or "")
-        provider = {
-            "tmdb": "TMDb",
-            "fanart": "Fanart.tv",
-            "plex": "Plex",
-        }.get(provider_key, "Existing/none")
-        emit("Artwork", asset, action, provider)
+        provider = provider_label(providers.get(asset), action)
+        emit("Artwork", asset, action, provider, artwork_target)
 
     season_actions = stats.get("season_poster_actions") or {}
     if season_actions:
@@ -869,20 +890,57 @@ def log_item_outcomes(
             provider_value = season_providers.get(season_number)
             if provider_value is None:
                 provider_value = season_providers.get(str(season_number))
-            provider_key = str(provider_value or "")
-            label = {
-                "tmdb": "TMDb",
-                "fanart": "Fanart.tv",
-                "plex": "Plex",
-            }.get(provider_key, "Existing/none")
+            label = provider_label(provider_value, action)
             provider_counts[label] = provider_counts.get(label, 0) + 1
         if action_counts:
+            action_labels = {
+                "downloaded": "Downloaded",
+                "upgraded": "Upgraded",
+                "adopted": "Adopted",
+                "skipped": "Unchanged",
+                "preserved": "Preserved",
+                "missing": "Missing",
+                "failed": "Failed",
+                "deferred": "Deferred",
+            }
             action_detail = ", ".join(
-                f"{name}={count}" for name, count in sorted(action_counts.items())
+                f"{action_labels.get(name, name.title())}={count}"
+                for name, count in sorted(action_counts.items())
             )
             provider_detail = ", ".join(
                 f"{name}={count}" for name, count in sorted(provider_counts.items())
             )
+            attempt_status_labels = {
+                "no_candidates": "no candidates",
+                "no_candidate": "no explicit season thumb",
+                "reserve": "below requirements",
+                "selected": "selected",
+                "selected_best_available": "selected as best available",
+            }
+            missing_details = []
+            season_attempts = stats.get("season_artwork_attempts") or {}
+            for season_number, action in sorted(
+                season_actions.items(),
+                key=lambda value: (-1 if value[0] is None else int(value[0])),
+            ):
+                if action != "missing":
+                    continue
+                attempts = season_attempts.get(season_number)
+                if attempts is None:
+                    attempts = season_attempts.get(str(season_number), [])
+                attempt_text = ", ".join(
+                    f"{attempt.get('provider', 'Unknown')}:"
+                    f"{attempt_status_labels.get(attempt.get('status'), attempt.get('status', 'unknown'))}"
+                    for attempt in attempts
+                )
+                season_label = (
+                    "unknown"
+                    if season_number is None
+                    else f"S{int(season_number):02d}"
+                )
+                missing_details.append(
+                    f"{season_label} ({attempt_text or 'provider attempts unavailable'})"
+                )
             quiet_actions = set(action_counts).issubset({"skipped", "preserved"})
             level = (
                 logger.error
@@ -894,11 +952,18 @@ def log_item_outcomes(
                 else logger.info
             )
             level(
-                "[Artwork] %s | %s | Season posters | %s | Sources=%s",
+                "[Artwork] %s | %s | Season posters | %s | Sources=%s | "
+                "Target=%s%s",
                 library_name,
                 full_title,
                 action_detail,
                 provider_detail,
+                artwork_target,
+                (
+                    f" | MissingSeasons={'; '.join(missing_details)}"
+                    if missing_details
+                    else ""
+                ),
             )
 
 def log_cleanup_event(event, logger=None, **kwargs):
@@ -1057,8 +1122,8 @@ class PlexMetadataProgress:
             else 100.0
         )
         self.logger.info(
-            "[Plex Metadata] %s: %d/%d checked (%.1f%%); "
-            "items changed: %d, API batches: %d, unchanged: %d, failed: %d.",
+            "[Metadata] Plex progress | %s | Checked=%d/%d (%.1f%%) | "
+            "Changed=%d | APIBatches=%d | Unchanged=%d | Failed=%d",
             self.library_name,
             completed,
             self.total_items,
@@ -1155,8 +1220,9 @@ def log_library_summary(
         lines.extend(box_line(metadata_summary, box_width))
     if run_metadata:
         meta_line = (
-            f"Metadata - Complete: {completed}/{total_items} ({percent_complete}%), "
-            f"Incomplete: {incomplete} ({percent_incomplete}%)"
+            f"Metadata coverage - Meets threshold: {completed}/{total_items} "
+            f"({percent_complete}%), Below threshold: {incomplete} "
+            f"({percent_incomplete}%)"
         )
         lines.extend(box_line(meta_line, box_width))
        
@@ -1165,18 +1231,22 @@ def log_library_summary(
             f"Poster - Downloaded: {library_summary.get('poster_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('poster_upgraded', 0)}, "
             f"Adopted: {library_summary.get('poster_adopted', 0)}, "
-            f"Skipped: {library_summary.get('poster_skipped', 0)}, "
+            f"Unchanged: {library_summary.get('poster_skipped', 0)}, "
+            f"Not due: {library_summary.get('poster_not_due', 0)}, "
             f"Preserved: {library_summary.get('poster_preserved', 0)}, "
             f"Missing: {library_summary.get('poster_missing', 0)}, "
+            f"Deferred: {library_summary.get('poster_deferred', 0)}, "
             f"Failed: {library_summary.get('poster_failed', 0)}", box_width))
     if feature_flags and feature_flags.get("background", False) and (library_type in ("movie", "tv", "show")):
         lines.extend(box_line(
             f"Background - Downloaded: {library_summary.get('background_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('background_upgraded', 0)}, "
             f"Adopted: {library_summary.get('background_adopted', 0)}, "
-            f"Skipped: {library_summary.get('background_skipped', 0)}, "
+            f"Unchanged: {library_summary.get('background_skipped', 0)}, "
+            f"Not due: {library_summary.get('background_not_due', 0)}, "
             f"Preserved: {library_summary.get('background_preserved', 0)}, "
             f"Missing: {library_summary.get('background_missing', 0)}, "
+            f"Deferred: {library_summary.get('background_deferred', 0)}, "
             f"Failed: {library_summary.get('background_failed', 0)}", box_width))
     if (
         feature_flags and feature_flags.get("season", False)
@@ -1186,7 +1256,10 @@ def log_library_summary(
             library_summary.get('season_poster_upgraded', 0) > 0 or
             library_summary.get('season_poster_adopted', 0) > 0 or
             library_summary.get('season_poster_skipped', 0) > 0 or
+            library_summary.get('season_poster_not_due', 0) > 0 or
+            library_summary.get('season_poster_preserved', 0) > 0 or
             library_summary.get('season_poster_missing', 0) > 0 or
+            library_summary.get('season_poster_deferred', 0) > 0 or
             library_summary.get('season_poster_failed', 0) > 0
         )
     ):
@@ -1194,9 +1267,11 @@ def log_library_summary(
             f"Season - Downloaded: {library_summary.get('season_poster_downloaded', 0)}, "
             f"Upgraded: {library_summary.get('season_poster_upgraded', 0)}, "
             f"Adopted: {library_summary.get('season_poster_adopted', 0)}, "
-            f"Skipped: {library_summary.get('season_poster_skipped', 0)}, "
+            f"Unchanged: {library_summary.get('season_poster_skipped', 0)}, "
+            f"Not due: {library_summary.get('season_poster_not_due', 0)}, "
             f"Preserved: {library_summary.get('season_poster_preserved', 0)}, "
             f"Missing: {library_summary.get('season_poster_missing', 0)}, "
+            f"Deferred: {library_summary.get('season_poster_deferred', 0)}, "
             f"Failed: {library_summary.get('season_poster_failed', 0)}", box_width))
 
     asset_summaries = []
@@ -1267,9 +1342,27 @@ def log_final_summary(
     artwork_written = sum(
         overall[key]
         for key in (
-            "poster_downloaded", "poster_upgraded", "poster_adopted",
-            "background_downloaded", "background_upgraded", "background_adopted",
-            "season_poster_downloaded", "season_poster_upgraded", "season_poster_adopted",
+            "poster_downloaded", "poster_upgraded",
+            "background_downloaded", "background_upgraded",
+            "season_poster_downloaded", "season_poster_upgraded",
+        )
+    )
+    artwork_adopted = sum(
+        overall[key]
+        for key in (
+            "poster_adopted", "background_adopted", "season_poster_adopted"
+        )
+    )
+    artwork_unchanged = sum(
+        overall[key]
+        for key in (
+            "poster_skipped", "background_skipped", "season_poster_skipped"
+        )
+    )
+    artwork_not_due = sum(
+        overall[key]
+        for key in (
+            "poster_not_due", "background_not_due", "season_poster_not_due"
         )
     )
     artwork_preserved = sum(
@@ -1284,6 +1377,12 @@ def log_final_summary(
         overall[key]
         for key in ("poster_failed", "background_failed", "season_poster_failed")
     )
+    artwork_deferred = sum(
+        overall[key]
+        for key in (
+            "poster_deferred", "background_deferred", "season_poster_deferred"
+        )
+    )
     lines.extend(box_line(
         f"Overall - Titles: {total_titles} | Metadata created/updated: "
         f"{overall['meta_downloaded'] + overall['meta_upgraded']} | "
@@ -1291,8 +1390,10 @@ def log_final_summary(
         box_width,
     ))
     lines.extend(box_line(
-        f"Artwork - Written/adopted: {artwork_written} | Preserved: "
-        f"{artwork_preserved} | Missing: {artwork_missing} | Failed: {artwork_failed}",
+        f"Artwork - Written: {artwork_written} | Adopted: {artwork_adopted} | "
+        f"Unchanged: {artwork_unchanged} | Not due: {artwork_not_due} | "
+        f"Preserved: {artwork_preserved} | Missing: {artwork_missing} | "
+        f"Deferred: {artwork_deferred} | Failed: {artwork_failed}",
         box_width,
     ))
     if providers:
@@ -1301,7 +1402,10 @@ def log_final_summary(
             f"{labels.get(name, name.title())}: {count}"
             for name, count in sorted(providers.items())
         )
-        lines.extend(box_line(f"Artwork providers - {provider_text}", box_width))
+        lines.extend(box_line(
+            f"Artwork selected providers (written/adopted) - {provider_text}",
+            box_width,
+        ))
 
     total_asset_size = sum(library_filesize.values())
     for lib, summary in metadata_summaries.items():
@@ -1348,27 +1452,33 @@ def log_final_summary(
             if percent_incomplete is None:
                 percent_incomplete = 100 - summary["percent_complete"]
             lines.extend(box_line(
-                f"Metadata - Complete: {summary['complete']}/{summary['total_items']} ({summary['percent_complete']}%), "
-                f"Incomplete: {summary['incomplete']} ({percent_incomplete}%)", box_width))
+                f"Metadata coverage - Meets threshold: "
+                f"{summary['complete']}/{summary['total_items']} "
+                f"({summary['percent_complete']}%), Below threshold: "
+                f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
             lines.extend(box_line(
-                f"Poster - Downloaded: {libsum.get('poster_downloaded', 0)}, "
+                f"Artwork poster - Downloaded: {libsum.get('poster_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('poster_upgraded', 0)}, "
                 f"Adopted: {libsum.get('poster_adopted', 0)}, "
-                f"Skipped: {libsum.get('poster_skipped', 0)}, "
+                f"Unchanged: {libsum.get('poster_skipped', 0)}, "
+                f"Not due: {libsum.get('poster_not_due', 0)}, "
                 f"Preserved: {libsum.get('poster_preserved', 0)}, "
                 f"Missing: {libsum.get('poster_missing', 0)}, "
+                f"Deferred: {libsum.get('poster_deferred', 0)}, "
                 f"Failed: {libsum.get('poster_failed', 0)}", box_width))
 
         if feature_flags and feature_flags.get("background", False) and library_type in ("movie", "tv", "show"):
             lines.extend(box_line(
-                f"Background - Downloaded: {libsum.get('background_downloaded', 0)}, "
+                f"Artwork background - Downloaded: {libsum.get('background_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('background_upgraded', 0)}, "
                 f"Adopted: {libsum.get('background_adopted', 0)}, "
-                f"Skipped: {libsum.get('background_skipped', 0)}, "
+                f"Unchanged: {libsum.get('background_skipped', 0)}, "
+                f"Not due: {libsum.get('background_not_due', 0)}, "
                 f"Preserved: {libsum.get('background_preserved', 0)}, "
                 f"Missing: {libsum.get('background_missing', 0)}, "
+                f"Deferred: {libsum.get('background_deferred', 0)}, "
                 f"Failed: {libsum.get('background_failed', 0)}", box_width))
 
         if (
@@ -1379,18 +1489,22 @@ def log_final_summary(
                 libsum.get('season_poster_upgraded', 0) > 0 or
                 libsum.get('season_poster_adopted', 0) > 0 or
                 libsum.get('season_poster_skipped', 0) > 0 or
+                libsum.get('season_poster_not_due', 0) > 0 or
                 libsum.get('season_poster_preserved', 0) > 0 or
                 libsum.get('season_poster_missing', 0) > 0 or
+                libsum.get('season_poster_deferred', 0) > 0 or
                 libsum.get('season_poster_failed', 0) > 0
             )
         ):
             lines.extend(box_line(
-                f"Season - Downloaded: {libsum.get('season_poster_downloaded', 0)}, "
+                f"Artwork season posters - Downloaded: {libsum.get('season_poster_downloaded', 0)}, "
                 f"Upgraded: {libsum.get('season_poster_upgraded', 0)}, "
                 f"Adopted: {libsum.get('season_poster_adopted', 0)}, "
-                f"Skipped: {libsum.get('season_poster_skipped', 0)}, "
+                f"Unchanged: {libsum.get('season_poster_skipped', 0)}, "
+                f"Not due: {libsum.get('season_poster_not_due', 0)}, "
                 f"Preserved: {libsum.get('season_poster_preserved', 0)}, "
                 f"Missing: {libsum.get('season_poster_missing', 0)}, "
+                f"Deferred: {libsum.get('season_poster_deferred', 0)}, "
                 f"Failed: {libsum.get('season_poster_failed', 0)}", box_width))
 
         library_providers = libsum.get("artwork_provider_writes") or {}
@@ -1400,10 +1514,14 @@ def log_final_summary(
                 f"{labels.get(name, name.title())}: {count}"
                 for name, count in sorted(library_providers.items())
             )
-            lines.extend(box_line(f"Artwork providers - {provider_text}", box_width))
+            lines.extend(box_line(
+                f"Artwork selected providers (written/adopted) - {provider_text}",
+                box_width,
+            ))
 
         lines.extend(box_line(
-            f"Assets - {human_readable_size(asset_size)} / {human_readable_size(total_asset_size)}", box_width))
+            f"Artwork bytes - {human_readable_size(asset_size)} / "
+            f"{human_readable_size(total_asset_size)}", box_width))
         lines.append(border)
 
     if cleanup_result is not None and getattr(cleanup_result, "failed_reason", None):

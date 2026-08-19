@@ -51,6 +51,15 @@ HTTPS and a Fanart.tv host. Plex artwork must use the exact configured Plex
 scheme and server, with the Plex token sent as a header rather than in the URL.
 Redirects are rejected.
 
+For TV seasons, MetaFusion uses the season thumbnail already exposed on Plex
+episode records as its fast path. If a present season has no such thumbnail,
+it reads Plex season objects once and caches their explicit thumbnails.
+Season artwork is evaluated only for seasons present in the authoritative Plex
+inventory; a future or unrelated TMDb season does not create a false missing
+warning. Specials use Season 0 when Season 0 exists in Plex. Split-series
+mappings retain the Plex destination season while querying TMDb and Fanart.tv
+with the configured source season.
+
 Fallback advances because a provider has no candidate or its candidate does
 not meet the configured hard dimensions. It does not automatically switch an
 entire run to another provider after a selected image suffers a transient
@@ -60,11 +69,16 @@ upstream outage.
 
 ## Logs and diagnostics
 
-Changed item logs identify `Source=TMDb`, `Source=Fanart.tv`, or `Source=Plex`.
-The final summary counts successful artwork writes by provider and includes
-only libraries processed in the run. Detailed request/cache activity is
-available at `LOG_LEVEL=DEBUG`; authorization, rate limiting, malformed
-responses, and provider exhaustion are warnings.
+Changed item logs identify `Source=TMDb`, `Source=Fanart.tv`, or `Source=Plex`
+and distinguish the Kometa-assets or Plex-local-media target. Preserved output
+uses `Source=Existing`; a missing outcome uses `Source=None`. Season warnings
+name missing season numbers and report whether TMDb and Fanart.tv had no
+candidates and whether Plex exposed an explicit season thumbnail. The final
+summary separates writes, adoption, unchanged, not-due, preserved, missing,
+deferred, and failed outcomes and counts successful writes/adoptions by
+provider. Detailed request/cache activity is available at `LOG_LEVEL=DEBUG`;
+authorization, rate limiting, malformed responses, and provider exhaustion are
+warnings.
 
 `--asset-audit`, `--library-audit`, and `--plan` reports show the selected
 provider, provider image ID when available, selection reason, candidate count,

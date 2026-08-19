@@ -158,7 +158,9 @@ async def _select_artwork_with_fallback(
     tmdb_id,
     tvdb_id=None,
     season_number=None,
+    plex_season_number=None,
     session=None,
+    attempts_out=None,
 ):
     """Select TMDb, Fanart.tv, Plex, then the strongest below-minimum reserve."""
     attempts = []
@@ -205,6 +207,8 @@ async def _select_artwork_with_fallback(
         selected["selection_reason"] = "primary provider met requirements"
         selected["provider_attempts"] = attempts
         selected["candidate_pool"] = tmdb_pool
+        if attempts_out is not None:
+            attempts_out.extend(attempts)
         return selected
 
     fanart_pool = await fanart_artwork_candidates(
@@ -239,10 +243,19 @@ async def _select_artwork_with_fallback(
         selected["selection_reason"] = "TMDb had no acceptable candidate"
         selected["provider_attempts"] = attempts
         selected["candidate_pool"] = fanart_pool
+        if attempts_out is not None:
+            attempts_out.extend(attempts)
         return selected
 
     plex_candidate = _plex_artwork_candidate(
-        config, meta, asset_type, season_number=season_number
+        config,
+        meta,
+        asset_type,
+        season_number=(
+            plex_season_number
+            if plex_season_number is not None
+            else season_number
+        ),
     )
     attempts.append(
         {
@@ -257,6 +270,8 @@ async def _select_artwork_with_fallback(
         )
         plex_candidate["provider_attempts"] = attempts
         plex_candidate["candidate_pool"] = [plex_candidate]
+        if attempts_out is not None:
+            attempts_out.extend(attempts)
         return plex_candidate
 
     reserves = [candidate for candidate in (tmdb_best, fanart_best) if candidate]
@@ -288,7 +303,11 @@ async def _select_artwork_with_fallback(
         selected["candidate_pool"] = (
             tmdb_pool if _candidate_provider(selected) == "tmdb" else fanart_pool
         )
+        if attempts_out is not None:
+            attempts_out.extend(attempts)
         return selected
+    if attempts_out is not None:
+        attempts_out.extend(attempts)
     return None
 
 
@@ -2122,13 +2141,14 @@ async def _build_tv(
     background_action = "skipped" if run_background else "not_due"
     season_poster_actions: dict[int | None, str] = {}
     season_candidate_sources: dict[int, str] = {}
-    result = {
+    result: dict[str, Any] = {
         "poster": {"size": 0},
         "background": {"size": 0},
         "season_poster": {"size": 0},
         "season_posters": {}, 
         "artwork_providers": {},
         "season_artwork_providers": {},
+        "season_artwork_attempts": {},
     }
     if not any((run_metadata, run_poster, run_background, run_season)):
         return {
@@ -2419,6 +2439,17 @@ async def _build_tv(
         )
     season_infos = [
         season_info_by_number[number] for number in sorted(season_info_by_number)
+    ]
+    plex_season_numbers = {
+        int(number)
+        for number in (
+            meta.get("plex_seasons")
+            or (seasons_episodes or {}).keys()
+        )
+    }
+    artwork_season_infos = [
+        season_info_by_number.get(number, {"season_number": number})
+        for number in sorted(plex_season_numbers)
     ]
     if mapped_inventory_seasons:
         log_builder_event(
@@ -3268,28 +3299,22 @@ async def _build_tv(
             season_poster_actions[season_number] = "skipped"
             return
         
-        season_details = await get_season_details(season_number)
-        if not season_details:
-            log_builder_event("builder_no_season_details", media_type="TV Show", full_title=full_title, season_number=season_number)
-            _record_artwork_gap(
-                config, "tmdb_failure", "TV Show", full_title,
-                f"season {season_number} poster",
-                "TMDb season details were unavailable",
-            )
-            season_poster_actions[season_number] = "failed"
-            return
-
+        season_details = await get_season_details(season_number) or {}
         images = get_meta_field(season_details, "posters", [], path=["images"])
-        source_tmdb_id, _source_season_number = season_source(season_number)
+        source_tmdb_id, source_season_number = season_source(season_number)
+        provider_attempts: list[dict[str, Any]] = []
         best = await _select_artwork_with_fallback(
             config, meta, images, asset_type="season", media_type="tv",
             tmdb_id=source_tmdb_id,
             tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
-            season_number=season_number,
+            season_number=source_season_number,
+            plex_season_number=season_number,
             session=session,
+            attempts_out=provider_attempts,
         )
         candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
+            result["season_artwork_attempts"][season_number] = provider_attempts
             log_builder_event(
                 "builder_no_suitable_asset_season", media_type="TV Show", asset_type="poster",
                 full_title=full_title, season_number=season_number
@@ -3509,7 +3534,7 @@ async def _build_tv(
         process_tv_background,
     ]
     if feature_flags and feature_flags.get("season", True):
-        for season_info in season_infos:
+        for season_info in artwork_season_infos:
             season_number = season_info.get("season_number")
             if season_number is not None:
                 artwork_operations.append(

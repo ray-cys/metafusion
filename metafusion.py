@@ -1083,7 +1083,7 @@ async def metafusion_main(config, logger):
                     if maintenance_failures:
                         raise RuntimeError("; ".join(maintenance_failures))
                     logger.info(
-                        "[Plex Metadata] %s completed for %d item(s)",
+                        "[Metadata] Plex maintenance | Action=%s | Items=%d",
                         maintenance_action,
                         len(found_keys),
                     )
@@ -1370,7 +1370,10 @@ def run_metafusion_job(config, logger, runtime_status=None):
             try:
                 report_path = finish_plex_metadata_run(config)
                 if report_path:
-                    logger.info("[Plex Metadata] Report saved to %s", report_path)
+                    logger.info(
+                        "[Diagnostics] Plex metadata report saved to %s",
+                        report_path,
+                    )
             except Exception as caught:
                 success = False
                 error = f"Failed to write Plex metadata report: {caught}"

@@ -1222,6 +1222,81 @@ def test_tv_builder_writes_specials_episodes_and_all_assets(monkeypatch, tmp_pat
     assert len(existing_assets) == 4
 
 
+def test_tv_builder_limits_season_artwork_to_authoritative_plex_inventory(
+    monkeypatch, tmp_path
+):
+    install_successful_asset_mocks(monkeypatch)
+    details = tv_details()
+    details["seasons"] = [
+        {"season_number": 0},
+        {"season_number": 1},
+        {"season_number": 2},
+    ]
+    tmdb_response_cache["tv/200"] = details
+    tmdb_response_cache["tv/200/season/1"] = season_details(1)
+    meta = tv_meta()
+    meta["plex_seasons"] = [1]
+    meta["seasons_episodes"] = {1: [1]}
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                poster=False,
+                background=False,
+                season=True,
+            ),
+            existing_assets=set(),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["season_poster_actions"] == {1: "downloaded"}
+    assert set(result["season_posters"]) == {1}
+
+
+def test_tv_builder_uses_plex_season_artwork_when_tmdb_season_is_unavailable(
+    monkeypatch, tmp_path
+):
+    install_successful_asset_mocks(monkeypatch)
+    tmdb_response_cache["tv/200"] = tv_details()
+
+    async def no_fanart(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(builder, "fanart_artwork_candidates", no_fanart)
+    meta = tv_meta()
+    meta["plex_seasons"] = [0]
+    meta["seasons_episodes"] = {0: [1]}
+    meta["plex_artwork"] = {
+        "seasons": {0: "/library/metadata/season-0/thumb"}
+    }
+
+    result = asyncio.run(
+        builder.build_tv(
+            build_config(tmp_path),
+            {"metadata": {}},
+            feature_flags=feature_flags(
+                metadata_basic=False,
+                metadata_enhanced=False,
+                poster=False,
+                background=False,
+                season=True,
+            ),
+            existing_assets=set(),
+            meta=meta,
+            session=object(),
+        )
+    )
+
+    assert result["season_poster_actions"] == {0: "downloaded"}
+    assert result["season_artwork_providers"] == {0: "plex"}
+
+
 def test_episode_crew_uses_only_episode_credits_and_preserves_missing_values(
     monkeypatch, tmp_path
 ):

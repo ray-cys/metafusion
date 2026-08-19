@@ -462,6 +462,50 @@ def test_selector_falls_through_fanart_plex_and_best_available(monkeypatch):
     assert "best available" in selected["selection_reason"]
 
 
+def test_season_selector_uses_source_number_for_providers_and_plex_target(
+    monkeypatch,
+):
+    config = artwork_config()
+    config["tmdb"]["artwork_allow_any_language"] = True
+    observed = []
+
+    async def no_unfiltered(*_args, **kwargs):
+        observed.append(("tmdb", kwargs.get("season_number")))
+        return {}
+
+    async def no_fanart(*_args, **kwargs):
+        observed.append(("fanart", kwargs.get("season_number")))
+        return []
+
+    monkeypatch.setattr(builder, "tmdb_unfiltered_images", no_unfiltered)
+    monkeypatch.setattr(builder, "fanart_artwork_candidates", no_fanart)
+    attempts = []
+
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            {"plex_artwork": {"seasons": {5: "/library/metadata/5/thumb"}}},
+            [],
+            asset_type="season",
+            media_type="tv",
+            tmdb_id=99,
+            season_number=2,
+            plex_season_number=5,
+            session=object(),
+            attempts_out=attempts,
+        )
+    )
+
+    assert observed == [("tmdb", 2), ("fanart", 2)]
+    assert selected["provider"] == "plex"
+    assert selected["provider_image_id"] == "/library/metadata/5/thumb"
+    assert [attempt["provider"] for attempt in attempts] == [
+        "TMDb",
+        "Fanart.tv",
+        "Plex",
+    ]
+
+
 def test_primary_tmdb_candidate_avoids_unneeded_fanart_request(monkeypatch):
     async def unexpected(*_args, **_kwargs):
         raise AssertionError("Fanart.tv must remain a fallback")
@@ -553,11 +597,45 @@ def test_aligned_item_logging_identifies_metadata_and_artwork_sources(caplog):
         "background_action": "missing",
         "artwork_providers": {"poster": "fanart"},
     }
-    flags = {"plex_metadata": False}
+    flags = {"plex_metadata": False, "mode": "kometa"}
 
     with caplog.at_level(logging.INFO):
         log_item_outcomes("Movies", "Example (2024)", stats, flags)
 
-    assert "Created metadata | Source=TMDb → Kometa YAML" in caplog.text
-    assert "Downloaded poster | Source=Fanart.tv" in caplog.text
-    assert "Missing background | Source=Existing/none" in caplog.text
+    assert "Created | Source=TMDb | Target=Kometa YAML" in caplog.text
+    assert "Poster downloaded | Source=Fanart.tv | Target=Kometa assets" in caplog.text
+    assert "Background missing | Source=None | Target=Kometa assets" in caplog.text
+
+
+def test_season_artwork_warning_names_missing_season_and_provider_attempts(caplog):
+    stats = {
+        "metadata_action": "not_due",
+        "poster_action": "not_due",
+        "background_action": "not_due",
+        "season_poster_actions": {0: "missing", 1: "skipped"},
+        "season_artwork_providers": {1: "tmdb"},
+        "season_artwork_attempts": {
+            0: [
+                {"provider": "TMDb", "status": "no_candidates"},
+                {"provider": "Fanart.tv", "status": "no_candidates"},
+                {"provider": "Plex", "status": "no_candidate"},
+            ]
+        },
+    }
+
+    with caplog.at_level(logging.WARNING):
+        log_item_outcomes(
+            "TV Shows",
+            "Example (2024)",
+            stats,
+            {"mode": "plex"},
+        )
+
+    assert "Missing=1, Unchanged=1" in caplog.text
+    assert "Sources=None=1, TMDb=1" in caplog.text
+    assert "Target=Plex local media" in caplog.text
+    assert (
+        "MissingSeasons=S00 (TMDb:no candidates, Fanart.tv:no candidates, "
+        "Plex:no explicit season thumb)"
+        in caplog.text
+    )

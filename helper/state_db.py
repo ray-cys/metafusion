@@ -1844,7 +1844,9 @@ def load_identity_binding(
                 )
             except StateDatabaseError as error:
                 logging.getLogger(__name__).warning(
-                    "Unable to record identity-binding history: %s", error
+                    "[Identity] Binding history | Failed to record mismatch | "
+                    "Error=%s",
+                    error,
                 )
         return None
     if not touch:

@@ -163,5 +163,8 @@ def test_final_summary_reports_season_failures_without_other_season_actions():
     )
 
     report = "\n".join(logger.lines)
-    assert "Season - Downloaded: 0, Upgraded: 0, Adopted: 0" in report
+    assert (
+        "Artwork season posters - Downloaded: 0, Upgraded: 0, Adopted: 0"
+        in report
+    )
     assert "Failed: 1" in report

@@ -443,16 +443,26 @@ reports identify fields and outcomes. Reports are bounded.
 default is `10`.
 
 At the default `LOG_LEVEL=INFO`, each changed item uses the same compact
-`Library | Title | Outcome | Source` structure for metadata and artwork.
-Routine unchanged/preserved checks and detailed provider requests remain at
-`DEBUG`; missing, deferred, and failed outcomes are warnings or errors. One
-final report combines only the libraries processed by that run, with metadata,
-artwork, provider, and failure totals. The older standalone per-library summary
+`[Component] Library | Title | Outcome | Source | Target` structure. Metadata
+uses `Source=TMDb` with `Target=Kometa YAML` or `Target=Plex`; artwork names
+TMDb, Fanart.tv, or Plex and targets Kometa assets or Plex local media.
+`FieldCoverage` describes populated expected fields; it does not decide the
+log level. A 100% record that changed remains `INFO`, while an unchanged 100%
+record remains `DEBUG`.
+
+Routine accepted identities, successful mappings, unchanged/preserved checks,
+provider requests, cache details, and internal API batches remain at `DEBUG`.
+Missing or deferred outcomes are warnings and failed outcomes are errors.
+Season-poster warnings name the missing Plex season and summarize the provider
+attempts. One final report combines only the libraries processed by that run
+and includes written, adopted, unchanged, not-due, preserved, missing,
+deferred, failed, and provider totals. The older standalone per-library summary
 blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
 totals are warnings; the corresponding `plex-metadata-*.txt` report retains
 field-level audit details.
 
-Direct Plex metadata progress is automatic and not configurable. Small
+Direct Plex metadata progress is automatic and not configurable. It uses the
+`[Metadata] Plex progress` component. Small
 libraries report every 5 items or 10%, medium libraries every 25 items or 5%,
 and large libraries every 100 items or 5%, whichever interval is larger. A
 30-second minimum gap prevents log flooding, a 60-second heartbeat covers slow
