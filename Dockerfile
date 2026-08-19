@@ -20,8 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.lock .
-RUN python -m pip install --require-hashes -r requirements.lock
+COPY requirements.txt .
+RUN python -m pip install --require-hashes -r requirements.txt
 
 COPY --chown=10001:10001 . /app
 RUN mkdir -p /config /config/logs /config/cache /kometa \

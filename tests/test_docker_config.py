@@ -95,7 +95,7 @@ def test_dockerfile_uses_stable_python_minor_without_os_upgrade():
     assert dockerfile.startswith("FROM python:3.13-slim-bookworm@sha256:")
     assert "apt-get upgrade" not in dockerfile
     assert "PIP_NO_CACHE_DIR=1" in dockerfile
-    assert "--require-hashes -r requirements.lock" in dockerfile
+    assert "--require-hashes -r requirements.txt" in dockerfile
     assert "USER 10001:10001" not in dockerfile
     assert 'ENTRYPOINT ["python", "/app/docker_entrypoint.py"]' in dockerfile
     assert '"--healthcheck"' in dockerfile
@@ -115,11 +115,50 @@ def test_docker_build_context_excludes_development_only_content():
         "asset",
         "docs",
         "requirements-dev.in",
-        "requirements-dev.lock",
+        "requirements-dev.txt",
         "requirements.in",
-        "requirements.txt",
         "unraid",
     } <= exclusions
+    assert "requirements.txt" not in exclusions
+
+
+def test_generated_dependency_manifests_are_self_contained_and_in_sync():
+    runtime_input = (REPO_ROOT / "requirements.in").read_text(encoding="utf-8")
+    runtime_manifest = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    dev_input = (REPO_ROOT / "requirements-dev.in").read_text(encoding="utf-8")
+    dev_manifest = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+
+    pin_pattern = re.compile(r"(?m)^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\\\s]+)")
+
+    def pins(document):
+        return {
+            name.lower().replace("_", "-"): version
+            for name, version in pin_pattern.findall(document)
+        }
+
+    def assert_hashed(document):
+        blocks = re.split(
+            r"(?m)(?=^[A-Za-z0-9][A-Za-z0-9_.-]*==)", document
+        )
+        package_blocks = [
+            block
+            for block in blocks
+            if pin_pattern.match(block)
+        ]
+        assert package_blocks
+        assert all("--hash=sha256:" in block for block in package_blocks)
+
+    runtime_input_pins = pins(runtime_input)
+    runtime_pins = pins(runtime_manifest)
+    dev_input_pins = pins(dev_input)
+    dev_pins = pins(dev_manifest)
+
+    assert re.search(r"(?m)^\s*(?:-r|--requirement)\s+", runtime_manifest) is None
+    assert runtime_input_pins.items() <= runtime_pins.items()
+    assert dev_input_pins.items() <= dev_pins.items()
+    assert runtime_pins.items() <= dev_pins.items()
+    assert_hashed(runtime_manifest)
+    assert_hashed(dev_manifest)
 
 
 def test_release_docs_match_local_feature_branch_publication_policy():
