@@ -88,7 +88,10 @@ def validate_manifest(
         raise ContractError(f"Invalid Kometa repository: {repository}")
     if not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", image):
         raise ContractError(f"Invalid Kometa image: {image}")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", schema_path):
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", schema_path)
+        or ".." in Path(schema_path).parts
+    ):
         raise ContractError(f"Invalid Kometa schema path: {schema_path}")
 
     contracts = {}

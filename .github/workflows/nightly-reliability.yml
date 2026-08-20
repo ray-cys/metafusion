@@ -84,9 +84,12 @@ jobs:
         run: |
           if test -f .coveragerc-provider-tools; then
             pytest -q tests/test_provider_compatibility_bot.py \
+              tests/test_phase27_provider_coverage.py \
               --cov=tools.provider_compatibility \
               --cov-config=.coveragerc-provider-tools --cov-branch \
-              --cov-report=term-missing --cov-fail-under=85
+              --cov-report=term-missing --cov-report=json:provider-coverage.json \
+              --cov-fail-under=0
+            python tools/check_provider_coverage.py provider-coverage.json
           else
             pytest -q tests/test_provider_compatibility_bot.py \
               --cov=tools.provider_compatibility --cov-config=/dev/null \
