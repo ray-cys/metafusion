@@ -48,6 +48,27 @@ protected; only untagged, unreferenced versions older than 30 days are eligible,
 and the newest 50 untagged versions are retained. Manual runs default to
 report-only mode.
 
+## Nightly reliability automation
+
+The read-only `Nightly reliability` workflow is defined on `main`, which is the
+default branch required by GitHub's scheduled-workflow service. Every day at
+18:17 UTC (02:17 Asia/Singapore), it explicitly checks out and qualifies both
+`main` and `develop`. The non-zero minute avoids the busiest top-of-hour
+scheduling window.
+
+For both branches it runs Python 3.10/3.13 tests, coverage and targeted floors,
+static analysis, generated configuration checks, provider contracts, Kometa
+corpus generation, dependency audit, the representative performance workload,
+Docker builds, CLI smoke tests, and fixable-critical vulnerability scans. It
+uses no live Plex or provider credentials and never publishes a container.
+`workflow_dispatch` remains available for an immediate manual run.
+
+GitHub sends scheduled-run notifications to the account associated with the
+schedule. Enable email under **Settings → Notifications → System → Actions**
+and select failed-workflow-only notifications if successful nightly mail is not
+wanted. Test and performance reports are retained as workflow artifacts for 14
+days.
+
 ## Provider compatibility automation
 
 `.github/provider-contracts.json` is the single source of truth for the Kometa

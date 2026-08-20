@@ -336,6 +336,27 @@ def test_docker_build_embeds_version_and_commit():
     assert "METAFUSION_COMMIT=${{ github.sha }}" in workflow
 
 
+def test_nightly_reliability_qualifies_main_and_develop_without_publishing():
+    workflow = (REPO_ROOT / ".github/workflows/nightly-reliability.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'cron: "17 18 * * *"' in workflow
+    assert "branch: [main, develop]" in workflow
+    assert 'python-version: ["3.10", "3.13"]' in workflow
+    assert "ref: ${{ matrix.branch }}" in workflow
+    assert "--cov-fail-under=85" in workflow
+    assert "--cov-fail-under=100" in workflow
+    assert "provider_compatibility.py verify" in workflow
+    assert "performance_regression.py" in workflow
+    assert "pip-audit" in workflow
+    assert "docker build" in workflow
+    assert "--severity CRITICAL" in workflow
+    assert "contents: read" in workflow
+    assert "packages: write" not in workflow
+    assert "docker push" not in workflow
+
+
 def test_unraid_template_exposes_every_container_environment_variable():
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     expected = set(compose["services"]["metafusion"]["environment"])
