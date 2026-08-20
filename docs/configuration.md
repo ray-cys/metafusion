@@ -168,6 +168,10 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 
+`TMDB_CHANGE_RECHECKS` and `UPGRADE_CANARY` require no per-library values. Their
+checkpoint, first-run, failure, and report behavior is documented in [runtime
+safeguards and application verification](runtime-safeguards.md).
+
 Artwork age comes from saved MetaFusion observations, not filesystem mtime.
 Decimal day values are accepted (`0.5` is 12 hours). Missing artwork is
 rechecked sooner and stable unchanged candidates back off automatically; these
