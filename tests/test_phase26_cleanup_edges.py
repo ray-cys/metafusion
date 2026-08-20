@@ -171,7 +171,7 @@ def test_cleanup_dry_run_covers_tv_title_season_episode_and_pending_candidates(
 
 def test_plex_cleanup_checksum_and_scope_matrix(monkeypatch, tmp_path):
     _patch_state(monkeypatch)
-    root = tmp_path / "media"
+    root = tmp_path / "movie"
     outside = tmp_path / "outside" / "poster.jpg"
     no_checksum = root / "no-checksum" / "poster.jpg"
     checksum_error = root / "checksum-error" / "poster.jpg"
@@ -265,3 +265,128 @@ def test_plex_cleanup_dry_run_and_state_only(monkeypatch, tmp_path):
         )
     )
     assert result.assets == 0
+
+
+def test_cleanup_rejects_malformed_yaml_and_reports_cache_commit_failure(
+    monkeypatch, tmp_path
+):
+    _patch_state(monkeypatch)
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    (metadata_dir / "movie_metadata.yml").write_text(
+        "metadata: []\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cleanup, "load_cache", lambda: {})
+    with pytest.raises(cleanup.CleanupError, match="Failed to clean metadata file"):
+        asyncio.run(
+            cleanup.cleanup_title_orphans(
+                _config(tmp_path),
+                _flags(),
+                preloaded_plex_metadata={},
+                safe_library_types={"movie"},
+            )
+        )
+
+    class FailingCache(dict):
+        def __delitem__(self, key):
+            raise OSError(f"cannot delete {key}")
+
+    monkeypatch.setattr(
+        cleanup,
+        "load_cache",
+        lambda: FailingCache(
+            {
+                "movie:Old:2000": {
+                    "media_type": "movie",
+                    "title": "Old",
+                    "year": 2000,
+                    "rating_key": "1",
+                }
+            }
+        ),
+    )
+    with pytest.raises(cleanup.CleanupError, match="update cleanup state cache") as caught:
+        asyncio.run(
+            cleanup.cleanup_title_orphans(
+                _config(tmp_path, mode="plex"),
+                _flags(),
+                preloaded_plex_metadata={},
+                safe_library_types={"movie"},
+            )
+        )
+    assert caught.value.result.failed_reason == "state cache changes could not be committed"
+
+
+@pytest.mark.parametrize("failure", [asyncio.CancelledError(), ValueError("bad checksum")])
+def test_cleanup_asset_task_propagates_cancel_and_normalizes_unexpected_failures(
+    monkeypatch, tmp_path, failure
+):
+    _patch_state(monkeypatch)
+    root = tmp_path / "assets"
+    poster = root / "movie" / "Old (2000)" / "poster.jpg"
+    poster.parent.mkdir(parents=True)
+    poster.write_bytes(b"poster")
+    cache = {
+        "movie:Old:2000": {
+            "media_type": "movie",
+            "title": "Old",
+            "year": 2000,
+            "rating_key": "1",
+            "poster_path": str(poster),
+            "poster_checksum": cleanup.sha256_file(poster),
+        }
+    }
+    monkeypatch.setattr(cleanup, "load_cache", lambda: cache)
+    monkeypatch.setattr(
+        cleanup,
+        "sha256_file",
+        lambda _path: (_ for _ in ()).throw(failure),
+    )
+
+    expected = asyncio.CancelledError if isinstance(failure, asyncio.CancelledError) else cleanup.CleanupError
+    with pytest.raises(expected):
+        asyncio.run(
+            cleanup.cleanup_title_orphans(
+                _config(tmp_path),
+                _flags(metadata_basic=False, metadata_enhanced=False),
+                asset_path=root,
+                preloaded_plex_metadata={},
+                safe_library_types={"movie"},
+            )
+        )
+
+
+def test_cleanup_empty_directory_failure_retains_completed_result(monkeypatch, tmp_path):
+    _patch_state(monkeypatch)
+    root = tmp_path / "assets"
+    poster = root / "movie" / "Old (2000)" / "poster.jpg"
+    poster.parent.mkdir(parents=True)
+    poster.write_bytes(b"poster")
+    cache = {
+        "movie:Old:2000": {
+            "media_type": "movie",
+            "title": "Old",
+            "year": 2000,
+            "rating_key": "1",
+            "poster_path": str(poster),
+            "poster_checksum": cleanup.sha256_file(poster),
+        }
+    }
+    monkeypatch.setattr(cleanup, "load_cache", lambda: cache)
+    monkeypatch.setattr(
+        cleanup,
+        "_directory_is_empty",
+        lambda _path: (_ for _ in ()).throw(OSError("directory busy")),
+    )
+
+    with pytest.raises(cleanup.CleanupError, match="empty asset directory") as caught:
+        asyncio.run(
+            cleanup.cleanup_title_orphans(
+                _config(tmp_path),
+                _flags(metadata_basic=False, metadata_enhanced=False),
+                asset_path=root,
+                preloaded_plex_metadata={},
+                safe_library_types={"movie"},
+            )
+        )
+    assert caught.value.result.assets == 1

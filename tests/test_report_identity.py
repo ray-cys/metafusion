@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 
 from helper import state_db
 from helper.diagnostics import (
@@ -134,7 +135,7 @@ def test_artwork_asset_and_adoption_json_share_identity_contract(tmp_path):
 
 def test_unresolved_work_persists_identity_and_upgrades_schema_five(tmp_path):
     database = tmp_path / "meta_db.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.executescript(
             """
             CREATE TABLE unresolved_work (
@@ -169,7 +170,7 @@ def test_unresolved_work_persists_identity_and_upgrades_schema_five(tmp_path):
     records = state_db.reconcile_unresolved_work([problem], path=database)
 
     _assert_identity(records[0])
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert (
             connection.execute("PRAGMA user_version").fetchone()[0]
             == state_db.SCHEMA_VERSION

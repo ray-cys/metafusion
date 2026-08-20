@@ -3,6 +3,7 @@ import json
 import shutil
 import sqlite3
 from collections import namedtuple
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,7 +80,7 @@ def test_tmdb_cache_recovers_missing_metadata_and_prunes_old_quarantines(tmp_pat
     cache = PersistentTTLCache()
     cache.configure(path)
     cache.reset_memory()
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("PRAGMA user_version = 99")
 
     for index in range(7):
@@ -91,7 +92,7 @@ def test_tmdb_cache_recovers_missing_metadata_and_prunes_old_quarantines(tmp_pat
 
     assert recovered.stats()["health"] == "recovered"
     assert len(list(tmp_path.glob("tmdb_cache.sqlite3*.corrupt-*"))) == 4
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT entry_count FROM tmdb_cache_meta WHERE singleton = 1"
         ).fetchone() == (0,)
@@ -295,7 +296,7 @@ def test_state_read_only_legacy_schema_without_asset_ownership_is_safe(
     monkeypatch.setattr(state_db, "_integrity_checked_databases", set())
     monkeypatch.setattr(state_db, "_initialized_databases", set())
     database = tmp_path / "legacy-state.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(f"PRAGMA user_version = {state_db.SCHEMA_VERSION}")
 
     store = MediaStateStore(database, writable=False)

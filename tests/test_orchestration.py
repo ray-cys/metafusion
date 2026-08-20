@@ -1140,12 +1140,14 @@ def test_idle_scheduler_stops_promptly_on_sigterm(tmp_path):
 
         started = time.monotonic()
         process.terminate()
-        process.wait(timeout=3)
+        process.communicate(timeout=3)
         elapsed = time.monotonic() - started
     finally:
         if process.poll() is None:
             process.kill()
-            process.wait(timeout=3)
+            process.communicate(timeout=3)
+        elif process.stdout is not None:
+            process.stdout.close()
 
     assert process.returncode == 0
     assert elapsed < 3

@@ -76,10 +76,11 @@ path discovery, identity inspection, provider mappings, pagination, and
 temporary-disconnect tests. The scheduled workflow also runs that replay suite
 weekly. Actual Plex credentials and server behavior remain covered by an
 operator's explicit `--compatibility-check` and Unraid soak test.
-The provider-maintenance script itself has an enforced 85% targeted coverage
-floor so release automation cannot silently lose its failure-path tests. It
-uses `.coveragerc-provider-tools`, keeping that operational-tool measurement
-independent from the application-runtime aggregate.
+The provider-maintenance script itself has independently enforced 95% line and
+95% branch coverage floors so release automation cannot silently lose its
+failure-path tests. It uses `.coveragerc-provider-tools`, keeping that
+operational-tool measurement independent from the application-runtime
+aggregate.
 
 ## Python dependency manifests
 
@@ -109,11 +110,11 @@ continues to install only `requirements.txt` with `--require-hashes`.
 Before promoting `develop` to `main`:
 
 1. All required CI tests and the critical-vulnerability image scan pass.
-2. Application-runtime line coverage stays at or above 95%, application-runtime
-   branch coverage stays at or above 85%, and high-risk modules meet their
+2. Application-runtime line coverage remains at 100%, application-runtime
+   branch coverage stays at or above 95%, and high-risk modules meet their
    explicit line/branch floors. Operational `tools/` and `.github/` scripts are
    excluded from the runtime aggregate and retain workflow-specific tests;
-   the provider-maintenance tool has its own 85% branch-aware gate. Raise any
+   the provider-maintenance tool has its own 95% line-and-branch gate. Raise any
    floor only with useful behavioral and failure-path tests.
 3. `python metafusion.py --preflight` passes in the intended deployment.
 4. `python metafusion.py --release-check` passes and its redacted report is retained.
@@ -141,7 +142,7 @@ The nightly reliability matrix checks both `main` and `develop` on Python 3.10
 and 3.13 and retains their branch-aware coverage reports for 14 days. A stable
 branch that predates `.coveragerc-provider-tools` keeps its prior 85% line gate
 while the newer policy is qualified on `develop`; as soon as the policy is
-promoted, that branch automatically receives the 95% line, 85% branch, and
+promoted, that branch automatically receives the 100% line, 95% branch, and
 ratcheted high-risk module gates. This avoids treating an intentionally older
 stable release as a regression while still measuring it every night.
 
@@ -153,6 +154,28 @@ inventory, cleanup permission failure, TMDb 404/429/5xx responses, bounded
 shutdown, scheduler catch-up, timezone offsets, canonical artwork collisions,
 and large inventory reconciliation. New write paths must add the corresponding
 recovery test before the coverage floor is raised.
+
+The suite treats leaked file and SQLite handles as failures. Every shared state
+session has an explicit close path, short-lived SQLite inspection handles are
+closed deterministically, and subprocess tests drain and close their pipes.
+
+A dependency-free mutation gate runs on Python 3.13 in release CI and nightly
+against `develop`. It temporarily changes four safety decisions—empty state
+batches, positive provider IDs, worker cancellation propagation, and cleanup
+checksum comparison—and requires the focused behavioral tests to kill every
+mutant. Exact source matching makes the gate fail closed when implementation
+changes require its sentinels to be reviewed.
+
+Pytest also promotes `ResourceWarning` and unraisable-exception warnings to
+failures. The final gate therefore requires both supported Python versions to
+finish without leaked files, sockets, SQLite connections, or asynchronous task
+failures before the coverage result is accepted.
+
+The orchestration, durable-state and processing floors are separately ratcheted
+after testing read-only startup, state normalization and deletion, diagnostic
+failure isolation, task cancellation, final cache flushing, and successful
+maintenance hooks. These focused floors prevent aggregate improvements elsewhere
+from hiding a regression in lifecycle or persistence behavior.
 
 Adaptive-concurrency tests use deterministic resource, pressure, clock, and
 provider signals. They cover cgroup ceilings, healthy growth, rate-limit and

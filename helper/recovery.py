@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tarfile
 import tempfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -193,7 +194,7 @@ def verify_recovery_bundle(bundle):
             (manifest.get("contents") or {}).get("durable_state", "meta_db.sqlite3")
         )
         if database.is_file():
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection:
                 integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
             if integrity != "ok":
                 failures.append(f"SQLite quick_check returned {integrity}")

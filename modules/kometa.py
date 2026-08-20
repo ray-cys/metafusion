@@ -258,11 +258,6 @@ def merge_generated_metadata(
                     number, authoritative_episodes.get(str(number), [])
                 )
             }
-            for key in list(episodes):
-                episode_number = _numeric_key(key)
-                if episode_number is not None and episode_number not in valid_episodes:
-                    episodes.pop(key, None)
-                    diagnostics["inventory_removed"] += 1
         existing_episode_keys = {
             _numeric_key(key): key
             for key in episodes
@@ -270,6 +265,8 @@ def merge_generated_metadata(
         }
         for episode_number, episode_patch in (season_patch.get("episodes") or {}).items():
             episode_number = int(episode_number)
+            if valid_episodes is not None and episode_number not in valid_episodes:
+                continue
             existing_episode_key = existing_episode_keys.get(
                 episode_number, episode_number
             )

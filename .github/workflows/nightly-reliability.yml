@@ -46,7 +46,7 @@ jobs:
           mypy
           python tools/generate_config_surfaces.py --check
 
-      - name: Run the complete branch-aware coverage suite
+      - name: Enforce complete line and 95% branch coverage
         shell: bash
         run: |
           pytest -q --cov=. --cov-branch --cov-report=term-missing \
@@ -79,14 +79,21 @@ jobs:
               --cov-fail-under=100
           fi
 
+      - name: Kill representative safety mutations
+        if: matrix.ref == 'develop' && matrix.python-version == '3.13'
+        run: python tools/run_mutation_gate.py
+
       - name: Enforce provider-maintenance tool coverage
         shell: bash
         run: |
           if test -f .coveragerc-provider-tools; then
             pytest -q tests/test_provider_compatibility_bot.py \
+              tests/test_phase27_provider_coverage.py \
               --cov=tools.provider_compatibility \
               --cov-config=.coveragerc-provider-tools --cov-branch \
-              --cov-report=term-missing --cov-fail-under=85
+              --cov-report=term-missing --cov-report=json:provider-coverage.json \
+              --cov-fail-under=0
+            python tools/check_provider_coverage.py provider-coverage.json
           else
             pytest -q tests/test_provider_compatibility_bot.py \
               --cov=tools.provider_compatibility --cov-config=/dev/null \

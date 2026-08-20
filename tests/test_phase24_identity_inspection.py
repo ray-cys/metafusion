@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -127,7 +128,7 @@ def test_identity_history_records_only_transitions_and_is_bounded(monkeypatch, t
 
 def test_schema_four_binding_can_be_inspected_without_upgrade_or_history(tmp_path):
     database = tmp_path / "meta_db.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.executescript(
             """
             CREATE TABLE identity_bindings (
@@ -161,7 +162,7 @@ def test_schema_four_binding_can_be_inspected_without_upgrade_or_history(tmp_pat
     assert inspected["status"] == "current"
     assert inspected["history_available"] is False
     assert inspected["history"] == []
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
@@ -170,7 +171,7 @@ def test_schema_four_identity_writer_remains_compatible_after_current_upgrade(tm
     save_identity_binding(
         "server", "library", "10", "movie", "100", "fingerprint", path=database
     )
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert (
             connection.execute("PRAGMA user_version").fetchone()[0]
             == state_db.SCHEMA_VERSION

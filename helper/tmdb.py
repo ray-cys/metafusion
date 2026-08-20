@@ -465,8 +465,6 @@ def _title_year_hint(value):
     if not match:
         return title, None
     base_title = title[: match.start()].strip()
-    if not base_title:
-        return title, None
     return base_title, int(match.group(1))
 
 

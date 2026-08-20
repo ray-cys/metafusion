@@ -2,6 +2,7 @@ import io
 import json
 import sqlite3
 import tarfile
+from contextlib import closing
 
 import pytest
 
@@ -286,7 +287,7 @@ def test_recovery_verification_reports_missing_and_tampered_files(tmp_path):
 
 def test_online_backup_rejects_failed_integrity(monkeypatch, tmp_path):
     source = tmp_path / "source.db"
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         connection.execute("CREATE TABLE example(value TEXT)")
 
     class _Connection:

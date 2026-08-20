@@ -521,3 +521,184 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
         lambda _config: (_ for _ in ()).throw(OSError("plex report")),
     )
     assert metafusion.run_metafusion_job(config, logging.getLogger("plex-report")) is False
+
+
+@pytest.mark.parametrize(
+    ("execution", "writer"),
+    [
+        ({"metadata_audit": True}, "write_metadata_audit_report"),
+        ({"plan": True}, "write_change_plan_report"),
+        ({"library_audit": True}, "write_library_asset_audit_report"),
+    ],
+)
+def test_run_job_normalizes_each_mandatory_diagnostic_write_failure(
+    monkeypatch, tmp_path, execution, writer
+):
+    _patch_job_services(monkeypatch, tmp_path)
+    config = {
+        "settings": {"mode": "kometa", "dry_run": False},
+        "plex": {},
+        "tmdb": {},
+        "_execution": execution,
+    }
+    monkeypatch.setattr(
+        metafusion,
+        writer,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("report full")),
+    )
+    assert metafusion.run_metafusion_job(config, logging.getLogger(writer)) is False
+
+
+def test_run_job_normalizes_final_cache_flush_failure(monkeypatch, tmp_path):
+    _patch_job_services(monkeypatch, tmp_path)
+    config = {
+        "settings": {"mode": "kometa", "dry_run": False},
+        "plex": {},
+        "tmdb": {},
+        "_execution": {},
+    }
+    monkeypatch.setattr(
+        metafusion,
+        "flush_cache",
+        lambda: (_ for _ in ()).throw(OSError("flush failed")),
+    )
+    assert metafusion.run_metafusion_job(config, logging.getLogger("flush")) is False
+
+
+def test_shutdown_cancels_active_task_and_starts_only_one_watchdog(monkeypatch):
+    events = []
+
+    class Loop:
+        def call_soon_threadsafe(self, callback):
+            events.append("scheduled")
+            callback()
+
+    class Task:
+        def done(self):
+            return False
+
+        def cancel(self):
+            events.append("cancelled")
+
+    class Thread:
+        def __init__(self, **kwargs):
+            events.append(kwargs["name"])
+
+        def start(self):
+            events.append("started")
+
+    metafusion.shutdown_requested.clear()
+    monkeypatch.setattr(metafusion, "_active_loop", Loop())
+    monkeypatch.setattr(metafusion, "_active_task", Task())
+    monkeypatch.setattr(metafusion.threading, "Thread", Thread)
+    metafusion.request_shutdown()
+    metafusion.request_shutdown()
+    assert events.count("started") == 1
+    assert events.count("cancelled") == 2
+    metafusion.shutdown_requested.clear()
+
+
+def test_plex_artwork_verification_connector_boundary(monkeypatch):
+    section = _Section(items=[_item()])
+    plex = SimpleNamespace(machineIdentifier="server")
+
+    async def preflight(*_args, **_kwargs):
+        return plex
+
+    async def verify(sections, config, rating_keys, session):
+        assert sections == [section]
+        assert rating_keys == ["10"]
+        assert session is not None and config["settings"]["mode"] == "plex"
+        return {"verified": 1}
+
+    monkeypatch.setattr(metafusion, "preflight_connectors", preflight)
+    monkeypatch.setattr(
+        metafusion, "connect_plex_library", lambda *_args, **_kwargs: ([section], [], [])
+    )
+    monkeypatch.setattr(metafusion, "verify_plex_artwork", verify)
+    monkeypatch.setattr(metafusion.aiohttp, "ClientSession", lambda **_kwargs: _Session())
+    monkeypatch.setattr(metafusion.aiohttp, "TCPConnector", lambda **_kwargs: object())
+    result = asyncio.run(
+        metafusion.plex_artwork_verification_connectors(
+            {"settings": {"mode": "plex"}, "runtime": {}}, ["10"]
+        )
+    )
+    assert result == {"verified": 1}
+
+
+def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_path):
+    section = _Section(items=[_item()])
+    _patch_runtime(
+        monkeypatch,
+        [section],
+        ["Movies"],
+        [{"title": "Movies", "type": "movie"}],
+        inventory={"Movies": [_record()]},
+    )
+    monkeypatch.setattr(
+        metafusion,
+        "get_feature_flags",
+        lambda _config: {
+            "dry_run": False,
+            "cleanup": False,
+            "metadata_basic": True,
+            "metadata_enhanced": True,
+            "plex_metadata": False,
+            "poster": True,
+            "background": False,
+            "season": False,
+        },
+    )
+    monkeypatch.setattr(
+        metafusion,
+        "library_full_scan_decisions",
+        lambda *_args, **_kwargs: {("server", "uuid-Movies"): False},
+    )
+    monkeypatch.setattr(
+        metafusion,
+        "prepare_tmdb_change_plan",
+        lambda *_args, **_kwargs: {
+            "status": "ready",
+            "start_date": "2026-08-19",
+            "end_date": "2026-08-20",
+            "checkpoint_candidate": "2026-08-20",
+        },
+    )
+
+    async def changes(*_args, **_kwargs):
+        return {
+            "rating_keys": {"Movies": ["10"]},
+            "changed_ids": {"movie": ["100"], "tv": []},
+            "pages": {"movie": 1, "tv": 0},
+        }
+
+    durations = []
+    tracker = SimpleNamespace(
+        add_duration=lambda name, value: durations.append((name, value))
+    )
+    monkeypatch.setattr(metafusion, "collect_tmdb_change_rechecks", changes)
+    monkeypatch.setattr(metafusion, "tracker_for", lambda _config: tracker)
+    monkeypatch.setattr(
+        metafusion,
+        "run_upgrade_canary",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0, result=({"samples": [{"rating_key": "10"}]}, tmp_path / "canary.txt")
+        ),
+    )
+
+    async def process(**kwargs):
+        kwargs["metadata_summaries"]["Movies"] = {
+            "total_items": 1,
+            "library_summary": {"item_failures": 0},
+        }
+        return [{}]
+
+    monkeypatch.setattr(metafusion, "process_library", process)
+    config = _config(tmp_path)
+    asyncio.run(metafusion.metafusion_main(config, logging.getLogger("change-success")))
+    assert config["_tmdb_change_summary"]["rating_keys"] == {"Movies": ["10"]}
+    assert config["_upgrade_canary_result"]["samples"]
+    assert {name for name, _value in durations} >= {
+        "plex_inventory",
+        "library_processing",
+    }

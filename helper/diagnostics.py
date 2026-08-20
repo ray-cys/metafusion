@@ -2,6 +2,7 @@ import copy
 import os
 import platform
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -518,7 +519,9 @@ def _database_status(path):
     if not path.exists():
         return "missing"
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with closing(
+            sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        ) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
         return (
@@ -533,7 +536,9 @@ def _tmdb_cache_status(path):
     if not path.exists():
         return "missing"
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with closing(
+            sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        ) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
             row = connection.execute(

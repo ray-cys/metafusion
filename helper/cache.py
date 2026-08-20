@@ -34,6 +34,16 @@ def begin_cache_session(
     return _cache_store
 
 
+def close_cache_session():
+    """Flush and release the current durable-state connection."""
+    global _cache_store, _cache_lock, _cache_lock_loop
+    if _cache_store is not None:
+        _cache_store.close()
+    _cache_store = None
+    _cache_lock = None
+    _cache_lock_loop = None
+
+
 def load_cache(force_reload=False):
     global _cache_store
     if force_reload or _cache_store is None:

@@ -292,3 +292,54 @@ def test_apply_and_restore_retry_wrappers(monkeypatch):
         ),
     )
     assert asyncio.run(plex_metadata.restore_plex_metadata(item, config, {}))["failures"] == 1
+
+
+def test_restore_tag_unlock_lock_only_and_unowned_child(monkeypatch):
+    config = _config()
+    meta = {
+        "server_id": "server",
+        "library_uuid": "uuid",
+        "library_name": "Movies",
+        "ratingKey": "1",
+        "library_type": "movie",
+        "title": "Example",
+    }
+    reporter = plex_metadata.PlexMetadataReporter(config)
+    saved = []
+    monkeypatch.setattr(
+        plex_metadata,
+        "save_plex_metadata_ownership",
+        lambda records, **kwargs: saved.append((records, kwargs)),
+    )
+
+    unlock_record = _owner(
+        "genre", "tag", applied=["Drama"], original=["Drama"], owned=["Drama"]
+    )
+    unlock_record["metafusion_locked"] = 1
+    monkeypatch.setattr(
+        plex_metadata,
+        "load_plex_metadata_ownership",
+        lambda *_args: {("", "genre"): unlock_record},
+    )
+    season = Editable(index=1)
+    item = Editable(genres=[SimpleNamespace(tag="Drama")], locks={"genre": True})
+    item.seasons = lambda: [season]
+    result = plex_metadata._restore_candidate(
+        item, config, meta, reporter, unlock_only=True
+    )
+    assert result == {"writes": 1, "failures": 0}
+    assert item.isLocked("genre") is False
+
+    restore_record = _owner(
+        "genre", "tag", applied=["Drama"], original=["Drama"], owned=["Drama"]
+    )
+    restore_record["original_locked"] = 1
+    monkeypatch.setattr(
+        plex_metadata,
+        "load_plex_metadata_ownership",
+        lambda *_args: {("", "genre"): restore_record},
+    )
+    item = Editable(genres=[SimpleNamespace(tag="Drama")], locks={"genre": False})
+    result = plex_metadata._restore_candidate(item, config, meta, reporter)
+    assert result == {"writes": 1, "failures": 0}
+    assert item.isLocked("genre") is True

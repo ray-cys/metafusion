@@ -2,6 +2,12 @@
 target-version = "py310"
 line-length = 100
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
+
 [tool.ruff.lint]
 select = [
     "B",

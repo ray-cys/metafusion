@@ -468,3 +468,178 @@ def test_process_item_plex_write_reload_cache_and_builder_failures(monkeypatch, 
     with pytest.raises(processing.ItemProcessingError, match="Failed to process"):
         asyncio.run(processing.process_item(item, {}, {"plex": {}}, feature_flags={}))
     assert asyncio.run(processing.process_item(None, {}, {"plex": {}}, feature_flags={})) is None
+
+
+def test_processing_identity_noop_cleanup_path_and_all_output_exception(monkeypatch):
+    learned = {
+        "ratingKey": "1",
+        "server_id": "server",
+        "library_uuid": "library",
+        "tmdb_id": "2",
+    }
+    monkeypatch.setattr(
+        processing, "load_identity_binding", lambda *_args, **_kwargs: {"tmdb_id": "2"}
+    )
+    assert processing.apply_learned_tmdb_identity(learned) is False
+    assert processing.cleanup_inventory_errors(
+        [{"library_type": "tv", "title": "Show", "year": 2020, "ratingKey": "1"}],
+        {"poster": True},
+    )[0].endswith("show_path")
+
+    item = SimpleNamespace(
+        ratingKey="1", title="Movie", year=2020, type="movie", updatedAt="now"
+    )
+
+    async def metadata(*_args, **_kwargs):
+        return {
+            "ratingKey": "1",
+            "title": "Movie",
+            "year": 2020,
+            "library_type": "movie",
+            "movie_path": "Movie",
+        }
+
+    received = {}
+
+    async def build(_config, _metadata, **kwargs):
+        received.update(kwargs["feature_flags"])
+        return {
+            "metadata_action": "skipped",
+            "poster_action": "skipped",
+            "background_action": "skipped",
+            "season_poster_actions": {},
+        }
+
+    monkeypatch.setattr(processing, "get_plex_metadata", metadata)
+    monkeypatch.setattr(processing, "build_movie", build)
+    monkeypatch.setattr(processing, "log_item_outcomes", lambda *_args, **_kwargs: None)
+    result = asyncio.run(
+        processing.process_item(
+            item,
+            {},
+            {
+                "settings": {"mode": "plex", "dry_run": True},
+                "plex_metadata": {"enabled": True},
+                "_item_exceptions_by_rating_key": {
+                    "1": [{"output_type": "all"}]
+                },
+            },
+            feature_flags={
+                "metadata_basic": True,
+                "metadata_enhanced": True,
+                "plex_metadata": True,
+                "poster": True,
+                "background": True,
+                "season": True,
+                "dry_run": True,
+            },
+        )
+    )
+    assert result["metadata_action"] == "skipped"
+    assert all(received[name] is False for name in ("poster", "background", "season"))
+
+
+def test_process_item_and_library_cancellation_are_never_normalized(monkeypatch, tmp_path):
+    item = SimpleNamespace(
+        ratingKey="1", title="Movie", year=2020, type="movie", updatedAt="now"
+    )
+
+    async def metadata(*_args, **_kwargs):
+        return {
+            "ratingKey": "1",
+            "title": "Movie",
+            "year": 2020,
+            "library_name": "Movies",
+            "library_type": "movie",
+            "movie_path": "Movie",
+            "updatedAt": "now",
+        }
+
+    async def cancelled(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(processing, "get_plex_metadata", metadata)
+    monkeypatch.setattr(processing, "build_movie", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            processing.process_item(
+                item, {}, {"settings": {"dry_run": True}}, feature_flags={}
+            )
+        )
+
+    section = _Section([item])
+    section.title = "Movies"
+    section.type = "movie"
+    section.uuid = "library"
+    section._server = SimpleNamespace(machineIdentifier="server")
+    monkeypatch.setattr(processing, "process_item", cancelled)
+    monkeypatch.setattr(processing, "load_due_item_retries", lambda *_args: {})
+    monkeypatch.setattr(processing, "mark_items_started", lambda *_args: None)
+    monkeypatch.setattr(processing, "record_item_failure", lambda *_args, **_kwargs: True)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            processing.process_library(
+                section,
+                {
+                    "settings": {"mode": "plex", "dry_run": False},
+                    "runtime": {"max_concurrency": 1},
+                    "plex": {},
+                    "safety": {},
+                },
+                feature_flags={
+                    "dry_run": False,
+                    "metadata_basic": False,
+                    "metadata_enhanced": False,
+                    "plex_metadata": False,
+                    "poster": True,
+                    "background": False,
+                    "season": False,
+                    "cleanup": False,
+                },
+            )
+        )
+
+
+def test_inventory_failure_is_persisted_and_blocks_cleanup(monkeypatch, tmp_path):
+    item = SimpleNamespace(
+        ratingKey="1", title="Movie", year=2020, type="movie", updatedAt="now"
+    )
+    section = _Section([item])
+    section.title = "Movies"
+    section.type = "movie"
+    section.uuid = "library"
+    section._server = SimpleNamespace(machineIdentifier="server")
+
+    async def failed_metadata(*_args, **_kwargs):
+        raise ConnectionError("Plex disconnected")
+
+    failures = []
+    monkeypatch.setattr(processing, "get_plex_metadata", failed_metadata)
+    monkeypatch.setattr(
+        processing,
+        "record_item_failure",
+        lambda *args, **kwargs: failures.append((args, kwargs)),
+    )
+    with pytest.raises(processing.LibraryProcessingError, match="inventory was incomplete"):
+        asyncio.run(
+            processing.process_library(
+                section,
+                {
+                    "settings": {"mode": "plex", "dry_run": False},
+                    "runtime": {"max_concurrency": 1},
+                    "plex": {},
+                    "safety": {},
+                },
+                feature_flags={
+                    "dry_run": False,
+                    "metadata_basic": False,
+                    "metadata_enhanced": False,
+                    "plex_metadata": False,
+                    "poster": False,
+                    "background": False,
+                    "season": False,
+                    "cleanup": True,
+                },
+            )
+        )
+    assert failures and isinstance(failures[0][0][3], ConnectionError)
