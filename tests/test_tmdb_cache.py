@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from stat import S_IMODE
 
 from helper import tmdb_cache as cache_module
@@ -19,7 +20,7 @@ def test_sqlite_tmdb_cache_round_trips_compresses_and_expires(monkeypatch, tmp_p
     assert path.read_bytes().startswith(b"SQLite format 3\x00")
     assert S_IMODE(path.stat().st_mode) == 0o664
     assert not path.with_name(f"{path.name}.bak").exists()
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA auto_vacuum").fetchone()[0] == 2

@@ -3,7 +3,7 @@
 import os
 import shutil
 import sqlite3
-from contextlib import suppress
+from contextlib import closing, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -47,7 +47,7 @@ def inspect_database(path, expected_schema):
         return result
     try:
         uri = f"file:{quote(str(database), safe='/')}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as connection:
             connection.execute("PRAGMA query_only = ON")
             integrity = str(connection.execute("PRAGMA quick_check").fetchone()[0])
             schema = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -144,7 +144,7 @@ def maintain_databases(
                     required = max(database.stat().st_size * 2, 16 * 1024 * 1024)
                     if shutil.disk_usage(database.parent).free < required:
                         raise OSError("insufficient free space for VACUUM")
-                with sqlite3.connect(database, timeout=10) as connection:
+                with closing(sqlite3.connect(database, timeout=10)) as connection:
                     connection.execute("PRAGMA busy_timeout = 10000")
                     integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
                     if integrity != "ok":

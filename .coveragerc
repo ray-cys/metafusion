@@ -2,8 +2,10 @@
 source = .
 omit =
     .venv/*
+    .github/*
     tests/*
+    tools/*
 
 [report]
-fail_under = 85
+fail_under = 0
 show_missing = True

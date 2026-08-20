@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 
 from helper.diagnostics import (
     _database_status,
@@ -98,7 +99,7 @@ def test_global_retention_bounds_support_and_release_reports(monkeypatch, tmp_pa
 
 def test_tmdb_cache_status_reports_entries_and_compressed_size(tmp_path):
     database = tmp_path / "tmdb_cache.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(
             "CREATE TABLE tmdb_cache_meta("
             "singleton INTEGER PRIMARY KEY, entry_count INTEGER, stored_bytes INTEGER)"
@@ -176,7 +177,7 @@ def test_release_qualification_report_fails_for_unresolved_paths_and_bad_databas
 
 def test_database_status_reports_healthy_and_unreadable_files(tmp_path):
     database = tmp_path / "state.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("PRAGMA user_version = 7")
         connection.execute("CREATE TABLE example(value TEXT)")
 
@@ -187,7 +188,7 @@ def test_database_status_reports_healthy_and_unreadable_files(tmp_path):
 
 def test_tmdb_cache_status_handles_missing_metadata_and_invalid_database(tmp_path):
     database = tmp_path / "tmdb_cache.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(
             "CREATE TABLE tmdb_cache_meta("
             "singleton INTEGER PRIMARY KEY, entry_count INTEGER, stored_bytes INTEGER)"

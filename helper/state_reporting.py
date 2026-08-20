@@ -101,7 +101,6 @@ def _format_bytes(value):
         if size < 1024 or unit == "TiB":
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.2f} {unit}"
         size /= 1024
-    return f"{size:.2f} TiB"
 
 
 def _filter_values(values):

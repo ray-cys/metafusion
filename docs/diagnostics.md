@@ -29,6 +29,7 @@ for every public flag and supported value.
 | Review pending and completed cleanup actions | `--cleanup-history-report` | None | `cleanup-history-*.txt` and `.json` |
 | Review unresolved identity work | `--identity-review-queue` | None | `identity-review-*.txt` and `.json` |
 | Verify whether Plex selected managed local artwork | `--plex-artwork-verify` | Plex only | `plex-artwork-verification-*.txt` and `.json` |
+| Verify generated Kometa output after Kometa applies it | `--kometa-application-audit` | Plex only | `kometa-application-audit-*.txt` and `.json` |
 | Compare a proposed configuration with the current effective one | `--config-impact /path/config.yml` | None | `configuration-impact-*.txt` and `.json` |
 
 The full artwork audits can take about as long as normal artwork evaluation.
@@ -246,6 +247,34 @@ the JSON before attaching it to a public issue.
 
 ## Reports, retention, and privacy
 
+### Post-Kometa application verification
+
+The complete status, safety, retention, and scheduling contract is in [runtime
+safeguards and application verification](runtime-safeguards.md#post-kometa-application-verification).
+
+Run Kometa first, then use:
+
+```bash
+python metafusion.py --kometa-application-audit
+python metafusion.py --kometa-application-audit --library Movies --rating-key 12345
+```
+
+This Kometa-mode command reads MetaFusion's generated YAML, durable managed
+artwork ownership, and the current Plex values. For generated tag fields, the
+expected values must be present but extra Plex/provider values are allowed. It
+reports applied, partial, not-applied, missing-YAML, and unverifiable metadata,
+then reuses checksum and perceptual verification to report whether Plex has
+selected managed artwork. It never invokes Kometa, triggers a Plex refresh, or
+changes metadata/artwork. Run it only after Kometa has processed the generated
+files; an earlier run naturally reports output as not yet applied.
+
+Without `--rating-key`, it verifies the selected libraries. With one or more
+rating keys it reports only those items plus explicit not-found entries. The
+text report is concise; field mismatches and normalized TMDb/IMDb/TVDb/Plex
+identity fields are retained in the JSON companion.
+
+### Retained report inventory
+
 | Report | Created by |
 | --- | --- |
 | `/config/reports/asset-audit-*.txt` | `--asset-audit` |
@@ -259,6 +288,8 @@ the JSON before attaching it to a public issue.
 | `/config/reports/support-report-*.txt` | `--support-report` |
 | `/config/reports/release-qualification-*.txt` | `--release-check` |
 | `/config/reports/provider-replay-capture-*.txt` | `--capture-replay` |
+| `/config/reports/kometa-application-audit-*.txt` | `--kometa-application-audit` |
+| `/config/reports/upgrade-canary-*.txt` | Automatic once per published commit/server/mode/profile |
 
 Every text report above has a same-name machine-readable `.json` companion.
 `REPORT_RETENTION` keeps the newest text/JSON pairs independently for each

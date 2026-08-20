@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+from contextlib import closing
 from stat import S_IMODE
 
 import pytest
@@ -27,7 +28,7 @@ def configure_cache(tmp_path, writable=True):
 
 
 def database_rows(path, table):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return connection.execute(f"SELECT * FROM {table}").fetchall()
 
 

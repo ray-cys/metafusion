@@ -85,11 +85,34 @@ jobs:
           mypy
           python tools/generate_config_surfaces.py --check
 
-      - name: Run tests
+      - name: Enforce 100% line and 95% branch coverage
         run: |
-          pytest -q --cov=. --cov-report=term-missing \
-            --cov-report=json:coverage.json --cov-fail-under=85
+          pytest -q --cov=. --cov-branch --cov-report=term-missing \
+            --cov-report=json:coverage.json --cov-fail-under=0
           python tools/check_targeted_coverage.py coverage.json
+
+      - name: Enforce complete Phase 25 safeguard coverage
+        run: |
+          pytest -q tests/test_phase25_change_canary_kometa.py \
+            --cov=helper.tmdb_changes \
+            --cov=helper.upgrade_canary \
+            --cov=helper.kometa_application_verification \
+            --cov-branch --cov-report=term-missing \
+            --cov-fail-under=100
+
+      - name: Kill representative safety mutations
+        if: matrix.python-version == '3.13'
+        run: python tools/run_mutation_gate.py
+
+      - name: Enforce provider-maintenance tool coverage
+        run: |
+          pytest -q tests/test_provider_compatibility_bot.py \
+            tests/test_phase27_provider_coverage.py \
+            --cov=tools.provider_compatibility \
+            --cov-config=.coveragerc-provider-tools --cov-branch \
+            --cov-report=term-missing --cov-report=json:provider-coverage.json \
+            --cov-fail-under=0
+          python tools/check_provider_coverage.py provider-coverage.json
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
@@ -348,7 +371,7 @@ jobs:
       # https://github.com/docker/build-push-action
       - name: Build and push Docker image
         id: build-and-push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64

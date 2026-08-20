@@ -335,14 +335,7 @@ def log_main_event(event, logger=None, **kwargs):
     if event == "main_scheduled_run":
         print(msg)
         return
-    if level == "info":
-        logger.info(msg)
-    elif level == "warning":
-        logger.warning(msg)
-    elif level == "error":
-        logger.error(msg)
-    else:
-        logger.debug(msg)
+    getattr(logger, level)(msg)
 
 def log_config_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -375,14 +368,7 @@ def log_config_event(event, logger=None, **kwargs):
     msg = messages.get(event, "[Config] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Configuration")
     level = levels.get(event, "info")
-    if level == "info":
-        logger.info(msg)
-    elif level == "warning":
-        logger.warning(msg)
-    elif level == "error":
-        logger.error(msg)
-    else:
-        logger.debug(msg)
+    getattr(logger, level)(msg)
 
 def log_cache_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -403,14 +389,7 @@ def log_cache_event(event, logger=None, **kwargs):
     msg = messages.get(event, "[Cache] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Cache")
     level = levels.get(event, "info")
-    if level == "info":
-        logger.info(msg)
-    elif level == "warning":
-        logger.warning(msg)
-    elif level == "error":
-        logger.error(msg)
-    else:
-        logger.debug(msg)
+    getattr(logger, level)(msg)
 
 def log_plex_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -459,14 +438,7 @@ def log_plex_event(event, logger=None, **kwargs):
     msg = messages.get(event, "[Plex] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Plex")
     level = levels.get(event, "info")
-    if level == "info":
-        logger.info(msg)
-    elif level == "warning":
-        logger.warning(msg)
-    elif level == "error":
-        logger.error(msg)
-    else:
-        logger.debug(msg)
+    getattr(logger, level)(msg)
 
 def log_tmdb_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -509,14 +481,7 @@ def log_tmdb_event(event, logger=None, **kwargs):
     msg = messages.get(event, "[TMDb] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "TMDb")
     level = levels.get(event, "info")
-    if level == "info":
-        logger.info(msg)
-    elif level == "warning":
-        logger.warning(msg)
-    elif level == "error":
-        logger.error(msg)
-    else:
-        logger.debug(msg)
+    getattr(logger, level)(msg)
 
 
 def log_fanart_event(event, logger=None, **kwargs):
@@ -607,14 +572,7 @@ def log_processing_event(event, logger=None, **kwargs):
     msg = messages.get(event, "[Processing] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Processing")
     level = levels.get(event, "info")
-    if level == "info":
-        logger.info(msg)
-    elif level == "warning":
-        logger.warning(msg)
-    elif level == "error":
-        logger.error(msg)
-    else:
-        logger.debug(msg)
+    getattr(logger, level)(msg)
 
 def log_builder_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logging.getLogger()
@@ -1098,23 +1056,9 @@ def log_cleanup_event(event, logger=None, **kwargs):
     level = levels.get(event, "info")
     if event == "cleanup_consolidated_removed" and "removed_summary" in kwargs:
         for line in msg.splitlines():
-            if level == "info":
-                logger.info(line)
-            elif level == "warning":
-                logger.warning(line)
-            elif level == "error":
-                logger.error(line)
-            else:
-                logger.debug(line)
+            getattr(logger, level)(line)
     else:
-        if level == "info":
-            logger.info(msg)
-        elif level == "warning":
-            logger.warning(msg)
-        elif level == "error":
-            logger.error(msg)
-        else:
-            logger.debug(msg)
+        getattr(logger, level)(msg)
 
 def metadata_action_summary(library_summary, feature_flags):
     """Return a mode-specific summary of metadata mutations."""
