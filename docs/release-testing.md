@@ -137,6 +137,14 @@ wall-clock sections, throughput, peak traced memory, and database size in a
 exceeded. It is a deterministic regression signal, not a replacement for the
 Unraid soak test against a real Plex server.
 
+The nightly reliability matrix checks both `main` and `develop` on Python 3.10
+and 3.13 and retains their branch-aware coverage reports for 14 days. A stable
+branch that predates `.coveragerc-provider-tools` keeps its prior 85% line gate
+while the newer policy is qualified on `develop`; as soon as the policy is
+promoted, that branch automatically receives the 95% line, 85% branch, and
+ratcheted high-risk module gates. This avoids treating an intentionally older
+stable release as a regression while still measuring it every night.
+
 ## Fault-injection coverage
 
 Automated tests preserve prior output or fail closed for interrupted atomic
