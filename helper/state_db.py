@@ -955,6 +955,33 @@ def _set_state_value(connection, key, value):
     )
 
 
+def load_application_record(key, *, path=None):
+    """Load one JSON object from durable application state without creating it."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return None
+    try:
+        raw = _state_value(connection, str(key))
+        if raw is None:
+            return None
+        return _json_load(raw, f"application state {key!r}")
+    finally:
+        connection.close()
+
+
+def save_application_record(key, value, *, path=None):
+    """Atomically replace one JSON object in durable application state."""
+    if not isinstance(value, dict):
+        raise TypeError("application state records must be dictionaries")
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            _set_state_value(connection, str(key), _json_dump(value))
+        return True
+    finally:
+        connection.close()
+
+
 class MediaStateStore(MutableMapping):
     """Dictionary-compatible, transactionally batched media state."""
 
@@ -2559,13 +2586,27 @@ def remove_asset_ownership(cache_key, asset_type, season_number=None, *, path=No
                 ):
                     payload.pop(f"{normalized_type}_{suffix}", None)
             elif normalized_type == "season":
-                season = (payload.get("seasons") or {}).get(normalized_season)
+                season_row = connection.execute(
+                    "SELECT payload FROM season_state WHERE cache_key = ? "
+                    "AND season_number = ?",
+                    (str(cache_key), normalized_season),
+                ).fetchone()
+                season = (
+                    _json_load(season_row[0], "season state")
+                    if season_row is not None
+                    else None
+                )
                 if isinstance(season, dict):
                     for key in list(season):
                         if key.startswith("season_") and key not in {
                             "season_last_checked", "season_last_upgraded"
                         }:
                             season.pop(key, None)
+                    connection.execute(
+                        "UPDATE season_state SET payload = ? WHERE cache_key = ? "
+                        "AND season_number = ?",
+                        (_json_dump(season), str(cache_key), normalized_season),
+                    )
             else:
                 raise ValueError(f"Unsupported artwork output type: {asset_type}")
             connection.execute(

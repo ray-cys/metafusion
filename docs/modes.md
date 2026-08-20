@@ -47,6 +47,11 @@ after MetaFusion. MetaFusion validates its generated YAML against the supported
 it does not start Kometa. `PLEX_METADATA_UPDATES=True` is invalid in Kometa
 mode.
 
+After Kometa runs, `python metafusion.py --kometa-application-audit` can compare
+the generated fields and managed artwork with live Plex. This is a read-only
+application audit, not a Kometa launcher or Plex refresh. See
+[runtime safeguards](runtime-safeguards.md#post-kometa-application-verification).
+
 ## Plex mode
 
 ```text

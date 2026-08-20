@@ -1831,13 +1831,9 @@ async def _build_movie(
             new_metadata[k] = writers if writers else []
         elif k == producer_key:
             new_metadata[k] = producers if producers else []
-        else:
-            new_metadata[k] = "" 
     plex_candidate = movie_plex_candidate(new_metadata)
 
     expected_fields = fields_to_write
-    if ignored_fields is None:
-        ignored_fields = set()
     filtered_fields = [f for f in expected_fields if f not in ignored_fields]
     if not filtered_fields:
         percent_filled = 100
@@ -3692,10 +3688,7 @@ async def _build_tv(
     async def process_season_poster(season_info):
         season_poster_size = 0
         season_number = season_info.get("season_number")
-        if season_number is None:
-            nonlocal season_poster_actions
-            season_poster_actions[season_number] = "skipped"
-            return
+        nonlocal season_poster_actions
         if int(season_number) in set(config.get("_excluded_seasons", set())):
             season_poster_actions[season_number] = "not_due"
             return

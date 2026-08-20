@@ -147,10 +147,6 @@ class AssetDestinationRegistry:
             if not compatible:
                 return "collision", other_records[0]["cache_key"]
 
-        if not same_owner and owners and not other_records:
-            # This is reachable only when a malformed registry repeats cache keys.
-            return "collision", next(iter(owners))
-
         entry["runtime_claim"] = candidate
         already_claimed = bool(entry["runtime_owners"])
         entry["runtime_owners"].add(cache_key)

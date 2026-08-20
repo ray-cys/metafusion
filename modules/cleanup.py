@@ -864,12 +864,9 @@ async def cleanup_title_orphans(
         async def remove_asset(path, description, allow_valid_title=False):
             path_key = _path_key(path)
             records = managed_assets.get(path_key, [])
-            try:
-                asset_library_type = normalize_library_type(
-                    path.relative_to(asset_path).parts[0]
-                )
-            except (ValueError, IndexError):
-                asset_library_type = ""
+            asset_library_type = normalize_library_type(
+                path.relative_to(asset_path).parts[0]
+            )
             if path_key in existing_asset_keys:
                 result.assets_skipped += 1
                 log_cleanup_event(

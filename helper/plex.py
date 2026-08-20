@@ -356,7 +356,6 @@ def _discover_show_directory(season_directories, locations=None):
         return common
     if all(common == path or common in path.parents for path in directories):
         return common
-    return None
 
 def connect_plex_server(config):
     runtime = config.get("runtime", {})

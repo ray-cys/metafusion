@@ -250,6 +250,13 @@ class PersistentTTLCache(MutableMapping):
         finally:
             self._connection = None
 
+    def close(self):
+        """Release the SQLite handle while retaining no process-local entries."""
+        self.reset_memory()
+
+    def __del__(self):
+        self._close_database()
+
     def reset_memory(self):
         self._close_database()
         self._memory = {}
