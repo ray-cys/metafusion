@@ -47,10 +47,25 @@ jobs:
           python tools/generate_config_surfaces.py --check
 
       - name: Run the complete branch-aware coverage suite
+        shell: bash
         run: |
           pytest -q --cov=. --cov-branch --cov-report=term-missing \
             --cov-report=json:coverage.json --cov-fail-under=0
-          python tools/check_targeted_coverage.py coverage.json
+          if test -f .coveragerc-provider-tools; then
+            python tools/check_targeted_coverage.py coverage.json
+          else
+            # A stable branch may predate the current coverage-policy files
+            # while develop is being qualified. Preserve its previous honest
+            # application line floor until the policy is promoted unchanged.
+            python - <<'PY'
+          import json
+
+          totals = json.load(open("coverage.json", encoding="utf-8"))["totals"]
+          line_coverage = 100.0 * totals["covered_lines"] / totals["num_statements"]
+          print(f"Legacy application line coverage: {line_coverage:.2f}% (minimum 85.00%)")
+          raise SystemExit(0 if line_coverage >= 85.0 else 1)
+          PY
+          fi
 
       - name: Enforce complete Phase 25 safeguard coverage when present
         shell: bash
@@ -65,11 +80,18 @@ jobs:
           fi
 
       - name: Enforce provider-maintenance tool coverage
+        shell: bash
         run: |
-          pytest -q tests/test_provider_compatibility_bot.py \
-            --cov=tools.provider_compatibility \
-            --cov-config=.coveragerc-provider-tools --cov-branch \
-            --cov-report=term-missing --cov-fail-under=85
+          if test -f .coveragerc-provider-tools; then
+            pytest -q tests/test_provider_compatibility_bot.py \
+              --cov=tools.provider_compatibility \
+              --cov-config=.coveragerc-provider-tools --cov-branch \
+              --cov-report=term-missing --cov-fail-under=85
+          else
+            pytest -q tests/test_provider_compatibility_bot.py \
+              --cov=tools.provider_compatibility --cov-config=/dev/null \
+              --cov-branch --cov-report=term-missing --cov-fail-under=85
+          fi
 
       - name: Validate provider contracts and generated Kometa corpus
         if: matrix.python-version == '3.13'
