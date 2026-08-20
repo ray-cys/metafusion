@@ -43,11 +43,14 @@ Kometa mode also needs a writable Kometa output mapping; Plex artwork mode
 needs writable media mappings. Fanart.tv artwork fallback uses MetaFusion's
 bundled project key and requires no user setting.
 
-Environment-only installations do not need `config.yml`. The container keeps
-a value-free `/config/config_template.yml` that can be copied to
-`/config/config.yml` when YAML configuration is preferred. See the
-[configuration reference](docs/configuration.md) for every setting, source
-priority, secret-file option, and per-library override.
+Environment-only installations do not need a YAML file. For YAML-based setup,
+the container maintains a conventional `/config/config_template.yml` plus
+ready-to-copy `/config/examples/kometa.yml` and
+`/config/examples/plex.yml` profiles. Copy a profile to `/config` without
+renaming it, or copy the conventional template to `/config/config.yml`.
+MetaFusion never creates an active configuration file or stores environment
+secrets in one. See the [configuration reference](docs/configuration.md) for
+selection rules, source priority, every setting, and per-library overrides.
 
 ## Choose an output mode
 

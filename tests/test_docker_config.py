@@ -357,9 +357,11 @@ def test_nightly_reliability_qualifies_main_and_develop_without_publishing():
     assert "docker push" not in workflow
 
 
-def test_unraid_template_exposes_every_container_environment_variable():
+def test_unraid_template_exposes_only_schema_declared_essential_variables():
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    expected = set(compose["services"]["metafusion"]["environment"])
+    compose_variables = set(compose["services"]["metafusion"]["environment"])
+    schema = yaml.safe_load((REPO_ROOT / "config_schema.yml").read_text(encoding="utf-8"))
+    expected = set(schema["unraid_variables"])
     root = ElementTree.parse(REPO_ROOT / "unraid" / "metafusion.xml").getroot()
     variables = {
         config.attrib["Target"]
@@ -368,6 +370,7 @@ def test_unraid_template_exposes_every_container_environment_variable():
     }
 
     assert variables == expected
+    assert variables < compose_variables
     assert len(variables) == len(
         [config for config in root.findall("Config") if config.attrib.get("Type") == "Variable"]
     )
@@ -407,7 +410,7 @@ def test_unraid_template_preserves_hardened_runtime_and_unraid_identity():
     assert configs["/config"].attrib["Mode"] == "rw"
     assert configs["PUID"].text == "99"
     assert configs["PGID"].text == "100"
-    assert configs["STATUS_FILE"].text == "/tmp/metafusion-status.json"
+    assert "STATUS_FILE" not in configs
     assert "--read-only" in extra_params
     assert "--cap-drop" not in extra_params
     assert "--security-opt=no-new-privileges" in extra_params

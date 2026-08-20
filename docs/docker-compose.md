@@ -13,9 +13,12 @@ Docker Compose v2 is required.
 ```bash
 git clone https://github.com/ray-cys/metafusion.git
 cd metafusion
-cp .env.example .env
 mkdir -p config kometa
 ```
+
+Create a short `.env` in step 3 for the recommended YAML-based setup. Copy
+`.env.example` only when you intentionally want the exhaustive environment-only
+surface.
 
 The image runs with a read-only root filesystem. Persistent state belongs in
 `/config`; temporary files and the health heartbeat use `/tmp`.
@@ -77,7 +80,7 @@ artwork option is disabled. It remains off unless
 
 ## 3. Configure connections
 
-Edit `.env` and provide at least:
+Create `.env` and provide at least:
 
 ```text
 RUN_MODE=kometa
@@ -93,7 +96,10 @@ comma-separated Plex library names when only part of the server should be in
 scope. A connection can use an IP address, Docker DNS name, or another URL
 reachable from the MetaFusion container.
 
-The complete variable list is in [Configuration](configuration.md). Keep
+The complete variable list is in [Configuration](configuration.md). Compose
+passes omitted application variables as blank values, which MetaFusion ignores;
+this allows YAML and built-in defaults to work without accidental overrides.
+Keep
 `PLEX_TOKEN` and `TMDB_API_KEY` out of screenshots and support attachments.
 The optional `*_FILE` settings can read credentials from mounted secret files.
 
@@ -155,25 +161,39 @@ docker compose run --rm -e METAFUSION_RUN=True metafusion
 See [Operations](operations.md) for targeted repairs, dry runs, support
 reports, cleanup, and health checks.
 
-## Optional `config.yml`
+## Choose environment-only or YAML
 
-Environment-only installations do not need `config.yml`, and MetaFusion never
-creates one from environment values. The container maintains a current,
-value-free reference at `config/config_template.yml`.
+Environment-only installations need no YAML. Copy `.env.example` to `.env` and
+edit its values when you want the exhaustive environment surface; variables
+you remove fall back to built-in defaults. MetaFusion never generates active
+configuration from environment values.
 
-To use YAML configuration:
+For the recommended split configuration, retain connection/container values in
+`.env` and copy one complete mode profile after the first container start:
 
 ```bash
-cp config/config_template.yml config/config.yml
-# Edit config/config.yml, then validate and restart.
+# Choose one; the filename remains unchanged.
+cp config/examples/kometa.yml config/kometa.yml
+cp config/examples/plex.yml config/plex.yml
+
+# Validate the selected profile and restart.
 docker compose run --rm metafusion python metafusion.py --doctor
 docker compose restart metafusion
 ```
 
-Do not edit `config_template.yml`; it is refreshed when the image contains a
-newer template. Existing `config.yml` files are never replaced. Non-empty
-environment variables override matching YAML values, so remove or blank an
-environment binding when YAML should supply that setting.
+The conventional alternative remains available:
+
+```bash
+cp config/config_template.yml config/config.yml
+```
+
+Do not edit the files under `config/examples` or `config_template.yml`; the
+container refreshes those inactive references. Active `config.yml`,
+`kometa.yml`, and `plex.yml` files are never replaced. `config.yml` wins when
+present. One mode profile is auto-selected; both profiles require `RUN_MODE`.
+Non-empty environment variables override the selected YAML, while blank
+Compose bindings are ignored. See [Configuration](configuration.md) for the
+complete selection and conflict rules.
 
 ## Update or roll back
 

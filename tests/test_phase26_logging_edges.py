@@ -117,6 +117,15 @@ def test_event_loggers_cover_default_info_warning_error_and_debug(capsys):
         app_logging.log_config_event("unknown_key", key="x")
         app_logging.log_config_event("invalid_env_var", key="x", value="y", default="z")
         app_logging.log_config_event("config_loaded", config_file="config.yml")
+        app_logging.log_config_event(
+            "config_source",
+            config_file="/config/kometa.yml",
+            selection="single run-type profile",
+            yaml_values=50,
+            environment_overrides=5,
+            secret_file_overrides=0,
+            cli_overrides=1,
+        )
 
         app_logging.log_cache_event("unknown")
         app_logging.log_cache_event("cache_load_failed", cache_file="db", error="bad")
@@ -133,6 +142,12 @@ def test_event_loggers_cover_default_info_warning_error_and_debug(capsys):
     assert {level for level, _message in logger.records} >= {
         "info", "warning", "error", "debug"
     }
+    assert (
+        "info",
+        "[Configuration] Source | File: /config/kometa.yml | "
+        "Selection: single run-type profile | YAML values: 50 | "
+        "Environment overrides: 5 | Secret-file overrides: 0 | CLI overrides: 1",
+    ) in logger.records
 
 
 def test_item_outcomes_cover_unknown_completeness_and_season_details():

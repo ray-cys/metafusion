@@ -391,7 +391,11 @@ def test_entrypoint_symlink_template_and_return_edges(tmp_path, monkeypatch):
 
     monkeypatch.setattr(docker_entrypoint.os, "geteuid", lambda: 99)
     monkeypatch.setattr(docker_entrypoint.os, "getegid", lambda: 100)
-    monkeypatch.setattr(docker_entrypoint, "sync_config_template", lambda *_args: False)
+    monkeypatch.setattr(
+        docker_entrypoint,
+        "sync_config_template",
+        lambda *_args, **_kwargs: False,
+    )
     monkeypatch.setattr(docker_entrypoint.os, "execvp", lambda *_args: None)
     assert docker_entrypoint.main(["python", "metafusion.py"]) == 0
 

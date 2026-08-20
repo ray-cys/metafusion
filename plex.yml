@@ -1,0 +1,123 @@
+# Complete Plex-mode configuration generated from config_schema.yml.
+# Copy this file to /config/plex.yml and edit the copy when needed.
+# Non-empty environment variables override matching YAML values.
+
+metafusion_run: false
+settings:
+  schedule: true
+  run_on_start: false
+  schedule_catch_up: true
+  schedule_catch_up_max_hours: 24.0
+  run_times:
+  - 06:00
+  - '18:30'
+  dry_run: false
+  log_level: INFO
+  log_max_mb: 10.0
+  log_backup_count: 14
+  mode: plex
+  path: /kometa/
+plex:
+  url: http://10.0.0.1:32400
+  token: YOUR_PLEX_TOKEN
+  path_mappings: []
+plex_libraries:
+- auto
+tmdb:
+  api_key: YOUR_TMDB_API_KEY
+  language: en-US
+  fallback:
+  - zh
+  - ja
+  region: US
+  artwork_allow_any_language: true
+  title_search_fallback: false
+  episode_group_fallback: true
+  split_series_show_policy: preserve
+  split_series_mappings: {}
+  episode_overrides: {}
+metadata:
+  run_basic: true
+  run_enhanced: true
+kometa:
+  tag_policy: append
+compatibility:
+  profile: auto
+  upgrade_canary: true
+plex_metadata:
+  enabled: false
+  policy: fill_missing
+  lock_writes: false
+  lock_merged_tags: false
+  allow_overwrite: false
+  recheck_days: 30.0
+  max_writes_per_run: 100
+  fields: []
+assets:
+  run_poster: true
+  run_season: true
+  run_background: false
+  update_policy: managed
+cleanup:
+  run_cleanup: false
+  confirmation_scans: 2
+  grace_hours: 48.0
+  plex_remove_managed_artwork: false
+runtime:
+  max_concurrency: 0
+  request_timeout: 30.0
+  connect_timeout: 10.0
+  plex_timeout: 10.0
+  plex_retries: 3
+  plex_retry_delay: 1.0
+  shutdown_timeout: 15.0
+  max_image_mb: 25
+  validate_media_mounts: true
+  min_free_space_mb: 256
+incremental:
+  enabled: true
+  full_scan_interval_hours: 168.0
+  metadata_pending_recheck_hours: 24.0
+  tmdb_change_rechecks: true
+image_upgrades:
+  default_days: 30.0
+  movie_days: null
+  series_days: null
+  season_days: null
+library_overrides: {}
+tmdb_cache:
+  enabled: true
+  ttl_hours: 24.0
+  negative_ttl_hours: 12.0
+  max_entries: 0
+  max_mb: 0.0
+output:
+  validate_schema: true
+  backup_count: 3
+  report_retention: 10
+safety:
+  allow_ambiguous_editions: false
+poster_set:
+  max_width: 2000
+  max_height: 3000
+  min_width: 1000
+  min_height: 1500
+  prefer_vote: 5.0
+  vote_relaxed: 3.5
+  vote_threshold: 5.0
+season_set:
+  max_width: 2000
+  max_height: 3000
+  min_width: 1000
+  min_height: 1500
+  prefer_vote: 5.0
+  vote_relaxed: 0.5
+  vote_threshold: 3.0
+background_set:
+  max_width: 3840
+  max_height: 2160
+  min_width: 1920
+  min_height: 1080
+  prefer_vote: 5.0
+  vote_relaxed: 3.5
+  vote_threshold: 5.0

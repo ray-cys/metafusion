@@ -10,6 +10,9 @@ DEFAULT_GID = 10001
 MAX_ID = 2_147_483_647
 CONFIG_TEMPLATE_SOURCE = Path(__file__).resolve().parent / "config_template.yml"
 CONFIG_TEMPLATE_NAME = "config_template.yml"
+RUN_TYPE_TEMPLATE_SOURCES = tuple(
+    Path(__file__).resolve().parent / name for name in ("kometa.yml", "plex.yml")
+)
 MANAGED_FILE_MODE = 0o664
 
 
@@ -64,17 +67,29 @@ def prepare_runtime_paths(config_dir, uid, gid):
         _set_owner(status_file, uid, gid)
 
 
-def sync_config_template(config_dir, uid, gid, source=CONFIG_TEMPLATE_SOURCE):
+def sync_config_template(
+    config_dir,
+    uid,
+    gid,
+    source=CONFIG_TEMPLATE_SOURCE,
+    destination_name=CONFIG_TEMPLATE_NAME,
+):
     """Keep a value-free reference template in the persistent config directory."""
     config_dir = Path(config_dir)
     source = Path(source)
-    destination = config_dir / CONFIG_TEMPLATE_NAME
+    destination = config_dir / destination_name
 
     if config_dir.is_symlink():
         raise RuntimeError(f"Configuration directory cannot be a symbolic link: {config_dir}")
     config_dir.mkdir(parents=True, exist_ok=True)
+    if destination.parent.is_symlink():
+        raise RuntimeError(
+            f"Managed config template directory cannot be a symbolic link: {destination.parent}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_symlink():
         raise RuntimeError(f"Managed config template cannot be a symbolic link: {destination}")
+    _set_owner(destination.parent, uid, gid)
 
     try:
         template_data = source.read_bytes()
@@ -93,8 +108,8 @@ def sync_config_template(config_dir, uid, gid, source=CONFIG_TEMPLATE_SOURCE):
         temporary = None
         try:
             descriptor, temporary_name = tempfile.mkstemp(
-                dir=config_dir,
-                prefix=f".{CONFIG_TEMPLATE_NAME}.",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
                 suffix=".tmp",
             )
             temporary = Path(temporary_name)
@@ -115,6 +130,20 @@ def sync_config_template(config_dir, uid, gid, source=CONFIG_TEMPLATE_SOURCE):
 
     os.chmod(destination, MANAGED_FILE_MODE, follow_symlinks=False)
     _set_owner(destination, uid, gid)
+    return updated
+
+
+def sync_run_type_templates(config_dir, uid, gid, sources=RUN_TYPE_TEMPLATE_SOURCES):
+    """Refresh managed, non-active mode examples under ``/config/examples``."""
+    updated = False
+    for source in sources:
+        updated = sync_config_template(
+            config_dir,
+            uid,
+            gid,
+            source,
+            destination_name=Path("examples") / source.name,
+        ) or updated
     return updated
 
 
@@ -146,6 +175,7 @@ def main(argv=None):
             if not healthcheck:
                 prepare_runtime_paths(config_dir, uid, gid)
                 sync_config_template(config_dir, uid, gid)
+                sync_run_type_templates(config_dir, uid, gid)
             drop_privileges(uid, gid)
         except (OSError, RuntimeError, ValueError) as error:
             print(f"MetaFusion startup error: {error}", file=sys.stderr)
@@ -153,6 +183,7 @@ def main(argv=None):
     elif not healthcheck:
         try:
             sync_config_template(config_dir, os.geteuid(), os.getegid())
+            sync_run_type_templates(config_dir, os.geteuid(), os.getegid())
         except (OSError, RuntimeError) as error:
             print(f"MetaFusion startup error: {error}", file=sys.stderr)
             return 78

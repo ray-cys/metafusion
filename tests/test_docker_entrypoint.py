@@ -54,6 +54,8 @@ def test_root_entrypoint_prepares_managed_paths_and_drops_privileges(
         docker_entrypoint.CONFIG_TEMPLATE_SOURCE.read_bytes()
     )
     assert (config_dir / "config_template.yml").stat().st_mode & 0o777 == 0o664
+    assert (config_dir / "examples" / "kometa.yml").exists()
+    assert (config_dir / "examples" / "plex.yml").exists()
     assert any(call[:4] == ("chown", str(log_file), 99, 100) for call in calls)
     assert any(call[:4] == ("chown", str(report_file), 99, 100) for call in calls)
     assert calls[-4:] == [
@@ -106,6 +108,8 @@ def test_explicit_docker_user_is_honored_and_receives_template(monkeypatch, tmp_
         docker_entrypoint.main(["python", "metafusion.py"])
 
     assert (config_dir / "config_template.yml").exists()
+    assert (config_dir / "examples" / "kometa.yml").exists()
+    assert (config_dir / "examples" / "plex.yml").exists()
     assert calls == [("exec", "python", ["python", "metafusion.py"])]
 
 
@@ -139,7 +143,11 @@ def test_bare_docker_options_are_forwarded_to_metafusion(monkeypatch, tmp_path):
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setattr(os, "geteuid", lambda: 10001)
     monkeypatch.setattr(os, "getegid", lambda: 10001)
-    monkeypatch.setattr(docker_entrypoint, "sync_config_template", lambda *_args: False)
+    monkeypatch.setattr(
+        docker_entrypoint,
+        "sync_config_template",
+        lambda *_args, **_kwargs: False,
+    )
     stop_at_exec(monkeypatch, calls)
 
     with pytest.raises(ExecCalled):
@@ -217,6 +225,45 @@ def test_config_template_is_refreshed_without_touching_config(monkeypatch, tmp_p
         lambda *args: pytest.fail("unchanged template must not be rewritten"),
     )
     assert not docker_entrypoint.sync_config_template(config_dir, 99, 100, source)
+
+
+def test_run_type_templates_are_managed_as_inactive_examples(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    active = config_dir / "kometa.yml"
+    active.write_text("settings:\n  mode: custom\n", encoding="utf-8")
+    packaged_kometa = tmp_path / "packaged-kometa.yml"
+    packaged_plex = tmp_path / "packaged-plex.yml"
+    packaged_kometa.write_text("settings:\n  mode: kometa\n", encoding="utf-8")
+    packaged_plex.write_text("settings:\n  mode: plex\n", encoding="utf-8")
+    monkeypatch.setattr(docker_entrypoint, "_set_owner", lambda *args: None)
+
+    assert docker_entrypoint.sync_run_type_templates(
+        config_dir, 99, 100, sources=(packaged_kometa, packaged_plex)
+    )
+    assert (config_dir / "examples" / packaged_kometa.name).read_bytes() == (
+        packaged_kometa.read_bytes()
+    )
+    assert (config_dir / "examples" / packaged_plex.name).read_bytes() == (
+        packaged_plex.read_bytes()
+    )
+    assert active.read_text(encoding="utf-8") == "settings:\n  mode: custom\n"
+    assert not docker_entrypoint.sync_run_type_templates(
+        config_dir, 99, 100, sources=(packaged_kometa, packaged_plex)
+    )
+
+
+def test_run_type_template_directory_must_not_be_symlink(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "examples").symlink_to(tmp_path / "outside")
+    source = tmp_path / "kometa.yml"
+    source.write_text("settings: {}\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="directory cannot be a symbolic link"):
+        docker_entrypoint.sync_run_type_templates(
+            config_dir, os.geteuid(), os.getegid(), sources=(source,)
+        )
 
 
 def test_config_template_destination_must_not_be_symlink(tmp_path):
