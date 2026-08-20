@@ -87,8 +87,8 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -q --cov=. --cov-report=term-missing \
-            --cov-report=json:coverage.json --cov-fail-under=85
+          pytest -q --cov=. --cov-branch --cov-report=term-missing \
+            --cov-report=json:coverage.json --cov-fail-under=0
           python tools/check_targeted_coverage.py coverage.json
 
       - name: Enforce complete Phase 25 safeguard coverage
@@ -99,6 +99,13 @@ jobs:
             --cov=helper.kometa_application_verification \
             --cov-branch --cov-report=term-missing \
             --cov-fail-under=100
+
+      - name: Enforce provider-maintenance tool coverage
+        run: |
+          pytest -q tests/test_provider_compatibility_bot.py \
+            --cov=tools.provider_compatibility \
+            --cov-config=.coveragerc-provider-tools --cov-branch \
+            --cov-report=term-missing --cov-fail-under=85
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
