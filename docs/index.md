@@ -20,12 +20,14 @@ a short project overview and first-run entry point.
 | Artwork, Plex metadata, Kometa tags, cleanup, identity, and edition safeguards | [Policy behavior and safety rules](policies.md) |
 | TMDb → Fanart.tv → Plex artwork order, quality, failure behavior, and attribution | [Artwork providers](artwork-providers.md) |
 | Scheduling, incremental/full scans, retries, SQLite, reports, shutdown, and troubleshooting | [Operations](operations.md) |
+| Understand TMDb change rechecks, the published-build canary, and post-Kometa readback | [Runtime safeguards and application verification](runtime-safeguards.md) |
 
 ## Diagnose and maintain
 
 | Task | Guide |
 | --- | --- |
 | Choose a local check, connector preflight, audit, plan, or item explanation | [Diagnostics and support reports](diagnostics.md) |
+| Verify generated Kometa metadata and artwork after Kometa applies it | [Post-Kometa verification](runtime-safeguards.md#post-kometa-application-verification) |
 | Find every supported command-line flag | [CLI reference](operations.md#command-line-reference) |
 | Manage one item's output, exceptions, identity review, migrations, cleanup history, or recovery | [Lifecycle management](lifecycle-management.md) |
 | Report a problem and confirm the supported release lane | [Support and version policy](../SUPPORT.md) |

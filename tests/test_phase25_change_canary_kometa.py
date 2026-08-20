@@ -89,6 +89,34 @@ def test_tmdb_change_plan_safety_states(tmp_path):
     )
 
 
+def test_tmdb_change_plan_handles_naive_clock_and_unreadable_checkpoint(
+    monkeypatch, tmp_path
+):
+    config = complete_config(tmp_path)
+    decisions = {("server", "movies"): False}
+    naive = datetime(2026, 8, 20, 1, 2, tzinfo=UTC).replace(tzinfo=None)
+    assert tmdb_changes._utc(naive).tzinfo == UTC
+
+    def unreadable(*_args, **_kwargs):
+        raise tmdb_changes.StateDatabaseError("broken state")
+
+    monkeypatch.setattr(tmdb_changes, "load_application_record", unreadable)
+    result = tmdb_changes.prepare_tmdb_change_plan(
+        config, decisions, now=naive, path=tmp_path / "broken.sqlite3"
+    )
+    assert result["status"] == "baseline_required"
+
+    monkeypatch.setattr(
+        tmdb_changes,
+        "load_application_record",
+        lambda *_args, **_kwargs: {"completed_at": "not-a-date"},
+    )
+    result = tmdb_changes.prepare_tmdb_change_plan(
+        config, decisions, now=naive, path=tmp_path / "invalid.sqlite3"
+    )
+    assert result["status"] == "baseline_required"
+
+
 def test_tmdb_change_feed_paginates_and_maps_only_local_ids(monkeypatch, tmp_path):
     calls = []
 
@@ -141,6 +169,59 @@ def test_tmdb_change_feed_rejects_partial_or_unbounded_responses(monkeypatch, tm
                 object(),
             )
         )
+
+    async def invalid_page_count(*args, **kwargs):
+        return {"results": [], "total_pages": "many"}
+
+    monkeypatch.setattr(tmdb_changes, "tmdb_api_request", invalid_page_count)
+    with pytest.raises(tmdb_changes.TMDbChangeFeedError, match="page count"):
+        asyncio.run(
+            tmdb_changes.collect_tmdb_change_rechecks(
+                complete_config(tmp_path),
+                plan,
+                {"Movies": [{"media_type": "movie", "tmdb_id": 1}]},
+                object(),
+            )
+        )
+
+
+def test_tmdb_change_feed_ignores_invalid_inventory_and_nonmatching_records(
+    monkeypatch, tmp_path
+):
+    async def response(_config, endpoint, **_kwargs):
+        if endpoint == "movie/changes":
+            return {"results": [None, {}, {"id": 100}], "total_pages": 1}
+        return {"results": [], "total_pages": 1}
+
+    monkeypatch.setattr(tmdb_changes, "tmdb_api_request", response)
+    config = complete_config(tmp_path)
+    not_ready = asyncio.run(
+        tmdb_changes.collect_tmdb_change_rechecks(
+            config, {"status": "baseline_required"}, {}, object()
+        )
+    )
+    assert not_ready["pages"] == {"movie": 0, "tv": 0}
+
+    plan = {"status": "ready", "start_date": "2026-08-19", "end_date": "2026-08-20"}
+    result = asyncio.run(
+        tmdb_changes.collect_tmdb_change_rechecks(
+            config,
+            plan,
+            {
+                "Movies": [
+                    {"media_type": "movie", "tmdb_id": 100, "rating_key": "10"},
+                    {"media_type": "movie", "tmdb_id": 100},
+                    {"media_type": "clip", "tmdb_id": 100, "rating_key": "11"},
+                    {"media_type": "movie", "rating_key": "12"},
+                ],
+                "No matches": [
+                    {"media_type": "movie", "tmdb_id": 101, "rating_key": "13"}
+                ],
+            },
+            object(),
+        )
+    )
+    assert result["rating_keys"] == {"Movies": {"10"}}
 
     async def unbounded(*args, **kwargs):
         return {"results": [], "total_pages": tmdb_changes.MAX_CHANGE_PAGES + 1}
@@ -281,7 +362,80 @@ def test_upgrade_canary_skips_development_dry_run_and_disabled_builds(tmp_path):
         current={"version": "1.2.0", "commit": "abc"},
         path=tmp_path / "missing.sqlite3",
     )
+    assert asyncio.run(
+        upgrade_canary.run_upgrade_canary(
+            [],
+            {},
+            config,
+            session=object(),
+            server_id="server",
+            plex_version="1.43.0",
+            current={"version": "1.2.0", "commit": "abc"},
+            path=tmp_path / "missing.sqlite3",
+        )
+    ) == (None, None)
     assert not upgrade_canary.commit_upgrade_canary(None, path=tmp_path / "state.sqlite3")
+
+
+def test_upgrade_canary_accepts_empty_libraries_and_reports_no_samples(
+    monkeypatch, tmp_path
+):
+    config = complete_config(tmp_path)
+    monkeypatch.setattr(
+        upgrade_canary,
+        "evaluate_compatibility",
+        lambda *_args, **_kwargs: {"passed": True, "checks": [], "warnings": []},
+    )
+    result, report = asyncio.run(
+        upgrade_canary.run_upgrade_canary(
+            [SimpleNamespace(title="Empty")],
+            {"Empty": []},
+            config,
+            session=object(),
+            server_id="server",
+            plex_version="1.43.0",
+            current={"version": "1.2.0", "commit": "empty123"},
+            base_dir=tmp_path,
+            path=tmp_path / "state.sqlite3",
+        )
+    )
+    assert result["passed"] is True
+    assert "No items were available" in report.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("failure", ["missing", "inventory"])
+def test_upgrade_canary_fails_when_sample_disappears_or_inventory_fails(
+    monkeypatch, tmp_path, failure
+):
+    config = complete_config(tmp_path)
+    section = SimpleNamespace(title="Movies")
+
+    async def inventory(*_args, **_kwargs):
+        if failure == "inventory":
+            raise RuntimeError("Plex unavailable")
+        return []
+
+    monkeypatch.setattr(upgrade_canary, "load_plex_library_inventory", inventory)
+    with pytest.raises(upgrade_canary.UpgradeCanaryError):
+        asyncio.run(
+            upgrade_canary.run_upgrade_canary(
+                [section],
+                {"Movies": [{"media_type": "movie", "title": "A", "rating_key": "1"}]},
+                config,
+                session=object(),
+                server_id="server",
+                plex_version="1.43.0",
+                current={"version": "1.2.0", "commit": f"{failure}123"},
+                base_dir=tmp_path,
+                path=tmp_path / "state.sqlite3",
+            )
+        )
+
+
+def test_upgrade_canary_rejects_pass_without_qualification_scope(tmp_path):
+    assert not upgrade_canary.commit_upgrade_canary(
+        {"passed": True}, path=tmp_path / "state.sqlite3"
+    )
 
 
 class Reloadable(SimpleNamespace):
@@ -319,6 +473,45 @@ def test_kometa_comparison_checks_generated_subset_and_reloads_each_child_once()
     assert result["fields_missing_or_different"] == 1
 
 
+def test_kometa_normalization_and_comparison_edge_states():
+    moment = datetime(2026, 8, 20, 1, 2, tzinfo=UTC)
+    assert kometa_application_verification._scalar(moment) == "2026-08-20"
+    assert kometa_application_verification._scalar(moment.date()) == "2026-08-20"
+    assert kometa_application_verification._tags(" Drama ") == {"drama"}
+    assert kometa_application_verification._tags(["", SimpleNamespace(tag="Comedy")]) == {
+        "comedy"
+    }
+    assert list(kometa_application_verification._field_expectations(None, "movie")) == []
+
+    invalid_children = {
+        "seasons": {
+            "invalid": {"title": "Ignored"},
+            1: {"episodes": {"invalid": {"title": "Ignored"}}},
+        }
+    }
+    assert list(
+        kometa_application_verification._field_expectations(invalid_children, "show")
+    ) == []
+
+    empty = kometa_application_verification.compare_kometa_entry(
+        {}, Reloadable(reload_count=0), "movie"
+    )
+    assert empty["status"] == "no_verifiable_fields"
+
+    different = kometa_application_verification.compare_kometa_entry(
+        {"summary": "Expected"}, Reloadable(summary="Actual", reload_count=0), "movie"
+    )
+    assert different["status"] == "not_applied"
+
+    missing_child = kometa_application_verification.compare_kometa_entry(
+        {"seasons": {1: {"episodes": {1: {"title": "Pilot"}}}}},
+        Reloadable(reload_count=0, seasons=lambda: []),
+        "show",
+    )
+    assert missing_child["status"] == "not_applied"
+    assert missing_child["mismatches"][0]["reason"] == "Plex child is unavailable"
+
+
 def test_kometa_report_has_text_json_and_retention(tmp_path):
     metadata = [
         {
@@ -347,6 +540,46 @@ def test_kometa_report_has_text_json_and_retention(tmp_path):
     assert report.is_file()
     assert companion["report_type"] == "kometa_application_audit"
     assert companion["data"]["summary"]["metadata"] == {"partial": 1}
+
+
+def test_kometa_report_handles_empty_results_and_truncates_text_mismatches(tmp_path):
+    empty = kometa_application_verification.write_kometa_application_report(
+        [], [], base_dir=tmp_path, retention=2
+    )
+    empty_text = empty.read_text(encoding="utf-8")
+    assert "- no items" in empty_text
+    assert "- no managed artwork" in empty_text
+
+    mismatches = [
+        {"child": "item", "field": f"field-{index}", "reason": "differs"}
+        for index in range(11)
+    ]
+    report = kometa_application_verification.write_kometa_application_report(
+        [
+            {
+                "library": "Movies",
+                "title": "Example",
+                "status": "partial",
+                "plex_rating_key": "1",
+                "fields_matched": 0,
+                "fields_checked": 11,
+                "mismatches": mismatches,
+            }
+        ],
+        [],
+        base_dir=tmp_path,
+        retention=2,
+    )
+    assert "additional mismatches" in report.read_text(encoding="utf-8")
+
+
+def test_kometa_document_loader_rejects_invalid_yaml(tmp_path):
+    config = complete_config(tmp_path)
+    metadata_dir = tmp_path / "kometa" / "metadata"
+    metadata_dir.mkdir(parents=True)
+    (metadata_dir / "movie_metadata.yml").write_text("metadata: [", encoding="utf-8")
+    with pytest.raises(ValueError, match="Unable to read generated Kometa metadata"):
+        kometa_application_verification._load_documents(config)
 
 
 def test_kometa_application_runner_matches_yaml_and_reports_missing_key(monkeypatch, tmp_path):
@@ -398,6 +631,105 @@ def test_kometa_application_runner_matches_yaml_and_reports_missing_key(monkeypa
     assert metadata_records[1]["status"] == "not_found"
     assert artwork_records[0]["status"] == "selected"
     assert report.is_file()
+
+
+@pytest.mark.parametrize("failure", ["missing_yaml", "comparison_error"])
+def test_kometa_verification_reports_missing_or_unverifiable_yaml(
+    monkeypatch, tmp_path, failure
+):
+    config = complete_config(tmp_path)
+    section = SimpleNamespace(title="TV")
+    item = Reloadable(ratingKey="2", reload_count=0, seasons=lambda: [])
+    documents = {
+        "movie": {"path": "movie.yml", "metadata": {}},
+        "show": {
+            "path": "show.yml",
+            "metadata": {} if failure == "missing_yaml" else {"Example (2020)": {"title": "Example"}},
+        },
+    }
+
+    async def inventory(_section, _runtime, records_only=False):
+        if records_only:
+            return [
+                {
+                    "rating_key": "2",
+                    "media_type": "show",
+                    "title": "Example",
+                    "year": 2020,
+                }
+            ]
+        return [item, Reloadable(ratingKey="ignored", reload_count=0)]
+
+    async def metadata(*_args, **_kwargs):
+        return {
+            "ratingKey": "2",
+            "library_type": "show",
+            "title": "Example",
+            "year": 2020,
+            "tmdb_id": 100,
+        }
+
+    monkeypatch.setattr(kometa_application_verification, "_load_documents", lambda *_args: documents)
+    monkeypatch.setattr(kometa_application_verification, "load_plex_library_inventory", inventory)
+    monkeypatch.setattr(kometa_application_verification, "get_plex_metadata", metadata)
+    monkeypatch.setattr(
+        kometa_application_verification,
+        "verify_plex_artwork",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+    )
+    if failure == "comparison_error":
+        monkeypatch.setattr(
+            kometa_application_verification,
+            "compare_kometa_entry",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("read failed")),
+        )
+
+    metadata_records, artwork_records = asyncio.run(
+        kometa_application_verification.verify_kometa_application(
+            [section], config, ["2"], object()
+        )
+    )
+    assert metadata_records[0]["status"] == failure.replace("comparison_error", "unverifiable")
+    assert artwork_records == []
+
+
+def test_kometa_verification_skips_libraries_without_requested_items(monkeypatch, tmp_path):
+    config = complete_config(tmp_path)
+    sections = [SimpleNamespace(title="Movies"), SimpleNamespace(title="TV")]
+    inventory_calls = []
+
+    async def inventory(section, _runtime, records_only=False):
+        inventory_calls.append((section.title, records_only))
+        if records_only:
+            key = "1" if section.title == "Movies" else "2"
+            return [{"rating_key": key, "media_type": "movie", "title": section.title}]
+        return [Reloadable(ratingKey="2", reload_count=0)]
+
+    async def metadata(*_args, **_kwargs):
+        return {"library_type": "movie", "title": "TV", "year": None}
+
+    monkeypatch.setattr(
+        kometa_application_verification,
+        "_load_documents",
+        lambda *_args: {
+            "movie": {"path": "movie.yml", "metadata": {}},
+            "show": {"path": "show.yml", "metadata": {}},
+        },
+    )
+    monkeypatch.setattr(kometa_application_verification, "load_plex_library_inventory", inventory)
+    monkeypatch.setattr(kometa_application_verification, "get_plex_metadata", metadata)
+    monkeypatch.setattr(
+        kometa_application_verification,
+        "verify_plex_artwork",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+    )
+    records, _artwork = asyncio.run(
+        kometa_application_verification.verify_kometa_application(
+            sections, config, ["2"], object()
+        )
+    )
+    assert [call for call in inventory_calls if call[1] is False] == [("TV", False)]
+    assert records[0]["status"] == "missing_yaml"
 
 
 def test_kometa_application_cli_is_standalone_and_mode_guarded(monkeypatch, tmp_path):

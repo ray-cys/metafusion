@@ -195,6 +195,9 @@ checkpoint is retained. Targeted and dry-run commands neither consume nor
 advance it. The new checkpoint is committed only when the complete MetaFusion
 job succeeds.
 
+See [TMDb change-aware rechecks](runtime-safeguards.md#tmdb-change-aware-rechecks)
+for the full selection, refresh, and checkpoint contract.
+
 For TV libraries, MetaFusion also fingerprints the show-level `childCount`,
 `seasonCount`, and `leafCount` values returned with the normal Plex library
 inventory. A new season or episode therefore selects its parent show even when
@@ -242,6 +245,9 @@ only after the surrounding job also completes successfully, so a later failure
 causes the canary to run again. Development builds, dry runs, and an unchanged
 published commit do not rerun it. Disable this advanced safety gate only with
 `UPGRADE_CANARY=False`.
+
+See the [one-time upgrade canary](runtime-safeguards.md#one-time-upgrade-canary)
+for qualification scope, retry behavior, and reports.
 
 ### Durable failed-item recovery
 

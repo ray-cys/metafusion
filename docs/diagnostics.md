@@ -249,6 +249,9 @@ the JSON before attaching it to a public issue.
 
 ### Post-Kometa application verification
 
+The complete status, safety, retention, and scheduling contract is in [runtime
+safeguards and application verification](runtime-safeguards.md#post-kometa-application-verification).
+
 Run Kometa first, then use:
 
 ```bash

@@ -10,7 +10,10 @@ scanner or metadata agent, and it never modifies video or audio files.
 - Selects artwork through a guarded TMDb → Fanart.tv → Plex fallback chain.
 - Optionally enriches selected Plex metadata fields through the Plex API.
 - Processes new and changed movies, shows, seasons, Specials, and episodes
-  incrementally, with durable retries and periodic reconciliation.
+  incrementally, including TMDb-only changes, with durable retries and periodic
+  reconciliation.
+- Qualifies each published upgrade before output writes and can verify Kometa
+  results against live Plex after Kometa runs.
 - Preserves manual artwork through ownership, checksum, quality, and collision
   safeguards.
 - Adapts processing and provider concurrency to container resources and
@@ -80,6 +83,7 @@ support, and release guidance.
 
 Common destinations:
 
+- [TMDb rechecks, upgrade canary, and post-Kometa verification](docs/runtime-safeguards.md)
 - [Artwork fallback and attribution](docs/artwork-providers.md)
 - [Scheduling, incremental processing, SQLite, and troubleshooting](docs/operations.md)
 - [Diagnostics, audits, and reports](docs/diagnostics.md)

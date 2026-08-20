@@ -107,8 +107,9 @@ continues to install only `requirements.txt` with `--require-hashes`.
 Before promoting `develop` to `main`:
 
 1. All required CI tests and the critical-vulnerability image scan pass.
-2. Test coverage stays at or above the enforced 85% floor. Raise the floor
-   only with useful failure-path tests.
+2. Whole-application line coverage stays at or above the enforced 85% floor,
+   and newly introduced critical safeguards meet their explicit line/branch
+   floors. Raise either only with useful behavioral and failure-path tests.
 3. `python metafusion.py --preflight` passes in the intended deployment.
 4. `python metafusion.py --release-check` passes and its redacted report is retained.
 5. A full scan completes with no unexpected item failures and with cleanup
@@ -213,3 +214,13 @@ support replay command sanitizes credentials, rating keys, private hosts, and
 local paths before retaining a bundle. Managed rename reconciliation removes
 only checksum-proven obsolete artwork inside configured roots; any modified,
 unproven, symlinked, out-of-scope, or still-claimed file remains untouched.
+
+Phase 25 adds TMDb change-feed checkpoints, the one-time published-build
+upgrade canary, and post-Kometa application verification. Their three modules
+have an independently enforced 100% line-and-branch coverage gate. This strict
+boundary covers corrupt/future/stale checkpoints, incomplete or excessive TMDb
+pagination, nonmatching local inventory, canary skip/pass/failure/retry states,
+missing samples, generated scalar/tag comparison, missing children/YAML,
+unverifiable Plex readback, report pairing, and targeted application audits.
+The whole repository retains its honest aggregate floor rather than excluding
+uncovered production code to manufacture a global 100% result.

@@ -91,6 +91,15 @@ jobs:
             --cov-report=json:coverage.json --cov-fail-under=85
           python tools/check_targeted_coverage.py coverage.json
 
+      - name: Enforce complete Phase 25 safeguard coverage
+        run: |
+          pytest -q tests/test_phase25_change_canary_kometa.py \
+            --cov=helper.tmdb_changes \
+            --cov=helper.upgrade_canary \
+            --cov=helper.kometa_application_verification \
+            --cov-branch --cov-report=term-missing \
+            --cov-fail-under=100
+
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
 

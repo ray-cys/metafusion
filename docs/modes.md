@@ -50,7 +50,7 @@ mode.
 After Kometa runs, `python metafusion.py --kometa-application-audit` can compare
 the generated fields and managed artwork with live Plex. This is a read-only
 application audit, not a Kometa launcher or Plex refresh. See
-[Diagnostics](diagnostics.md#post-kometa-application-verification).
+[runtime safeguards](runtime-safeguards.md#post-kometa-application-verification).
 
 ## Plex mode
 
