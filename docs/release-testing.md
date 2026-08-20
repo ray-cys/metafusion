@@ -77,7 +77,9 @@ temporary-disconnect tests. The scheduled workflow also runs that replay suite
 weekly. Actual Plex credentials and server behavior remain covered by an
 operator's explicit `--compatibility-check` and Unraid soak test.
 The provider-maintenance script itself has an enforced 85% targeted coverage
-floor so release automation cannot silently lose its failure-path tests.
+floor so release automation cannot silently lose its failure-path tests. It
+uses `.coveragerc-provider-tools`, keeping that operational-tool measurement
+independent from the application-runtime aggregate.
 
 ## Python dependency manifests
 
@@ -107,9 +109,12 @@ continues to install only `requirements.txt` with `--require-hashes`.
 Before promoting `develop` to `main`:
 
 1. All required CI tests and the critical-vulnerability image scan pass.
-2. Whole-application line coverage stays at or above the enforced 85% floor,
-   and newly introduced critical safeguards meet their explicit line/branch
-   floors. Raise either only with useful behavioral and failure-path tests.
+2. Application-runtime line coverage stays at or above 95%, application-runtime
+   branch coverage stays at or above 85%, and high-risk modules meet their
+   explicit line/branch floors. Operational `tools/` and `.github/` scripts are
+   excluded from the runtime aggregate and retain workflow-specific tests;
+   the provider-maintenance tool has its own 85% branch-aware gate. Raise any
+   floor only with useful behavioral and failure-path tests.
 3. `python metafusion.py --preflight` passes in the intended deployment.
 4. `python metafusion.py --release-check` passes and its redacted report is retained.
 5. A full scan completes with no unexpected item failures and with cleanup
@@ -160,7 +165,7 @@ testing should run `--plan` and `--compatibility-check` before a normal job, and
 use `--sqlite-maintenance check` after the soak without overlapping an active
 job.
 
-Focused coverage floors cover the builders, processing, cleanup,
+Branch-aware focused coverage floors cover the builders, processing, cleanup,
 download/image utilities, TMDb and Fanart.tv adapters, Plex metadata writer,
 diagnostic/report/replay writers, logging/provider mappings, main
 orchestration, and durable state paths. The highest-risk existing floors were
