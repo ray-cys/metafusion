@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -530,12 +531,12 @@ def test_overwrite_policy_requires_explicit_acknowledgement():
 
 def test_version_one_state_database_upgrades_in_place(tmp_path):
     database = tmp_path / "meta_db.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("PRAGMA user_version = 1")
     store = MediaStateStore(path=database)
     store.close()
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert (
             connection.execute("PRAGMA user_version").fetchone()[0]
             == state_db.SCHEMA_VERSION

@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 
 import pytest
@@ -64,7 +65,7 @@ def test_state_primitives_reject_invalid_values_and_schema(tmp_path):
     connection.close()
 
     unsupported = tmp_path / "unsupported.sqlite3"
-    with sqlite3.connect(unsupported) as connection:
+    with closing(sqlite3.connect(unsupported)) as connection, connection:
         connection.execute(f"PRAGMA user_version={state_db.SCHEMA_VERSION + 1}")
     state_db._integrity_checked_databases.clear()
     with pytest.raises(state_db.StateDatabaseError, match="unsupported"):

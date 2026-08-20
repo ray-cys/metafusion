@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +37,7 @@ def test_automatic_limits_schema_guards_and_close_failures(monkeypatch, tmp_path
     assert cache._database_files() == []
 
     unsupported = tmp_path / "unsupported.sqlite3"
-    with sqlite3.connect(unsupported) as connection:
+    with closing(sqlite3.connect(unsupported)) as connection, connection:
         connection.execute("PRAGMA user_version=99")
     readonly = PersistentTTLCache()
     readonly.configure(unsupported, writable=False)
@@ -228,3 +229,115 @@ def test_relieve_space_and_maintenance_success_and_failure(monkeypatch, tmp_path
     empty = PersistentTTLCache()
     assert empty.relieve_space(destination, 1) == 0
     assert empty.maintain()["optimized"] is False
+
+
+def test_remaining_cache_corruption_expiry_and_update_paths(monkeypatch, tmp_path):
+    unavailable = PersistentTTLCache()
+    monkeypatch.setattr(
+        unavailable,
+        "_open_database",
+        lambda: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+    unavailable.configure(tmp_path / "unavailable.sqlite3")
+    assert unavailable.stats()["last_error"].startswith("OSError:")
+
+    path = tmp_path / "cache.sqlite3"
+    cache = PersistentTTLCache()
+    cache.configure(path)
+    monkeypatch.setattr(
+        cache,
+        "_delete_expired",
+        lambda _now: (_ for _ in ()).throw(sqlite3.OperationalError("locked")),
+    )
+    cache.configure(path)
+    assert cache.stats()["health"] == "degraded"
+
+    recovered = []
+    cache = PersistentTTLCache()
+    cache.path = path
+    cache.writable = True
+    monkeypatch.setattr(cache, "_recover_database", lambda: recovered.append(True))
+    cache._handle_database_error(sqlite3.DatabaseError("database disk image is malformed"))
+    assert recovered == [True]
+
+    cache = PersistentTTLCache()
+    cache.configure(path)
+    cache._connection.execute("DELETE FROM tmdb_cache_meta")
+    with pytest.raises(sqlite3.DatabaseError, match="metadata row"):
+        cache._refresh_totals()
+    cache.close()
+
+    clock = [100.0]
+    monkeypatch.setattr(tmdb_cache.time, "time", lambda: clock[0])
+    cache = PersistentTTLCache()
+    cache.configure(tmp_path / "expiry.sqlite3")
+    cache.set("expired", {"value": 1}, ttl_seconds=1)
+    cache.set("updated", {"value": 1})
+    cache.set("updated", {"value": 2})
+    cache.flush()
+    cache._connection.execute(
+        "UPDATE tmdb_cache SET response=? WHERE cache_key='updated'", (b"broken",)
+    )
+    cache._connection.commit()
+    cache._memory.clear()
+    cache._memory_expires.clear()
+    cache._memory_touched.clear()
+    clock[0] += 2
+    assert cache.get("expired") is None
+    assert cache.get("updated") is None
+    assert cache._entry_count == 0
+
+
+def test_remaining_cache_duplicate_flush_space_and_maintenance_branches(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "cache.sqlite3"
+    cache = PersistentTTLCache()
+    cache.configure(path)
+    cache["shared"] = {"database": True}
+    cache.flush()
+    cache._store_memory("shared", {"memory": True}, tmdb_cache.time.time(), 60)
+    assert len(cache) == 1
+
+    class RollbackFailure(FailingConnection):
+        def rollback(self):
+            raise sqlite3.OperationalError("rollback failed")
+
+    cache["pending"] = {"value": 1}
+    real = cache._connection
+    cache._connection = RollbackFailure(real, fail_on="UPDATE tmdb_cache_meta")
+    assert cache.flush() is False
+    assert cache._dirty is False
+
+    cache.configure(path)
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    real_stat = tmdb_cache.Path.stat
+
+    def different_device(candidate):
+        result = real_stat(candidate)
+        if candidate == destination:
+            return SimpleNamespace(st_dev=result.st_dev + 1)
+        return result
+
+    monkeypatch.setattr(tmdb_cache.Path, "stat", different_device)
+    assert cache.relieve_space(destination, 1) == 0
+    monkeypatch.setattr(tmdb_cache.Path, "stat", real_stat)
+
+    monkeypatch.setattr(
+        tmdb_cache.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=0),
+    )
+    monkeypatch.setattr(cache, "_delete_expired", lambda _now: 1)
+    monkeypatch.setattr(cache, "flush", lambda: False)
+    assert cache.relieve_space(destination, 1) == 1
+
+    cache.configure(path)
+    cache["one"] = {"value": 1}
+    cache.flush()
+    wal = tmp_path / "cache.sqlite3-wal"
+    wal.write_bytes(b"wal")
+    result = cache.maintain(wal_threshold_mb=0)
+    assert result["optimized"] is True
+    assert result["wal_bytes"] >= 0

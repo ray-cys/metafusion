@@ -1,6 +1,7 @@
 import copy
 import sqlite3
 from collections import namedtuple
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -44,7 +45,7 @@ def complete_config(mode="kometa"):
 
 
 def create_database(path, schema):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE sample (value INTEGER)")
         connection.execute("INSERT INTO sample VALUES (1)")
         connection.execute(f"PRAGMA user_version = {int(schema)}")

@@ -155,6 +155,10 @@ shutdown, scheduler catch-up, timezone offsets, canonical artwork collisions,
 and large inventory reconciliation. New write paths must add the corresponding
 recovery test before the coverage floor is raised.
 
+The suite treats leaked file and SQLite handles as failures. Every shared state
+session has an explicit close path, short-lived SQLite inspection handles are
+closed deterministically, and subprocess tests drain and close their pipes.
+
 Adaptive-concurrency tests use deterministic resource, pressure, clock, and
 provider signals. They cover cgroup ceilings, healthy growth, rate-limit and
 resource-pressure reduction, circuit opening/half-open recovery, shared

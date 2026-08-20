@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -36,13 +37,13 @@ UTC = timezone.utc
 
 def test_state_schema_upgrade_creates_bounded_sqlite_backup(tmp_path):
     database = tmp_path / "meta_db.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("PRAGMA user_version = 3")
 
     connection = _connect(database, writable=True)
     connection.close()
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         tables = {
             row[0]
@@ -262,7 +263,7 @@ def test_library_inventory_preserves_temporarily_missing_library(tmp_path):
         "server", libraries[:1], path=database, now="2026-08-19T00:00:00+00:00"
     )
     assert [entry["library_name"] for entry in missing] == ["Series"]
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         row = connection.execute(
             "SELECT active, missing_since FROM plex_library_inventory "
             "WHERE library_uuid = 'two'"
@@ -284,7 +285,7 @@ def test_library_inventory_dry_run_comparison_does_not_write(tmp_path):
     )
 
     assert [entry["library_name"] for entry in missing] == ["Series"]
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         row = connection.execute(
             "SELECT active, missing_since FROM plex_library_inventory "
             "WHERE library_uuid = 'two'"
