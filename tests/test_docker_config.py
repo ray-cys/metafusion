@@ -151,6 +151,14 @@ def test_packaged_configuration_references_are_versioned_and_in_image_context():
         "!/config/examples/plex.yml",
     } <= gitignore
 
+    workflow = (REPO_ROOT / ".github" / "workflows" / "docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'cmp "${config_dir}/config_template.yml" config/config_template.yml'
+        in workflow
+    )
+
 
 def test_generated_dependency_manifests_are_self_contained_and_in_sync():
     runtime_input = (REPO_ROOT / "requirements.in").read_text(encoding="utf-8")
