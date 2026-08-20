@@ -5,29 +5,29 @@ import argparse
 import json
 from pathlib import Path
 
-GLOBAL_LINE_MINIMUM = 95.0
-GLOBAL_BRANCH_MINIMUM = 85.0
+GLOBAL_LINE_MINIMUM = 100.0
+GLOBAL_BRANCH_MINIMUM = 95.0
 
 # Floors are intentionally below the measured values so that CI catches a
 # regression without depending on platform-specific rounding. Each value is a
 # (line, branch) percentage pair.
 TARGETS = {
-    "modules/builder.py": (93.0, 82.0),
-    "modules/processing.py": (94.5, 88.0),
-    "modules/cleanup.py": (94.0, 86.5),
-    "modules/utils.py": (93.0, 84.0),
-    "helper/tmdb_cache.py": (94.0, 90.0),
-    "helper/fanart.py": (98.0, 90.0),
-    "helper/logging.py": (97.0, 89.0),
-    "helper/plex_metadata.py": (92.0, 85.0),
-    "helper/diagnostics.py": (98.0, 94.0),
-    "helper/provider_replay.py": (96.0, 87.0),
-    "helper/reporting.py": (82.0, 95.0),
-    "helper/provider_mappings.py": (99.0, 98.0),
-    "metafusion.py": (94.5, 91.0),
-    "helper/state_db.py": (96.0, 92.0),
-    "helper/identity_diagnostics.py": (95.0, 85.0),
-    "helper/item_explanation.py": (96.0, 80.0),
+    "modules/builder.py": (100.0, 93.5),
+    "modules/processing.py": (100.0, 96.0),
+    "modules/cleanup.py": (100.0, 96.5),
+    "modules/utils.py": (100.0, 94.5),
+    "helper/tmdb_cache.py": (100.0, 95.0),
+    "helper/fanart.py": (100.0, 93.0),
+    "helper/logging.py": (100.0, 95.0),
+    "helper/plex_metadata.py": (100.0, 95.5),
+    "helper/diagnostics.py": (100.0, 99.0),
+    "helper/provider_replay.py": (100.0, 96.0),
+    "helper/reporting.py": (100.0, 100.0),
+    "helper/provider_mappings.py": (100.0, 100.0),
+    "metafusion.py": (100.0, 95.5),
+    "helper/state_db.py": (100.0, 97.0),
+    "helper/identity_diagnostics.py": (100.0, 95.5),
+    "helper/item_explanation.py": (100.0, 93.0),
     "helper/tmdb_changes.py": (100.0, 100.0),
     "helper/upgrade_canary.py": (100.0, 100.0),
     "helper/kometa_application_verification.py": (100.0, 100.0),

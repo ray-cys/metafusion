@@ -153,12 +153,14 @@ def test_item_outcomes_cover_unknown_completeness_and_season_details():
                 1: "failed",
                 2: "skipped",
                 3: "not_due",
+                4: "missing",
             },
             "season_artwork_providers": {"1": "fanart", 2: None},
             "season_artwork_attempts": {
                 None: [
                     {"provider": "Plex", "status": "no_candidate"}
-                ]
+                ],
+                "4": [{"provider": "TMDb", "status": "no_candidates"}],
             },
             "season_artwork_selection_stages": {
                 "1": "missing_only_relaxed",
@@ -214,6 +216,7 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
 
     logger = CaptureLogger()
     summary = {
+        "Unavailable": None,
         "Shows": {
             "total_items": 1,
             "library_type": "unknown",
@@ -228,7 +231,23 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
                 "artwork_provider_writes": {"fanart": 2, "custom": 1},
                 "artwork_bytes": 20,
             },
-        }
+        },
+        "Movies Archive": {
+            "total_items": 0,
+            "library_type": "unknown",
+            "complete": 0,
+            "incomplete": 0,
+            "percent_complete": 100,
+            "library_summary": {},
+        },
+        "Misc": {
+            "total_items": 0,
+            "library_type": "unknown",
+            "complete": 0,
+            "incomplete": 0,
+            "percent_complete": 100,
+            "library_summary": {},
+        },
     }
     cleanup = SimpleNamespace(
         titles=1,
@@ -275,3 +294,24 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     assert "Plex metadata: Server-managed" in text
     assert "Low free space" in text
     assert app_logging.human_readable_size(1024) == "1.00 KB"
+
+
+def test_storage_helpers_tolerate_os_errors_and_missing_mounts(monkeypatch, tmp_path):
+    class BrokenFile:
+        def is_file(self):
+            raise OSError("unreadable")
+
+    class BrokenMount:
+        def stat(self):
+            raise OSError("unreadable")
+
+    assert app_logging._file_group_bytes([BrokenFile()]) == 0
+    monkeypatch.setattr(app_logging, "BASE_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(app_logging, "_nearest_existing_path", lambda _path: None)
+    assert app_logging._storage_mounts({"settings": {"mode": "kometa"}}) == []
+    monkeypatch.setattr(
+        app_logging,
+        "_nearest_existing_path",
+        lambda _path: BrokenMount(),
+    )
+    assert app_logging._storage_mounts({"settings": {"mode": "kometa"}}) == []

@@ -46,7 +46,7 @@ jobs:
           mypy
           python tools/generate_config_surfaces.py --check
 
-      - name: Run the complete branch-aware coverage suite
+      - name: Enforce complete line and 95% branch coverage
         shell: bash
         run: |
           pytest -q --cov=. --cov-branch --cov-report=term-missing \

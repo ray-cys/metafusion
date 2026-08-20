@@ -85,7 +85,7 @@ jobs:
           mypy
           python tools/generate_config_surfaces.py --check
 
-      - name: Run tests
+      - name: Enforce 100% line and 95% branch coverage
         run: |
           pytest -q --cov=. --cov-branch --cov-report=term-missing \
             --cov-report=json:coverage.json --cov-fail-under=0

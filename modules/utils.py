@@ -398,10 +398,10 @@ def get_best_poster(
             best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
             return best
 
-    if images:
-        best = max(images, key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language))
-        return best
-    return None
+    return max(
+        images,
+        key=lambda x: _artwork_quality_key(config, x, "poster", preferred_language),
+    )
 
 def get_best_season(
     config, images, preferred_language="en", fallback=None, prefer_vote=None, max_width=None,
@@ -459,10 +459,10 @@ def get_best_season(
             best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
             return best
 
-    if images:
-        best = max(images, key=lambda x: _artwork_quality_key(config, x, "season", preferred_language))
-        return best
-    return None
+    return max(
+        images,
+        key=lambda x: _artwork_quality_key(config, x, "season", preferred_language),
+    )
 
 def get_best_background(
     config, images, prefer_vote=None, max_width=None, max_height=None, relaxed_vote=None,
@@ -507,10 +507,7 @@ def get_best_background(
         best = max(filtered, key=lambda x: _artwork_quality_key(config, x, "background"))
         return best
 
-    if images:
-        best = max(images, key=lambda x: _artwork_quality_key(config, x, "background"))
-        return best
-    return None
+    return max(images, key=lambda x: _artwork_quality_key(config, x, "background"))
 
 def stale_image(last_upgraded, days=30):
     try:
@@ -676,9 +673,6 @@ def smart_asset_upgrade(
         return True, "UPGRADE_RELAXED", context
     if cached_votes > 0 and new_votes > cached_votes:
         return True, "UPGRADE_VOTES", context
-    if cached_votes >= vote_threshold and new_votes >= vote_threshold and new_votes > cached_votes:
-        return True, "UPGRADE_STRICT", context
-
     if new_width > existing_width or new_height > existing_height:
         return True, "UPGRADE_DIMENSIONS", context
 
@@ -1030,8 +1024,6 @@ def analyze_image_content(image_content, *, asset_type="poster", expected_image=
         image.load()
         width, height = (int(value) for value in image.size)
         image_format = str(image.format or "unknown").upper()
-        if width <= 0 or height <= 0:
-            raise ValueError("Artwork has invalid dimensions")
         if image_format not in {"JPEG", "PNG", "WEBP"}:
             raise ValueError(f"Unsupported artwork format: {image_format}")
         ratio = width / height
