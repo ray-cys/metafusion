@@ -21,6 +21,19 @@ _NEGATIVE_STATUS_KEY = "__metafusion_negative_http_status__"
 _inflight_requests = weakref.WeakKeyDictionary()
 
 
+def _change_refresh_requested(config, endpoint_or_url):
+    """Identify detail endpoints selected by the current TMDb change window."""
+    if str(endpoint_or_url).startswith("http"):
+        return False
+    parts = str(endpoint_or_url).strip("/").split("/")
+    if len(parts) < 2 or parts[0] not in {"movie", "tv"}:
+        return False
+    configured = config.get("_tmdb_refresh_ids", {})
+    return str(parts[1]) in {
+        str(value) for value in configured.get(parts[0], []) if value is not None
+    }
+
+
 def get_tmdb_limiter():
     """Return a limiter bound to the current job's event loop."""
     global _tmdb_limiter, _tmdb_limiter_loop
@@ -121,9 +134,12 @@ def _redact_url(url):
 async def tmdb_api_request(
     config, endpoint_or_url, params=None, retries=3, delay=2, backoff_factor=2, api_key=None,
     language=None, region=None, cache=True, raw=False, session=None,
-    max_response_bytes=None, include_locale=True, _coalesced_owner=False, **kwargs,
+    max_response_bytes=None, include_locale=True, refresh_cache=None,
+    _coalesced_owner=False, **kwargs,
 ):
     performance = tracker_for(config)
+    if refresh_cache is None:
+        refresh_cache = _change_refresh_requested(config, endpoint_or_url)
     if endpoint_or_url.startswith("http"):
         url = endpoint_or_url
         query = dict(params or {})
@@ -170,7 +186,9 @@ async def tmdb_api_request(
 
     cache_hash = hashlib.sha256(cache_key.encode()).hexdigest()
     cached_response = (
-        tmdb_response_cache.get(cache_hash, _CACHE_MISS) if cache else _CACHE_MISS
+        tmdb_response_cache.get(cache_hash, _CACHE_MISS)
+        if cache and not refresh_cache
+        else _CACHE_MISS
     )
     if cached_response is not _CACHE_MISS:
         if performance:
@@ -189,8 +207,8 @@ async def tmdb_api_request(
         json.dumps(kwargs, sort_keys=True, default=str).encode()
     ).hexdigest()
     request_identity = (
-        f"{cache_hash}:{int(bool(cache))}:{int(bool(raw))}:"
-        f"{max_response_bytes}:{option_hash}"
+        f"{cache_hash}:{int(bool(cache))}:{int(bool(refresh_cache))}:"
+        f"{int(bool(raw))}:{max_response_bytes}:{option_hash}"
     )
     if not _coalesced_owner:
         loop = asyncio.get_running_loop()
@@ -217,6 +235,7 @@ async def tmdb_api_request(
                 session=session,
                 max_response_bytes=max_response_bytes,
                 include_locale=include_locale,
+                refresh_cache=refresh_cache,
                 _coalesced_owner=True,
                 **kwargs,
             )

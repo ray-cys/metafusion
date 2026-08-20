@@ -149,6 +149,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `INCREMENTAL` | `True` | Skip successfully processed unchanged items. |
 | `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between complete reconciliation scans. |
 | `METADATA_PENDING_RECHECK_HOURS` | `24` | Recheck interval for Plex episodes whose TMDb metadata is not published yet. |
+| `TMDB_CHANGE_RECHECKS` | `True` | Select locally known titles returned by TMDb's bounded change feed and refresh their cached detail responses. Safe baselines and checkpoints are automatic. |
 | `IMAGE_UPGRADE_DAYS` | `30` | Default adaptive base interval; `0` disables timed rechecks. |
 | `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
 | `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
@@ -163,6 +164,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |
+| `UPGRADE_CANARY` | `True` | Qualify each published image commit once with read-only compatibility and deterministic local item checks before output writes. |
 | `HEALTH_FAIL_ON_JOB_ERROR` | `False` | Mark the container unhealthy after a failed job instead of only reporting it. |
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 

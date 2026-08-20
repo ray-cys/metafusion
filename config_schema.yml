@@ -41,6 +41,7 @@ defaults:
     tag_policy: append
   compatibility:
     profile: auto
+    upgrade_canary: true
   plex_metadata:
     enabled: false
     policy: fill_missing
@@ -75,6 +76,7 @@ defaults:
     enabled: true
     full_scan_interval_hours: 168.0
     metadata_pending_recheck_hours: 24.0
+    tmdb_change_rechecks: true
   image_upgrades:
     default_days: 30.0
     movie_days: null
@@ -2054,3 +2056,41 @@ settings:
     mask: false
     value: auto
     order: 99
+- name: UPGRADE_CANARY
+  section: Runtime, incremental, cache, and output
+  description: Run a one-time read-only local qualification before each published build is allowed to write output.
+  path:
+  - compatibility
+  - upgrade_canary
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 102
+  compose: ${UPGRADE_CANARY-}
+  compose_order: 100
+  unraid:
+    name: Upgrade Canary
+    default: 'True'
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 100
+- name: TMDB_CHANGE_RECHECKS
+  section: Runtime, incremental, cache, and output
+  description: Recheck locally known titles returned by the bounded TMDb change feed between successful jobs.
+  path:
+  - incremental
+  - tmdb_change_rechecks
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 103
+  compose: ${TMDB_CHANGE_RECHECKS-}
+  compose_order: 101
+  unraid:
+    name: TMDb Change-Aware Rechecks
+    default: 'True'
+    display: advanced
+    required: false
+    mask: false
+    value: 'True'
+    order: 101
