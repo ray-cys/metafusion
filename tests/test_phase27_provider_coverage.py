@@ -1,5 +1,7 @@
 import copy
 import json
+import runpy
+import sys
 from pathlib import Path
 
 import pytest
@@ -169,9 +171,9 @@ def test_provider_coverage_checker_enforces_both_dimensions(tmp_path, capsys):
     passing = {
         "totals": {
             "num_statements": 100,
-            "covered_lines": 95,
+            "covered_lines": 100,
             "num_branches": 100,
-            "covered_branches": 95,
+            "covered_branches": 100,
         }
     }
     report = tmp_path / "provider.json"
@@ -179,7 +181,12 @@ def test_provider_coverage_checker_enforces_both_dimensions(tmp_path, capsys):
     assert check_provider_coverage.main([str(report)]) == 0
     assert "[PASS]" in capsys.readouterr().out
 
-    passing["totals"].update(covered_branches=94)
+    passing["totals"].update(covered_branches=99)
+    report.write_text(json.dumps(passing), encoding="utf-8")
+    assert check_provider_coverage.main([str(report)]) == 1
+    assert "[FAIL]" in capsys.readouterr().out
+
+    passing["totals"].update(covered_lines=99, covered_branches=100)
     report.write_text(json.dumps(passing), encoding="utf-8")
     assert check_provider_coverage.main([str(report)]) == 1
     assert "[FAIL]" in capsys.readouterr().out
@@ -188,3 +195,21 @@ def test_provider_coverage_checker_enforces_both_dimensions(tmp_path, capsys):
     assert missing["passed"] is False
     assert missing["line_percent"] == 100.0
     assert missing["branch_percent"] == 0.0
+
+
+def test_provider_compatibility_module_entrypoint(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "provider_compatibility.py",
+            "--manifest",
+            str(MANIFEST_PATH),
+            "--requirements",
+            str(REQUIREMENTS_PATH),
+            "verify",
+        ],
+    )
+    with pytest.raises(SystemExit, match="0"):
+        runpy.run_path(provider_compatibility.__file__, run_name="__main__")
+    assert "Provider contracts valid" in capsys.readouterr().out

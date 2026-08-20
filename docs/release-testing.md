@@ -76,8 +76,8 @@ path discovery, identity inspection, provider mappings, pagination, and
 temporary-disconnect tests. The scheduled workflow also runs that replay suite
 weekly. Actual Plex credentials and server behavior remain covered by an
 operator's explicit `--compatibility-check` and Unraid soak test.
-The provider-maintenance script itself has independently enforced 95% line and
-95% branch coverage floors so release automation cannot silently lose its
+The provider-maintenance script itself has independently enforced 100% line and
+100% branch coverage floors so release automation cannot silently lose its
 failure-path tests. It uses `.coveragerc-provider-tools`, keeping that
 operational-tool measurement independent from the application-runtime
 aggregate.
@@ -114,7 +114,7 @@ Before promoting `develop` to `main`:
    branch coverage stays at or above 95%, and high-risk modules meet their
    explicit line/branch floors. Operational `tools/` and `.github/` scripts are
    excluded from the runtime aggregate and retain workflow-specific tests;
-   the provider-maintenance tool has its own 95% line-and-branch gate. Raise any
+   the provider-maintenance tool has its own 100% line-and-branch gate. Raise any
    floor only with useful behavioral and failure-path tests.
 3. `python metafusion.py --preflight` passes in the intended deployment.
 4. `python metafusion.py --release-check` passes and its redacted report is retained.
