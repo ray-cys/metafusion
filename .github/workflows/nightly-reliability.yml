@@ -79,6 +79,10 @@ jobs:
               --cov-fail-under=100
           fi
 
+      - name: Kill representative safety mutations
+        if: matrix.ref == 'develop' && matrix.python-version == '3.13'
+        run: python tools/run_mutation_gate.py
+
       - name: Enforce provider-maintenance tool coverage
         shell: bash
         run: |

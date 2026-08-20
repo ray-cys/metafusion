@@ -171,7 +171,7 @@ def test_cleanup_dry_run_covers_tv_title_season_episode_and_pending_candidates(
 
 def test_plex_cleanup_checksum_and_scope_matrix(monkeypatch, tmp_path):
     _patch_state(monkeypatch)
-    root = tmp_path / "media"
+    root = tmp_path / "movie"
     outside = tmp_path / "outside" / "poster.jpg"
     no_checksum = root / "no-checksum" / "poster.jpg"
     checksum_error = root / "checksum-error" / "poster.jpg"

@@ -1197,9 +1197,14 @@ async def process_library(
         ]
         if plex_progress is not None:
             progress_task = asyncio.create_task(progress_heartbeat())
+        worker_cancelled = False
         try:
             await queue.join()
         finally:
+            worker_cancelled = any(
+                worker_task.done() and worker_task.cancelled()
+                for worker_task in workers
+            )
             if progress_task is not None:
                 progress_task.cancel()
             for worker_task in workers:
@@ -1208,6 +1213,8 @@ async def process_library(
             if progress_task is not None:
                 pending_tasks.append(progress_task)
             await asyncio.gather(*pending_tasks, return_exceptions=True)
+        if worker_cancelled:
+            raise asyncio.CancelledError
 
         if (
             full_scan

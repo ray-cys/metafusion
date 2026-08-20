@@ -159,6 +159,19 @@ The suite treats leaked file and SQLite handles as failures. Every shared state
 session has an explicit close path, short-lived SQLite inspection handles are
 closed deterministically, and subprocess tests drain and close their pipes.
 
+A dependency-free mutation gate runs on Python 3.13 in release CI and nightly
+against `develop`. It temporarily changes four safety decisions—empty state
+batches, positive provider IDs, worker cancellation propagation, and cleanup
+checksum comparison—and requires the focused behavioral tests to kill every
+mutant. Exact source matching makes the gate fail closed when implementation
+changes require its sentinels to be reviewed.
+
+The orchestration, durable-state and processing floors are separately ratcheted
+after testing read-only startup, state normalization and deletion, diagnostic
+failure isolation, task cancellation, final cache flushing, and successful
+maintenance hooks. These focused floors prevent aggregate improvements elsewhere
+from hiding a regression in lifecycle or persistence behavior.
+
 Adaptive-concurrency tests use deterministic resource, pressure, clock, and
 provider signals. They cover cgroup ceilings, healthy growth, rate-limit and
 resource-pressure reduction, circuit opening/half-open recovery, shared

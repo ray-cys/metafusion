@@ -13,7 +13,7 @@ GLOBAL_BRANCH_MINIMUM = 85.0
 # (line, branch) percentage pair.
 TARGETS = {
     "modules/builder.py": (93.0, 82.0),
-    "modules/processing.py": (91.0, 84.0),
+    "modules/processing.py": (94.5, 88.0),
     "modules/cleanup.py": (94.0, 86.5),
     "modules/utils.py": (93.0, 84.0),
     "helper/tmdb_cache.py": (94.0, 90.0),
@@ -24,8 +24,8 @@ TARGETS = {
     "helper/provider_replay.py": (96.0, 87.0),
     "helper/reporting.py": (82.0, 95.0),
     "helper/provider_mappings.py": (99.0, 98.0),
-    "metafusion.py": (91.0, 88.0),
-    "helper/state_db.py": (93.0, 84.0),
+    "metafusion.py": (94.5, 91.0),
+    "helper/state_db.py": (96.0, 92.0),
     "helper/identity_diagnostics.py": (95.0, 85.0),
     "helper/item_explanation.py": (96.0, 80.0),
     "helper/tmdb_changes.py": (100.0, 100.0),

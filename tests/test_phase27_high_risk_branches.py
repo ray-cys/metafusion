@@ -66,14 +66,19 @@ def test_provider_mapping_invalid_and_empty_boundaries():
                 "tmdb:1": {"seasons": {}},
                 "tvdb:2": {
                     "seasons": {
-                        1: {"tmdb_id": 0, "season_number": -1},
+                        1: {"tmdb_id": 0, "season_number": 1},
+                    }
+                },
+                "tvdb:3": {
+                    "seasons": {
+                        1: {"tmdb_id": 3, "season_number": -1},
                     }
                 },
             }
         }
     )
     assert any("non-empty mapping" in error for error in errors)
-    assert any("positive tmdb_id" in error for error in errors)
+    assert sum("positive tmdb_id" in error for error in errors) == 2
 
 
 def test_asset_registry_records_and_unverifiable_checksum(tmp_path, monkeypatch):
