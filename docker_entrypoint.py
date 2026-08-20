@@ -8,10 +8,13 @@ from pathlib import Path
 DEFAULT_UID = 10001
 DEFAULT_GID = 10001
 MAX_ID = 2_147_483_647
-CONFIG_TEMPLATE_SOURCE = Path(__file__).resolve().parent / "config_template.yml"
+CONFIG_TEMPLATE_SOURCE = (
+    Path(__file__).resolve().parent / "config" / "config_template.yml"
+)
 CONFIG_TEMPLATE_NAME = "config_template.yml"
 RUN_TYPE_TEMPLATE_SOURCES = tuple(
-    Path(__file__).resolve().parent / name for name in ("kometa.yml", "plex.yml")
+    Path(__file__).resolve().parent / "config" / "examples" / name
+    for name in ("kometa.yml", "plex.yml")
 )
 MANAGED_FILE_MODE = 0o664
 

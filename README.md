@@ -49,8 +49,12 @@ ready-to-copy `/config/examples/kometa.yml` and
 `/config/examples/plex.yml` profiles. Copy a profile to `/config` without
 renaming it, or copy the conventional template to `/config/config.yml`.
 MetaFusion never creates an active configuration file or stores environment
-secrets in one. See the [configuration reference](docs/configuration.md) for
-selection rules, source priority, every setting, and per-library overrides.
+secrets in one. You can view or download the packaged
+[conventional template](config/config_template.yml),
+[Kometa profile](config/examples/kometa.yml), or
+[Plex profile](config/examples/plex.yml) directly from this repository. See the
+[configuration reference](docs/configuration.md) for selection rules, source
+priority, every setting, and per-library overrides.
 
 ## Choose an output mode
 

@@ -174,6 +174,17 @@ examples/kometa.yml
 examples/plex.yml
 ```
 
+The same files can be reviewed or downloaded from GitHub while reading this
+guide:
+
+- [Conventional template](../config/config_template.yml)
+- [Kometa profile](../config/examples/kometa.yml)
+- [Plex profile](../config/examples/plex.yml)
+
+These inactive references are the only configuration files automatically
+placed in `/config`. MetaFusion does not automatically create active
+`config.yml`, `kometa.yml`, or `plex.yml` files.
+
 Stop the container and copy one reference to an active file. The short mode
 profiles can be used without renaming:
 

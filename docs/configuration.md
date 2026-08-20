@@ -10,23 +10,27 @@ Choose the intended behavior first in
 [documentation index](index.md) for task-oriented guides.
 
 The exhaustive [generated configuration table](configuration.generated.md),
-`.env.example`, `config_template.yml`, `kometa.yml`, `plex.yml`, Docker Compose
-environment block, and the selected minimal Unraid variables are generated from
-the canonical `config_schema.yml` file. Maintainers update the schema and run
+`.env.example`, YAML files under `config/`, Docker Compose environment block,
+and the selected minimal Unraid variables are generated from the canonical
+`config_schema.yml` file. Maintainers update the schema and run
 `python tools/generate_config_surfaces.py`.
 
 ## Choose one YAML source
 
-The container refreshes three inactive references at startup:
+The repository keeps every downloadable YAML reference in the `config/`
+folder. The container copies or refreshes these three inactive references at
+startup:
 
-| Reference | Make it active as | Use |
-| --- | --- | --- |
-| `/config/config_template.yml` | `/config/config.yml` | Conventional configuration whose mode may be overridden by `RUN_MODE`. |
-| `/config/examples/kometa.yml` | `/config/kometa.yml` | Complete, ready-to-edit Kometa profile. |
-| `/config/examples/plex.yml` | `/config/plex.yml` | Complete, ready-to-edit Plex profile. |
+| Downloadable repository file | Automatic `/config` reference | Make it active as | Use |
+| --- | --- | --- | --- |
+| [Conventional template](../config/config_template.yml) | `/config/config_template.yml` | `/config/config.yml` | Conventional configuration whose mode may be overridden by `RUN_MODE`. |
+| [Kometa profile](../config/examples/kometa.yml) | `/config/examples/kometa.yml` | `/config/kometa.yml` | Complete, ready-to-edit Kometa profile. |
+| [Plex profile](../config/examples/plex.yml) | `/config/examples/plex.yml` | `/config/plex.yml` | Complete, ready-to-edit Plex profile. |
 
-The references contain placeholders, never values copied from the environment.
-MetaFusion refreshes only the inactive references and never creates, modifies,
+The packaged files are generated from the project schema during development;
+the running container does not generate configuration choices for the user. It
+only synchronizes the inactive references above. They contain placeholders,
+never values copied from the environment. MetaFusion never creates, modifies,
 or replaces an active `config.yml`, `kometa.yml`, or `plex.yml`.
 
 Active-file selection is deterministic:

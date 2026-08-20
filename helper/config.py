@@ -79,7 +79,7 @@ def safe_json_mapping(val, default, key=None):
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_FILE = BASE_CONFIG_DIR / "config.yml"
-TEMPLATE_FILE = Path(__file__).parent.parent / "config_template.yml"
+TEMPLATE_FILE = Path(__file__).parent.parent / "config" / "config_template.yml"
 CACHE_DIR = BASE_CONFIG_DIR / "cache"
 
 CONFIG_SCHEMA_FILE = Path(__file__).parent.parent / "config_schema.yml"

@@ -171,6 +171,11 @@ configuration from environment values.
 For the recommended split configuration, retain connection/container values in
 `.env` and copy one complete mode profile after the first container start:
 
+- Download or review the [Kometa profile](../config/examples/kometa.yml).
+- Download or review the [Plex profile](../config/examples/plex.yml).
+- The [conventional template](../config/config_template.yml) remains available
+  for users who prefer `config.yml`.
+
 ```bash
 # Choose one; the filename remains unchanged.
 cp config/examples/kometa.yml config/kometa.yml
@@ -188,7 +193,8 @@ cp config/config_template.yml config/config.yml
 ```
 
 Do not edit the files under `config/examples` or `config_template.yml`; the
-container refreshes those inactive references. Active `config.yml`,
+container automatically refreshes those inactive references in `/config`.
+Active `config.yml`,
 `kometa.yml`, and `plex.yml` files are never replaced. `config.yml` wins when
 present. One mode profile is auto-selected; both profiles require `RUN_MODE`.
 Non-empty environment variables override the selected YAML, while blank

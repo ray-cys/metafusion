@@ -122,6 +122,36 @@ def test_docker_build_context_excludes_development_only_content():
     assert "requirements.txt" not in exclusions
 
 
+def test_packaged_configuration_references_are_versioned_and_in_image_context():
+    references = {
+        REPO_ROOT / "config" / "config_template.yml",
+        REPO_ROOT / "config" / "examples" / "kometa.yml",
+        REPO_ROOT / "config" / "examples" / "plex.yml",
+    }
+    assert all(path.is_file() for path in references)
+
+    dockerignore = set(
+        (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    )
+    assert "config/" not in dockerignore
+    assert {
+        "!config/config_template.yml",
+        "!config/examples/",
+        "!config/examples/*.yml",
+    } <= dockerignore
+
+    gitignore = set(
+        (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    )
+    assert "/config/" not in gitignore
+    assert {
+        "!/config/config_template.yml",
+        "!/config/examples/",
+        "!/config/examples/kometa.yml",
+        "!/config/examples/plex.yml",
+    } <= gitignore
+
+
 def test_generated_dependency_manifests_are_self_contained_and_in_sync():
     runtime_input = (REPO_ROOT / "requirements.in").read_text(encoding="utf-8")
     runtime_manifest = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -312,6 +342,9 @@ def test_readme_remains_a_concise_documentation_landing_page():
         REPO_ROOT / "README.md",
         REPO_ROOT / "docs" / "index.md",
         REPO_ROOT / "docs" / "modes.md",
+        REPO_ROOT / "docs" / "configuration.md",
+        REPO_ROOT / "docs" / "docker-compose.md",
+        REPO_ROOT / "docs" / "unraid.md",
     ):
         text = document.read_text(encoding="utf-8")
         for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):

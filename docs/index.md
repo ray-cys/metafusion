@@ -11,6 +11,7 @@ a short project overview and first-run entry point.
 | Install, map appdata/media, and run with Unraid ownership `99:100` | [Unraid setup](unraid.md) |
 | Choose between Kometa output and Plex local artwork/API enrichment | [Kometa and Plex operation modes](modes.md) |
 | Choose `config.yml`, `kometa.yml`, `plex.yml`, environment-only setup, secrets, and overrides | [Configuration reference](configuration.md) |
+| Download a complete YAML starting point | [Conventional](../config/config_template.yml), [Kometa](../config/examples/kometa.yml), or [Plex](../config/examples/plex.yml) |
 | Inspect every generated configuration variable and surface | [Generated configuration table](configuration.generated.md) |
 
 ## Understand behavior and safety

@@ -9,7 +9,10 @@
 **/.env.*
 **/config.yml
 **/*.profile
-config/
+config/*
+!config/config_template.yml
+!config/examples/
+!config/examples/*.yml
 kometa/
 **/logs
 **/cache

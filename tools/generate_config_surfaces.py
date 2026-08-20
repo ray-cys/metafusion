@@ -201,9 +201,13 @@ def generated_files(schema):
     unraid_path = ROOT / "unraid" / "metafusion.xml"
     return {
         ROOT / ".env.example": render_env_example(schema),
-        ROOT / "config_template.yml": render_config_template(schema),
-        ROOT / "kometa.yml": render_mode_template(schema, "kometa"),
-        ROOT / "plex.yml": render_mode_template(schema, "plex"),
+        ROOT / "config" / "config_template.yml": render_config_template(schema),
+        ROOT / "config" / "examples" / "kometa.yml": render_mode_template(
+            schema, "kometa"
+        ),
+        ROOT / "config" / "examples" / "plex.yml": render_mode_template(
+            schema, "plex"
+        ),
         compose_path: render_compose(schema, compose_path.read_text(encoding="utf-8")),
         unraid_path: render_unraid(schema, unraid_path.read_text(encoding="utf-8")),
         ROOT / "docs" / "configuration.generated.md": render_reference(schema),

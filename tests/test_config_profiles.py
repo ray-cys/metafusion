@@ -22,7 +22,11 @@ def write_profile(path, mode, **sections):
 
 def test_generated_run_type_profiles_are_complete_and_mode_specific():
     for mode in ("kometa", "plex"):
-        profile = yaml.safe_load((REPO_ROOT / f"{mode}.yml").read_text(encoding="utf-8"))
+        profile = yaml.safe_load(
+            (REPO_ROOT / "config" / "examples" / f"{mode}.yml").read_text(
+                encoding="utf-8"
+            )
+        )
         expected = copy.deepcopy(DEFAULT_CONFIG)
         expected["settings"]["mode"] = mode
         expected["plex"]["token"] = "YOUR_PLEX_TOKEN"
