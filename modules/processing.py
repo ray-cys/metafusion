@@ -497,7 +497,7 @@ async def process_library(
     season_cache=None, episode_cache=None, movie_cache=None, session=None, ignored_fields=None,
     full_scan=True, rating_keys=None, incremental_fingerprint=None,
     all_items=None, global_identity_counts=None, global_edition_counts=None,
-    explain_selection=False,
+    explain_selection=False, change_rating_keys=None,
 ):
     global plex_metadata_dict
 
@@ -578,6 +578,7 @@ async def process_library(
             server_id=server_id,
             library_uuid=library_uuid,
             retry_rating_keys=due_retries,
+            change_rating_keys=change_rating_keys,
         )
         items = [planned.item for planned in planned_items]
         total_library_items = len(all_items)

@@ -955,6 +955,33 @@ def _set_state_value(connection, key, value):
     )
 
 
+def load_application_record(key, *, path=None):
+    """Load one JSON object from durable application state without creating it."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return None
+    try:
+        raw = _state_value(connection, str(key))
+        if raw is None:
+            return None
+        return _json_load(raw, f"application state {key!r}")
+    finally:
+        connection.close()
+
+
+def save_application_record(key, value, *, path=None):
+    """Atomically replace one JSON object in durable application state."""
+    if not isinstance(value, dict):
+        raise TypeError("application state records must be dictionaries")
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            _set_state_value(connection, str(key), _json_dump(value))
+        return True
+    finally:
+        connection.close()
+
+
 class MediaStateStore(MutableMapping):
     """Dictionary-compatible, transactionally batched media state."""
 

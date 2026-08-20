@@ -68,6 +68,7 @@ from helper.incremental import (
     mark_library_scan_started,
 )
 from helper.item_explanation import run_item_explanation
+from helper.kometa_application_verification import run_kometa_application_audit
 from helper.logging import (
     check_sys_requirements,
     format_fields,
@@ -162,6 +163,16 @@ from helper.tmdb import (
     flush_tmdb_cache,
     tmdb_api_request,
     tmdb_response_cache,
+)
+from helper.tmdb_changes import (
+    TMDbChangeFeedError,
+    collect_tmdb_change_rechecks,
+    commit_tmdb_change_checkpoint,
+    prepare_tmdb_change_plan,
+)
+from helper.upgrade_canary import (
+    commit_upgrade_canary,
+    run_upgrade_canary,
 )
 from modules.cleanup import CleanupError, CleanupResult, cleanup_title_orphans
 from modules.processing import plex_metadata_dict, process_library
@@ -449,6 +460,11 @@ def parse_cli_args(argv=None):
         "--plex-artwork-verify",
         action="store_true",
         help="Verify whether Plex currently selects recorded MetaFusion artwork",
+    )
+    parser.add_argument(
+        "--kometa-application-audit",
+        action="store_true",
+        help="Verify generated Kometa metadata and artwork against live Plex",
     )
     return parser.parse_args(argv)
 
@@ -742,6 +758,29 @@ async def item_explanation_connectors(config, rating_keys, *, write_report=True)
         )
 
 
+async def kometa_application_audit_connectors(config, rating_keys):
+    runtime = config.get("runtime", {})
+    maximum = concurrency_ceiling(config, "network")
+    timeout = aiohttp.ClientTimeout(
+        total=max(1.0, float(runtime.get("request_timeout", 30.0))),
+        connect=max(1.0, float(runtime.get("connect_timeout", 10.0))),
+    )
+    connector = aiohttp.TCPConnector(limit=maximum, limit_per_host=maximum)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        plex = await preflight_connectors(config, session, require_tmdb=False)
+        sections, _selected, _available = await asyncio.to_thread(
+            connect_plex_library,
+            config,
+            plex=plex,
+        )
+        return await run_kometa_application_audit(
+            sections,
+            config,
+            rating_keys,
+            session,
+        )
+
+
 def normalize_library_type(value):
     library_type = (value or "").lower()
     if library_type == "movies":
@@ -997,6 +1036,24 @@ async def metafusion_main(config, logger):
             )
             if execution.get("full_scan"):
                 scan_decisions = dict.fromkeys(scan_decisions, True)
+            tmdb_change_plan = prepare_tmdb_change_plan(
+                config,
+                scan_decisions,
+                targeted=targeted,
+            )
+            config["_tmdb_change_plan"] = tmdb_change_plan
+            config["_tmdb_change_summary"] = {
+                "rating_keys": {},
+                "changed_ids": {"movie": [], "tv": []},
+                "pages": {"movie": 0, "tv": 0},
+            }
+            if tmdb_change_plan.get("force_full_scan"):
+                scan_decisions = dict.fromkeys(scan_decisions, True)
+                logger.info(
+                    "[TMDb] Change-aware recheck | Status: %s | "
+                    "Action: authoritative baseline full scan",
+                    tmdb_change_plan.get("status"),
+                )
             run_feature_flags = dict(feature_flags)
             cleanup_skip_reason = None
             all_full_scan = False
@@ -1157,6 +1214,37 @@ async def metafusion_main(config, logger):
                         "TMDb IDs not exposed by Plex GUIDs: "
                         + ", ".join(sorted(missing_tmdb_ids))
                     )
+                if tmdb_change_plan.get("status") == "ready":
+                    try:
+                        change_summary = await collect_tmdb_change_rechecks(
+                            config,
+                            tmdb_change_plan,
+                            section_inventory_records,
+                            session,
+                        )
+                        config["_tmdb_change_summary"] = change_summary
+                        selected_by_change = sum(
+                            len(keys)
+                            for keys in change_summary.get("rating_keys", {}).values()
+                        )
+                        logger.info(
+                            "[TMDb] Change-aware recheck | Window: %s to %s | "
+                            "Pages: movie=%d, TV=%d | Selected Plex items: %d",
+                            tmdb_change_plan.get("start_date"),
+                            tmdb_change_plan.get("end_date"),
+                            change_summary.get("pages", {}).get("movie", 0),
+                            change_summary.get("pages", {}).get("tv", 0),
+                            selected_by_change,
+                        )
+                    except TMDbChangeFeedError as change_error:
+                        tmdb_change_plan["status"] = "feed_unavailable"
+                        tmdb_change_plan["checkpoint_candidate"] = None
+                        logger.warning(
+                            "[TMDb] Change-aware recheck unavailable; the checkpoint "
+                            "was preserved and normal incremental/full-scan safeguards "
+                            "remain active: %s",
+                            change_error,
+                        )
                 if execution.get("plan") or execution.get("library_audit"):
                     loaded_counts = {
                         scope["library_name"]: scope.get("item_count")
@@ -1248,6 +1336,25 @@ async def metafusion_main(config, logger):
                     )
                     return
 
+                canary_result, canary_report = await run_upgrade_canary(
+                    sections,
+                    section_inventory_records,
+                    config,
+                    session=session,
+                    server_id=getattr(plex, "machineIdentifier", None) or "unknown",
+                    plex_version=getattr(plex, "version", "unknown"),
+                    identity_counts=identity_counts,
+                    edition_counts=edition_counts,
+                    current=current_build,
+                )
+                if canary_result:
+                    config["_upgrade_canary_result"] = canary_result
+                    logger.info(
+                        "[Canary] Upgrade qualification passed | Samples: %d | Report: %s",
+                        len(canary_result.get("samples", [])),
+                        canary_report,
+                    )
+
                 asset_destination_registry = AssetDestinationRegistry()
                 cache_store = load_cache()
                 if hasattr(cache_store, "asset_destination_records"):
@@ -1272,6 +1379,9 @@ async def metafusion_main(config, logger):
                             execution.get("tmdb_ids"),
                         )
                         library_config = config_for_library(config, section.title)
+                        library_config["_tmdb_refresh_ids"] = config.get(
+                            "_tmdb_change_summary", {}
+                        ).get("changed_ids", {})
                         library_config["_asset_destination_registry"] = (
                             asset_destination_registry
                         )
@@ -1324,6 +1434,11 @@ async def metafusion_main(config, logger):
                                 global_identity_counts=identity_counts,
                                 global_edition_counts=edition_counts,
                                 explain_selection=explain_selection,
+                                change_rating_keys=config.get(
+                                    "_tmdb_change_summary", {}
+                                )
+                                .get("rating_keys", {})
+                                .get(section.title, set()),
                             )
                         finally:
                             performance = tracker_for(config)
@@ -1517,6 +1632,9 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_asset_audit_records"] = []
     config["_library_audit_records"] = []
     config["_adoption_audit_records"] = []
+    config["_upgrade_canary_result"] = None
+    config["_tmdb_change_plan"] = {}
+    config["_tmdb_change_summary"] = {}
     config["_successful_full_scan_libraries"] = []
     config["_successful_full_scan_work"] = {}
     config["_cleanup_result"] = CleanupResult(
@@ -1719,6 +1837,19 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     logger.warning(
                         "[Maintenance] Deferred optional SQLite maintenance: %s",
                         maintenance_error,
+                    )
+            if success and not config.get("settings", {}).get("dry_run", False):
+                if commit_upgrade_canary(config.get("_upgrade_canary_result")):
+                    logger.info(
+                        "[Canary] Upgrade qualification committed after successful job"
+                    )
+                if commit_tmdb_change_checkpoint(
+                    config.get("_tmdb_change_plan", {}),
+                    config.get("_tmdb_change_summary", {}),
+                ):
+                    logger.info(
+                        "[TMDb] Change-aware recheck checkpoint advanced after "
+                        "successful job"
                     )
         except Exception as caught:
             success = False
@@ -1939,6 +2070,28 @@ def _handle_operator_command(args, config):
         )
         print(f"Plex artwork verification saved to {report}; {mismatches} entry(s) need review.")
         return 0
+    if args.kometa_application_audit:
+        if not mode_check(config, "kometa"):
+            raise ValueError(
+                "Post-Kometa application verification requires RUN_MODE=kometa"
+            )
+        validate_preflight_paths(config, BASE_CONFIG_DIR)
+        metadata, artwork, report = asyncio.run(
+            kometa_application_audit_connectors(
+                config, config.get("_execution", {}).get("rating_keys", [])
+            )
+        )
+        review = sum(
+            record.get("status") not in {"applied", "no_verifiable_fields"}
+            for record in metadata
+        ) + sum(
+            record.get("status") != "selected" for record in artwork
+        )
+        print(
+            f"Post-Kometa application verification saved to {report}; "
+            f"{review} entry(s) need review."
+        )
+        return 0
     if args.output_action:
         item = _state_target(args)
         decisions = plan_output_management(
@@ -2012,6 +2165,7 @@ def main(argv=None):
         args.verify_recovery,
         args.config_impact,
         args.plex_artwork_verify,
+        args.kometa_application_audit,
     ]
     if sum(bool(value) for value in new_primary_commands) > 1:
         print(

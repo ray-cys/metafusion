@@ -445,11 +445,15 @@ def plan_items(
     server_id=None,
     library_uuid=None,
     retry_rating_keys=None,
+    change_rating_keys=None,
 ):
     """Plan selected items without losing which operations made them eligible."""
     target_keys = {str(value) for value in (rating_keys or []) if str(value).strip()}
     retry_keys = {
         str(value) for value in (retry_rating_keys or []) if str(value).strip()
+    }
+    changed_keys = {
+        str(value) for value in (change_rating_keys or []) if str(value).strip()
     }
     candidates = [
         item
@@ -494,6 +498,8 @@ def plan_items(
         child_fingerprint = child_inventory_fingerprint(item)
         cached = cache_by_rating_key.get(rating_key)
         selection_causes = set()
+        if rating_key in changed_keys:
+            selection_causes.add("tmdb_change_detected")
         if rating_key in retry_keys:
             selection_causes.add("deferred_retry_due")
         if not cached:
@@ -556,6 +562,7 @@ def select_items(
     server_id=None,
     library_uuid=None,
     retry_rating_keys=None,
+    change_rating_keys=None,
 ):
     return [
         planned.item
@@ -571,5 +578,6 @@ def select_items(
             server_id=server_id,
             library_uuid=library_uuid,
             retry_rating_keys=retry_rating_keys,
+            change_rating_keys=change_rating_keys,
         )
     ]

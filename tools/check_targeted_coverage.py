@@ -22,6 +22,9 @@ TARGETS = {
     "helper/state_db.py": 86.0,
     "helper/identity_diagnostics.py": 85.0,
     "helper/item_explanation.py": 85.0,
+    "helper/tmdb_changes.py": 85.0,
+    "helper/upgrade_canary.py": 85.0,
+    "helper/kometa_application_verification.py": 85.0,
     "tools/provider_compatibility.py": 85.0,
 }
 

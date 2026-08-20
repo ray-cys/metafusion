@@ -102,6 +102,7 @@ or `config.yml` values.
 | Recovery | `--verify-recovery` | Bundle path | Offline-verify archive paths, hashes, manifest, and SQLite integrity. |
 | Configuration | `--config-impact` | Proposed `config.yml` path | Compare current and proposed effective values and explain affected behavior without processing. |
 | Plex artwork | `--plex-artwork-verify` | None | Read Plex's currently selected images and compare them with checksum-proven local artwork; never refreshes or changes Plex. |
+| Kometa verification | `--kometa-application-audit` | None | In Kometa mode, compare generated YAML fields and managed artwork with live Plex after Kometa has run. It does not invoke Kometa or change Plex. |
 | Compatibility | `--compatibility-profile` | `auto`, `kometa-2.4`, or `plex-api-v1` | Override `COMPATIBILITY_PROFILE` for this command or run. An explicit profile must match `RUN_MODE`. |
 | Targeting | `--library` | Plex library name | Process only the named library. Repeat the option or use comma-separated names. |
 | Targeting | `--rating-key` | Plex rating key | Process only the named item. Repeat the option or use comma-separated keys. Targeted runs disable cleanup. |
@@ -179,6 +180,21 @@ selected again when its Plex update marker changes, a metadata/artwork recheck
 becomes due, required generated output is missing, or a full reconciliation is
 required.
 
+With `TMDB_CHANGE_RECHECKS=True`, an incremental job also reads TMDb's bounded
+movie and TV change feeds from the last successfully committed checkpoint. A
+locally known TMDb ID returned by that feed selects its Plex item even when
+Plex's update marker is unchanged. Its TMDb detail and season requests refresh
+the corresponding cached responses before normal metadata and artwork policy
+checks run. IDs that are not present in the selected Plex inventory are ignored.
+
+The first eligible job establishes an authoritative full-scan baseline. A
+missing, corrupt, future, or older-than-13-days checkpoint also forces a safe
+full scan because TMDb exposes only a bounded change window. If either change
+feed is incomplete, normal incremental safeguards continue and the old
+checkpoint is retained. Targeted and dry-run commands neither consume nor
+advance it. The new checkpoint is committed only when the complete MetaFusion
+job succeeds.
+
 For TV libraries, MetaFusion also fingerprints the show-level `childCount`,
 `seasonCount`, and `leafCount` values returned with the normal Plex library
 inventory. A new season or episode therefore selects its parent show even when
@@ -210,6 +226,22 @@ Future episodes whose Plex records arrive before TMDb publishes episode data
 are marked pending in SQLite. They are selected for metadata-only evaluation
 after `METADATA_PENDING_RECHECK_HOURS` even if Plex's update timestamp is
 unchanged; the marker clears automatically once every pending episode resolves.
+
+### One-time upgrade canary
+
+`UPGRADE_CANARY=True` qualifies each new published image commit once for the
+current Plex server, output mode, and compatibility profile. After connector
+and lightweight inventory checks, MetaFusion deterministically exercises up to
+two items per non-empty selected library through the existing identity,
+mapping, policy, and destination explanation pipeline. It runs before media
+output writes and never edits Plex, YAML, or artwork.
+
+The canary writes `upgrade-canary-*.txt` plus a JSON companion. A failure stops
+the job before output processing. A pass is remembered in `meta_db.sqlite3`
+only after the surrounding job also completes successfully, so a later failure
+causes the canary to run again. Development builds, dry runs, and an unchanged
+published commit do not rerun it. Disable this advanced safety gate only with
+`UPGRADE_CANARY=False`.
 
 ### Durable failed-item recovery
 
