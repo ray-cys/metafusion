@@ -398,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.output.write_text(report, encoding="utf-8")
             else:
                 print(report, end="")
-        elif args.command == "update-kometa":
+        else:
             changed = update_kometa_contract(
                 args.manifest,
                 release=args.release,

@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-LINE_MINIMUM = 95.0
-BRANCH_MINIMUM = 95.0
+LINE_MINIMUM = 100.0
+BRANCH_MINIMUM = 100.0
 
 
 def _percentage(covered: int, total: int) -> float:
