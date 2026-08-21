@@ -431,6 +431,11 @@ jobs:
           }
           trap cleanup EXIT
 
+          # The preceding manifest smoke test leaves its ARM64 image attached to
+          # the multi-platform digest. Clear it before this loop starts with
+          # AMD64, otherwise Docker refuses to replace that digest locally.
+          docker image rm --force "${image}" >/dev/null 2>&1 || true
+
           for platform in linux/amd64 linux/arm64; do
             config_dir="$(mktemp -d)"
             config_dirs+=("${config_dir}")
