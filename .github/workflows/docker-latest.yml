@@ -227,9 +227,9 @@ jobs:
       - name: Build image for vulnerability scan
         run: >-
           docker build
-          --build-arg METAFUSION_VERSION=${GITHUB_REF_NAME}
-          --build-arg METAFUSION_COMMIT=${GITHUB_SHA}
-          --tag metafusion-ci:${GITHUB_SHA} .
+          --build-arg "METAFUSION_VERSION=${GITHUB_REF_NAME}"
+          --build-arg "METAFUSION_COMMIT=${GITHUB_SHA}"
+          --tag "metafusion-ci:${GITHUB_SHA}" .
 
       - name: Smoke test Unraid UID/GID remapping
         run: |
@@ -242,7 +242,7 @@ jobs:
             --env PUID=99 \
             --env PGID=100 \
             --volume "${config_dir}:/config" \
-            metafusion-ci:${GITHUB_SHA} \
+            "metafusion-ci:${GITHUB_SHA}" \
             python -c 'import os; from pathlib import Path; assert (os.getuid(), os.getgid()) == (99, 100); reports = Path("/config/reports"); assert reports.is_dir(); assert (reports.stat().st_uid, reports.stat().st_gid) == (99, 100); target = Path("/config/.ci-write-test"); target.write_text("ok", encoding="utf-8"); status = target.stat(); assert (status.st_uid, status.st_gid) == (99, 100)'
 
       - name: Exercise environment-only read-only scheduler lifecycle
@@ -272,8 +272,8 @@ jobs:
             --env RUN_ON_START=False \
             --env RUN_TIMES="${past_time}" \
             --volume "${config_dir}:/config" \
-            metafusion-ci:${GITHUB_SHA})"
-          for attempt in $(seq 1 20); do
+            "metafusion-ci:${GITHUB_SHA}")"
+          for _attempt in $(seq 1 20); do
             docker exec --user 99:100 "${container_id}" \
               test -f /tmp/metafusion-status.json && break
             sleep 1
@@ -296,7 +296,7 @@ jobs:
             --volume /var/run/docker.sock:/var/run/docker.sock \
             aquasec/trivy:0.65.0@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 image \
             --exit-code 1 --ignore-unfixed --severity CRITICAL \
-            metafusion-ci:${GITHUB_SHA}
+            "metafusion-ci:${GITHUB_SHA}"
 
   build:
     if: >-
@@ -414,6 +414,68 @@ jobs:
           docker image rm --force "${image}"
           arm64_version="$(docker run --rm --platform linux/arm64 "${image}" --version)"
           [[ "${arm64_version}" == *"MetaFusion ${GITHUB_REF_NAME} (${GITHUB_SHA})"* ]]
+
+      - name: Exercise published AMD64 and ARM64 operational CLI
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          config_dirs=()
+          cleanup() {
+            for directory in "${config_dirs[@]}"; do
+              sudo rm -rf -- "${directory}"
+            done
+          }
+          trap cleanup EXIT
+
+          for platform in linux/amd64 linux/arm64; do
+            config_dir="$(mktemp -d)"
+            config_dirs+=("${config_dir}")
+            chmod 0777 "${config_dir}"
+            runtime=(
+              --rm
+              --platform "${platform}"
+              --read-only
+              --tmpfs "/tmp:size=128m,mode=1777"
+              --security-opt no-new-privileges
+              --env PUID=99
+              --env PGID=100
+              --env CONFIG_DIR=/config
+              --env RUN_MODE=plex
+              --env PLEX_URL=http://127.0.0.1:32400
+              --env PLEX_TOKEN=ci-plex-token
+              --env PLEX_LIBRARIES=Movies
+              --env TMDB_API_KEY=ci-tmdb-key
+              --env RUN_SCHEDULE=False
+              --volume "${config_dir}:/config"
+            )
+
+            docker run "${runtime[@]}" "${image}" --doctor
+            docker run "${runtime[@]}" "${image}" --support-report
+            docker run "${runtime[@]}" "${image}" python -c \
+              'from helper.config import CACHE_DIR; from helper.state_db import MediaStateStore; store = MediaStateStore(path=CACHE_DIR / "meta_db.sqlite3"); store["movie:ci:1"] = {"server_id": "ci", "library_uuid": "movies", "library_name": "Movies", "rating_key": "1", "media_type": "movie", "tmdb_id": "550", "title": "CI Movie", "year": 1999}; store.flush(); store.close()'
+            docker run "${runtime[@]}" "${image}" \
+              --sqlite-maintenance check --sqlite-target state
+            docker run "${runtime[@]}" "${image}" --state-report --include-state-items
+            docker run "${runtime[@]}" "${image}" --recovery-bundle
+
+            bundle="$(find "${config_dir}/backups" -maxdepth 1 -type f \
+              -name 'metafusion-recovery-*.tar.gz' -print -quit)"
+            [[ -n "${bundle}" ]]
+            docker run "${runtime[@]}" "${image}" \
+              --verify-recovery "/config/backups/$(basename "${bundle}")"
+            test -f "${config_dir}/config_template.yml"
+            test ! -e "${config_dir}/config.yml"
+            find "${config_dir}/reports" -maxdepth 1 -type f \
+              -name 'support-report-*.txt' -print -quit | grep -q .
+            find "${config_dir}/reports" -maxdepth 1 -type f \
+              -name 'state-report-*.txt' -print -quit | grep -q .
+
+            docker image rm --force "${image}" >/dev/null 2>&1 || true
+          done
 
       - name: Verify published aliases, signature, SBOM, and provenance
         if: ${{ github.event_name != 'pull_request' }}
