@@ -103,6 +103,53 @@ failure-path tests. It uses `.coveragerc-provider-tools`, keeping that
 operational-tool measurement independent from the application-runtime
 aggregate.
 
+## Repository and operational automation
+
+MetaFusion keeps GitHub's default CodeQL setup as its single CodeQL owner. Do
+not add an advanced `codeql.yml` workflow while default setup is enabled;
+GitHub rejects overlapping advanced and default SARIF results.
+
+Pull requests that change dependency manifests, the Dockerfile, Dependabot, or
+workflows run `Dependency review`. It blocks newly introduced high or critical
+runtime vulnerabilities and reports dependency and license changes before the
+normal build installs them. `Repository integrity` runs for relevant pull
+requests and `develop` pushes, plus weekly. It validates Actions syntax and
+embedded shell with actionlint/ShellCheck, audits workflow security with
+zizmor, lints the Dockerfile and Markdown, checks generated configuration and
+issue forms, validates local documentation links, and checks external links on
+scheduled or manual runs. Third-party Actions and downloaded binaries remain
+pinned to immutable commits or verified checksums.
+
+`Live provider canary` runs daily at 19:47 UTC (03:47 Asia/Singapore). Fanart.tv
+uses MetaFusion's bundled project key. To enable live TMDb checks, create the
+repository Actions secret `TMDB_CANARY_API_KEY` under **Settings → Secrets and
+variables → Actions**. The key may be a TMDb v3 API key or API read-access
+token. Without it, TMDb is reported as `not_configured` while the Fanart.tv
+canary still runs; a manual dispatch can require TMDb and fail when the secret
+is absent. Checks are read-only and bounded to stable movie/show identities,
+configuration, artwork delivery, a controlled 404, response structure,
+latency, and retry behavior. Sanitized JSON is retained for 30 days. GitHub-
+hosted runners never contact a private Plex server. A relevant `develop` push
+runs the canary immediately; its daily schedule becomes active when the
+workflow reaches the default `main` branch and still checks out `develop`.
+
+`State and recovery drill` runs weekly against `develop` with synthetic data.
+It verifies cleanup confirmation/history, item exceptions, secret-redacted
+recovery bundles, online SQLite backup, independent restore, `quick_check`, and
+committed records after a writer is stopped with `SIGTERM`. Focused tests also
+repeat TMDb/Fanart.tv rate limiting, temporary Plex disconnection, atomic-file
+failure, and interrupted-item recovery. The JSON report is retained for 30
+days and contains no operator data. Relevant state/recovery changes on
+`develop` also trigger the drill immediately; its weekly schedule becomes
+active after the workflow reaches `main`.
+
+Every published AMD64 and ARM64 image now runs the same operational acceptance
+sequence after its basic version check: environment-only configuration
+validation, support reporting, state creation, SQLite maintenance, state
+reporting, recovery-bundle creation, offline bundle verification, template
+presence, and confirmation that no `config.yml` was generated. These checks use
+synthetic credentials and never contact Plex or TMDb.
+
 ## Python dependency manifests
 
 `requirements.in` and `requirements-dev.in` are the human-maintained direct

@@ -1,0 +1,154 @@
+name: Repository integrity
+
+on:
+  pull_request:
+    branches: ["main", "develop"]
+    paths:
+      - ".github/**"
+      - ".markdownlint-cli2.yaml"
+      - ".lycheeignore"
+      - "Dockerfile"
+      - "README.md"
+      - "SUPPORT.md"
+      - "docs/**"
+      - "config/**"
+      - "config_schema.yml"
+      - "docker-compose.yml"
+      - "unraid/**"
+      - "tests/test_docker_config.py"
+      - "tests/test_issue_templates.py"
+      - "tools/generate_config_surfaces.py"
+  push:
+    branches: ["develop"]
+    paths:
+      - ".github/**"
+      - ".markdownlint-cli2.yaml"
+      - ".lycheeignore"
+      - "Dockerfile"
+      - "README.md"
+      - "SUPPORT.md"
+      - "docs/**"
+      - "config/**"
+      - "config_schema.yml"
+      - "docker-compose.yml"
+      - "unraid/**"
+      - "tests/test_docker_config.py"
+      - "tests/test_issue_templates.py"
+      - "tools/generate_config_surfaces.py"
+  schedule:
+    # 20:43 UTC Saturday is 04:43 Asia/Singapore Sunday.
+    - cron: "43 20 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install verified actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="actionlint_1.7.12_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/${archive}" \
+            --output "${RUNNER_TEMP}/${archive}"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  ${RUNNER_TEMP}/${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "${RUNNER_TEMP}/${archive}" \
+            --directory "${RUNNER_TEMP}" actionlint
+          install "${RUNNER_TEMP}/actionlint" "${RUNNER_TEMP}/actionlint-bin"
+
+      - name: Validate Actions syntax and embedded shell
+        run: '"${RUNNER_TEMP}/actionlint-bin" -shellcheck shellcheck'
+
+      - name: Audit Actions security
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          inputs: .github
+          collect: all
+          version: v1.29.0
+          persona: regular
+          min-severity: medium
+          min-confidence: high
+          online-audits: true
+          advanced-security: false
+          annotations: true
+
+  dockerfile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6 # v3.4.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+          trusted-registries: docker.io
+
+  surfaces-and-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install locked development dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Validate generated configuration and public forms
+        run: |
+          python tools/generate_config_surfaces.py --check
+          pytest -q tests/test_docker_config.py tests/test_issue_templates.py
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+        with:
+          config: .markdownlint-cli2.yaml
+          globs: |
+            README.md
+            SUPPORT.md
+            docs/**/*.md
+
+      - name: Validate local documentation links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --offline --no-progress
+            README.md SUPPORT.md 'docs/**/*.md'
+          fail: true
+
+      - name: Check external documentation links
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --no-progress --max-retries 3 --retry-wait-time 2
+            --accept 200,204,206,429
+            README.md SUPPORT.md 'docs/**/*.md'
+          fail: true

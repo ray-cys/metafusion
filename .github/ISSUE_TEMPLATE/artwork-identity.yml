@@ -1,48 +1,94 @@
-name: Artwork or TMDb identity issue
-description: Report missing artwork, collisions, unsafe matches, or upgrade-policy decisions.
-title: "[Artwork/Identity]: "
-labels: ["artwork"]
+name: Artwork or identity issue
+description: Report missing or incorrect artwork, rejected identities, collisions, or Plex-to-TMDb mapping problems.
+title: "[Artwork/Identity] "
+labels: ["bug", "artwork"]
 body:
   - type: markdown
     attributes:
-      value: Run `python metafusion.py --asset-audit` first. Its report omits destination paths and secrets.
+      value: |
+        For one item, run `python metafusion.py --explain-item --rating-key KEY`. For library-wide problems, use `--asset-audit` or `--library-audit`.
+
+        Attach only sanitized reports and logs. Never post tokens, API keys, private URLs, or unredacted paths.
   - type: input
     id: version
     attributes:
-      label: Image tag and commit
+      label: MetaFusion version
+      description: Paste the exact version and commit printed by `python metafusion.py --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Operation mode
+      options:
+        - Kometa
+        - Plex
+    validations:
+      required: true
+  - type: dropdown
+    id: problem_type
+    attributes:
+      label: Problem type
+      options:
+        - Missing after all artwork fallbacks
+        - Incorrect candidate selected
+        - Valid candidate rejected
+        - Destination collision or ownership
+        - Upgrade, adoption, or preservation decision
+        - Plex-to-TMDb identity mismatch
+        - Season or episode mapping
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: asset_type
+    attributes:
+      label: Affected asset or identity
+      options:
+        - Movie poster
+        - Movie background
+        - Show poster
+        - Show background
+        - Season poster
+        - Media identity or mapping
     validations:
       required: true
   - type: dropdown
     id: policy
     attributes:
       label: Artwork policy
-      options: [fill_missing, managed, overwrite]
-    validations:
-      required: true
-  - type: dropdown
-    id: asset
-    attributes:
-      label: Asset type
-      options: [movie poster, movie background, show poster, show background, season poster, TMDb identity]
+      options:
+        - fill_missing
+        - managed
+        - overwrite
     validations:
       required: true
   - type: textarea
-    id: report
+    id: reproduce
     attributes:
-      label: Asset audit and artwork-gap excerpts
-      description: Paste the affected sanitized lines only.
+      label: Item and reproduction details
+      description: Include title, year, edition or season, provider order, language/quality settings, and whether artwork already existed.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected decision and why
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Identity or artwork evidence
+      description: Attach the relevant redacted item explanation, artwork-gap, asset-audit, library-audit, or adoption-audit report and log lines.
     validations:
       required: true
   - type: checkboxes
     id: safety
     attributes:
-      label: Safety confirmation
+      label: Before submitting
       options:
-        - label: I removed secrets and personal paths.
+        - label: I searched existing issues and included the exact MetaFusion version.
+          required: true
+        - label: I removed secrets, private URLs, and unredacted paths from all evidence.
           required: true

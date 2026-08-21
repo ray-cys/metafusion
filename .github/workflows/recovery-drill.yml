@@ -1,0 +1,71 @@
+name: State and recovery drill
+
+on:
+  push:
+    branches: ["develop"]
+    paths:
+      - ".github/scripts/state_recovery_drill.py"
+      - ".github/workflows/recovery-drill.yml"
+      - "helper/database_maintenance.py"
+      - "helper/recovery.py"
+      - "helper/state_db.py"
+      - "tests/test_phase20_automation.py"
+      - "tests/test_phase22_hardening.py"
+      - "tests/test_fanart_fallback.py"
+      - "tests/test_io.py"
+  schedule:
+    # 20:37 UTC Thursday is 04:37 Asia/Singapore Friday.
+    - cron: "37 20 * * 4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-recovery-drill
+  cancel-in-progress: false
+
+jobs:
+  state-recovery-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: develop
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install locked development dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Exercise state backup, restoration, and interrupted writes
+        run: >-
+          python .github/scripts/state_recovery_drill.py
+          --output state-recovery-drill.json
+          --github-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Exercise provider and atomic-output failure paths
+        run: |
+          pytest -q \
+            tests/test_phase22_hardening.py::test_provider_rate_limit_is_not_cached_and_a_later_run_recovers \
+            tests/test_phase22_hardening.py::test_temporary_plex_disconnect_retries_without_duplicate_mutation \
+            tests/test_fanart_fallback.py::test_fanart_rate_limit_honors_retry_after \
+            tests/test_io.py::test_atomic_yaml_failure_preserves_previous_file \
+            tests/test_io.py::test_atomic_bytes_failure_preserves_previous_file \
+            tests/test_phase20_automation.py::test_retry_queue_recovers_interrupted_items_and_bounds_failures
+
+      - name: Preserve recovery drill report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: state-recovery-drill-${{ github.run_id }}
+          path: state-recovery-drill.json
+          if-no-files-found: warn
+          retention-days: 30

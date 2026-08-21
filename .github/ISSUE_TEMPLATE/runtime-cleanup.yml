@@ -1,0 +1,85 @@
+name: Runtime, scheduling, or cleanup issue
+description: Report scheduled runs, incremental scans, cleanup, retries, SQLite state, recovery, or configuration selection.
+title: "[Runtime/Cleanup] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `python metafusion.py --status` and `python metafusion.py --support-report` when possible. Cleanup problems may also need `--cleanup-history-report`; state problems may need `--state-report` or `--problems`.
+
+        Attach only relevant redacted evidence. Never post configuration files, tokens, API keys, private URLs, or unredacted paths.
+  - type: input
+    id: version
+    attributes:
+      label: MetaFusion version
+      description: Paste the exact version and commit printed by `python metafusion.py --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Operation mode
+      options:
+        - Kometa
+        - Plex
+        - Both or not mode-specific
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Scheduled or catch-up run
+        - Incremental or full-scan selection
+        - Automated cleanup
+        - Manual targeted cleanup
+        - Retry queue or unresolved work
+        - SQLite state or maintenance
+        - Backup, restore, or recovery bundle
+        - Library rebinding or migration
+        - Configuration selection or reload
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Timeline and steps to reproduce
+      description: Include relevant dates/times, schedule or cleanup settings, and the smallest sequence that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: manual_changes
+    attributes:
+      label: Manual state or file changes
+      description: Optional. Describe any manual deletion, ownership change, database maintenance, restore, or library rename performed before the problem.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Attach the relevant redacted status, state, cleanup-history, unresolved-work, or log output. If unavailable, explain why.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and included the exact MetaFusion version.
+          required: true
+        - label: I removed secrets, private URLs, and unredacted paths from all evidence.
+          required: true

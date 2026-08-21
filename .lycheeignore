@@ -1,0 +1,8 @@
+^https?://127\.0\.0\.1(?:[:/]|$)
+^https?://localhost(?:[:/]|$)
+^https?://10\.[0-9.]+(?:[:/]|$)
+^https?://192\.168\.[0-9.]+(?:[:/]|$)
+^https?://example\.com(?:[:/]|$)
+^https?://plex(?:[:/]|$)
+^https://api\.fanart\.tv/?$
+^https://fanart\.tv/terms-and-conditions/?$
