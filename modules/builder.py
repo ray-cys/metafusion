@@ -19,6 +19,7 @@ from helper.identity import (
 )
 from helper.io import atomic_replace_file, sha256_file
 from helper.logging import format_fields, log_asset_status, log_builder_event
+from helper.metadata_provenance import kometa_provenance_records
 from helper.plex import get_plex_country
 from helper.provider_mappings import (
     resolve_episode_overrides,
@@ -1561,6 +1562,7 @@ async def _build_movie(
         "artwork_providers": {},
         "artwork_selection_stages": {},
     }
+    metadata_provenance = []
         
     if not any((run_metadata, run_poster, run_background)):
         return {
@@ -1870,6 +1872,12 @@ async def _build_movie(
                 generated=generated_entry,
                 diagnostics=diagnostics,
                 identity=meta,
+            )
+            metadata_provenance = kometa_provenance_records(
+                meta,
+                existing=existing_metadata,
+                generated=generated_entry,
+                merged=merged_entry,
             )
         changes = recursive_season_diff(existing_metadata, merged_entry)
         if changes:
@@ -2441,6 +2449,7 @@ async def _build_movie(
         "poster_action": poster_action,
         "background_action": background_action,
         "plex_candidate": plex_candidate if run_metadata else None,
+        "_metadata_provenance": metadata_provenance,
         **result
     }
 
@@ -2498,6 +2507,7 @@ async def _build_tv(
         "season_artwork_selection_stages": {},
         "season_artwork_attempts": {},
     }
+    metadata_provenance = []
     if not any((run_metadata, run_poster, run_background, run_season)):
         return {
             "percent": 100,
@@ -3158,6 +3168,12 @@ async def _build_tv(
                 generated=generated_entry,
                 diagnostics=diagnostics,
                 identity=meta,
+            )
+            metadata_provenance = kometa_provenance_records(
+                meta,
+                existing=existing_metadata,
+                generated=generated_entry,
+                merged=merged_entry,
             )
         changes = recursive_season_diff(existing_metadata, merged_entry)
         if changes:
@@ -4000,5 +4016,6 @@ async def _build_tv(
             )
             if run_metadata else None
         ),
+        "_metadata_provenance": metadata_provenance,
         **result
     }

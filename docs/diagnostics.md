@@ -26,6 +26,7 @@ for every public flag and supported value.
 | Explain identity, scheduling, policy, mapping, retry, and destinations together | `--explain-item --rating-key KEY` | Plex and TMDb | `item-explanation-*.txt` |
 | Capture sanitized item evidence for a reproducible support case | `--capture-replay --rating-key KEY` | Plex and TMDb | `provider-replay-capture-*.txt` |
 | Inspect durable state without opening raw SQLite | `--state-report` | None | `state-report-*.txt` and `.json` |
+| Browse run, library, problem, cleanup, provider, and provenance state offline | `--dashboard-report` | None | `metafusion-dashboard-*.html` and `.json` |
 | Review pending and completed cleanup actions | `--cleanup-history-report` | None | `cleanup-history-*.txt` and `.json` |
 | Review unresolved identity work | `--identity-review-queue` | None | `identity-review-*.txt` and `.json` |
 | Verify whether Plex selected managed local artwork | `--plex-artwork-verify` | Plex only | `plex-artwork-verification-*.txt` and `.json` |
@@ -40,6 +41,30 @@ SQLite-only reports describe recorded evidence, not current Plex/provider or
 filesystem truth. Plex artwork verification is the live read-only check for
 adoption. Detailed command examples and report limitations are in
 [Lifecycle management](lifecycle-management.md).
+
+### Offline HTML dashboard
+
+```bash
+python metafusion.py --dashboard-report
+```
+
+Normal non-dry runs refresh both a retained timestamped dashboard and
+`/config/reports/metafusion-dashboard-latest.html`. Open either file directly
+in a browser; it contains its own styling, tables, filtering, section
+navigation, and print support and makes no network request. The dashboard is
+built only from bounded SQLite evidence and covers recent jobs, library scan
+state, unresolved work, retries, identity review, cleanup, provider health,
+database health, and value-free field-level metadata provenance. A same-name
+JSON companion is available for automation. It does not embed artwork,
+provider response bodies, metadata values, credentials, or configuration.
+
+The provenance view records which source supplied or retained each field, the
+target (`kometa_yaml` or `plex_api`), policy, decision, one-way value
+fingerprint, and the time that provenance state last changed. Repeated
+identical decisions do not rewrite the row. Use `--state-report
+--state-section provenance` for the equivalent text/JSON view or
+`--explain-item --rating-key KEY` to combine recorded provenance with live
+identity and policy diagnosis.
 
 ## Local checks and support
 

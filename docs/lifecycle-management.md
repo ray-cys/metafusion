@@ -207,15 +207,28 @@ timestamps, contact Plex/providers, or inspect artwork/YAML:
 ```bash
 python metafusion.py --state-report
 python metafusion.py --state-report --state-section problems
+python metafusion.py --state-report --state-section provenance
 python metafusion.py --state-report --include-state-items --library Movies
 python metafusion.py --state-report --rating-key 12345
 ```
 
 It covers database health and size, table counts, library/full-scan state,
-recent jobs, ownership, retries, exceptions, overrides, identity reviews,
-cleanup candidates/history, and rebinding history. Recorded state is historical
-evidence; use live diagnostics before concluding Plex or a file currently
-matches it.
+recent jobs, ownership, value-free field provenance, retries, exceptions,
+overrides, identity reviews, cleanup candidates/history, and rebinding history.
+Recorded state is historical evidence; use live diagnostics before concluding
+Plex or a file currently matches it.
+
+For the same bounded evidence in a browser-friendly offline view:
+
+```bash
+python metafusion.py --dashboard-report
+```
+
+Completed non-dry runs also refresh
+`/config/reports/metafusion-dashboard-latest.html` automatically. The file has
+inline styling and behavior and never starts a web server or needs network
+access. Timestamped dashboards follow `REPORT_RETENTION`; the stable `latest`
+file is replaced atomically and is not counted against retention.
 
 ## Plex artwork adoption verification
 

@@ -18,7 +18,7 @@ from helper.config import CACHE_DIR
 from helper.report_identity import report_identity
 
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 FILE_MODE = 0o664
 IDENTITY_HISTORY_LIMIT = 10_000
 UNRESOLVED_HISTORY_LIMIT = 10_000
@@ -288,6 +288,39 @@ def _initialize_schema(connection):
 
         CREATE INDEX IF NOT EXISTS plex_metadata_ownership_library
             ON plex_metadata_ownership(server_id, library_uuid, media_type);
+
+        CREATE TABLE IF NOT EXISTS metadata_field_provenance (
+            cache_key TEXT NOT NULL,
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT NOT NULL,
+            rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            tmdb_id TEXT,
+            target TEXT NOT NULL,
+            child_key TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            field_path TEXT NOT NULL,
+            source_provider TEXT NOT NULL,
+            source_id TEXT,
+            action TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            reason TEXT,
+            value_fingerprint TEXT,
+            first_recorded_at TEXT NOT NULL,
+            last_changed_at TEXT NOT NULL,
+            PRIMARY KEY (cache_key, target, field_path),
+            FOREIGN KEY (cache_key) REFERENCES media_state(cache_key)
+                ON DELETE CASCADE
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS metadata_provenance_item
+            ON metadata_field_provenance(
+                server_id, library_uuid, rating_key, target
+            );
+        CREATE INDEX IF NOT EXISTS metadata_provenance_source
+            ON metadata_field_provenance(source_provider, action);
 
         CREATE TABLE IF NOT EXISTS item_retry_queue (
             server_id TEXT NOT NULL,
@@ -1478,6 +1511,170 @@ def mark_global_full_scan(value, path=None):
         with connection:
             _set_state_value(connection, "global_last_full_scan", value)
         return True
+    finally:
+        connection.close()
+
+
+def save_metadata_provenance(records, *, prune=True, path=None):
+    """Persist current field provenance without retaining metadata values."""
+    normalized = [
+        dict(record)
+        for record in (records or [])
+        if isinstance(record, dict)
+        and record.get("cache_key")
+        and record.get("target")
+        and record.get("field_path")
+    ]
+    if not normalized:
+        return 0
+    current = utc_now()
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            changed = 0
+            for record in normalized:
+                media_exists = connection.execute(
+                    "SELECT 1 FROM media_state WHERE cache_key = ?",
+                    (str(record["cache_key"]),),
+                ).fetchone()
+                if media_exists is None:
+                    continue
+                cursor = connection.execute(
+                    """
+                    INSERT INTO metadata_field_provenance(
+                        cache_key, server_id, library_uuid, library_name,
+                        rating_key, media_type, title, tmdb_id, target,
+                        child_key, field_name, field_path, source_provider,
+                        source_id, action, policy, reason, value_fingerprint,
+                        first_recorded_at, last_changed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(cache_key, target, field_path) DO UPDATE SET
+                        server_id = excluded.server_id,
+                        library_uuid = excluded.library_uuid,
+                        library_name = excluded.library_name,
+                        rating_key = excluded.rating_key,
+                        media_type = excluded.media_type,
+                        title = excluded.title,
+                        tmdb_id = excluded.tmdb_id,
+                        child_key = excluded.child_key,
+                        field_name = excluded.field_name,
+                        source_provider = excluded.source_provider,
+                        source_id = excluded.source_id,
+                        action = excluded.action,
+                        policy = excluded.policy,
+                        reason = excluded.reason,
+                        value_fingerprint = excluded.value_fingerprint,
+                        last_changed_at = excluded.last_changed_at
+                    WHERE metadata_field_provenance.server_id IS NOT excluded.server_id
+                       OR metadata_field_provenance.library_uuid IS NOT excluded.library_uuid
+                       OR metadata_field_provenance.library_name IS NOT excluded.library_name
+                       OR metadata_field_provenance.rating_key IS NOT excluded.rating_key
+                       OR metadata_field_provenance.media_type IS NOT excluded.media_type
+                       OR metadata_field_provenance.title IS NOT excluded.title
+                       OR metadata_field_provenance.tmdb_id IS NOT excluded.tmdb_id
+                       OR metadata_field_provenance.child_key IS NOT excluded.child_key
+                       OR metadata_field_provenance.field_name IS NOT excluded.field_name
+                       OR metadata_field_provenance.source_provider IS NOT excluded.source_provider
+                       OR metadata_field_provenance.source_id IS NOT excluded.source_id
+                       OR metadata_field_provenance.action IS NOT excluded.action
+                       OR metadata_field_provenance.policy IS NOT excluded.policy
+                       OR metadata_field_provenance.reason IS NOT excluded.reason
+                       OR metadata_field_provenance.value_fingerprint IS NOT excluded.value_fingerprint
+                    """,
+                    (
+                        str(record["cache_key"]),
+                        str(record.get("server_id") or "unknown"),
+                        str(record.get("library_uuid") or "unknown"),
+                        str(record.get("library_name") or "Unknown library"),
+                        str(record.get("rating_key") or "unknown"),
+                        str(record.get("media_type") or "unknown"),
+                        str(record.get("title") or "Unknown title"),
+                        None if record.get("tmdb_id") in (None, "") else str(record["tmdb_id"]),
+                        str(record["target"]),
+                        str(record.get("child_key") or "item"),
+                        str(record.get("field_name") or "unknown"),
+                        str(record["field_path"]),
+                        str(record.get("source_provider") or "Unknown"),
+                        None if record.get("source_id") in (None, "") else str(record["source_id"]),
+                        str(record.get("action") or "unknown"),
+                        str(record.get("policy") or "unknown"),
+                        str(record.get("reason") or ""),
+                        (
+                            None
+                            if record.get("value_fingerprint") in (None, "")
+                            else str(record["value_fingerprint"])
+                        ),
+                        current,
+                        current,
+                    ),
+                )
+                changed += max(0, int(cursor.rowcount))
+            if prune:
+                grouped: dict[tuple[str, str], set[str]] = {}
+                for record in normalized:
+                    grouped.setdefault(
+                        (str(record["cache_key"]), str(record["target"])), set()
+                    ).add(str(record["field_path"]))
+                for (cache_key, target), valid_fields in grouped.items():
+                    rows = connection.execute(
+                        "SELECT field_path FROM metadata_field_provenance "
+                        "WHERE cache_key = ? AND target = ?",
+                        (cache_key, target),
+                    ).fetchall()
+                    stale = {str(row[0]) for row in rows} - valid_fields
+                    connection.executemany(
+                        "DELETE FROM metadata_field_provenance "
+                        "WHERE cache_key = ? AND target = ? AND field_path = ?",
+                        ((cache_key, target, field) for field in stale),
+                    )
+                    changed += len(stale)
+        return changed
+    finally:
+        connection.close()
+
+
+def load_metadata_provenance(
+    *,
+    cache_keys=None,
+    libraries=None,
+    rating_keys=None,
+    targets=None,
+    limit=10_000,
+    path=None,
+):
+    """Load bounded, value-free field provenance for reports and diagnosis."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='metadata_field_provenance'"
+        ).fetchone()
+        if table is None:
+            return []
+        clauses = []
+        parameters: list[Any] = []
+        for column, requested in (
+            ("cache_key", cache_keys),
+            ("library_name", libraries),
+            ("rating_key", rating_keys),
+            ("target", targets),
+        ):
+            values = [str(value) for value in (requested or []) if str(value).strip()]
+            if values:
+                clauses.append(
+                    f"{column} IN ({','.join('?' for _ in values)})"
+                )
+                parameters.extend(values)
+        query = "SELECT * FROM metadata_field_provenance"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY last_changed_at DESC, library_name, title, field_path LIMIT ?"
+        parameters.append(max(1, min(100_000, int(limit))))
+        return [
+            dict(row) for row in connection.execute(query, parameters).fetchall()
+        ]
     finally:
         connection.close()
 

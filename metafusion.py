@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -40,6 +41,7 @@ from helper.config import (
 )
 from helper.config_impact import write_config_impact_report
 from helper.config_reload import ScheduledConfigReloader
+from helper.dashboard import write_dashboard_report
 from helper.database_maintenance import (
     format_maintenance_results,
     maintain_databases,
@@ -161,6 +163,7 @@ from helper.state_db import (
     retry_queue_summary,
     save_identity_override,
     save_item_exception,
+    save_metadata_provenance,
 )
 from helper.state_reporting import (
     write_cleanup_history_report,
@@ -378,8 +381,22 @@ def parse_cli_args(argv=None):
         help="Generate a human-readable and JSON report from SQLite only",
     )
     parser.add_argument(
+        "--dashboard-report",
+        action="store_true",
+        help="Generate a self-contained offline HTML dashboard from SQLite only",
+    )
+    parser.add_argument(
         "--state-section",
-        choices=["all", "database", "libraries", "jobs", "ownership", "problems", "items"],
+        choices=[
+            "all",
+            "database",
+            "libraries",
+            "jobs",
+            "ownership",
+            "provenance",
+            "problems",
+            "items",
+        ],
         default="all",
         help="Limit --state-report to one report section",
     )
@@ -1451,6 +1468,9 @@ async def metafusion_main(config, logger):
                             execution.get("tmdb_ids"),
                         )
                         library_config = config_for_library(config, section.title)
+                        library_config["_metadata_provenance_records"] = (
+                            config.setdefault("_metadata_provenance_records", [])
+                        )
                         library_config["_tmdb_refresh_ids"] = config.get(
                             "_tmdb_change_summary", {}
                         ).get("changed_ids", {})
@@ -1683,6 +1703,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 runtime_status.run_finished(False, error=error)
             return False
     config["_metadata_audit_records"] = []
+    config["_metadata_provenance_records"] = []
     try:
         begin_cache_session(
             writable=not config.get("settings", {}).get("dry_run", False)
@@ -1894,6 +1915,20 @@ def run_metafusion_job(config, logger, runtime_status=None):
             flush_fanart_cache()
             if not config.get("settings", {}).get("dry_run", False):
                 try:
+                    provenance_changes = save_metadata_provenance(
+                        config.get("_metadata_provenance_records", [])
+                    )
+                    if provenance_changes:
+                        logger.debug(
+                            "[Metadata] Field provenance synchronized | Changes: %d",
+                            provenance_changes,
+                        )
+                except (StateDatabaseError, sqlite3.Error) as provenance_error:
+                    logger.warning(
+                        "[Metadata] Field provenance recording was deferred: %s",
+                        provenance_error,
+                    )
+                try:
                     tmdb_maintenance = tmdb_response_cache.maintain()
                     state_maintenance = maintain_state_database()
                     retry_summary = retry_queue_summary()
@@ -1955,6 +1990,20 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     library_results=config.get("_job_library_results", {}),
                     metrics=metrics,
                 )
+            if not config.get("settings", {}).get("dry_run", False):
+                try:
+                    dashboard = write_dashboard_report(
+                        retention=report_retention(config),
+                        path=STATE_DATABASE,
+                    )
+                    logger.info(
+                        "[Diagnostics] Offline dashboard saved to %s", dashboard
+                    )
+                except (OSError, StateDatabaseError, sqlite3.Error) as caught:
+                    logger.warning(
+                        "[Diagnostics] Unable to refresh offline dashboard: %s",
+                        caught,
+                    )
         finally:
             if job_lock is not None:
                 job_lock.release()
@@ -2000,6 +2049,10 @@ async def plex_artwork_verification_connectors(config, rating_keys):
 
 
 def _handle_sqlite_only_command(args):
+    if args.dashboard_report:
+        report = write_dashboard_report(path=STATE_DATABASE)
+        print(f"Offline diagnostics dashboard saved to {report}")
+        return 0
     if args.state_report:
         report = write_state_report(
             libraries=_cli_values(args.library),
@@ -2280,6 +2333,7 @@ def main(argv=None):
     args = parse_cli_args(argv)
     new_primary_commands = [
         args.state_report,
+        args.dashboard_report,
         args.cleanup_history_report,
         args.cleanup_quarantine_report,
         args.cleanup_restore,
@@ -2400,6 +2454,7 @@ def main(argv=None):
     sqlite_only = any(
         (
             args.state_report,
+            args.dashboard_report,
             args.cleanup_history_report,
             args.cleanup_quarantine_report,
             args.identity_review_queue,

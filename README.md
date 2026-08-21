@@ -111,6 +111,7 @@ Run these inside the container before opening an issue:
 python metafusion.py --doctor
 python metafusion.py --preflight
 python metafusion.py --support-report
+python metafusion.py --dashboard-report
 ```
 
 Use the [GitHub issue chooser](https://github.com/ray-cys/metafusion/issues/new/choose)
@@ -119,7 +120,9 @@ form, and explain when requested diagnostics are unavailable.
 
 Attach only the relevant redacted log section and problem-specific report.
 Never publish `config.yml`, Docker inspection output, tokens, API keys, or
-unredacted private paths. The [diagnostics guide](docs/diagnostics.md) explains
+unredacted private paths. The offline dashboard is intended for local review;
+inspect it before sharing because library and media titles are included. The
+[diagnostics guide](docs/diagnostics.md) explains
 which report to use, and the [command-line reference](docs/operations.md#command-line-reference)
 lists every public flag.
 

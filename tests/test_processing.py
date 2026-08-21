@@ -117,6 +117,41 @@ def test_plex_metadata_progress_logs_start_and_completion(
     assert "Changed: 0 | API batches: 0 | Unchanged: 3 | Failed: 0" in caplog.text
 
 
+def test_kometa_provenance_is_queued_until_cache_flush(monkeypatch, tmp_path):
+    async def fake_metadata(item, **_kwargs):
+        return metadata_for(item)
+
+    async def fake_process_item(**_kwargs):
+        return {
+            "metadata_action": "skipped",
+            "is_complete": True,
+            "_metadata_provenance": [{"cache_key": "movie:plex:1"}],
+        }
+
+    async def no_cache(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+    monkeypatch.setattr(processing, "meta_cache_async", no_cache)
+    flags = feature_flags()
+    flags["metadata_basic"] = True
+    run_config = config(tmp_path, mode="kometa")
+
+    result = asyncio.run(
+        processing.process_library(
+            FakeSection([1]),
+            run_config,
+            feature_flags=flags,
+        )
+    )
+
+    assert result[0]["metadata_action"] == "skipped"
+    assert run_config["_metadata_provenance_records"] == [
+        {"cache_key": "movie:plex:1"}
+    ]
+
+
 def test_process_library_propagates_item_failures(monkeypatch, tmp_path):
     class FailedItem:
         title = "Broken Movie"

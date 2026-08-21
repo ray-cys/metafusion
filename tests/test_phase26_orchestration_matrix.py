@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -402,6 +403,9 @@ def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
 
     monkeypatch.setattr(metafusion, "metafusion_main", job)
     monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: tmp_path / "plex.txt")
+    monkeypatch.setattr(
+        metafusion, "write_dashboard_report", lambda **_kwargs: tmp_path / "dashboard.html"
+    )
     monkeypatch.setattr(metafusion, "report_retention", lambda _config: 3)
     monkeypatch.setattr(metafusion, "load_cache", lambda: {"item": {}})
     monkeypatch.setattr(metafusion, "reconcile_unresolved_work", lambda *_a, **_k: [{"status": "open"}])
@@ -426,6 +430,7 @@ def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
     monkeypatch.setattr(metafusion, "flush_cache", lambda: True)
     monkeypatch.setattr(metafusion, "flush_tmdb_cache", lambda: True)
     monkeypatch.setattr(metafusion, "flush_fanart_cache", lambda: True)
+    monkeypatch.setattr(metafusion, "save_metadata_provenance", lambda _records: 1)
     monkeypatch.setattr(metafusion, "maintain_state_database", lambda: {"checkpointed": True})
     monkeypatch.setattr(metafusion, "retry_queue_summary", lambda: {"due": 1})
     monkeypatch.setattr(metafusion, "commit_upgrade_canary", lambda _result: True)
@@ -519,6 +524,16 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
         metafusion,
         "maintain_state_database",
         lambda: (_ for _ in ()).throw(RuntimeError("maintenance")),
+    )
+    monkeypatch.setattr(
+        metafusion,
+        "write_dashboard_report",
+        lambda **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("busy")),
+    )
+    monkeypatch.setattr(
+        metafusion,
+        "save_metadata_provenance",
+        lambda _records: (_ for _ in ()).throw(sqlite3.OperationalError("busy")),
     )
     assert metafusion.run_metafusion_job(config, logging.getLogger("degraded")) is True
 

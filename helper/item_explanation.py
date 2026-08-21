@@ -13,13 +13,19 @@ from helper.config import (
     mode_check,
     report_retention,
 )
+from helper.identity import cache_key_for_meta
 from helper.identity_diagnostics import diagnose_identity
 from helper.incremental import config_fingerprint, library_full_scan_decisions, plan_items
 from helper.mapping_diagnostics import diagnose_mapping
 from helper.plex import get_plex_metadata, load_plex_library_inventory
 from helper.report_identity import item_report_record, item_report_records
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
-from helper.state_db import STATE_DATABASE, MediaStateStore, load_item_retries
+from helper.state_db import (
+    STATE_DATABASE,
+    MediaStateStore,
+    load_item_retries,
+    load_metadata_provenance,
+)
 
 
 def _normalized_media_type(value):
@@ -179,6 +185,11 @@ async def explain_item(
             "selection": _selection_record(item, meta, effective),
             "policies": _policy_record(effective, media_type),
             "episode_mapping": mapping,
+            "metadata_provenance": load_metadata_provenance(
+                cache_keys=[cache_key_for_meta(meta)],
+                limit=10_000,
+                path=STATE_DATABASE,
+            ),
         },
         identity,
     )
@@ -220,6 +231,7 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
         metadata = policies.get("metadata") or {}
         artwork_policy = policies.get("artwork") or {}
         mapping = record.get("episode_mapping") or {}
+        provenance = record.get("metadata_provenance") or []
         lines.extend(
             (
                 f"## {_display(plex.get('localized_title'))} ({_display(plex.get('year'))})",
@@ -260,8 +272,20 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
                 "",
                 f"Episode mapping status: {_display(mapping.get('status'))}",
                 f"Episode mapping explanation: {_display(mapping.get('explanation'))}",
+                "",
+                "Recorded field-level metadata provenance:",
             )
         )
+        if not provenance:
+            lines.append("- none recorded yet")
+        for field in provenance:
+            lines.append(
+                f"- {_display(field.get('target'))} | "
+                f"{_display(field.get('field_path'))} | "
+                f"source={_display(field.get('source_provider'))} | "
+                f"action={_display(field.get('action'))} | "
+                f"policy={_display(field.get('policy'))}"
+            )
         metadata_destination = identity.get("metadata_destination") or {}
         lines.append(
             f"Metadata destination: {_display(metadata_destination.get('path'))} "

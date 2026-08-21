@@ -483,6 +483,10 @@ def operator_config(tmp_path):
 
 def test_sqlite_only_command_dispatch(monkeypatch, tmp_path, capsys):
     report = tmp_path / "report.txt"
+    monkeypatch.setattr(metafusion, "write_dashboard_report", lambda **_kwargs: report)
+    assert metafusion._handle_sqlite_only_command(
+        cli_args(dashboard_report=True)
+    ) == 0
     monkeypatch.setattr(metafusion, "write_state_report", lambda **_kwargs: report)
     assert metafusion._handle_sqlite_only_command(
         cli_args(state_report=True, include_state_items=True, library=["Movies"])

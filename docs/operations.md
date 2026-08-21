@@ -94,7 +94,8 @@ or `config.yml` values.
 | Diagnostics | `--support-report` | None | Perform a local value-free configuration/build/state inventory, write it under `/config/reports`, and exit without contacting providers. |
 | Diagnostics | `--capture-replay` | None | Capture sanitized support data for items selected by `--rating-key`; writes a text manifest and JSON companion without changing metadata, artwork, or state. |
 | SQLite reports | `--state-report` | None | Generate human-readable and JSON reports entirely from recorded SQLite state; no provider, Plex, YAML, or artwork access occurs. |
-| SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
+| SQLite reports | `--dashboard-report` | None | Generate a self-contained offline HTML dashboard plus JSON companion from recorded SQLite state. |
+| SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `provenance`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
 | SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
 | SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
 | SQLite reports | `--history-source` | `automated` or `manual` | Filter `--cleanup-history-report`; repeat to select both. |
@@ -551,6 +552,8 @@ Shared reports and logs are:
 /config/reports/support-report-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/release-qualification-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/state-report-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/metafusion-dashboard-YYYYMMDD-HHMMSSffffff.html
+/config/reports/metafusion-dashboard-latest.html
 /config/reports/cleanup-history-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/cleanup-quarantine-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/run-history-YYYYMMDD-HHMMSSffffff.txt
@@ -570,8 +573,9 @@ Asset-audit reports include the selected candidate's language, dimensions,
 vote score, ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
-Every retained text report has a same-name `.json` companion with a stable
-report envelope and structured records. Identity-inspection,
+Every retained text report and timestamped HTML dashboard has a same-name
+`.json` companion with a stable report envelope and structured records.
+Identity-inspection,
 destination-history, unresolved-work, adoption-audit, and item-explanation
 reports can contain media titles or computed/actual paths and must be reviewed
 before sharing. Destination reconciliation removes an old artwork file only

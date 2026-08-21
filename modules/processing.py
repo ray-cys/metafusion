@@ -526,6 +526,7 @@ async def process_library(
     artwork_storage_files = {}
     artwork_automatic_relaxed = 0
     artwork_download_failover = 0
+    metadata_provenance_records = []
 
     server = getattr(library_section, "_server", None)
     server_id = getattr(server, "machineIdentifier", None) or "unknown"
@@ -938,6 +939,9 @@ async def process_library(
                 incremental_success = stats.pop("_incremental_success", True)
                 retry_error = stats.pop("_retry_error", None)
                 retry_failure_class = stats.pop("_retry_failure_class", None)
+                metadata_provenance_records.extend(
+                    stats.pop("_metadata_provenance", [])
+                )
                 if writable_state and rating_key is not None:
                     if retry_error:
                         await asyncio.to_thread(
@@ -1317,6 +1321,15 @@ async def process_library(
                 plex_child_fingerprint=plex_child_fingerprint,
                 config_fingerprint=incremental_fingerprint,
                 metadata_pending_count=metadata_pending_count,
+            )
+
+        if (
+            mode_check(config, "kometa")
+            and not feature_flags.get("dry_run", False)
+            and metadata_provenance_records
+        ):
+            config.setdefault("_metadata_provenance_records", []).extend(
+                metadata_provenance_records
             )
 
         if persistent_recovery and successful_retry_keys:
