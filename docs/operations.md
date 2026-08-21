@@ -27,6 +27,18 @@ already covers it.
 `RUN_ON_START=True` is different: it requests a job on every scheduler start,
 regardless of whether a scheduled slot was missed.
 
+With `CONFIG_RELOAD=True`, the long-running scheduler watches the selected
+YAML profile and mounted secret files. A changed file is reloaded only while
+no job is running, then the complete effective configuration and required
+paths are validated. Invalid changes are rejected and the last working
+configuration and schedule remain active. A valid `RUN_TIMES` change replaces
+the in-process schedule. If an already-running scheduler reloads
+`RUN_SCHEDULE=False`, it pauses jobs but continues watching so a later valid
+YAML change can resume them. Environment
+variables cannot change inside an existing container, and Docker-level mounts,
+`PUID`, `PGID`, or `TZ` still require recreating the container. Configuration
+is never changed during a running job.
+
 ## Run one job
 
 With Docker Compose:
@@ -86,6 +98,11 @@ or `config.yml` values.
 | SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
 | SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
 | SQLite reports | `--history-source` | `automated` or `manual` | Filter `--cleanup-history-report`; repeat to select both. |
+| SQLite reports | `--run-history` | None | Write retained run duration, throughput, provider activity, library results, and capacity guidance without contacting Plex/providers. |
+| SQLite reports | `--schedule-advice` | None | Compare retained median/95th-percentile duration with the shortest configured schedule interval. |
+| Cleanup recovery | `--cleanup-quarantine-report` | None | Report active, restored, purged, missing, and protected cleanup quarantine records. |
+| Cleanup recovery | `--cleanup-restore` | History ID | Restore one active checksum-proven quarantined artwork file without overwriting an existing destination. |
+| Cleanup recovery | `--cleanup-purge` | None | Purge only expired, checksum-matching quarantine files; protected mismatches are retained. |
 | Output lifecycle | `--output-action` | `preview`, `remove`, `forget`, or `rebuild` | Inspect or manage only the checksum-proven output of exactly one recorded item. Requires a unique target. |
 | Output lifecycle | `--output-type` | `all`, `metadata`, `poster`, `background`, or `season` | Limit `--output-action`; defaults to `all`. |
 | Output lifecycle | `--season-number` | Integer | Limit season output management or a season exception to one Plex season, including `0` for Specials. |
@@ -333,6 +350,27 @@ more TMDb/network I/O than later runs.
 Per-library timing overrides are documented in
 [Configuration](configuration.md#per-library-overrides).
 
+## Run history and schedule advice
+
+The newest 500 completed jobs retain value-safe metrics in SQLite: duration,
+throughput, library result counts, provider/cache/retry totals, cleanup outcome,
+full-scan scope, slow rating keys, and final adaptive-concurrency state. Media
+paths, metadata values, response bodies, tokens, and API keys are not retained.
+
+Generate paired text/JSON reports without contacting Plex or providers:
+
+```bash
+python metafusion.py --run-history
+python metafusion.py --schedule-advice
+```
+
+The first command includes individual retained jobs. The second is concise and
+compares median and 95th-percentile runtime with the shortest configured
+schedule interval. It warns about retained failures, schedule-capacity risk,
+or a latest successful throughput more than 30% below the retained median.
+This is local operational guidance, not an external metrics or notification
+service.
+
 ## Adaptive concurrency and provider protection
 
 MetaFusion uses separate item, TMDb, Plex, and nested artwork/season-work
@@ -347,6 +385,13 @@ TMDb HTTP 429 responses immediately reduce the TMDb lane and still honor
 new work is preserved or skipped during the cooldown, then a single half-open
 probe decides whether the circuit closes. Identical concurrent TMDb requests
 share one in-flight request, response, and cache write.
+
+TMDb, Fanart.tv, and Plex circuit failure counts and unexpired cooldowns are
+retained across scheduled jobs. Connector identities are one-way hashes; URLs,
+tokens, API keys, response bodies, and metadata values are not stored. An
+expired cooldown starts cleanly, while a still-active cooldown prevents a
+container restart or later schedule slot from immediately repeating an outage
+storm.
 
 Successful Plex calls taking five seconds or longer reduce only the Plex lane,
 preventing a slow server from accumulating requests even when it returns no
@@ -374,12 +419,19 @@ Run one job and review the final report. Restore normal values afterward. A
 dry run does not update YAML, artwork, cache, or durable state. Direct Plex
 metadata dry runs retain one redacted audit report as the deliberate exception.
 
+Real cleanup moves eligible checksum-proven managed artwork to
+`/config/quarantine/cleanup` instead of deleting it immediately. The default
+14-day retention is controlled by `CLEANUP_QUARANTINE_DAYS`; expired matching
+files are purged during later cleanup runs or with `--cleanup-purge`. See
+[cleanup quarantine and restoration](lifecycle-management.md#cleanup-quarantine-and-restoration).
+
 Cleanup uses the same outcome-oriented logging style as metadata and artwork.
 At the normal INFO level, each affected title receives one consolidated
 `[Cleanup] Inventory | title | outcome | reason` record. The final report
 separates stale title/season/episode scope, cache and Kometa YAML entries,
-managed artwork removed, protected artwork preserved, unchanged valid artwork,
-and failures. Dry-run removals are listed individually as `Would remove`.
+managed artwork quarantined, protected artwork preserved, unchanged valid artwork,
+and failures. Dry-run state/YAML removals are listed as `Would remove`, while
+managed artwork is listed as `Would quarantine`.
 Enable DEBUG only when exact cache keys, YAML season/episode entries, asset
 paths, or preserved unmanaged files are needed. In Plex mode the report labels
 cleanup as state-only by default. The advanced
@@ -393,7 +445,7 @@ MetaFusion uses separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
-| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities/history, review queue and overrides, item exceptions, cleanup candidates/history, library rebinding history, discovered-library inventory, artwork ownership, per-library scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
+| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities/history, review queue and overrides, item exceptions, cleanup candidates/history/quarantine, provider cooldowns, library rebinding history, discovered-library inventory, artwork ownership, per-library scans, schedules, and bounded run metrics | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
 | `/config/cache/fanart_cache.sqlite3` | Compressed Fanart.tv artwork responses | Disposable; it shares the bounded provider-cache policy and can be rebuilt automatically. |
 
@@ -475,6 +527,8 @@ Kometa mode writes:
 
 Plex mode never writes those YAML files. Enabled artwork is written beside the
 mapped media. Direct Plex metadata updates are sent through the API.
+Checksum-proven managed artwork removed by automated cleanup is retained under
+`/config/quarantine/cleanup` until restored or its retention expires.
 
 Shared reports and logs are:
 
@@ -498,6 +552,9 @@ Shared reports and logs are:
 /config/reports/release-qualification-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/state-report-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/cleanup-history-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/cleanup-quarantine-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/run-history-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/schedule-advice-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/identity-review-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/output-management-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/library-rebinding-YYYYMMDD-HHMMSSffffff.txt
@@ -568,7 +625,7 @@ its Plex database use cannot be measured from the container. The scope says
 `full inventory` or `processed items`; MetaFusion stats known generated output
 files and does not read artwork contents or recursively scan the media tree.
 Runtime storage separately reports the durable state database, TMDb cache,
-Fanart.tv cache, logs, and reports. Filesystem records show total volume used,
+Fanart.tv cache, logs, reports, and cleanup quarantine. Filesystem records show total volume used,
 free, capacity, and free percentage; they do not claim that all used bytes
 belong to MetaFusion. TMDb and Fanart.tv cache entry statistics use the same
 `[Cache] Provider: ...` format at `DEBUG`.

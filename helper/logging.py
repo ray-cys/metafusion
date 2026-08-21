@@ -151,7 +151,9 @@ def get_setup_logging(config):
     logger.setLevel(log_level)
 
     if logger.hasHandlers():
-        logger.handlers.clear()
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
     console_handler = logging.StreamHandler(sys.stdout)
@@ -1006,11 +1008,14 @@ def log_cleanup_event(event, logger=None, **kwargs):
         "cleanup_failed_remove_metadata": "[Cleanup] Kometa YAML | {filename} | Failed cleanup | Error: {error}",
         "cleanup_skipping_valid_asset": "[Cleanup] Artwork | {path} | Preserved {description} | Reason: Not an eligible managed orphan",
         "cleanup_preserving_modified_asset": "[Cleanup] Artwork | {path} | Preserved {description} | Reason: {reason}",
-        "cleanup_removing_asset": "[Cleanup] Artwork | {path} | Removed {description} | Reason: Not present in complete Plex inventory",
+        "cleanup_removing_asset": "[Cleanup] Artwork | {path} | Quarantined {description} | Reason: Not present in complete Plex inventory",
+        "cleanup_quarantine_purged": "[Cleanup] Quarantine | Purged expired artwork | Records: {count}",
+        "cleanup_quarantine_purge_deferred": "[Cleanup] Quarantine | Expired purge deferred | Error: {error}",
         "cleanup_removing_empty_dir": "[Cleanup] Artwork | {parent} | Removed empty managed directory",
         "cleanup_failed_remove_asset": "[Cleanup] Artwork | {path} | Failed to remove {description} | Error: {error}",
         "cleanup_consolidated_removed": "[Cleanup] {summary}",
         "cleanup_dry_run": "[Cleanup] Preview | {path} | Would remove {description} | Reason: Not present in complete Plex inventory",
+        "cleanup_dry_run_artwork": "[Cleanup] Preview | {path} | Would quarantine {description} | Reason: Not present in complete Plex inventory",
     }
     levels = {
         "cleanup_start": "info",
@@ -1030,25 +1035,34 @@ def log_cleanup_event(event, logger=None, **kwargs):
         "cleanup_skipping_valid_asset": "debug",
         "cleanup_preserving_modified_asset": "warning",
         "cleanup_removing_asset": "debug",
+        "cleanup_quarantine_purged": "info",
+        "cleanup_quarantine_purge_deferred": "warning",
         "cleanup_removing_empty_dir": "debug",
         "cleanup_failed_remove_asset": "warning",
         "cleanup_consolidated_removed": "info",
         "cleanup_dry_run": "info",
+        "cleanup_dry_run_artwork": "info",
     }
     
     if event == "cleanup_consolidated_removed" and "removed_summary" in kwargs:
         summary_lines = []
         for (title, year), types in kwargs["removed_summary"].items():
-            parts = []
+            removed_parts = []
             if types.get("cache"):
-                parts.append("cache entry")
+                removed_parts.append("cache entry")
             if types.get("yaml"):
-                parts.append("Kometa YAML entry")
+                removed_parts.append("Kometa YAML entry")
+            actions = []
+            if removed_parts:
+                actions.append(f"Removed {', '.join(removed_parts)}")
+            quarantined = []
             for asset_type in types.get("asset", []):
-                parts.append(f"managed {asset_type}")
-            if parts:
+                quarantined.append(f"managed {asset_type}")
+            if quarantined:
+                actions.append(f"Quarantined {', '.join(quarantined)}")
+            if actions:
                 summary_lines.append(
-                    f"Inventory | {title} ({year}) | Removed {', '.join(parts)} "
+                    f"Inventory | {title} ({year}) | {'; '.join(actions)} "
                     "| Reason: Not present in complete Plex inventory"
                 )
         kwargs["summary"] = "\n[Cleanup] ".join(summary_lines)
@@ -1211,6 +1225,9 @@ def _runtime_storage_bytes():
         )
     result["Logs"] = _file_group_bytes(LOGS_DIR.glob("*"))
     result["Reports"] = _file_group_bytes((BASE_CONFIG_DIR / "reports").glob("*"))
+    result["Quarantine"] = _file_group_bytes(
+        (BASE_CONFIG_DIR / "quarantine").rglob("*")
+    )
     return result
 
 
@@ -1549,7 +1566,7 @@ def log_final_summary(
         )
         lines.extend(
             box_line(
-                f"Cleanup artwork | Removed: {cleanup_result.assets} | "
+                f"Cleanup artwork | Quarantined: {cleanup_result.assets} | "
                 f"Preserved: {cleanup_result.assets_preserved} | "
                 f"Unchanged: {cleanup_result.assets_skipped}",
                 box_width,
@@ -1571,6 +1588,9 @@ def log_final_summary(
     elif feature_flags and feature_flags.get("cleanup", False):
         if hasattr(cleanup_result, "titles"):
             action = "Would remove" if cleanup_result.dry_run else "Removed"
+            artwork_action = (
+                "Would quarantine" if cleanup_result.dry_run else "Quarantined"
+            )
             status = "Preview" if cleanup_result.dry_run else "Completed"
             cleanup_mode = str(getattr(cleanup_result, "mode", "unknown")).title()
             scope = (
@@ -1609,7 +1629,7 @@ def log_final_summary(
             )
             lines.extend(
                 box_line(
-                    f"Cleanup artwork | Action: {action} | Assets: {cleanup_result.assets} | "
+                    f"Cleanup artwork | Action: {artwork_action} | Assets: {cleanup_result.assets} | "
                     f"Preserved: {cleanup_result.assets_preserved} | "
                     f"Unchanged: {cleanup_result.assets_skipped}",
                     box_width,

@@ -11,6 +11,7 @@ from helper.cache import load_cache, mark_cache_dirty
 from helper.identity import cache_key_for_meta, metadata_key_for_meta
 from helper.io import sha256_file
 from helper.logging import log_cleanup_event
+from helper.quarantine import purge_expired_quarantine, quarantine_managed_asset
 from helper.state_db import (
     cancel_cleanup_candidate,
     complete_cleanup_candidate,
@@ -126,6 +127,20 @@ async def cleanup_title_orphans(
         1, int(cleanup_config.get("confirmation_scans", 2))
     )
     grace_hours = max(0.0, float(cleanup_config.get("grace_hours", 48.0)))
+    if not dry_run:
+        try:
+            purged = purge_expired_quarantine(config, source="automated")
+            purge_count = sum(
+                record.get("status") in {"purged", "missing"}
+                for record in purged
+            )
+            if purge_count:
+                log_cleanup_event("cleanup_quarantine_purged", count=purge_count)
+        except Exception as error:
+            log_cleanup_event(
+                "cleanup_quarantine_purge_deferred",
+                error=str(error),
+            )
     observation_id = datetime.now(timezone.utc).isoformat()
     cleanup_exceptions = {
         str(record.get("rating_key"))
@@ -519,23 +534,33 @@ async def cleanup_title_orphans(
                     continue
                 if dry_run:
                     log_cleanup_event(
-                        "cleanup_dry_run", description="Plex managed artwork", path=path
+                        "cleanup_dry_run_artwork",
+                        description="Plex managed artwork",
+                        path=path,
                     )
                 else:
-                    await asyncio.to_thread(path.unlink)
-                    for record in eligible_records:
-                        state_record = title_candidate_records.get(
-                            record.get("cache_key")
-                        ) or candidate_record(
-                            record.get("cache_key"), cache.get(record.get("cache_key"))
-                        )
-                        record_cleanup_history(
-                            "automated", "remove", "completed", state_record,
-                            output_type=("season" if record.get("season") is not None else path.stem),
-                            season_number=record.get("season"), destination=path,
-                            checksum=actual_checksum,
-                            reason="confirmed absent from Plex",
-                        )
+                    primary = eligible_records[0]
+                    state_record = title_candidate_records.get(
+                        primary.get("cache_key")
+                    ) or candidate_record(
+                        primary.get("cache_key"), cache.get(primary.get("cache_key"))
+                    )
+                    await asyncio.to_thread(
+                        quarantine_managed_asset,
+                        config,
+                        path,
+                        state_record,
+                        output_type=(
+                            "season" if primary.get("season") is not None else path.stem
+                        ),
+                        season_number=primary.get("season"),
+                        checksum=actual_checksum,
+                    )
+                    log_cleanup_event(
+                        "cleanup_removing_asset",
+                        description="Plex managed artwork",
+                        path=path,
+                    )
                 removed_assets.add(_path_key(path))
         else:
             log_cleanup_event("cleanup_skipped_plex_mode")
@@ -945,26 +970,27 @@ async def cleanup_title_orphans(
 
             if dry_run:
                 log_cleanup_event(
-                    "cleanup_dry_run", description=description, path=path
+                    "cleanup_dry_run_artwork", description=description, path=path
                 )
             else:
                 try:
-                    await asyncio.to_thread(path.unlink)
+                    primary = eligible_records[0]
+                    state_record = candidate_record(
+                        primary.get("cache_key"), cache.get(primary.get("cache_key"))
+                    )
+                    await asyncio.to_thread(
+                        quarantine_managed_asset,
+                        config,
+                        path,
+                        state_record,
+                        output_type=description.replace(" ", "_"),
+                        season_number=primary.get("season"),
+                        checksum=current_checksum,
+                    )
                     deleted_dirs.add(_path_key(path.parent))
                     log_cleanup_event(
                         "cleanup_removing_asset", description=description, path=path
                     )
-                    for record in eligible_records:
-                        state_record = candidate_record(
-                            record.get("cache_key"), cache.get(record.get("cache_key"))
-                        )
-                        record_cleanup_history(
-                            "automated", "remove", "completed", state_record,
-                            output_type=description.replace(" ", "_"),
-                            season_number=record.get("season"), destination=path,
-                            checksum=current_checksum,
-                            reason="confirmed absent from Plex",
-                        )
                 except Exception as error:
                     log_cleanup_event(
                         "cleanup_failed_remove_asset",

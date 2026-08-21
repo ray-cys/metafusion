@@ -238,7 +238,7 @@ class RuntimeStatus:
         self,
         path,
         heartbeat_seconds=30,
-        history_limit=10,
+        history_limit=500,
         state_database=None,
     ):
         self.path = Path(path)
@@ -295,7 +295,13 @@ class RuntimeStatus:
     def run_started(self):
         self._update(state="running", last_run_started=utc_now(), last_error=None)
 
-    def run_finished(self, success, error=None, library_results=None):
+    def run_finished(
+        self,
+        success,
+        error=None,
+        library_results=None,
+        metrics=None,
+    ):
         now = utc_now()
         values = {
             "state": "idle",
@@ -316,6 +322,7 @@ class RuntimeStatus:
                     status=values["last_run_status"],
                     error=values["last_error"],
                     summary=library_results,
+                    metrics=metrics,
                     history_limit=self.history_limit,
                     path=self.state_database,
                 )

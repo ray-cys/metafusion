@@ -186,6 +186,7 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "plex_retries": 3,
         "plex_retry_delay": 1.0,
         "shutdown_timeout": 12.0,
+        "config_reload": True,
         "max_image_mb": 12,
         "validate_media_mounts": False,
         "min_free_space_mb": 64,

@@ -501,6 +501,12 @@ def validate_config(config):
             1,
             1000,
         ),
+        (
+            "cleanup.quarantine_days",
+            config.get("cleanup", {}).get("quarantine_days"),
+            1,
+            3650,
+        ),
         ("plex_metadata.recheck_days", plex_metadata.get("recheck_days"), 0, 3650),
         (
             "plex_metadata.max_writes_per_run",

@@ -336,13 +336,16 @@ requires two distinct authoritative full scans and a 48-hour grace period
 one job count once. If the item returns before eligibility, the candidate is
 cancelled. Both cancellation and completed changes are retained in SQLite
 cleanup history with Plex/TMDb/IMDb/TVDB identities where available.
+Checksum-proven managed artwork is moved to a 14-day recoverable quarantine,
+not permanently deleted at cleanup time. The copy is verified before the
+active destination is removed.
 
 ### Kometa mode
 
 - Removes generated movie/show entries that no longer exist in Plex.
 - Removes stale generated season and episode entries after a complete inventory.
 - Retains Season 0/Specials while they remain in Plex.
-- Removes artwork only when its path and checksum still match MetaFusion's
+- Quarantines artwork only when its path and checksum still match MetaFusion's
   ownership record.
 - Evaluates a shared canonical artwork destination once across all recorded
   edition owners and accepts a checksum match from any canonical owner.
@@ -356,7 +359,7 @@ Cleanup removes stale MetaFusion state records only. It does not delete local
 artwork, Kometa YAML/assets, or any Plex media file.
 
 `PLEX_CLEANUP_MANAGED_ARTWORK=True` is a separate, advanced opt-in. It can
-remove only an exact local artwork destination recorded for an eligible stale
+quarantine only an exact local artwork destination recorded for an eligible stale
 item when the current checksum still proves MetaFusion ownership. Modified,
 unmanaged, checksum-less, or symbolic-link files remain protected. Video and
 audio files are never candidates.
@@ -365,6 +368,10 @@ The final cleanup summary explicitly labels this as state-only and reports
 cache records separately from Kometa YAML and artwork outcomes. A failed
 cleanup retains confirmed pre-failure counts in the final report instead of
 silently losing the cleanup summary.
+
+Use `--cleanup-quarantine-report` and `--cleanup-restore HISTORY_ID` during the
+retention window. See [Lifecycle management](lifecycle-management.md#cleanup-quarantine-and-restoration)
+for restoration and expiry rules.
 
 The cleanup checksum rule is independent of `ASSET_UPDATE_POLICY`. Even when
 artwork updates use `overwrite`, cleanup cannot delete an unverified manual

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import math
 import os
@@ -12,6 +13,11 @@ from pathlib import Path
 import psutil
 
 from helper.logging import format_fields
+from helper.state_db import (
+    StateDatabaseError,
+    load_provider_health,
+    save_provider_health,
+)
 
 _current_controller = ContextVar("metafusion_concurrency_controller", default=None)
 _loop_controllers = weakref.WeakKeyDictionary()
@@ -230,6 +236,8 @@ class AdaptiveLane:
         failure_threshold=5,
         circuit_cooldown=30.0,
         adjustment_callback=None,
+        initial_failures=0,
+        initial_cooldown=0.0,
     ):
         self.kind = str(kind)
         self.floor = 1
@@ -246,8 +254,12 @@ class AdaptiveLane:
         self.condition = asyncio.Condition()
         self.active = 0
         self.healthy_count = 0
-        self.consecutive_failures = 0
-        self.open_until = 0.0
+        self.consecutive_failures = max(0, int(initial_failures))
+        self.open_until = (
+            self.clock() + max(0.0, float(initial_cooldown))
+            if float(initial_cooldown or 0.0) > 0
+            else 0.0
+        )
         self.half_open_active = False
         self.successes = 0
         self.failures = 0
@@ -358,6 +370,7 @@ class AdaptiveLane:
             self.condition.notify_all()
 
     def snapshot(self):
+        retry_after = max(0.0, self.open_until - self.clock()) if self.open_until else 0.0
         return {
             "ceiling": self.ceiling,
             "final_limit": self.limit,
@@ -368,6 +381,8 @@ class AdaptiveLane:
             "increases": self.increases,
             "decreases": self.decreases,
             "slow_responses": self.slow_responses,
+            "consecutive_failures": self.consecutive_failures,
+            "retry_after_seconds": retry_after,
             "average_seconds": (
                 self.total_duration / max(1, self.successes + self.failures)
             ),
@@ -384,6 +399,7 @@ class AdaptiveConcurrencyController:
         pressure_probe=None,
         pressure_interval=5.0,
         healthy_windows=None,
+        provider_health=None,
     ):
         self.config = config
         self.resources = resources or detect_runtime_resources()
@@ -394,10 +410,12 @@ class AdaptiveConcurrencyController:
         self.last_pressure = {"cpu_percent": 0.0, "memory_percent": 0.0}
         self.adjustments = []
         windows = healthy_windows or {}
+        provider_health = provider_health or {}
         self.lanes = {}
         for kind in ("item", "tmdb", "fanart", "plex", "nested"):
             ceiling = concurrency_ceiling(config, kind, resources=self.resources)
             initial = min(4, ceiling)
+            saved = provider_health.get(kind, {})
             self.lanes[kind] = AdaptiveLane(
                 kind,
                 initial,
@@ -405,6 +423,8 @@ class AdaptiveConcurrencyController:
                 clock=self.clock,
                 healthy_window=windows.get(kind),
                 adjustment_callback=self._record_adjustment,
+                initial_failures=saved.get("consecutive_failures", 0),
+                initial_cooldown=saved.get("cooldown_seconds", 0.0),
             )
 
     def _record_adjustment(self, kind, previous, current, reason):
@@ -477,8 +497,47 @@ class AdaptiveConcurrencyController:
         }
 
 
+def _provider_state_keys(config):
+    values = {
+        "tmdb": config.get("tmdb", {}).get("api_key") or "default",
+        "fanart": "metafusion-project",
+        "plex": config.get("plex", {}).get("url") or "default",
+    }
+    return {
+        provider: f"{provider}:{hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:20]}"
+        for provider, value in values.items()
+    }
+
+
 def begin_adaptive_concurrency(config, **kwargs):
-    controller = AdaptiveConcurrencyController(config, **kwargs)
+    persist_provider_health = kwargs.pop(
+        "persist_provider_health",
+        not any(
+            name in kwargs
+            for name in ("resources", "clock", "pressure_probe", "healthy_windows")
+        ),
+    )
+    state_keys = _provider_state_keys(config)
+    persisted = {}
+    if persist_provider_health and not config.get("settings", {}).get("dry_run", False):
+        try:
+            saved = load_provider_health(state_keys.values())
+            persisted = {
+                provider: saved.get(state_key, {})
+                for provider, state_key in state_keys.items()
+            }
+        except StateDatabaseError as error:
+            logging.getLogger(__name__).warning(
+                "[Concurrency] Provider health state unavailable; using fresh limits: %s",
+                error,
+            )
+    controller = AdaptiveConcurrencyController(
+        config,
+        provider_health=persisted,
+        **kwargs,
+    )
+    controller.provider_state_keys = state_keys
+    controller.persist_provider_health = bool(persist_provider_health)
     token = _current_controller.set(controller)
     logging.getLogger(__name__).info(
         "[Concurrency] Adaptive mode started | %s",
@@ -516,6 +575,32 @@ def finish_adaptive_concurrency(controller, token=None):
     )
     if token is not None:
         _current_controller.reset(token)
+    if controller.persist_provider_health and not controller.config.get("settings", {}).get(
+        "dry_run", False
+    ):
+        for provider in ("tmdb", "fanart", "plex"):
+            lane = lanes[provider]
+            activity = (
+                lane["successes"] + lane["failures"] + lane["circuit_rejections"]
+            )
+            if not activity:
+                continue
+            try:
+                save_provider_health(
+                    controller.provider_state_keys[provider],
+                    provider,
+                    consecutive_failures=lane["consecutive_failures"],
+                    cooldown_seconds=lane["retry_after_seconds"],
+                    successful=bool(
+                        lane["successes"] and not lane["retry_after_seconds"]
+                    ),
+                )
+            except StateDatabaseError as error:
+                logging.getLogger(__name__).warning(
+                    "[Concurrency] Unable to persist %s provider health: %s",
+                    provider,
+                    error,
+                )
     return snapshot
 
 

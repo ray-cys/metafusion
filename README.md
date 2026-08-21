@@ -17,7 +17,9 @@ scanner or metadata agent, and it never modifies video or audio files.
 - Preserves manual artwork through ownership, checksum, quality, and collision
   safeguards.
 - Adapts processing and provider concurrency to container resources and
-  upstream health.
+  upstream health, retaining short provider cooldowns across scheduled jobs.
+- Reloads validated YAML changes between scheduled jobs and retains bounded
+  run-performance history with schedule-capacity guidance.
 - Provides read-only plans, audits, item explanations, and maintenance tools.
 - Runs once or as a Docker scheduler on AMD64 and ARM64.
 
@@ -76,6 +78,7 @@ modes](docs/modes.md) before choosing paths or enabling direct Plex metadata.
 | `KOMETA_TAG_POLICY` | `append` | Add supported generated tags while preserving existing tags. |
 | `RUN_CLEANUP` | `False` | Do not reconcile stale generated output until explicitly enabled and dry-run reviewed. |
 | Cleanup confirmation | 2 scans plus 48 hours | Keep a missing item pending before any eligible state/output removal. |
+| Cleanup quarantine | 14 days | Retain checksum-proven artwork removed by automatic cleanup so it can be restored before expiry. |
 
 Keep these defaults for the first full run and use `DRY_RUN=True` before
 enabling cleanup or aggressive metadata/artwork replacement. The

@@ -70,6 +70,7 @@ defaults:
     run_cleanup: false
     confirmation_scans: 2
     grace_hours: 48.0
+    quarantine_days: 14
     plex_remove_managed_artwork: false
   runtime:
     max_concurrency: 0
@@ -79,6 +80,7 @@ defaults:
     plex_retries: 3
     plex_retry_delay: 1.0
     shutdown_timeout: 15.0
+    config_reload: true
     max_image_mb: 25
     validate_media_mounts: true
     min_free_space_mb: 256
@@ -1072,9 +1074,18 @@ settings:
     mask: false
     value: '48'
     order: 101
+- name: CLEANUP_QUARANTINE_DAYS
+  section: Runtime, incremental, cache, and output
+  description: Days to retain checksum-proven artwork removed by automated cleanup before automatic purge.
+  path:
+  - cleanup
+  - quarantine_days
+  converter: safe_int
+  env_example: '14'
+  env_order: 105
 - name: PLEX_CLEANUP_MANAGED_ARTWORK
   section: Scheduling and processing
-  description: Opt in to deleting only checksum-verified MetaFusion-owned local artwork for Plex items confirmed absent; state-only cleanup is the default.
+  description: Opt in to quarantining only checksum-verified MetaFusion-owned local artwork for Plex items confirmed absent; state-only cleanup is the default.
   path:
   - cleanup
   - plex_remove_managed_artwork
@@ -1225,6 +1236,15 @@ settings:
     mask: false
     value: '15'
     order: 54
+- name: CONFIG_RELOAD
+  section: Runtime, incremental, cache, and output
+  description: Reload and validate the selected YAML safely between scheduled jobs.
+  path:
+  - runtime
+  - config_reload
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 106
 - name: STOP_GRACE_PERIOD
   section: Container paths and lifecycle
   description: Docker graceful-stop deadline.

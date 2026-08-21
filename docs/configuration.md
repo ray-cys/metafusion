@@ -125,7 +125,8 @@ creating the two required user credentials.
 | `RUN_CLEANUP` | `False` | Enable guarded full-scan cleanup. Always test with dry-run. |
 | `CLEANUP_CONFIRMATION_SCANS` | `2` | Require this many separate authoritative full scans to confirm an absence before cleanup becomes eligible. |
 | `CLEANUP_GRACE_HOURS` | `48` | Keep a cleanup candidate pending for at least this many hours after first detection. |
-| `PLEX_CLEANUP_MANAGED_ARTWORK` | `False` | Plex mode only. Opt in to deleting exact checksum-proven MetaFusion-owned local artwork for confirmed stale items; state-only cleanup remains the default. |
+| `CLEANUP_QUARANTINE_DAYS` | `14` | Retain checksum-proven artwork removed by automated cleanup before automatic purge. |
+| `PLEX_CLEANUP_MANAGED_ARTWORK` | `False` | Plex mode only. Opt in to quarantining exact checksum-proven MetaFusion-owned local artwork for confirmed stale items; state-only cleanup remains the default. |
 
 ## Policy controls
 
@@ -163,6 +164,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 | `PLEX_RETRIES` | `3` | Plex startup connection attempts. |
 | `PLEX_RETRY_DELAY` | `1` | Base delay between Plex connection retries in seconds. |
 | `SHUTDOWN_TIMEOUT` | `15` | Internal graceful-shutdown deadline in seconds. |
+| `CONFIG_RELOAD` | `True` | Reload and validate the selected YAML between scheduled jobs. Invalid replacements retain the last working configuration. |
 | `STOP_GRACE_PERIOD` | `20s` | Docker Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size in MiB. |
 | `VALIDATE_MEDIA_MOUNTS` | `True` | Validate configured Plex-mode mapping destinations before artwork processing. |
@@ -173,6 +175,10 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 Existing installations that explicitly saved `MAX_CONCURRENCY=8` remain
 adaptive but cannot grow past eight. Change the value to `0`, or remove the
 environment variable, to use the complete automatic range.
+
+Provider circuits retain only hashed connector identities, failure counts,
+and bounded cooldown deadlines in SQLite. No URL, token, or API key is stored
+in provider-health state.
 
 Do not use Compose `user:` or Docker `--user`; those options bypass
 `PUID`/`PGID` startup handling.

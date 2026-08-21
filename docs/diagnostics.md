@@ -290,6 +290,9 @@ identity fields are retained in the JSON companion.
 | `/config/reports/provider-replay-capture-*.txt` | `--capture-replay` |
 | `/config/reports/kometa-application-audit-*.txt` | `--kometa-application-audit` |
 | `/config/reports/upgrade-canary-*.txt` | Automatic once per published commit/server/mode/profile |
+| `/config/reports/run-history-*.txt` | `--run-history` |
+| `/config/reports/schedule-advice-*.txt` | `--schedule-advice` |
+| `/config/reports/cleanup-quarantine-*.txt` | `--cleanup-quarantine-report`, restore, or purge |
 
 Every text report above has a same-name machine-readable `.json` companion.
 `REPORT_RETENTION` keeps the newest text/JSON pairs independently for each

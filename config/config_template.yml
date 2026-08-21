@@ -61,6 +61,7 @@ cleanup:
   run_cleanup: false
   confirmation_scans: 2
   grace_hours: 48.0
+  quarantine_days: 14
   plex_remove_managed_artwork: false
 runtime:
   max_concurrency: 0
@@ -70,6 +71,7 @@ runtime:
   plex_retries: 3
   plex_retry_delay: 1.0
   shutdown_timeout: 15.0
+  config_reload: true
   max_image_mb: 25
   validate_media_mounts: true
   min_free_space_mb: 256

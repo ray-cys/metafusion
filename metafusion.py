@@ -39,6 +39,7 @@ from helper.config import (
     validate_config,
 )
 from helper.config_impact import write_config_impact_report
+from helper.config_reload import ScheduledConfigReloader
 from helper.database_maintenance import (
     format_maintenance_results,
     maintain_databases,
@@ -116,11 +117,18 @@ from helper.plex_metadata import (
 from helper.plex_paths import advise_path_mappings
 from helper.provider_credentials import fanart_project_api_key
 from helper.provider_replay import write_sanitized_replay_capture
+from helper.quarantine import (
+    QuarantineError,
+    purge_expired_quarantine,
+    restore_quarantined_asset,
+    write_quarantine_report,
+)
 from helper.recovery import (
     RecoveryBundleError,
     create_recovery_bundle,
     verify_recovery_bundle,
 )
+from helper.run_history import write_run_history_report
 from helper.runtime import (
     JobAlreadyRunningError,
     JobRunLock,
@@ -386,6 +394,32 @@ def parse_cli_args(argv=None):
         help="Generate cleanup history and pending-candidate reports from SQLite",
     )
     parser.add_argument(
+        "--cleanup-quarantine-report",
+        action="store_true",
+        help="Report recoverable and completed cleanup quarantine records",
+    )
+    parser.add_argument(
+        "--cleanup-restore",
+        type=int,
+        metavar="HISTORY_ID",
+        help="Restore one checksum-proven quarantined artwork file",
+    )
+    parser.add_argument(
+        "--cleanup-purge",
+        action="store_true",
+        help="Purge only expired checksum-proven cleanup quarantine files",
+    )
+    parser.add_argument(
+        "--run-history",
+        action="store_true",
+        help="Write durable run-performance history and capacity guidance",
+    )
+    parser.add_argument(
+        "--schedule-advice",
+        action="store_true",
+        help="Assess retained run duration against the configured schedule",
+    )
+    parser.add_argument(
         "--history-source",
         action="append",
         choices=["automated", "manual"],
@@ -619,6 +653,39 @@ def override_config_with_cli(config, args):
     if maintenance_action:
         execution["plex_metadata_maintenance"] = maintenance_action
     config["_execution"] = execution
+
+
+def load_effective_config(args):
+    """Load the same validated source stack used at startup and scheduled reload."""
+    config, sources = load_config_file(
+        create_if_missing=False,
+        return_sources=True,
+    )
+    override_config_with_cli(config, args)
+    cli_sources = {
+        ("metafusion_run",): args.metafusion_run,
+        ("settings", "schedule"): args.schedule,
+        ("settings", "run_times"): args.run_times is not None,
+        ("settings", "dry_run"): args.dry_run,
+        ("settings", "mode"): args.mode is not None,
+        ("metadata", "run_basic"): args.run_basic or args.asset_only,
+        ("metadata", "run_enhanced"): args.run_enhanced or args.asset_only,
+        ("assets", "run_poster"): args.run_poster or args.metadata_only,
+        ("assets", "run_season"): args.run_season or args.metadata_only,
+        ("assets", "run_background"): args.run_background or args.metadata_only,
+        ("cleanup", "run_cleanup"): (
+            args.metadata_only or args.asset_only or bool(args.rating_key)
+        ),
+        ("plex_libraries",): bool(args.library),
+        ("compatibility", "profile"): args.compatibility_profile is not None,
+    }
+    for source_path, used in cli_sources.items():
+        if used:
+            sources[source_path] = "CLI"
+    config.setdefault("_execution", {})["config_source_overview"] = (
+        config_source_overview(config, sources)
+    )
+    return config, sources
 
 
 async def preflight_connectors(config, session, require_tmdb=True):
@@ -1640,6 +1707,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_upgrade_canary_result"] = None
     config["_tmdb_change_plan"] = {}
     config["_tmdb_change_summary"] = {}
+    config["_concurrency_snapshot"] = {}
     config["_successful_full_scan_libraries"] = []
     config["_successful_full_scan_work"] = {}
     config["_cleanup_result"] = CleanupResult(
@@ -1656,7 +1724,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
         try:
             await metafusion_main(config, logger)
         finally:
-            finish_adaptive_concurrency(
+            config["_concurrency_snapshot"] = finish_adaptive_concurrency(
                 concurrency_controller,
                 concurrency_token,
             )
@@ -1866,10 +1934,26 @@ def run_metafusion_job(config, logger, runtime_status=None):
             fanart_response_cache.reset_memory()
         try:
             if runtime_status:
+                metrics = performance_tracker.snapshot()
+                cleanup_result = config.get("_cleanup_result")
+                metrics.update(
+                    output_mode=config.get("settings", {}).get("mode", "unknown"),
+                    dry_run=bool(config.get("settings", {}).get("dry_run", False)),
+                    successful_full_scan_libraries=list(
+                        config.get("_successful_full_scan_libraries", [])
+                    ),
+                    cleanup=(
+                        dict(vars(cleanup_result))
+                        if isinstance(cleanup_result, CleanupResult)
+                        else {}
+                    ),
+                    concurrency=config.get("_concurrency_snapshot", {}),
+                )
                 runtime_status.run_finished(
                     success,
                     error=error,
                     library_results=config.get("_job_library_results", {}),
+                    metrics=metrics,
                 )
         finally:
             if job_lock is not None:
@@ -1935,6 +2019,10 @@ def _handle_sqlite_only_command(args):
         )
         print(f"Cleanup history report saved to {report}")
         return 0
+    if args.cleanup_quarantine_report:
+        report = write_quarantine_report()
+        print(f"Cleanup quarantine report saved to {report}")
+        return 0
     if args.identity_review_queue:
         records = load_identity_reviews(
             libraries=_cli_values(args.library),
@@ -1952,6 +2040,38 @@ def _handle_sqlite_only_command(args):
 
 def _handle_operator_command(args, config):
     retention = report_retention(config)
+    if args.run_history or args.schedule_advice:
+        report = write_run_history_report(
+            config,
+            advice_only=bool(args.schedule_advice),
+            retention=retention,
+        )
+        label = "Schedule advice" if args.schedule_advice else "Run history"
+        print(f"{label} report saved to {report}")
+        return 0
+    if args.cleanup_restore is not None:
+        lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        lock.acquire()
+        try:
+            record = restore_quarantined_asset(config, args.cleanup_restore)
+        finally:
+            lock.release()
+        report = write_quarantine_report(retention=retention)
+        print(
+            f"Cleanup history {record['history_id']} restored; report saved to {report}"
+        )
+        return 0
+    if args.cleanup_purge:
+        lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
+        lock.acquire()
+        try:
+            records = purge_expired_quarantine(config, source="manual")
+        finally:
+            lock.release()
+        report = write_quarantine_report(retention=retention)
+        purged = sum(record.get("status") in {"purged", "missing"} for record in records)
+        print(f"Purged {purged} expired quarantine record(s); report saved to {report}")
+        return 0
     if args.exception_action:
         if args.exception_action == "list":
             records = load_item_exceptions(
@@ -2161,6 +2281,11 @@ def main(argv=None):
     new_primary_commands = [
         args.state_report,
         args.cleanup_history_report,
+        args.cleanup_quarantine_report,
+        args.cleanup_restore,
+        args.cleanup_purge,
+        args.run_history,
+        args.schedule_advice,
         args.output_action,
         args.exception_action,
         args.identity_override_action,
@@ -2226,6 +2351,12 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+    if args.cleanup_restore is not None and args.cleanup_restore < 1:
+        print(
+            "Configuration error: --cleanup-restore requires a positive history ID",
+            file=sys.stderr,
+        )
+        return 2
     if args.include_state_items and not args.state_report:
         print(
             "Configuration error: --include-state-items requires --state-report",
@@ -2267,7 +2398,13 @@ def main(argv=None):
         )
         return 2
     sqlite_only = any(
-        (args.state_report, args.cleanup_history_report, args.identity_review_queue, args.verify_recovery)
+        (
+            args.state_report,
+            args.cleanup_history_report,
+            args.cleanup_quarantine_report,
+            args.identity_review_queue,
+            args.verify_recovery,
+        )
     )
     if sqlite_only:
         try:
@@ -2592,35 +2729,10 @@ def main(argv=None):
         print(json.dumps(status, indent=2, sort_keys=True))
         return 0
     try:
-        config, sources = load_config_file(
-            create_if_missing=False,
-            return_sources=True,
-        )
+        config, sources = load_effective_config(args)
     except ConfigError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
-    override_config_with_cli(config, args)
-    cli_sources = {
-        ("metafusion_run",): args.metafusion_run,
-        ("settings", "schedule"): args.schedule,
-        ("settings", "run_times"): args.run_times is not None,
-        ("settings", "dry_run"): args.dry_run,
-        ("settings", "mode"): args.mode is not None,
-        ("metadata", "run_basic"): args.run_basic or args.asset_only,
-        ("metadata", "run_enhanced"): args.run_enhanced or args.asset_only,
-        ("assets", "run_poster"): args.run_poster or args.metadata_only,
-        ("assets", "run_season"): args.run_season or args.metadata_only,
-        ("assets", "run_background"): args.run_background or args.metadata_only,
-        ("cleanup", "run_cleanup"): args.metadata_only or args.asset_only or bool(args.rating_key),
-        ("plex_libraries",): bool(args.library),
-        ("compatibility", "profile"): args.compatibility_profile is not None,
-    }
-    for path, used in cli_sources.items():
-        if used:
-            sources[path] = "CLI"
-    config.setdefault("_execution", {})["config_source_overview"] = (
-        config_source_overview(config, sources)
-    )
 
     database_operator = any(
         (
@@ -2639,6 +2751,7 @@ def main(argv=None):
             JobAlreadyRunningError,
             OSError,
             OutputManagementError,
+            QuarantineError,
             RecoveryBundleError,
             StateDatabaseError,
             ValueError,
@@ -2685,6 +2798,7 @@ def main(argv=None):
         JobAlreadyRunningError,
         OSError,
         OutputManagementError,
+        QuarantineError,
         RecoveryBundleError,
         StateDatabaseError,
         ValueError,
@@ -2947,6 +3061,42 @@ def main(argv=None):
                 if not run_metafusion_job(config, logger, runtime_status):
                     exit_code = 1
         elif schedule_enabled and run_times:
+            reloader = ScheduledConfigReloader(
+                BASE_CONFIG_DIR,
+                lambda: load_effective_config(args)[0],
+                validate_config,
+                lambda candidate: validate_runtime_paths(
+                    candidate, BASE_CONFIG_DIR
+                ),
+            )
+
+            def scheduled_run():
+                return run_metafusion_job(config, logger, runtime_status)
+
+            def register_scheduled_jobs():
+                schedule.clear("metafusion-jobs")
+                current_settings = config.get("settings", {})
+                if not current_settings.get("schedule", False):
+                    logger.info(
+                        "[Scheduler] Configuration reload paused scheduled jobs."
+                    )
+                    return 0
+                count = 0
+                for run_time in current_settings.get("run_times", []):
+                    try:
+                        schedule.every().day.at(run_time).do(scheduled_run).tag(
+                            "metafusion-jobs"
+                        )
+                        count += 1
+                    except schedule.ScheduleValueError as error:
+                        log_main_event(
+                            "main_invalid_schedule_time",
+                            run_time=run_time,
+                            error=error,
+                            logger=logger,
+                        )
+                return count
+
             run_on_start = settings.get("run_on_start", False)
             if run_on_start and not shutdown_requested.is_set():
                 run_metafusion_job(config, logger, runtime_status)
@@ -2973,20 +3123,7 @@ def main(argv=None):
                         missed_slot.isoformat(),
                     )
                     run_metafusion_job(config, logger, runtime_status)
-            scheduled_count = 0
-            for run_time in run_times:
-                try:
-                    schedule.every().day.at(run_time).do(
-                        run_metafusion_job, config, logger, runtime_status
-                    )
-                    scheduled_count += 1
-                except schedule.ScheduleValueError as error:
-                    log_main_event(
-                        "main_invalid_schedule_time",
-                        run_time=run_time,
-                        error=error,
-                        logger=logger,
-                    )
+            scheduled_count = register_scheduled_jobs()
             if not scheduled_count:
                 exit_code = 1
             else:
@@ -2995,6 +3132,37 @@ def main(argv=None):
                     "main_scheduled_run", run_time=", ".join(run_times), logger=logger
                 )
                 while not shutdown_requested.is_set():
+                    candidate, changed, reload_error = reloader.reload_if_changed(
+                        config
+                    )
+                    if reload_error:
+                        logger.warning(
+                            "[Configuration] Reload rejected | Previous settings retained | Error: %s",
+                            redact_secrets(
+                                reload_error,
+                                config.get("plex", {}).get("token"),
+                                config.get("tmdb", {}).get("api_key"),
+                                fanart_project_api_key(),
+                            ),
+                        )
+                    elif changed:
+                        config = candidate
+                        settings = config.get("settings", {})
+                        _shutdown_timeout = max(
+                            1.0,
+                            float(
+                                config.get("runtime", {}).get(
+                                    "shutdown_timeout", 15.0
+                                )
+                            ),
+                        )
+                        logger = get_setup_logging(config)
+                        scheduled_count = register_scheduled_jobs()
+                        logger.info(
+                            "[Configuration] Reload accepted | Schedule: %s | Run times: %s",
+                            "Enabled" if settings.get("schedule", False) else "Paused",
+                            ", ".join(settings.get("run_times", [])) or "None",
+                        )
                     schedule.run_pending()
                     shutdown_requested.wait(30)
         else:
