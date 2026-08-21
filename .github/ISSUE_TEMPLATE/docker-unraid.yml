@@ -1,50 +1,99 @@
 name: Docker or Unraid issue
-description: Report startup, shutdown, mount, permission, health, or image problems.
-title: "[Docker/Unraid]: "
-labels: ["docker"]
+description: Report startup, shutdown, permission, mount, health, scheduling, or image problems.
+title: "[Docker] "
+labels: ["bug", "docker"]
 body:
   - type: markdown
     attributes:
-      value: Do not paste Docker inspection output because it can expose tokens. Use the redacted support report.
+      value: |
+        Run `python metafusion.py --version` and, when possible, `python metafusion.py --support-report` inside the container.
+
+        Do not post Docker inspection output. Share only the relevant redacted settings and log lines.
   - type: input
     id: version
     attributes:
-      label: Image tag and commit
+      label: MetaFusion version
+      description: Paste the exact version and commit printed by `python metafusion.py --version`.
     validations:
       required: true
   - type: dropdown
     id: platform
     attributes:
       label: Platform
-      options: [Unraid, Docker Compose, Docker CLI]
+      options:
+        - Unraid
+        - Docker Compose
+        - Docker CLI
+        - Other container platform
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Container start or stop
+        - Permission or ownership
+        - Mount or path mapping
+        - Health check or scheduler
+        - Image, architecture, or resource use
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: config_source
+    attributes:
+      label: Configuration source
+      options:
+        - Environment variables only
+        - config.yml
+        - kometa.yml
+        - plex.yml
+        - Not sure
     validations:
       required: true
   - type: input
-    id: identity
+    id: puid_pgid
     attributes:
-      label: Runtime PUID:PGID
+      label: PUID and PGID
+      description: Optional. Include only for a permission or ownership problem.
       placeholder: 99:100
+  - type: textarea
+    id: container_settings
+    attributes:
+      label: Relevant container settings
+      description: List only the affected mount, user, stop-timeout, schedule, or resource settings. Redact private paths.
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
     validations:
       required: true
   - type: textarea
-    id: mounts
+    id: expected
     attributes:
-      label: Redacted mount layout and permissions
-      description: List only container destinations, access mode, and numeric owner/mode.
+      label: Expected result
     validations:
       required: true
   - type: textarea
-    id: symptom
+    id: actual
     attributes:
-      label: Symptom and redacted logs
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Attach a redacted support report and the smallest useful log excerpt, or explain why they are unavailable.
     validations:
       required: true
   - type: checkboxes
-    id: checks
+    id: safety
     attributes:
-      label: Checks completed
+      label: Before submitting
       options:
-        - label: I did not override the Docker user or bypass the supplied entrypoint.
+        - label: I searched open and closed issues and described any custom user or entrypoint override.
           required: true
-        - label: I removed secrets and personal paths.
+        - label: I removed tokens, API keys, private URLs, Docker inspection output, and unredacted paths.
           required: true

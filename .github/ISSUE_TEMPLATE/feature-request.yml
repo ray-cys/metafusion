@@ -1,0 +1,68 @@
+name: Feature request
+description: Suggest an improvement that remains aligned with MetaFusion's metadata, artwork, diagnostics, or operations scope.
+title: "[Request] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem and desired outcome before proposing an implementation. Search existing issues first so related requests can stay together.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Kometa mode
+        - Plex mode
+        - Metadata
+        - Artwork or providers
+        - Identity or mapping
+        - Cleanup or state
+        - Scheduling or performance
+        - Diagnostics or reporting
+        - Docker or Unraid
+        - Documentation or configuration
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain what is difficult, unsafe, unclear, or impossible today.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior rather than only an implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Example workflow
+      description: Show how a user would configure, run, and verify the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and safety considerations
+      description: Note possible effects on Kometa/Plex modes, existing state, providers, cleanup, permissions, or performance. Enter "None known" when appropriate.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for a similar request.
+          required: true
+        - label: This request supports MetaFusion's metadata, artwork, identity, diagnostics, cleanup, or runtime scope.
+          required: true

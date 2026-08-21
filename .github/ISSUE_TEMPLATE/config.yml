@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and troubleshooting guides
+    url: https://github.com/ray-cys/metafusion/blob/main/docs/index.md
+    about: Find configuration, deployment, diagnostics, policy, and troubleshooting documentation.
+  - name: Support and version policy
+    url: https://github.com/ray-cys/metafusion/blob/main/SUPPORT.md
+    about: Check supported releases and what evidence is safe to include in a public issue.

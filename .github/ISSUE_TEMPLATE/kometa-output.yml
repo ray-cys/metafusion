@@ -1,43 +1,72 @@
 name: Kometa output issue
-description: Report generated YAML, schema, merge, edition, or cleanup behavior.
-title: "[Kometa]: "
-labels: ["kometa"]
+description: Report YAML, schema, merge, ordering, edition, or application-verification problems.
+title: "[Kometa] "
+labels: ["bug", "kometa"]
 body:
   - type: markdown
     attributes:
-      value: Include only the smallest sanitized YAML fragment needed to reproduce the issue.
+      value: |
+        Use the artwork/identity form for image selection problems and the runtime/cleanup form for cleanup behavior.
+
+        Share the smallest sanitized YAML excerpt and relevant report. Never post tokens, API keys, private URLs, or unredacted paths.
   - type: input
     id: version
     attributes:
-      label: Image tag and commit
+      label: MetaFusion version
+      description: Paste the exact version and commit printed by `python metafusion.py --version`.
     validations:
       required: true
   - type: dropdown
-    id: output
+    id: output_type
     attributes:
       label: Affected output
-      options: [movie metadata, TV metadata, season or episode metadata, cleanup]
+      options:
+        - Movie metadata YAML
+        - TV metadata YAML
+        - Season or episode metadata
+        - Match key, edition, or duplicate identity
+        - Schema validation or field ordering
+        - Merge or preservation behavior
+        - Post-Kometa application verification
     validations:
       required: true
   - type: textarea
-    id: sanitized
+    id: reproduce
     attributes:
-      label: Sanitized existing and generated YAML
+      label: Steps to reproduce
+      description: Include the item, relevant non-secret settings, and whether the output was newly created or merged.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output or behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output or behavior
+    validations:
+      required: true
+  - type: textarea
+    id: yaml_excerpt
+    attributes:
+      label: Smallest sanitized YAML excerpt
       render: yaml
-    validations:
-      required: true
   - type: textarea
-    id: behavior
+    id: diagnostics
     attributes:
-      label: Expected and actual behavior
+      label: Relevant diagnostics
+      description: Attach a redacted support report plus the relevant compatibility, metadata-audit, Kometa-application, or log excerpt.
     validations:
       required: true
   - type: checkboxes
     id: safety
     attributes:
-      label: Safety confirmation
+      label: Before submitting
       options:
-        - label: I confirmed the Plex library inventory completed successfully.
+        - label: I searched existing issues and included the exact MetaFusion version.
           required: true
-        - label: I removed secrets and personal paths.
+        - label: I removed tokens, API keys, private URLs, and unredacted paths.
           required: true

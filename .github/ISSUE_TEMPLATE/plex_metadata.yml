@@ -1,23 +1,41 @@
 name: Plex metadata issue
-description: Report a Phase 11 Plex API metadata or path-discovery problem.
-title: "[Plex metadata]: "
-labels: ["plex-metadata"]
+description: Report direct Plex API updates, locks, policies, write limits, restore, or verification problems.
+title: "[Plex metadata] "
+labels: ["bug", "plex-metadata"]
 body:
   - type: markdown
     attributes:
       value: |
-        Remove tokens, API keys, public URLs, and personal media paths. Attach the latest `/config/reports/plex-metadata-*.txt`; it is designed to contain no metadata values or secrets.
+        Use this form only for direct metadata behavior with `RUN_MODE=plex` and Plex metadata updates enabled. Use the Docker form for mounts/paths and the artwork/identity form for image problems.
+
+        Attach a sanitized Plex metadata report and relevant log lines. Never post a Plex token, private URL, or unredacted path.
   - type: input
     id: version
     attributes:
-      label: MetaFusion image or commit
-      placeholder: develop, sha-..., or a commit hash
+      label: MetaFusion version
+      description: Paste the exact version and commit printed by `python metafusion.py --version`.
     validations:
       required: true
   - type: input
     id: plex_version
     attributes:
       label: Plex Media Server version
+    validations:
+      required: true
+  - type: dropdown
+    id: behavior
+    attributes:
+      label: Affected behavior
+      options:
+        - fill_missing decision
+        - managed update
+        - overwrite update
+        - Locked field handling
+        - Tag merge or synchronization
+        - Write limit, deferral, or retry
+        - Restore or unlock
+        - Metadata or artwork adoption verification
+        - Other
     validations:
       required: true
   - type: dropdown
@@ -30,45 +48,56 @@ body:
         - overwrite
     validations:
       required: true
+  - type: input
+    id: fields
+    attributes:
+      label: Affected fields
+      description: List field names only; do not include private content.
+      placeholder: summary, content_rating, genre
+    validations:
+      required: true
   - type: dropdown
     id: dry_run
     attributes:
-      label: Was this a dry-run?
+      label: Reproduced in dry-run
       options:
         - "Yes"
         - "No"
+        - Not applicable
     validations:
       required: true
   - type: textarea
-    id: layout
+    id: reproduce
     attributes:
-      label: Library and path layout
-      description: Describe movie/show library type, bind-mount targets, and redacted path mappings.
+      label: Steps and field state
+      description: Include policy, allowlist, lock state, existing value state, and the smallest reproduction sequence.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
+      label: Expected decision
     validations:
       required: true
   - type: textarea
     id: actual
     attributes:
-      label: Actual behavior
+      label: Actual decision
     validations:
       required: true
   - type: textarea
-    id: report
+    id: diagnostics
     attributes:
-      label: Redacted report and logs
-      description: Attach or paste only redacted report/log excerpts. Never include Plex tokens or TMDb keys.
+      label: Relevant diagnostics
+      description: Attach the redacted Plex metadata report, item explanation if relevant, and the smallest useful log excerpt.
+    validations:
+      required: true
   - type: checkboxes
     id: safety
     attributes:
-      label: Safety checks
+      label: Before submitting
       options:
-        - label: I removed secrets and personal paths.
+        - label: I searched existing issues and included exact MetaFusion and Plex versions.
           required: true
-        - label: I tested fill_missing and/or dry-run before overwrite.
+        - label: I removed the Plex token, private URL, media paths, and other secrets.
           required: true

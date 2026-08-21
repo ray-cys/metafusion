@@ -110,6 +110,10 @@ python metafusion.py --preflight
 python metafusion.py --support-report
 ```
 
+Use the [GitHub issue chooser](https://github.com/ray-cys/metafusion/issues/new/choose)
+to select the form matching the problem. Run only the checks relevant to that
+form, and explain when requested diagnostics are unavailable.
+
 Attach only the relevant redacted log section and problem-specific report.
 Never publish `config.yml`, Docker inspection output, tokens, API keys, or
 unredacted private paths. The [diagnostics guide](docs/diagnostics.md) explains

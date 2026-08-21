@@ -642,7 +642,10 @@ process.
 | Scheduled runs do not start | Check `RUN_SCHEDULE`, `RUN_TIMES`, `TZ`, current `--status`, and whether the container remains running. |
 | Container is slow to stop | Restore the supplied entrypoint/init settings and keep the Docker stop timeout above `SHUTDOWN_TIMEOUT`. |
 
-When opening a GitHub issue, attach the latest relevant redacted report,
-support report, Plex server version, and only the necessary log section. Never
-attach `config.yml`, tokens, API keys, Docker inspection output, or unredacted
-host paths.
+When opening a GitHub issue, use the
+[issue chooser](https://github.com/ray-cys/metafusion/issues/new/choose) for a
+general bug, Docker/Unraid, artwork/identity, Kometa output, Plex metadata,
+runtime/cleanup, or feature request. Attach only the redacted report and log
+section relevant to the selected form; explain when requested evidence is not
+available. Never attach `config.yml`, tokens, API keys, Docker inspection
+output, or unredacted host paths.
