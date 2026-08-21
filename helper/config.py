@@ -79,7 +79,7 @@ def safe_json_mapping(val, default, key=None):
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_FILE = BASE_CONFIG_DIR / "config.yml"
-TEMPLATE_FILE = Path(__file__).parent.parent / "config_template.yml"
+TEMPLATE_FILE = Path(__file__).parent.parent / "config" / "config_template.yml"
 CACHE_DIR = BASE_CONFIG_DIR / "cache"
 
 CONFIG_SCHEMA_FILE = Path(__file__).parent.parent / "config_schema.yml"
@@ -250,14 +250,20 @@ def warn_unknown_keys(user_cfg, default_cfg, parent_key=""):
         elif isinstance(user_cfg[key], dict) and isinstance(default_cfg[key], dict):
             warn_unknown_keys(user_cfg[key], default_cfg[key], parent_key=f"{parent_key}.{key}" if parent_key else key)
 
-def merge_config_dicts(default, user, sources=None, prefix=()):
+def merge_config_dicts(default, user, sources=None, prefix=(), source="config.yml"):
     for k, v in user.items():
         if isinstance(v, dict) and isinstance(default.get(k), dict):
-            merge_config_dicts(default[k], v, sources=sources, prefix=(*prefix, k))
+            merge_config_dicts(
+                default[k],
+                v,
+                sources=sources,
+                prefix=(*prefix, k),
+                source=source,
+            )
         else:
             default[k] = v
             if sources is not None:
-                _mark_sources(v, "config.yml", sources, (*prefix, k))
+                _mark_sources(v, source, sources, (*prefix, k))
 
 
 def config_for_library(config, library_name):
@@ -711,6 +717,62 @@ def config_source_report(config, sources):
             report.append(f"{dotted}: {value!r} ({source})")
     return report
 
+
+def config_source_overview(config, sources):
+    """Return a redacted, human-readable summary of effective config sources."""
+    selection = sources.get((), {})
+    yaml_source = selection.get("yaml_source")
+    source_values = tuple(
+        source for source in sources.values() if isinstance(source, str)
+    )
+    direct_environment = {name for name, _path, _converter in ENV_BINDINGS}
+    secret_environment = {name for name, _path, _direct in SECRET_FILE_BINDINGS}
+    return {
+        "config_file": selection.get("path") or "None",
+        "selection": selection.get("strategy", "environment and defaults"),
+        "yaml_values": sum(source == yaml_source for source in source_values)
+        if yaml_source
+        else 0,
+        "environment_overrides": sum(
+            source in direct_environment for source in source_values
+        ),
+        "secret_file_overrides": sum(
+            source in secret_environment for source in source_values
+        ),
+        "cli_overrides": sum(source == "CLI" for source in source_values),
+    }
+
+
+def _discover_config_file(config_dir, environ):
+    """Select one conventional YAML source without silently merging profiles."""
+    config_dir = Path(config_dir)
+    conventional = config_dir / "config.yml"
+    if conventional.exists():
+        return conventional, "conventional config.yml", None
+
+    profiles = {
+        mode: config_dir / f"{mode}.yml"
+        for mode in ("kometa", "plex")
+        if (config_dir / f"{mode}.yml").exists()
+    }
+    requested_mode = str(environ.get("RUN_MODE", "")).strip().lower()
+    if len(profiles) == 1:
+        profile_mode, profile_path = next(iter(profiles.items()))
+        if requested_mode in {"kometa", "plex"} and requested_mode != profile_mode:
+            raise ConfigError(
+                f"RUN_MODE={requested_mode} conflicts with the only run-type "
+                f"configuration file: {profile_path}"
+            )
+        return profile_path, "single run-type profile", profile_mode
+    if len(profiles) == 2:
+        if requested_mode in profiles:
+            return profiles[requested_mode], "RUN_MODE-selected profile", requested_mode
+        raise ConfigError(
+            "Both /config/kometa.yml and /config/plex.yml exist. Set RUN_MODE "
+            "to select one, keep only the active file, or use /config/config.yml."
+        )
+    return conventional, "environment and defaults", None
+
 def mode_check(config, mode="kometa"):
     return config.get("settings", {}).get("mode", "kometa").lower() == mode.lower()
 
@@ -729,9 +791,20 @@ def load_config_file(
     create_if_missing=True,
     return_sources=False,
 ):
-    config_file = Path(config_file) if config_file is not None else CONFIG_FILE
-    template_file = Path(template_file) if template_file is not None else TEMPLATE_FILE
     environ = os.environ if environ is None else environ
+    if config_file is None:
+        config_file, selection_strategy, profile_mode = _discover_config_file(
+            BASE_CONFIG_DIR, environ
+        )
+    else:
+        config_file = Path(config_file)
+        selection_strategy = "explicit file"
+        profile_mode = (
+            config_file.stem
+            if config_file.name in {"kometa.yml", "plex.yml"}
+            else None
+        )
+    template_file = Path(template_file) if template_file is not None else TEMPLATE_FILE
     has_config_env = any(
         env_name in environ
         and environ[env_name] is not None
@@ -760,8 +833,27 @@ def load_config_file(
                 user_config = yaml.safe_load(f) or {}
                 if not isinstance(user_config, dict):
                     raise yaml.YAMLError("Configuration root must be a mapping")
+                if profile_mode:
+                    profile_settings = user_config.setdefault("settings", {})
+                    if not isinstance(profile_settings, dict):
+                        raise yaml.YAMLError("Configuration settings must be a mapping")
+                    declared_mode = str(
+                        profile_settings.get("mode", profile_mode)
+                    ).strip().lower()
+                    if declared_mode != profile_mode:
+                        raise ConfigError(
+                            f"Run-type configuration {config_file} declares "
+                            f"settings.mode={declared_mode!r}; expected {profile_mode!r}"
+                        )
+                    profile_settings.setdefault("mode", profile_mode)
                 warn_unknown_keys(user_config, DEFAULT_CONFIG)
-                merge_config_dicts(config, user_config, sources=sources)
+                yaml_source = f"YAML: {config_file.name}"
+                merge_config_dicts(
+                    config,
+                    user_config,
+                    sources=sources,
+                    source=yaml_source,
+                )
                 log_config_event("config_loaded", config_file=config_file)
         except yaml.YAMLError:
             config.setdefault("_config_errors", []).append(
@@ -775,6 +867,12 @@ def load_config_file(
 
     apply_secret_file_overrides(config, environ=environ, sources=sources)
     apply_env_overrides(config, environ=environ, sources=sources)
+    sources[()] = {
+        "path": str(config_file) if config_file.exists() else None,
+        "strategy": selection_strategy,
+        "profile": profile_mode,
+        "yaml_source": f"YAML: {config_file.name}" if config_file.exists() else None,
+    }
     if return_sources:
         return config, sources
     return config

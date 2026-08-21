@@ -1,37 +1,72 @@
 # Configuration reference
 
-MetaFusion supports environment variables, secret files, and
-`/config/config.yml`. The supplied Docker Compose and Unraid templates expose
-the same application settings. Choose the intended behavior first in
+MetaFusion supports environment variables, secret files, `/config/config.yml`,
+and mode-specific `/config/kometa.yml` or `/config/plex.yml` files. Docker
+Compose retains the complete environment surface, while the Unraid template
+shows only essential connection, library, output-mode, identity, and path
+settings. Application behavior and runtime tuning normally belong in YAML.
+Choose the intended behavior first in
 [Kometa and Plex operation modes](modes.md); use the
 [documentation index](index.md) for task-oriented guides.
 
 The exhaustive [generated configuration table](configuration.generated.md),
-`.env.example`, `config_template.yml`, Docker Compose environment block, and
-Unraid variables are generated from the canonical `config_schema.yml` file.
-Maintainers update the schema and run `python tools/generate_config_surfaces.py`.
+`.env.example`, YAML files under `config/`, Docker Compose environment block,
+and the selected minimal Unraid variables are generated from the canonical
+`config_schema.yml` file. Maintainers update the schema and run
+`python tools/generate_config_surfaces.py`.
+
+## Choose one YAML source
+
+The repository keeps every downloadable YAML reference in the `config/`
+folder. The container copies or refreshes these three inactive references at
+startup:
+
+| Downloadable repository file | Automatic `/config` reference | Make it active as | Use |
+| --- | --- | --- | --- |
+| [Conventional template](../config/config_template.yml) | `/config/config_template.yml` | `/config/config.yml` | Conventional configuration whose mode may be overridden by `RUN_MODE`. |
+| [Kometa profile](../config/examples/kometa.yml) | `/config/examples/kometa.yml` | `/config/kometa.yml` | Complete, ready-to-edit Kometa profile. |
+| [Plex profile](../config/examples/plex.yml) | `/config/examples/plex.yml` | `/config/plex.yml` | Complete, ready-to-edit Plex profile. |
+
+The packaged files are generated from the project schema during development;
+the running container does not generate configuration choices for the user. It
+only synchronizes the inactive references above. They contain placeholders,
+never values copied from the environment. MetaFusion never creates, modifies,
+or replaces an active `config.yml`, `kometa.yml`, or `plex.yml`.
+
+Active-file selection is deterministic:
+
+1. `/config/config.yml` wins when it exists.
+2. Otherwise, one mode profile is selected automatically.
+3. If both mode profiles exist, `RUN_MODE=kometa` or `RUN_MODE=plex` selects
+   the matching file.
+4. If no active YAML exists, built-in defaults and environment values are used.
+
+The files are never merged. A mode profile must agree with its filename;
+`RUN_MODE=plex` cannot silently turn `kometa.yml` into a Plex profile. Keep one
+active mode profile for the simplest setup, or retain both and set `RUN_MODE`.
 
 ## Configuration priority
 
 Values are merged in this order, with later sources taking priority:
 
 1. Built-in defaults.
-2. `/config/config.yml`.
+2. The one selected YAML file, if present.
 3. `PLEX_TOKEN_FILE` and `TMDB_API_KEY_FILE`.
 4. Non-empty environment variables.
+5. Command-line overrides for that invocation.
 
-Blank environment bindings are ignored, allowing `config.yml` or defaults to
-supply the value. A non-empty direct token or API key takes priority over its
-matching secret file.
+Blank environment bindings are ignored, allowing YAML or defaults to supply
+the value. A non-empty direct token or API key takes priority over its matching
+secret file. Environment-only operation remains fully supported: omit every
+active YAML and provide any desired values through the container environment.
 
-The container maintains `/config/config_template.yml` as a value-free
-reference. It never copies environment values or secrets into that file and
-never creates `config.yml` automatically. Copy the template to `config.yml`
-when YAML configuration is wanted, then edit only the copy. Image updates may
-refresh the template but never replace an existing `config.yml`.
+`CONFIG_PATH` is the Compose host directory mounted at `/config`; it is not the
+name or path of an active YAML file.
 
 Run `python metafusion.py --doctor` inside the container to validate the
-effective configuration without contacting Plex or TMDb.
+effective configuration without contacting Plex or TMDb. Normal jobs also log
+one redacted source line under **Effective run configuration**, including the
+selected filename and counts of YAML, environment, secret-file, and CLI values.
 
 ## Connections, libraries, and mode
 

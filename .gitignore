@@ -29,7 +29,11 @@ test_output/
 /compose.override.yml
 
 # Docker bind mounts and generated runtime output
-/config/
+/config/*
+!/config/config_template.yml
+!/config/examples/
+!/config/examples/kometa.yml
+!/config/examples/plex.yml
 /kometa/
 /logs/
 /cache/

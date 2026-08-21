@@ -1,8 +1,11 @@
 # Unraid setup
 
-MetaFusion includes an [Unraid Docker template](../unraid/metafusion.xml) with
-all supported environment variables. Basic view shows the required and common
-settings; optional tuning and safety controls are under **Advanced View**.
+MetaFusion includes a deliberately small
+[Unraid Docker template](../unraid/metafusion.xml). It exposes connection,
+library, output-mode, path, timezone, and Unraid identity settings. Put normal
+application behavior and runtime tuning in one YAML file under appdata. The
+complete environment surface remains available through manually added Unraid
+variables when an environment-only installation is preferred.
 Review [Kometa and Plex operation modes](modes.md) before choosing media or
 Kometa path mappings. All guides are listed in the
 [documentation index](index.md).
@@ -34,14 +37,6 @@ For testing current `develop` changes, temporarily change **Repository** to:
 ghcr.io/ray-cys/metafusion:develop
 ```
 
-When upgrading an existing template to Phase 19 or later, open **Advanced
-View** and set **Concurrency Safety Ceiling** to `0`. Unraid preserves the old
-saved value of `8`; that value is safe and still adaptive, but limits automatic
-growth to eight workers.
-
-Phase 20 defaults **Plex Libraries** to `auto`. Existing exact saved names
-remain valid and continue to limit processing to those libraries.
-
 ## Required settings
 
 Provide these connection and workflow values:
@@ -65,7 +60,8 @@ The default appdata mapping is:
 ```
 
 `/config` contains the state databases, logs, reports, run lock, and managed
-configuration template. Keep it persistent and include it in appdata backups.
+configuration references. Keep it persistent and include it in appdata
+backups.
 
 ## Unraid ownership and permissions
 
@@ -161,34 +157,79 @@ Direct Plex metadata updates do not need media mappings when
 `RUN_POSTER=False`, `RUN_SEASON=False`, and `RUN_BACKGROUND=False`. They remain
 disabled unless `PLEX_METADATA_UPDATES=True`.
 
-## Environment-only or `config.yml`
+## Application configuration
 
-The Unraid template can supply the entire configuration through environment
-variables. In that case:
+The recommended Unraid arrangement is:
 
-- `/config/config.yml` does not need to exist.
-- MetaFusion does not create it.
-- The maintained `/config/config_template.yml` contains placeholders only,
-  never your environment values or secrets.
+- Keep Plex/TMDb connections, library selection, output mode, mappings,
+  timezone, `PUID`, and `PGID` in the Docker template.
+- Keep scheduling, feature switches, policies, cache, concurrency, artwork
+  quality, cleanup, and other runtime behavior in YAML.
 
-To use YAML instead, stop the container and create a separate file:
+After the first container start, appdata contains three managed references:
+
+```text
+config_template.yml
+examples/kometa.yml
+examples/plex.yml
+```
+
+The same files can be reviewed or downloaded from GitHub while reading this
+guide:
+
+- [Conventional template](../config/config_template.yml)
+- [Kometa profile](../config/examples/kometa.yml)
+- [Plex profile](../config/examples/plex.yml)
+
+These inactive references are the only configuration files automatically
+placed in `/config`. MetaFusion does not automatically create active
+`config.yml`, `kometa.yml`, or `plex.yml` files.
+
+Stop the container and copy one reference to an active file. The short mode
+profiles can be used without renaming:
+
+```bash
+# Choose one:
+cp /mnt/user/appdata/metafusion/examples/kometa.yml \
+   /mnt/user/appdata/metafusion/kometa.yml
+cp /mnt/user/appdata/metafusion/examples/plex.yml \
+   /mnt/user/appdata/metafusion/plex.yml
+```
+
+Alternatively, use the conventional filename:
 
 ```bash
 cp /mnt/user/appdata/metafusion/config_template.yml \
    /mnt/user/appdata/metafusion/config.yml
 ```
 
-Edit `config.yml`, then start the container. Do not edit
-`config_template.yml`; image updates may refresh it. Non-empty template
-environment values have higher priority than YAML, so remove optional
-variables from the Unraid container when `config.yml` should control them.
+Edit only the active copy. Image updates refresh the references but never
+overwrite active files. `config.yml` takes priority over mode profiles. One
+mode profile is auto-selected; if both are active, the Unraid **Output Mode**
+selects the matching one. MetaFusion refuses filename/mode conflicts instead
+of silently running the wrong operation.
 
-The [configuration reference](configuration.md) explains priority, every
-variable, and per-library overrides.
+Non-empty Docker variables override YAML. Therefore, keep application/runtime
+variables out of the Unraid form when YAML should control them. Each job logs a
+redacted `[Configuration] Source` entry showing which file was selected and how
+many values came from each source.
+
+### Environment-only setup
+
+No YAML file is required. MetaFusion does not create one automatically. Keep
+the essential template fields and use **Add another Path, Port, Variable,
+Label or Device** to add any optional environment variables you want. Built-in
+defaults supply omitted values, so declaring every variable is unnecessary.
+The complete list is in the
+[generated configuration table](configuration.generated.md).
+
+The [configuration reference](configuration.md) explains selection, priority,
+secret files, and per-library overrides.
 
 ## First-run safety
 
-Recommended initial values are:
+Set these recommended initial values in the active YAML, or add them as custom
+Unraid variables for an environment-only setup:
 
 ```text
 DRY_RUN=True
@@ -209,7 +250,8 @@ reconciliation reports the expected removals. See [Policies](policies.md).
 
 ## Scheduling and manual runs
 
-For a normal Unraid service:
+For a normal Unraid service, put these values in the active YAML or add them as
+custom environment variables:
 
 ```text
 METAFUSION_RUN=False

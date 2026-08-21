@@ -23,7 +23,7 @@ from helper.config import (
     validate_config,
 )
 
-TEMPLATE_FILE = Path(__file__).parents[1] / "config_template.yml"
+TEMPLATE_FILE = Path(__file__).parents[1] / "config" / "config_template.yml"
 
 
 def test_environment_only_config_does_not_copy_template(tmp_path):

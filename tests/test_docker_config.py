@@ -122,6 +122,44 @@ def test_docker_build_context_excludes_development_only_content():
     assert "requirements.txt" not in exclusions
 
 
+def test_packaged_configuration_references_are_versioned_and_in_image_context():
+    references = {
+        REPO_ROOT / "config" / "config_template.yml",
+        REPO_ROOT / "config" / "examples" / "kometa.yml",
+        REPO_ROOT / "config" / "examples" / "plex.yml",
+    }
+    assert all(path.is_file() for path in references)
+
+    dockerignore = set(
+        (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    )
+    assert "config/" not in dockerignore
+    assert {
+        "!config/config_template.yml",
+        "!config/examples/",
+        "!config/examples/*.yml",
+    } <= dockerignore
+
+    gitignore = set(
+        (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    )
+    assert "/config/" not in gitignore
+    assert {
+        "!/config/config_template.yml",
+        "!/config/examples/",
+        "!/config/examples/kometa.yml",
+        "!/config/examples/plex.yml",
+    } <= gitignore
+
+    workflow = (REPO_ROOT / ".github" / "workflows" / "docker-latest.yml").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'cmp "${config_dir}/config_template.yml" config/config_template.yml'
+        in workflow
+    )
+
+
 def test_generated_dependency_manifests_are_self_contained_and_in_sync():
     runtime_input = (REPO_ROOT / "requirements.in").read_text(encoding="utf-8")
     runtime_manifest = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -312,6 +350,9 @@ def test_readme_remains_a_concise_documentation_landing_page():
         REPO_ROOT / "README.md",
         REPO_ROOT / "docs" / "index.md",
         REPO_ROOT / "docs" / "modes.md",
+        REPO_ROOT / "docs" / "configuration.md",
+        REPO_ROOT / "docs" / "docker-compose.md",
+        REPO_ROOT / "docs" / "unraid.md",
     ):
         text = document.read_text(encoding="utf-8")
         for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
@@ -357,9 +398,11 @@ def test_nightly_reliability_qualifies_main_and_develop_without_publishing():
     assert "docker push" not in workflow
 
 
-def test_unraid_template_exposes_every_container_environment_variable():
+def test_unraid_template_exposes_only_schema_declared_essential_variables():
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    expected = set(compose["services"]["metafusion"]["environment"])
+    compose_variables = set(compose["services"]["metafusion"]["environment"])
+    schema = yaml.safe_load((REPO_ROOT / "config_schema.yml").read_text(encoding="utf-8"))
+    expected = set(schema["unraid_variables"])
     root = ElementTree.parse(REPO_ROOT / "unraid" / "metafusion.xml").getroot()
     variables = {
         config.attrib["Target"]
@@ -368,6 +411,7 @@ def test_unraid_template_exposes_every_container_environment_variable():
     }
 
     assert variables == expected
+    assert variables < compose_variables
     assert len(variables) == len(
         [config for config in root.findall("Config") if config.attrib.get("Type") == "Variable"]
     )
@@ -407,7 +451,7 @@ def test_unraid_template_preserves_hardened_runtime_and_unraid_identity():
     assert configs["/config"].attrib["Mode"] == "rw"
     assert configs["PUID"].text == "99"
     assert configs["PGID"].text == "100"
-    assert configs["STATUS_FILE"].text == "/tmp/metafusion-status.json"
+    assert "STATUS_FILE" not in configs
     assert "--read-only" in extra_params
     assert "--cap-drop" not in extra_params
     assert "--security-opt=no-new-privileges" in extra_params

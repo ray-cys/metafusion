@@ -128,6 +128,14 @@ def test_metafusion_retry_without_matching_queue_returns_early(monkeypatch, tmp_
         lambda *_args, **_kwargs: {"status": "disabled"},
     )
     config = _config(tmp_path, retry_failed=True, retry_status="permanent")
+    config["_execution"]["config_source_overview"] = {
+        "config_file": "/config/kometa.yml",
+        "selection": "single run-type profile",
+        "yaml_values": 10,
+        "environment_overrides": 4,
+        "secret_file_overrides": 0,
+        "cli_overrides": 0,
+    }
     assert asyncio.run(
         metafusion.metafusion_main(config, logging.getLogger("retry-empty"))
     ) is None

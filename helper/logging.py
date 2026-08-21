@@ -346,11 +346,12 @@ def log_config_event(event, logger=None, **kwargs):
         "feature_profile": "[Configuration] Run profile | Mode: {mode} | Metadata: {metadata} | Plex metadata: {plex_metadata} | Poster: {poster} | Season posters: {season} | Background: {background} | Cleanup: {cleanup} | Dry run: {dry_run}",
         "unknown_feature": "[Configuration] Unknown configuration settings: {feature}",
         "unknown_key": "[Configuration] Unknown configuration key: {key}",
-        "yaml_not_found": "[Configuration] YAML not found at {config_file}. Copying template to {config_file}...",
-        "yaml_missing": "[Configuration] YAMLs not found at {config_file}. Using default...",
-        "yaml_parse_error": "[Configuration] Failed to parse YAML at {config_file}. Using default...",
-        "config_missing": "[Configuration] Config file {config_file} does not exist. Using default...",
-        "config_loaded": "[Configuration] Successfully loaded configuration from {config_file}.",
+        "yaml_not_found": "[Configuration] YAML initialized | File: {config_file} | Source: packaged template",
+        "yaml_missing": "[Configuration] YAML initialization failed | File: {config_file} | Reason: packaged template unavailable",
+        "yaml_parse_error": "[Configuration] YAML validation failed | File: {config_file} | Startup: blocked",
+        "config_missing": "[Configuration] YAML source | File: {config_file} | Status: not present",
+        "config_loaded": "[Configuration] YAML loaded | File: {config_file}",
+        "config_source": "[Configuration] Source | File: {config_file} | Selection: {selection} | YAML values: {yaml_values} | Environment overrides: {environment_overrides} | Secret-file overrides: {secret_file_overrides} | CLI overrides: {cli_overrides}",
     }
     levels = {
         "invalid_env_var": "error",
@@ -359,11 +360,12 @@ def log_config_event(event, logger=None, **kwargs):
         "feature_profile": "info",
         "unknown_feature": "warning",
         "unknown_key": "warning",
-        "yaml_not_found": "warning",
+        "yaml_not_found": "info",
         "yaml_missing": "error",
         "yaml_parse_error": "error",
-        "config_missing": "warning",
+        "config_missing": "debug",
         "config_loaded": "debug",
+        "config_source": "info",
     }
     msg = messages.get(event, "[Config] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Configuration")

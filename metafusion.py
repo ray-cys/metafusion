@@ -29,6 +29,7 @@ from helper.config import (
     BASE_CONFIG_DIR,
     ConfigError,
     config_for_library,
+    config_source_overview,
     config_source_report,
     get_disabled_features,
     get_feature_flags,
@@ -75,6 +76,7 @@ from helper.logging import (
     get_meta_banner,
     get_setup_logging,
     log_cleanup_event,
+    log_config_event,
     log_final_summary,
     log_main_event,
     log_section,
@@ -951,6 +953,9 @@ async def metafusion_main(config, logger):
             start_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
         log_section(logger, "Configuration", "Effective run configuration")
+        source_overview = config.get("_execution", {}).get("config_source_overview")
+        if source_overview:
+            log_config_event("config_source", logger=logger, **source_overview)
         get_disabled_features(config, logger)
         feature_flags = get_feature_flags(config)
         log_section(logger, "Processing", "Library processing")
@@ -2588,22 +2593,7 @@ def main(argv=None):
         return 0
     try:
         config, sources = load_config_file(
-            create_if_missing=not (
-                args.dry_run
-                or args.doctor
-                or args.preflight
-                or args.asset_audit
-                or args.metadata_audit
-                or args.plan
-                or args.library_audit
-                or args.mapping_diagnose
-                or args.identity_inspect
-                or args.explain_item
-                or args.capture_replay
-                or args.compatibility_check
-                or args.release_check
-                or any(new_primary_commands)
-            ),
+            create_if_missing=False,
             return_sources=True,
         )
     except ConfigError as error:
@@ -2628,6 +2618,9 @@ def main(argv=None):
     for path, used in cli_sources.items():
         if used:
             sources[path] = "CLI"
+    config.setdefault("_execution", {})["config_source_overview"] = (
+        config_source_overview(config, sources)
+    )
 
     database_operator = any(
         (
