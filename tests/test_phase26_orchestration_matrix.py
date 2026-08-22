@@ -513,6 +513,7 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
         "settings": {"mode": "plex", "dry_run": False},
         "plex": {},
         "tmdb": {},
+        "output": {"dashboard_enabled": True},
         "_execution": {},
     }
     monkeypatch.setattr(

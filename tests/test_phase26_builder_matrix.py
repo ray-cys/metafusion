@@ -264,6 +264,58 @@ def test_split_series_preserve_policy_reconciles_top_level_files(
     )
 
 
+def test_split_series_preserve_policy_handles_disappearing_top_level_files(
+    monkeypatch, tmp_path
+):
+    _patch_identity(monkeypatch)
+    monkeypatch.setattr(
+        builder,
+        "resolve_split_series_mapping",
+        lambda *_args, **_kwargs: {
+            "show_policy": "preserve",
+            "seasons": {1: {"tmdb_id": "200", "season_number": 1}},
+        },
+    )
+
+    class DisappearingAsset:
+        def is_file(self):
+            return True
+
+        def stat(self):
+            raise OSError("asset disappeared during reconciliation")
+
+        def resolve(self):
+            raise AssertionError("a failed stat must not register the asset")
+
+    monkeypatch.setattr(
+        builder,
+        "get_asset_path",
+        lambda *_args, **_kwargs: DisappearingAsset(),
+    )
+    config = _config(tmp_path)
+    config["_artwork_gaps"] = []
+
+    result = asyncio.run(
+        builder._build_tv(
+            config,
+            {"metadata": {}},
+            feature_flags=_flags(season=False),
+            existing_assets=set(),
+            meta=_show_meta(),
+            session=object(),
+        )
+    )
+
+    assert result["poster_action"] == "policy_missing"
+    assert result["background_action"] == "policy_missing"
+    assert result["poster"]["size"] == 0
+    assert result["background"]["size"] == 0
+    assert {gap["asset_type"] for gap in config["_artwork_gaps"]} == {
+        "poster",
+        "background",
+    }
+
+
 def test_candidate_observation_does_not_replace_installed_provider(monkeypatch, tmp_path):
     calls = []
 

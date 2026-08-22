@@ -25,6 +25,8 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
         "skipped",
         "not_due",
         "preserved",
+        "policy_preserved",
+        "policy_missing",
         "missing",
         "failed",
         "deferred",
@@ -141,14 +143,17 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     assert len(result) == len(actions)
     assert counts == {"TV Shows": len(actions)}
     summary = summaries["TV Shows"]
-    assert summary["complete"] == 5
-    assert summary["incomplete"] == 4
+    assert summary["complete"] == 6
+    assert summary["incomplete"] == 5
     assert summary["season_count"] == len(actions)
     assert summary["episode_count"] == len(actions)
     library = summary["library_summary"]
-    for prefix in ("poster", "background", "season_poster"):
+    for prefix in ("poster", "background"):
         for action in actions:
             assert library[f"{prefix}_{action}"] == 1
+    for action in actions:
+        if action not in {"policy_preserved", "policy_missing"}:
+            assert library[f"season_poster_{action}"] == 1
     assert library["artwork_deferred"] == 3
     assert library["artwork_automatic_relaxed"] >= 1
     assert library["artwork_download_failover"] >= 1
@@ -159,9 +164,157 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
         "existing": len(actions),
         "tmdb": len(actions),
     }
-    assert library["poster_bytes"] == 90
-    assert library["background_bytes"] == 180
-    assert library["season_poster_bytes"] == 310
+    assert library["poster_bytes"] == 110
+    assert library["background_bytes"] == 220
+    assert library["season_poster_bytes"] == 370
+
+
+def test_artwork_provider_reconciliation_helpers_cover_all_source_paths(tmp_path):
+    poster = tmp_path / "poster.jpg"
+    poster.write_bytes(b"poster")
+    other = tmp_path / "other.jpg"
+    cached = {
+        "poster_path": str(poster),
+        "poster_checksum": "checksum",
+        "poster_provider": "TMDb",
+        "seasons": {
+            "1": {
+                "season_path": str(poster),
+                "season_checksum": "checksum",
+                "season_provider": "Plex",
+            }
+        },
+    }
+
+    assert processing._normalized_artwork_provider(" FanArt ") == "fanart"
+    assert processing._normalized_artwork_provider("manual") == "unknown"
+    assert processing._recorded_artwork_provider(None, "poster", poster) == "existing"
+    assert (
+        processing._recorded_artwork_provider(
+            {"seasons": []}, "season", poster, season_number=1
+        )
+        == "existing"
+    )
+    assert (
+        processing._recorded_artwork_provider(
+            cached, "season", poster, season_number=1
+        )
+        == "plex"
+    )
+    assert (
+        processing._recorded_artwork_provider(
+            {"poster_path": str(poster)}, "poster", poster
+        )
+        == "existing"
+    )
+    assert (
+        processing._recorded_artwork_provider(
+            {"poster_path": object(), "poster_checksum": "checksum"},
+            "poster",
+            poster,
+        )
+        == "existing"
+    )
+    assert processing._recorded_artwork_provider(cached, "poster", other) == "existing"
+    unknown = dict(cached, poster_provider="manual")
+    assert processing._recorded_artwork_provider(unknown, "poster", poster) == "unknown"
+
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_providers": {"poster": "FanArt"}},
+            cached,
+            "poster",
+            "downloaded",
+            poster,
+        )
+        == "fanart"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_providers": {1: "Plex"}},
+            cached,
+            "season",
+            "upgraded",
+            poster,
+            season_number=1,
+        )
+        == "plex"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_providers": {"1": "TMDb"}},
+            cached,
+            "season",
+            "adopted",
+            poster,
+            season_number=1,
+        )
+        == "tmdb"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {}, cached, "poster", "preserved", poster
+        )
+        == "existing"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {}, cached, "poster", "policy_preserved", poster
+        )
+        == "existing"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_ownership": {"poster": "manual"}},
+            cached,
+            "poster",
+            "skipped",
+            poster,
+        )
+        == "existing"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_ownership": {"poster": "overwrite"}},
+            cached,
+            "poster",
+            "skipped",
+            poster,
+        )
+        == "unknown"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_ownership": {"poster": "managed"}},
+            cached,
+            "poster",
+            "skipped",
+            poster,
+        )
+        == "tmdb"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_ownership": {1: "managed"}},
+            cached,
+            "season",
+            "skipped",
+            poster,
+            season_number=1,
+        )
+        == "plex"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_ownership": {"1": "shared"}},
+            cached,
+            "season",
+            "skipped",
+            poster,
+            season_number=1,
+        )
+        == "plex"
+    )
 
 
 def test_processing_uses_storage_inventory_and_clears_retries(monkeypatch, tmp_path):
