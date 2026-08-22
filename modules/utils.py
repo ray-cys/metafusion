@@ -24,6 +24,15 @@ from helper.tmdb import tmdb_api_request
 
 _CACHE_ENTRY_UNSET = object()
 _ARTWORK_ANALYSIS_MEMORY = {}
+_UNORDERED_METADATA_LIST_FIELDS = {
+    "collection",
+    "country",
+    "director",
+    "genre",
+    "label",
+    "producer",
+    "writer",
+}
 
 
 def _artwork_content_analysis(image):
@@ -93,29 +102,58 @@ def get_meta_field(data, field, default=None, path=None):
     except Exception:
         return default
 
-def recursive_season_diff(old, new, path=""):
+def _unordered_metadata_values(values):
+    """Return a deterministic set-like view of a Kometa tag list."""
+    normalized = {
+        str(value).strip()
+        for value in values
+        if value not in (None, "", []) and str(value).strip()
+    }
+    return sorted(normalized, key=lambda value: (value.casefold(), value))
+
+
+def recursive_season_diff(old, new, path="", _field=None):
+    """Return deterministic semantic changes for nested Kometa metadata.
+
+    Kometa tag fields are set-like: provider ordering and duplicate entries do
+    not change their meaning. Other lists retain positional comparison so an
+    ordering change remains visible where sequence can be significant.
+    """
     changes = []
+
     def strip_indices(p):
         return re.sub(r"\[\d+\]", "", p)
+
     if isinstance(old, dict) and isinstance(new, dict):
-        all_keys = set(old.keys()) | set(new.keys())
+        all_keys = sorted(set(old.keys()) | set(new.keys()), key=str)
         for k in all_keys:
             new_path = f"{path}['{k}']" if path else f"['{k}']"
             if k not in old or k not in new:
                 changes.append(strip_indices(new_path))
             else:
-                changes.extend(recursive_season_diff(old[k], new[k], new_path))
+                changes.extend(
+                    recursive_season_diff(old[k], new[k], new_path, _field=str(k))
+                )
     elif isinstance(old, list) and isinstance(new, list):
+        field = str(_field or "").removesuffix(".sync")
+        if field in _UNORDERED_METADATA_LIST_FIELDS:
+            return (
+                []
+                if _unordered_metadata_values(old) == _unordered_metadata_values(new)
+                else [strip_indices(path)]
+            )
         min_len = min(len(old), len(new))
         for i in range(min_len):
             new_path = f"{path}[{i}]"
-            changes.extend(recursive_season_diff(old[i], new[i], new_path))
+            changes.extend(
+                recursive_season_diff(old[i], new[i], new_path, _field=_field)
+            )
         if len(old) != len(new):
             changes.append(strip_indices(path))
     else:
         if old != new:
             changes.append(strip_indices(path))
-    return list(set(changes))
+    return list(dict.fromkeys(changes))
 
 
 def artwork_quality_score(

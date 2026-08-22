@@ -7,6 +7,16 @@ import json
 
 from helper.identity import cache_key_for_meta
 
+_KOMETA_UNORDERED_FIELDS = {
+    "collection",
+    "country",
+    "director",
+    "genre",
+    "label",
+    "producer",
+    "writer",
+}
+
 
 def value_fingerprint(value):
     """Return a stable one-way fingerprint without retaining metadata values."""
@@ -52,6 +62,24 @@ def _child_and_field(field_path):
     if len(parts) >= 3 and parts[0] == "seasons":
         return f"season:{parts[1]}", ".".join(parts[2:])
     return "item", field_path
+
+
+def _kometa_effective_value(field_path, value):
+    field = field_path.rsplit(".", 1)[-1].removesuffix(".sync")
+    if field not in _KOMETA_UNORDERED_FIELDS or not isinstance(value, list):
+        return value
+    normalized = {
+        str(item).strip()
+        for item in value
+        if item not in (None, "", []) and str(item).strip()
+    }
+    return sorted(normalized, key=lambda item: (item.casefold(), item))
+
+
+def _kometa_values_equal(field_path, left, right):
+    return _kometa_effective_value(field_path, left) == _kometa_effective_value(
+        field_path, right
+    )
 
 
 def _kometa_source(field_path, action):
@@ -156,11 +184,11 @@ def kometa_provenance_records(
             action = "created"
             reason = "Target field was missing"
             effective_value = final if final_present else desired
-        elif current == desired:
+        elif _kometa_values_equal(field_path, current, desired):
             action = "unchanged"
             reason = "Existing value matches the selected source"
             effective_value = current
-        elif final_present and final == desired:
+        elif final_present and _kometa_values_equal(field_path, final, desired):
             action = "updated"
             reason = "Selected source differs from the existing value"
             effective_value = final
@@ -187,7 +215,7 @@ def kometa_provenance_records(
                 action=action,
                 policy=policy,
                 reason=reason,
-                value=effective_value,
+                value=_kometa_effective_value(field_path, effective_value),
             )
         )
     return records

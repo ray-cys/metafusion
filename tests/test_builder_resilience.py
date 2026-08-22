@@ -801,6 +801,7 @@ def test_movie_builder_unchanged_metadata_preserves_cache_identity(
     )
 
     assert result["metadata_action"] == "skipped"
+    assert result["metadata_changes"] == []
     assert calls[-1]["update_timestamp"] is False
 
 

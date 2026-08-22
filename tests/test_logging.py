@@ -3,10 +3,12 @@ import logging
 from helper.logging import (
     PlexMetadataProgress,
     _format_event_message,
+    _metadata_change_details,
     format_fields,
     get_meta_banner,
     log_builder_event,
     log_fanart_event,
+    log_item_outcomes,
     log_processing_event,
     log_tmdb_event,
     metadata_action_summary,
@@ -30,6 +32,72 @@ def test_unchanged_metadata_log_labels_completeness_percentages(caplog):
         in caplog.text
     )
     assert "(100%/0%) completed" not in caplog.text
+
+
+def test_item_outcome_visibility_separates_changes_from_field_coverage(caplog):
+    flags = {"mode": "kometa", "plex_metadata": False}
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "Movies",
+            "Changed and complete (2024)",
+            {
+                "metadata_action": "upgraded",
+                "metadata_changes": ["['summary']", "['producer'][0]"],
+                "percent": 100,
+                "incomplete_percent": 0,
+                "is_complete": True,
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "TV Shows",
+            "Incomplete but stable (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 79,
+                "incomplete_percent": 21,
+                "is_complete": True,
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "TV Shows",
+            "Complete and stable (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 100,
+                "incomplete_percent": 0,
+                "is_complete": True,
+            },
+            flags,
+        )
+
+    assert "Changed and complete (2024) | Updated" in caplog.text
+    assert "Changed fields: summary, producer | Field changes: 2" in caplog.text
+    assert "Field coverage: 100% | Missing fields: 0%" in caplog.text
+    assert "Incomplete but stable (2024) | Unchanged" in caplog.text
+    assert "Status: Incomplete but unchanged" in caplog.text
+    assert "Complete and stable (2024)" not in caplog.text
+
+
+def test_metadata_change_details_are_bounded_and_collapse_nested_fields():
+    details = _metadata_change_details(
+        [
+            "plain fallback",
+            "['seasons']['1']['episodes']['2']['summary']",
+            "['seasons']['1']['episodes']['3']['summary']",
+            "['seasons']['1']['title']",
+            "['studio']",
+            "['tagline']",
+        ],
+        limit=4,
+    )
+
+    assert "plain fallback" in details
+    assert "episode summary" in details
+    assert "season title" in details
+    assert "+1 more" in details
+    assert "Field changes: 6" in details
 
 
 def test_builder_asset_details_are_debug_to_avoid_duplicate_item_outcomes(caplog):

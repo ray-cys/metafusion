@@ -649,7 +649,9 @@ def test_plex_artwork_verification_connector_boundary(monkeypatch):
     assert result == {"verified": 1}
 
 
-def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_path):
+def test_metafusion_change_feed_canary_and_performance_success(
+    monkeypatch, tmp_path, caplog
+):
     section = _Section(items=[_item()])
     _patch_runtime(
         monkeypatch,
@@ -693,6 +695,7 @@ def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_
             "rating_keys": {"Movies": ["10"]},
             "changed_ids": {"movie": ["100"], "tv": []},
             "pages": {"movie": 1, "tv": 0},
+            "selected_items": {"movie": 1, "tv": 0},
         }
 
     durations = []
@@ -718,8 +721,10 @@ def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_
 
     monkeypatch.setattr(metafusion, "process_library", process)
     config = _config(tmp_path)
-    asyncio.run(metafusion.metafusion_main(config, logging.getLogger("change-success")))
+    with caplog.at_level(logging.INFO, logger="change-success"):
+        asyncio.run(metafusion.metafusion_main(config, logging.getLogger("change-success")))
     assert config["_tmdb_change_summary"]["rating_keys"] == {"Movies": ["10"]}
+    assert "Selected Plex items: Movies: 1, TV Shows: 0" in caplog.text
     assert config["_upgrade_canary_result"]["samples"]
     assert {name for name, _value in durations} >= {
         "plex_inventory",

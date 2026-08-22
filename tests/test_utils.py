@@ -85,6 +85,21 @@ def test_metadata_helpers_detect_nested_changes_and_format_runtime():
     assert format_runtime("invalid") == "invalid"
 
 
+def test_metadata_diff_ignores_only_set_like_kometa_list_order():
+    existing = {
+        "genre": ["Drama", "Comedy"],
+        "director.sync": ["One", "Two"],
+        "ordered": ["first", "second"],
+    }
+    generated = {
+        "genre": ["Comedy", "Drama", "Drama"],
+        "director.sync": ["Two", "One"],
+        "ordered": ["second", "first"],
+    }
+
+    assert recursive_season_diff(existing, generated) == ["['ordered']"]
+
+
 def test_stale_image_handles_recent_old_and_invalid_dates():
     recent = datetime.now(timezone.utc).isoformat()
     old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()

@@ -151,6 +151,7 @@ def test_tmdb_change_feed_paginates_and_maps_only_local_ids(monkeypatch, tmp_pat
     assert result["rating_keys"] == {"Movies": {"10"}, "TV": {"20"}}
     assert result["changed_ids"] == {"movie": ["100"], "tv": ["200"]}
     assert result["pages"] == {"movie": 2, "tv": 1}
+    assert result["selected_items"] == {"movie": 1, "tv": 1}
     assert all(call[2]["cache"] is False for call in calls)
 
 

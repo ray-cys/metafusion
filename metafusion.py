@@ -1312,18 +1312,17 @@ async def metafusion_main(config, logger):
                             session,
                         )
                         config["_tmdb_change_summary"] = change_summary
-                        selected_by_change = sum(
-                            len(keys)
-                            for keys in change_summary.get("rating_keys", {}).values()
-                        )
+                        selected_items = change_summary.get("selected_items", {})
                         logger.info(
                             "[TMDb] Change-aware recheck | Window: %s to %s | "
-                            "Pages: movie=%d, TV=%d | Selected Plex items: %d",
+                            "Pages: Movies: %d, TV Shows: %d | "
+                            "Selected Plex items: Movies: %d, TV Shows: %d",
                             tmdb_change_plan.get("start_date"),
                             tmdb_change_plan.get("end_date"),
                             change_summary.get("pages", {}).get("movie", 0),
                             change_summary.get("pages", {}).get("tv", 0),
-                            selected_by_change,
+                            selected_items.get("movie", 0),
+                            selected_items.get("tv", 0),
                         )
                     except TMDbChangeFeedError as change_error:
                         tmdb_change_plan["status"] = "feed_unavailable"

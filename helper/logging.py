@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import platform
+import re
 import shutil
 import sys
 import time
@@ -780,6 +781,35 @@ def log_asset_status(
     log_builder_event(event, **kwargs)
 
 
+def _metadata_change_details(changes, *, limit=5):
+    """Summarize nested metadata diff paths without exposing metadata values."""
+    paths = [str(change) for change in (changes or []) if str(change).strip()]
+    labels = []
+    for path in paths:
+        tokens = [
+            token
+            for token in re.findall(r"\['([^']+)'\]", path)
+            if not token.lstrip("-").isdigit()
+        ]
+        if not tokens:
+            label = path
+        elif tokens[0] == "seasons" and "episodes" in tokens:
+            label = f"episode {tokens[-1]}"
+        elif tokens[0] == "seasons" and len(tokens) > 1:
+            label = f"season {tokens[-1]}"
+        else:
+            label = ".".join(tokens)
+        if label not in labels:
+            labels.append(label)
+    visible = labels[: max(1, int(limit))]
+    if len(labels) > len(visible):
+        visible.append(f"+{len(labels) - len(visible)} more")
+    return format_fields(
+        ("Changed fields", ", ".join(visible) or "Unknown"),
+        ("Field changes", len(paths)),
+    )
+
+
 def log_item_outcomes(
     library_name,
     full_title,
@@ -793,7 +823,15 @@ def log_item_outcomes(
     feature_flags = feature_flags or {}
     stats = stats or {}
 
-    def emit(component, subject, action, source, target=None, detail=None):
+    def emit(
+        component,
+        subject,
+        action,
+        source,
+        target,
+        detail=None,
+        level=None,
+    ):
         if action in {None, "not_due"}:
             return
         labels = {
@@ -811,17 +849,21 @@ def log_item_outcomes(
             outcome = f"{str(subject).title()} {outcome.lower()}"
         message = (
             f"[{component}] {library_name} | {full_title} | "
-            f"{outcome} | Source: {source}"
+            f"{outcome} | Source: {source} | Target: {target}"
         )
-        if target:
-            message += f" | Target: {target}"
         if detail:
             message += f" | {detail}"
-        if action == "failed":
+        if level == "error" or (level is None and action == "failed"):
             logger.error(message)
-        elif action in {"missing", "deferred"}:
+        elif level == "warning" or (
+            level is None and action in {"missing", "deferred"}
+        ):
             logger.warning(message)
-        elif action in {"skipped", "preserved"}:
+        elif level == "info":
+            logger.info(message)
+        elif level == "debug" or (
+            level is None and action in {"skipped", "preserved"}
+        ):
             logger.debug(message)
         else:
             logger.info(message)
@@ -829,14 +871,46 @@ def log_item_outcomes(
     metadata_action = stats.get("metadata_action")
     if metadata_action != "not_due":
         mode = "Plex" if feature_flags.get("plex_metadata", False) else "Kometa YAML"
+        coverage_value = None
         try:
-            completeness = f"{float(stats.get('percent') or 0):g}%"
+            coverage_value = float(stats.get("percent"))
+            completeness = f"{coverage_value:g}%"
         except (TypeError, ValueError):
             completeness = "unknown"
         details = [f"Field coverage: {completeness}"]
+        try:
+            missing = f"{float(stats.get('incomplete_percent')):g}%"
+        except (TypeError, ValueError):
+            missing = "unknown"
+        details.append(f"Missing fields: {missing}")
+        if (
+            metadata_action == "upgraded"
+            and not feature_flags.get("plex_metadata", False)
+        ):
+            details.insert(
+                0,
+                _metadata_change_details(stats.get("metadata_changes")),
+            )
         if feature_flags.get("plex_metadata", False):
             details.append(f"API batches: {int(stats.get('plex_metadata_writes', 0))}")
-        emit("Metadata", None, metadata_action, "TMDb", mode, " | ".join(details))
+        metadata_level = (
+            "info"
+            if metadata_action == "skipped"
+            and coverage_value is not None
+            and coverage_value < 100
+            else None
+        )
+        if metadata_level:
+            details.append("Status: Incomplete but unchanged")
+        emit(
+            "Metadata",
+            None,
+            metadata_action,
+            "TMDb",
+            mode,
+            " | ".join(details),
+            level=metadata_level,
+        )
 
     providers = stats.get("artwork_providers") or {}
     artwork_target = (

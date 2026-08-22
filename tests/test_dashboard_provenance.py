@@ -84,6 +84,17 @@ def test_value_free_kometa_provenance_classifies_sources_actions_and_children():
         metadata_provenance.value_fingerprint({"a": 1, "b": 2})
     )
 
+    unordered_tags = metadata_provenance.kometa_provenance_records(
+        identity,
+        existing={"genre": ["Drama", "Comedy"]},
+        generated={"genre": ["Comedy", "Drama", "Drama"]},
+        merged={"genre": ["Comedy", "Drama", "Drama"]},
+    )[0]
+    assert unordered_tags["action"] == "unchanged"
+    assert unordered_tags["value_fingerprint"] == metadata_provenance.value_fingerprint(
+        ["Comedy", "Drama"]
+    )
+
     retained_by_policy = metadata_provenance.kometa_provenance_records(
         identity,
         existing={"nested": "current", "studio": "Manual"},

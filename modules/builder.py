@@ -2446,6 +2446,7 @@ async def _build_movie(
         "incomplete_percent": 100 - percent,
         "is_complete": is_complete,
         "metadata_action": metadata_action,
+        "metadata_changes": changes,
         "poster_action": poster_action,
         "background_action": background_action,
         "plex_candidate": plex_candidate if run_metadata else None,
@@ -2878,6 +2879,7 @@ async def _build_tv(
     is_complete = True
     metadata_fetch_failed = False
     metadata_pending_count = 0
+    changes = []
     if run_metadata:
         inventory = {
             int(season): {int(episode) for episode in episodes}
@@ -4003,6 +4005,7 @@ async def _build_tv(
         "incomplete_percent": 100 - grand_percent,
         "is_complete": is_complete,
         "metadata_action": metadata_action,
+        "metadata_changes": changes,
         "poster_action": poster_action,
         "background_action": background_action,
         "seasons": seasons_data,

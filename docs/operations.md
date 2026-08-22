@@ -596,8 +596,10 @@ At the default `LOG_LEVEL=INFO`, each changed item uses the same compact
 uses `Source: TMDb` with `Target: Kometa YAML` or `Target: Plex`; artwork names
 TMDb, Fanart.tv, or Plex and targets Kometa assets or Plex local media.
 `Field coverage` describes populated expected fields; it does not decide the
-log level. A 100% record that changed remains `INFO`, while an unchanged 100%
-record remains `DEBUG`.
+update outcome. A 100% record that genuinely changed remains `INFO` and names
+the changed field categories. An unchanged 100% record remains `DEBUG`; every
+unchanged record below 100% is promoted to `INFO` with its missing percentage
+so incomplete movie and TV records are not hidden during a normal run.
 
 Routine accepted identities, successful mappings, unchanged/preserved checks,
 provider requests, cache details, and internal API batches remain at `DEBUG`.

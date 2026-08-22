@@ -31,6 +31,13 @@ eligible. Unknown change-feed IDs are ignored. A matching item is selected as
 responses are refreshed, then the normal metadata, artwork, lock, ownership,
 quality, and output-mode policies decide whether anything changes.
 
+TMDb change windows use calendar dates and can overlap between scheduled runs.
+The run log therefore reports selected movie and television Plex-item counts
+separately. MetaFusion compares the refreshed result semantically before
+writing: provider order changes and duplicate values in set-like Kometa tag
+fields do not create a metadata update, while meaningful field changes remain
+visible at `INFO`.
+
 The checkpoint rules fail closed:
 
 - The first eligible run establishes an authoritative full-scan baseline.
