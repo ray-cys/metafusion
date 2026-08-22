@@ -538,14 +538,14 @@ def test_background_selection_accepts_builder_input_without_extra_arguments():
 
 
 def test_dry_run_logging_does_not_create_log_directory(monkeypatch, tmp_path):
-    log_file = tmp_path / "missing" / "logs" / "metafusion.log"
-    monkeypatch.setattr(logging_module, "LOG_FILE", log_file)
+    logs_dir = tmp_path / "missing" / "logs"
+    monkeypatch.setattr(logging_module, "LOGS_DIR", logs_dir)
 
     logger = logging_module.get_setup_logging(
         {"settings": {"dry_run": True, "log_level": "INFO"}}
     )
     try:
-        assert not log_file.parent.exists()
+        assert not logs_dir.exists()
         assert all(not isinstance(handler, logging.FileHandler) for handler in logger.handlers)
     finally:
         for handler in list(logger.handlers):
@@ -554,7 +554,7 @@ def test_dry_run_logging_does_not_create_log_directory(monkeypatch, tmp_path):
 
 
 def test_logging_filter_redacts_configured_secrets(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(logging_module, "LOG_FILE", tmp_path / "unused.log")
+    monkeypatch.setattr(logging_module, "LOGS_DIR", tmp_path / "unused")
     logger = logging_module.get_setup_logging(
         {
             "settings": {"dry_run": True, "log_level": "INFO"},
@@ -828,9 +828,9 @@ def test_tmdb_not_found_uses_short_negative_cache(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
-def test_combined_log_rotation_enforces_size_and_backup_count(tmp_path):
-    log_file = tmp_path / "metafusion.log"
-    handler = logging_module.SizeAndTimeRotatingFileHandler(
+def test_run_log_size_rotation_enforces_backup_count(tmp_path):
+    log_file = tmp_path / "metafusion-2026-08-22_01-02-03_000001.log"
+    handler = logging_module.SizeRotatingFileHandler(
         log_file, max_bytes=80, backup_count=2
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
@@ -842,23 +842,19 @@ def test_combined_log_rotation_enforces_size_and_backup_count(tmp_path):
     try:
         for index in range(5):
             logger.info("entry-%d-%s", index, "x" * 70)
-        handler.next_rollover_at = 0
-        logger.info("daily-boundary")
     finally:
         handler.close()
         logger.handlers.clear()
 
     assert log_file.exists()
-    assert len(list(tmp_path.glob("metafusion.log.*"))) == 2
+    assert len(list(tmp_path.glob(f"{log_file.name}.*"))) == 2
 
-    unlimited = logging_module.SizeAndTimeRotatingFileHandler(
+    unlimited = logging_module.SizeRotatingFileHandler(
         tmp_path / "unlimited.log", max_bytes=0, backup_count=1
     )
     record = logging.LogRecord("test", logging.INFO, __file__, 1, "line", (), None)
     try:
         assert unlimited.shouldRollover(record) is False
-        unlimited.next_rollover_at = 0
-        assert unlimited.shouldRollover(record) is True
     finally:
         unlimited.close()
 

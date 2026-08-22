@@ -472,6 +472,12 @@ def test_failed_run_returns_false_and_flushes_cache(monkeypatch):
     monkeypatch.setattr(
         metafusion, "begin_cache_session", lambda **_kwargs: None
     )
+    monkeypatch.setattr(
+        metafusion, "begin_run_file_logging", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        metafusion, "finish_run_file_logging", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(metafusion, "flush_cache", lambda: flushed.append(True))
 
     successful = metafusion.run_metafusion_job(

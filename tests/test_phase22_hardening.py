@@ -305,7 +305,7 @@ def test_state_read_only_legacy_schema_without_asset_ownership_is_safe(
 
 
 def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
-    monkeypatch.setattr(logging_module, "LOG_FILE", tmp_path / "metafusion.log")
+    monkeypatch.setattr(logging_module, "LOGS_DIR", tmp_path)
     config = {
         "settings": {
             "dry_run": False,
@@ -317,10 +317,12 @@ def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
         "tmdb": {"api_key": "tmdb-secret"},
     }
     logger = logging_module.get_setup_logging(config)
+    run_handler = logging_module.begin_run_file_logging(config, logger)
     logger.info("tokens plex-secret tmdb-secret")
     for handler in logger.handlers:
         handler.flush()
-    text = (tmp_path / "metafusion.log").read_text(encoding="utf-8")
+    run_log = Path(config["_run_log_path"])
+    text = run_log.read_text(encoding="utf-8")
     assert "plex-secret" not in text
     assert "tmdb-secret" not in text
 
@@ -380,10 +382,9 @@ def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
     )
 
     assert "Artwork season posters | Downloaded: " in (
-        tmp_path / "metafusion.log"
-    ).read_text(
-        encoding="utf-8"
+        run_log.read_text(encoding="utf-8")
     )
+    logging_module.finish_run_file_logging(config, logger, run_handler)
     for handler in list(logger.handlers):
         handler.close()
     logger.handlers.clear()

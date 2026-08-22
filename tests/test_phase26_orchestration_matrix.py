@@ -374,6 +374,12 @@ class _CacheFacade:
 def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
     _JobLock.instances.clear()
     monkeypatch.setattr(metafusion, "JobRunLock", _JobLock)
+    monkeypatch.setattr(
+        metafusion, "begin_run_file_logging", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        metafusion, "finish_run_file_logging", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(metafusion, "begin_cache_session", lambda **_kwargs: None)
     monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: None)
     monkeypatch.setattr(metafusion, "begin_fanart_cache", lambda _config: None)

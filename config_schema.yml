@@ -694,7 +694,7 @@ settings:
     order: 28
 - name: LOG_MAX_MB
   section: Scheduling and processing
-  description: Rotate the active log at this size as well as daily. Set 0 to disable only size rotation.
+  description: Split an individual per-run log at this size. Set 0 to keep every run in exactly one file.
   path:
   - settings
   - log_max_mb
@@ -713,7 +713,7 @@ settings:
     order: 29
 - name: LOG_BACKUP_COUNT
   section: Scheduling and processing
-  description: Number of daily or size-rotated log files retained.
+  description: Number of newest per-run log groups retained.
   path:
   - settings
   - log_backup_count

@@ -333,10 +333,22 @@ walk the media tree or read file mtimes to calculate artwork age.
 
 ## Log retention
 
-The persistent log rotates at local midnight and whenever the active file
-reaches `LOG_MAX_MB` (10 MiB by default). `LOG_BACKUP_COUNT` keeps the newest
-14 rotated files by default. Set `LOG_MAX_MB=0` only when size-based rotation
-must be disabled; daily rotation remains active.
+Every scheduled, startup, catch-up, or forced processing job creates a separate
+timestamped file under `/config/logs`, for example
+`metafusion-2026-08-22_07-35-00_123456.log`. The file is opened after the
+single-job lock is acquired and is closed after reports, cache maintenance, the
+optional dashboard, and the final run status have completed. Scheduler startup,
+idle, reload, and shutdown messages remain in Docker's continuous console log
+and do not contaminate an individual job file.
+
+`LOG_BACKUP_COUNT` keeps the newest 14 run groups by default. `LOG_MAX_MB`
+remains an emergency size limit for one unusually verbose run; additional parts
+use the same filename followed by a timestamp suffix and are retained or removed
+with their parent run. Set `LOG_MAX_MB=0` when every run must remain in exactly
+one file regardless of size. Dry runs continue to write only to Docker output so
+that their no-persistent-write contract is preserved. A legacy
+`/config/logs/metafusion.log` from an older release is left untouched and is no
+longer appended.
 
 At the first scheduled job after an interval expires, MetaFusion evaluates a
 candidate. [Artwork policy](policies.md#artwork-update-policies) and quality
@@ -534,7 +546,7 @@ Checksum-proven managed artwork removed by automated cleanup is retained under
 Shared reports and logs are:
 
 ```text
-/config/logs/metafusion.log
+/config/logs/metafusion-YYYY-MM-DD_HH-MM-SS_microseconds.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
 /config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/metadata-audit-YYYYMMDD-HHMMSS.txt

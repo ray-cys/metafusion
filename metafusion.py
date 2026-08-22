@@ -74,7 +74,9 @@ from helper.incremental import (
 from helper.item_explanation import run_item_explanation
 from helper.kometa_application_verification import run_kometa_application_audit
 from helper.logging import (
+    begin_run_file_logging,
     check_sys_requirements,
+    finish_run_file_logging,
     format_fields,
     get_meta_banner,
     get_setup_logging,
@@ -1691,6 +1693,7 @@ def request_shutdown(_signum=None, _frame=None):
 def run_metafusion_job(config, logger, runtime_status=None):
     global _active_loop, _active_task
     job_lock = None
+    run_log_handler = None
     if not config.get("settings", {}).get("dry_run", False):
         job_lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
         try:
@@ -1704,15 +1707,21 @@ def run_metafusion_job(config, logger, runtime_status=None):
     config["_metadata_audit_records"] = []
     config["_metadata_provenance_records"] = []
     try:
+        run_log_handler = begin_run_file_logging(config, logger)
         begin_cache_session(
             writable=not config.get("settings", {}).get("dry_run", False)
         )
         begin_tmdb_cache(config)
         begin_fanart_cache(config)
         begin_plex_metadata_run(config)
-    except Exception:
-        if job_lock is not None:
-            job_lock.release()
+    except Exception as caught:
+        if run_log_handler is not None:
+            log_main_event("main_unhandled_exception", error=caught, logger=logger)
+        try:
+            finish_run_file_logging(config, logger, run_log_handler)
+        finally:
+            if job_lock is not None:
+                job_lock.release()
         raise
     if runtime_status:
         runtime_status.run_started()
@@ -2008,8 +2017,11 @@ def run_metafusion_job(config, logger, runtime_status=None):
                         caught,
                     )
         finally:
-            if job_lock is not None:
-                job_lock.release()
+            try:
+                finish_run_file_logging(config, logger, run_log_handler)
+            finally:
+                if job_lock is not None:
+                    job_lock.release()
     return success
 
 

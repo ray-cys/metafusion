@@ -115,8 +115,8 @@ creating the two required user credentials.
 | `TZ` | `UTC` | Timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate without normal writes/deletions. A direct Plex metadata dry-run still writes a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-| `LOG_MAX_MB` | `10` | Rotate the active log before it exceeds this many MiB; `0` disables only size rotation. |
-| `LOG_BACKUP_COUNT` | `14` | Number of daily/size-rotated log files retained. |
+| `LOG_MAX_MB` | `10` | Split an individual run log before it exceeds this many MiB; `0` keeps every run in exactly one file. |
+| `LOG_BACKUP_COUNT` | `14` | Number of newest per-run log groups retained. |
 | `RUN_BASIC` | `True` | Generate core Kometa fields or enable core direct Plex fields after Plex API opt-in. |
 | `RUN_ENHANCED` | `True` | Add supported director/writer/producer fields. Requires `RUN_BASIC=True`; cast remains with Plex's provider. |
 | `RUN_POSTER` | `True` | Generate movie and show posters. |

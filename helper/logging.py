@@ -19,32 +19,22 @@ from helper.storage import storage_pressure_threshold
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
-LOG_FILE = LOGS_DIR / "metafusion.log"
+RUN_LOG_PREFIX = "metafusion-"
+RUN_LOG_SUFFIX = ".log"
 MIN_PYTHON = (3, 10)
 MIN_CPU_CORES = 4
 MIN_RAM_GB = 4
 
 
-class SizeAndTimeRotatingFileHandler(logging.FileHandler):
-    """Rotate at local midnight or before the active log exceeds its size cap."""
+class SizeRotatingFileHandler(logging.FileHandler):
+    """Split an unusually large run log without crossing run boundaries."""
 
     def __init__(self, filename, max_bytes, backup_count, encoding="utf-8"):
         self.max_bytes = max(0, int(max_bytes))
         self.backup_count = max(1, int(backup_count))
         super().__init__(filename, encoding=encoding)
-        self.next_rollover_at = self._next_midnight()
-
-    @staticmethod
-    def _next_midnight(now=None):
-        current = now or datetime.datetime.now().astimezone()
-        tomorrow = current.date() + datetime.timedelta(days=1)
-        return datetime.datetime.combine(
-            tomorrow, datetime.time.min, tzinfo=current.tzinfo
-        ).timestamp()
 
     def shouldRollover(self, record):
-        if time.time() >= self.next_rollover_at:
-            return True
         if not self.max_bytes:
             return False
         message_bytes = len(
@@ -82,7 +72,6 @@ class SizeAndTimeRotatingFileHandler(logging.FileHandler):
             with suppress(OSError):
                 expired.unlink()
         self.stream = self._open()
-        self.next_rollover_at = self._next_midnight()
 
     def emit(self, record):
         try:
@@ -91,6 +80,39 @@ class SizeAndTimeRotatingFileHandler(logging.FileHandler):
         except OSError:
             self.handleError(record)
         super().emit(record)
+
+
+def _run_log_path(logs_dir, now=None):
+    started_at = now or datetime.datetime.now().astimezone()
+    timestamp = started_at.strftime("%Y-%m-%d_%H-%M-%S_%f")
+    return Path(logs_dir) / f"{RUN_LOG_PREFIX}{timestamp}{RUN_LOG_SUFFIX}"
+
+
+def _run_log_files(logs_dir):
+    pattern = re.compile(
+        rf"^{re.escape(RUN_LOG_PREFIX)}\d{{4}}-\d{{2}}-\d{{2}}_"
+        rf"\d{{2}}-\d{{2}}-\d{{2}}_\d{{6}}{re.escape(RUN_LOG_SUFFIX)}$"
+    )
+    return sorted(
+        (
+            path
+            for path in Path(logs_dir).glob(f"{RUN_LOG_PREFIX}*{RUN_LOG_SUFFIX}")
+            if pattern.fullmatch(path.name)
+        ),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+
+
+def retain_run_logs(logs_dir, retention):
+    """Keep the newest completed/current run groups and all of their size parts."""
+    keep = max(1, int(retention))
+    expired_logs = _run_log_files(logs_dir)[keep:]
+    for log_file in expired_logs:
+        for path in (log_file, *log_file.parent.glob(f"{log_file.name}.*")):
+            with suppress(OSError):
+                path.unlink()
+    return len(expired_logs)
 
 
 def redact_secrets(value, *secrets):
@@ -141,10 +163,22 @@ class SecretRedactionFilter(logging.Filter):
         record.args = ()
         return True
 
-def get_setup_logging(config):
-    log_file = LOG_FILE
-    dry_run = config.get("settings", {}).get("dry_run", False)
 
+def _log_formatter():
+    return logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+
+def _secret_filter(config):
+    return SecretRedactionFilter(
+        (
+            config.get("plex", {}).get("token"),
+            config.get("tmdb", {}).get("api_key"),
+            fanart_project_api_key(),
+        )
+    )
+
+
+def get_setup_logging(config):
     log_level_str = config["settings"].get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
 
@@ -155,37 +189,60 @@ def get_setup_logging(config):
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
             handler.close()
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    formatter = _log_formatter()
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
-    secret_filter = SecretRedactionFilter(
-        (
-            config.get("plex", {}).get("token"),
-            config.get("tmdb", {}).get("api_key"),
-            fanart_project_api_key(),
-        )
-    )
-    console_handler.addFilter(secret_filter)
-
-    if not dry_run:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = SizeAndTimeRotatingFileHandler(
-            log_file,
-            max_bytes=max(
-                0,
-                int(float(config["settings"].get("log_max_mb", 10)) * 1024 * 1024),
-            ),
-            backup_count=config["settings"].get("log_backup_count", 14),
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(log_level)
-        file_handler.addFilter(secret_filter)
-        logger.addHandler(file_handler)
+    console_handler.addFilter(_secret_filter(config))
     logger.addHandler(console_handler)
     return logger
+
+
+def begin_run_file_logging(config, logger, *, logs_dir=None, now=None):
+    """Attach one persistent file for the lifetime of a single non-dry-run job."""
+    if config.get("settings", {}).get("dry_run", False):
+        config.pop("_run_log_path", None)
+        return None
+    directory = Path(logs_dir or LOGS_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    log_file = _run_log_path(directory, now=now)
+    settings = config.get("settings", {})
+    handler = SizeRotatingFileHandler(
+        log_file,
+        max_bytes=max(
+            0,
+            int(float(settings.get("log_max_mb", 10)) * 1024 * 1024),
+        ),
+        backup_count=settings.get("log_backup_count", 14),
+        encoding="utf-8",
+    )
+    handler.setFormatter(_log_formatter())
+    handler.setLevel(logger.level)
+    handler.addFilter(_secret_filter(config))
+    logger.addHandler(handler)
+    config["_run_log_path"] = str(log_file)
+    retain_run_logs(directory, settings.get("log_backup_count", 14))
+    logger.info("[Logging] Run log started | %s", format_fields(("Path", log_file)))
+    return handler
+
+
+def finish_run_file_logging(config, logger, handler):
+    """Flush, close, detach, and retain a completed per-run log file."""
+    if handler is None:
+        return None
+    log_file = Path(handler.baseFilename)
+    try:
+        logger.info("[Logging] Run log saved | %s", format_fields(("Path", log_file)))
+    finally:
+        logger.removeHandler(handler)
+        handler.flush()
+        handler.close()
+    retain_run_logs(
+        log_file.parent,
+        config.get("settings", {}).get("log_backup_count", 14),
+    )
+    return log_file
 
 def get_meta_banner(logger=None):
     return log_section(logger, "Startup", "M E T A F U S I O N")
