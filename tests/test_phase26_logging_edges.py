@@ -244,6 +244,16 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
                 "background_downloaded": 1,
                 "season_poster_downloaded": 1,
                 "artwork_provider_writes": {"fanart": 2, "custom": 1},
+                "artwork_current_providers": {
+                    "tmdb": 1,
+                    "existing": 1,
+                    "unknown": 1,
+                },
+                "artwork_file_expected": 4,
+                "artwork_file_present": 3,
+                "artwork_file_absent": 1,
+                "poster_policy_preserved": 1,
+                "background_policy_missing": 1,
                 "artwork_bytes": 20,
             },
         },
@@ -306,6 +316,14 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     )
     text = "\n".join(message for _level, message in logger.records)
     assert "Fanart.tv: 2" in text
+    assert "Artwork write sources" in text
+    assert (
+        "Artwork files | Scope: processed items | Expected destinations: 4 | "
+        "Present: 3 | Absent: 1"
+    ) in text
+    assert "Artwork current sources | Existing/manual: 1, TMDb: 1, Unknown: 1" in text
+    assert "Policy preserved: 1" in text
+    assert "Policy missing: 1" in text
     assert "Plex metadata: Server-managed" in text
     assert "Low free space" in text
     assert app_logging.human_readable_size(1024) == "1.00 KB"

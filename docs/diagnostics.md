@@ -48,9 +48,18 @@ adoption. Detailed command examples and report limitations are in
 python metafusion.py --dashboard-report
 ```
 
-Normal non-dry runs refresh both a retained timestamped dashboard and
-`/config/reports/metafusion-dashboard-latest.html`. Open either file directly
-in a browser; it contains its own styling, tables, filtering, section
+The command always generates both a retained timestamped dashboard and
+`/config/reports/metafusion-dashboard-latest.html`. Automatic refresh after a
+successful non-dry run is disabled by default. Opt in with either:
+
+```yaml
+output:
+  dashboard_enabled: true
+```
+
+or `DASHBOARD_ENABLED=True`. Disabling automatic refresh does not delete an
+existing dashboard. Open either file directly in a browser; it contains its
+own styling, tables, filtering, section
 navigation, and print support and makes no network request. The dashboard is
 built only from bounded SQLite evidence and covers recent jobs, library scan
 state, unresolved work, retries, identity review, cleanup, provider health,

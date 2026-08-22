@@ -1989,7 +1989,11 @@ def run_metafusion_job(config, logger, runtime_status=None):
                     library_results=config.get("_job_library_results", {}),
                     metrics=metrics,
                 )
-            if not config.get("settings", {}).get("dry_run", False):
+            if (
+                success
+                and not config.get("settings", {}).get("dry_run", False)
+                and config.get("output", {}).get("dashboard_enabled", False)
+            ):
                 try:
                     dashboard = write_dashboard_report(
                         retention=report_retention(config),

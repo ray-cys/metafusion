@@ -90,6 +90,8 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
                 if index % 2
                 else {str(index): "missing_only_download_failover"}
             ),
+            "artwork_file_counts": {"expected": 3, "present": 2, "absent": 1},
+            "artwork_current_providers": {"tmdb": 1, "existing": 1},
             "poster": {"size": 10},
             "background": {"size": 20},
             "seasons": {1: {"episodes": {1: {}}}},
@@ -150,6 +152,13 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     assert library["artwork_deferred"] == 3
     assert library["artwork_automatic_relaxed"] >= 1
     assert library["artwork_download_failover"] >= 1
+    assert library["artwork_file_expected"] == len(actions) * 3
+    assert library["artwork_file_present"] == len(actions) * 2
+    assert library["artwork_file_absent"] == len(actions)
+    assert library["artwork_current_providers"] == {
+        "existing": len(actions),
+        "tmdb": len(actions),
+    }
     assert library["poster_bytes"] == 90
     assert library["background_bytes"] == 180
     assert library["season_poster_bytes"] == 310
@@ -237,6 +246,94 @@ def test_processing_uses_storage_inventory_and_clears_retries(monkeypatch, tmp_p
     assert sizes == {"Movies": 123}
     assert cleared and cleared[0][-1] == {"1"}
     assert summaries["Movies"]["library_summary"]["storage_scope"] == "full inventory"
+
+
+def test_item_artwork_reconciliation_is_independent_of_action_counters(
+    monkeypatch, tmp_path
+):
+    item = SimpleNamespace(
+        ratingKey="1",
+        title="Movie",
+        year=2020,
+        type="movie",
+        updatedAt="now",
+    )
+    meta = {
+        "title": "Movie",
+        "year": 2020,
+        "library_name": "Movies",
+        "library_type": "movie",
+        "ratingKey": "1",
+        "tmdb_id": "100",
+        "movie_path": "Movie (2020)",
+    }
+    poster = tmp_path / "poster.jpg"
+    poster.write_bytes(b"poster")
+    background = tmp_path / "background.jpg"
+
+    async def metadata(*_args, **_kwargs):
+        return dict(meta)
+
+    async def build(*_args, **_kwargs):
+        return {
+            "metadata_action": "not_due",
+            "poster_action": "skipped",
+            "background_action": "skipped",
+            "season_poster_actions": {},
+            # A newly considered candidate must not become the installed source.
+            "artwork_providers": {"poster": "fanart"},
+        }
+
+    def asset_path(_config, _meta, *, asset_type, **_kwargs):
+        return poster if asset_type == "poster" else background
+
+    events = []
+    monkeypatch.setattr(processing, "get_plex_metadata", metadata)
+    monkeypatch.setattr(processing, "build_movie", build)
+    monkeypatch.setattr(processing, "get_asset_path", asset_path)
+    monkeypatch.setattr(
+        processing,
+        "load_cache",
+        lambda: {
+            processing.cache_key_for_meta(meta): {
+                "poster_path": str(poster.resolve()),
+                "poster_checksum": "known-checksum",
+                "poster_provider": "tmdb",
+            }
+        },
+    )
+    monkeypatch.setattr(processing, "log_item_outcomes", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        processing,
+        "log_processing_event",
+        lambda event, **kwargs: events.append((event, kwargs)),
+    )
+
+    stats = asyncio.run(
+        processing.process_item(
+            item,
+            {},
+            {"plex": {}, "settings": {"mode": "kometa", "dry_run": False}},
+            feature_flags={
+                "metadata_basic": False,
+                "metadata_enhanced": False,
+                "plex_metadata": False,
+                "poster": True,
+                "background": True,
+                "season": False,
+                "dry_run": False,
+            },
+        )
+    )
+
+    assert stats["artwork_file_counts"] == {
+        "expected": 2,
+        "present": 1,
+        "absent": 1,
+    }
+    assert stats["artwork_current_providers"] == {"tmdb": 1}
+    assert events[-1][0] == "processing_artwork_reconciliation"
+    assert events[-1][1]["absent"] == 1
 
 
 def test_processing_identity_failure_and_inventory_helpers(monkeypatch, tmp_path):

@@ -114,6 +114,10 @@ python metafusion.py --support-report
 python metafusion.py --dashboard-report
 ```
 
+Automatic dashboard refresh is disabled by default. Enable it with
+`output.dashboard_enabled: true` or `DASHBOARD_ENABLED=True`; the command above
+always remains available for an on-demand report.
+
 Use the [GitHub issue chooser](https://github.com/ray-cys/metafusion/issues/new/choose)
 to select the form matching the problem. Run only the checks relevant to that
 form, and explain when requested diagnostics are unavailable.

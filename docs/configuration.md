@@ -203,6 +203,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
+| `DASHBOARD_ENABLED` | `False` | Refresh the offline HTML dashboard automatically after successful non-dry runs. The explicit `--dashboard-report` command remains available when false. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |
 | `UPGRADE_CANARY` | `True` | Qualify each published image commit once with read-only compatibility and deterministic local item checks before output writes. |

@@ -346,7 +346,7 @@ def log_config_event(event, logger=None, **kwargs):
         "invalid_env_var": "[Configuration] Invalid environment variable for {key}: '{value}'. Using default: {default}",
         "feature_disabled": "[Configuration] {feature} is DISABLED and will not be processed.",
         "feature_enabled": "[Configuration] {feature} is ENABLED and will be processed.",
-        "feature_profile": "[Configuration] Run profile | Mode: {mode} | Metadata: {metadata} | Plex metadata: {plex_metadata} | Poster: {poster} | Season posters: {season} | Background: {background} | Cleanup: {cleanup} | Dry run: {dry_run}",
+        "feature_profile": "[Configuration] Run profile | Mode: {mode} | Metadata: {metadata} | Plex metadata: {plex_metadata} | Poster: {poster} | Season posters: {season} | Background: {background} | Cleanup: {cleanup} | Dashboard: {dashboard} | Dry run: {dry_run}",
         "unknown_feature": "[Configuration] Unknown configuration settings: {feature}",
         "unknown_key": "[Configuration] Unknown configuration key: {key}",
         "yaml_not_found": "[Configuration] YAML initialized | File: {config_file} | Source: packaged template",
@@ -556,6 +556,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_selection_summary": "[Processing] Selection summary for {library_name} | Selected: {selected} | Unchanged/not due: {skipped} | Causes: {causes}",
         "processing_ambiguous_editions": "[Processing] Unsafe duplicate editions in '{library_name}': {description}",
         "processing_ambiguous_editions_allowed": "[Processing] Ambiguous editions allowed in '{library_name}': {description}",
+        "processing_artwork_reconciliation": "[Artwork] {library_name} | {full_title} | Destination reconciliation | Expected: {expected} | Present: {present} | Absent: {absent}",
     }
     levels = {
         "processing_no_item": "warning",
@@ -573,6 +574,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_selection_summary": "info",
         "processing_ambiguous_editions": "error",
         "processing_ambiguous_editions_allowed": "warning",
+        "processing_artwork_reconciliation": "warning",
     }
     msg = messages.get(event, "[Processing] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Processing")
@@ -840,6 +842,8 @@ def log_item_outcomes(
             "adopted": "Adopted",
             "skipped": "Unchanged",
             "preserved": "Preserved",
+            "policy_preserved": "Policy preserved",
+            "policy_missing": "Policy-preserved missing",
             "missing": "Missing",
             "failed": "Failed",
             "deferred": "Deferred",
@@ -856,13 +860,13 @@ def log_item_outcomes(
         if level == "error" or (level is None and action == "failed"):
             logger.error(message)
         elif level == "warning" or (
-            level is None and action in {"missing", "deferred"}
+            level is None and action in {"missing", "policy_missing", "deferred"}
         ):
             logger.warning(message)
         elif level == "info":
             logger.info(message)
         elif level == "debug" or (
-            level is None and action in {"skipped", "preserved"}
+            level is None and action in {"skipped", "preserved", "policy_preserved"}
         ):
             logger.debug(message)
         else:
@@ -928,7 +932,7 @@ def log_item_outcomes(
         }.get(provider_key)
         if known:
             return known
-        if action in {"skipped", "preserved"}:
+        if action in {"skipped", "preserved", "policy_preserved"}:
             return "Existing"
         return "None"
 
@@ -972,6 +976,8 @@ def log_item_outcomes(
                 "adopted": "Adopted",
                 "skipped": "Unchanged",
                 "preserved": "Preserved",
+                "policy_preserved": "Policy preserved",
+                "policy_missing": "Policy-preserved missing",
                 "missing": "Missing",
                 "failed": "Failed",
                 "deferred": "Deferred",
@@ -1015,7 +1021,9 @@ def log_item_outcomes(
                 missing_details.append(
                     f"{season_label} ({attempt_text or 'provider attempts unavailable'})"
                 )
-            quiet_actions = set(action_counts).issubset({"skipped", "preserved"})
+            quiet_actions = set(action_counts).issubset(
+                {"skipped", "preserved", "policy_preserved"}
+            )
             season_stages = stats.get("season_artwork_selection_stages") or {}
             relaxed_count = sum(
                 (
@@ -1043,7 +1051,11 @@ def log_item_outcomes(
                 logger.error
                 if action_counts.get("failed")
                 else logger.warning
-                if action_counts.get("missing") or action_counts.get("deferred")
+                if (
+                    action_counts.get("missing")
+                    or action_counts.get("policy_missing")
+                    or action_counts.get("deferred")
+                )
                 else logger.debug
                 if quiet_actions
                 else logger.info
@@ -1374,12 +1386,22 @@ def log_final_summary(
     summaries = [
         summary for summary in metadata_summaries.values() if isinstance(summary, dict)
     ]
+    artwork_enabled = bool(
+        feature_flags
+        and any(
+            feature_flags.get(name, False)
+            for name in ("poster", "background", "season")
+        )
+    )
     overall: Counter[str] = Counter()
     providers: Counter[str] = Counter()
+    current_providers: Counter[str] = Counter()
     for summary in summaries:
         for key, value in (summary.get("library_summary") or {}).items():
             if key == "artwork_provider_writes":
                 providers.update(value or {})
+            elif key == "artwork_current_providers":
+                current_providers.update(value or {})
             elif isinstance(value, (int, float)):
                 overall[key] += int(value)
     total_titles = sum(int(summary.get("total_items", 0)) for summary in summaries)
@@ -1413,6 +1435,14 @@ def log_final_summary(
         overall[key]
         for key in ("poster_preserved", "background_preserved", "season_poster_preserved")
     )
+    artwork_policy_preserved = sum(
+        overall[key]
+        for key in ("poster_policy_preserved", "background_policy_preserved")
+    )
+    artwork_policy_missing = sum(
+        overall[key]
+        for key in ("poster_policy_missing", "background_policy_missing")
+    )
     artwork_missing = sum(
         overall[key]
         for key in ("poster_missing", "background_missing", "season_poster_missing")
@@ -1438,6 +1468,8 @@ def log_final_summary(
         f"Artwork | Written: {artwork_written} | Adopted: {artwork_adopted} | "
         f"Unchanged: {artwork_unchanged} | Not due: {artwork_not_due} | "
         f"Preserved: {artwork_preserved} | Missing: {artwork_missing} | "
+        f"Policy preserved: {artwork_policy_preserved} | "
+        f"Policy missing: {artwork_policy_missing} | "
         f"Deferred: {artwork_deferred} | Failed: {artwork_failed} | "
         f"Automatic relaxation: {overall['artwork_automatic_relaxed']} | "
         f"Download failover: {overall['artwork_download_failover']}",
@@ -1450,7 +1482,38 @@ def log_final_summary(
             for name, count in sorted(providers.items())
         )
         lines.extend(box_line(
-            f"Artwork providers | Selected: {provider_text}",
+            f"Artwork write sources | {provider_text}",
+            box_width,
+        ))
+    if artwork_enabled:
+        storage_scopes = {
+            str((summary.get("library_summary") or {}).get("storage_scope") or "processed items")
+            for summary in summaries
+        }
+        reconciliation_scope = (
+            "full inventory" if storage_scopes == {"full inventory"} else "processed items"
+        )
+        lines.extend(box_line(
+            f"Artwork files | Scope: {reconciliation_scope} | Expected destinations: "
+            f"{overall['artwork_file_expected']} | Present: "
+            f"{overall['artwork_file_present']} | Absent: "
+            f"{overall['artwork_file_absent']}",
+            box_width,
+        ))
+    if artwork_enabled and current_providers:
+        labels = {
+            "tmdb": "TMDb",
+            "fanart": "Fanart.tv",
+            "plex": "Plex",
+            "existing": "Existing/manual",
+            "unknown": "Unknown",
+        }
+        provider_text = ", ".join(
+            f"{labels.get(name, name.title())}: {count}"
+            for name, count in sorted(current_providers.items())
+        )
+        lines.extend(box_line(
+            f"Artwork current sources | {provider_text}",
             box_width,
         ))
 
@@ -1510,6 +1573,8 @@ def log_final_summary(
                 f"Upgraded: {libsum.get('poster_upgraded', 0)} | Adopted: {libsum.get('poster_adopted', 0)} | "
                 f"Unchanged: {libsum.get('poster_skipped', 0)} | Not due: {libsum.get('poster_not_due', 0)} | "
                 f"Preserved: {libsum.get('poster_preserved', 0)} | Missing: {libsum.get('poster_missing', 0)} | "
+                f"Policy preserved: {libsum.get('poster_policy_preserved', 0)} | "
+                f"Policy missing: {libsum.get('poster_policy_missing', 0)} | "
                 f"Deferred: {libsum.get('poster_deferred', 0)} | Failed: {libsum.get('poster_failed', 0)}", box_width))
 
         if feature_flags and feature_flags.get("background", False) and library_type in ("movie", "tv", "show"):
@@ -1518,6 +1583,8 @@ def log_final_summary(
                 f"Upgraded: {libsum.get('background_upgraded', 0)} | Adopted: {libsum.get('background_adopted', 0)} | "
                 f"Unchanged: {libsum.get('background_skipped', 0)} | Not due: {libsum.get('background_not_due', 0)} | "
                 f"Preserved: {libsum.get('background_preserved', 0)} | Missing: {libsum.get('background_missing', 0)} | "
+                f"Policy preserved: {libsum.get('background_policy_preserved', 0)} | "
+                f"Policy missing: {libsum.get('background_policy_missing', 0)} | "
                 f"Deferred: {libsum.get('background_deferred', 0)} | Failed: {libsum.get('background_failed', 0)}", box_width))
 
         if (
@@ -1550,7 +1617,34 @@ def log_final_summary(
                 for name, count in sorted(library_providers.items())
             )
             lines.extend(box_line(
-                f"Library: {lib} | Artwork providers | Selected: {provider_text}",
+                f"Library: {lib} | Artwork write sources | {provider_text}",
+                box_width,
+            ))
+
+        if artwork_enabled:
+            lines.extend(box_line(
+                f"Library: {lib} | Artwork files | Scope: "
+                f"{libsum.get('storage_scope', 'processed items')} | "
+                f"Expected destinations: {libsum.get('artwork_file_expected', 0)} | "
+                f"Present: {libsum.get('artwork_file_present', 0)} | "
+                f"Absent: {libsum.get('artwork_file_absent', 0)}",
+                box_width,
+            ))
+        library_current_providers = libsum.get("artwork_current_providers") or {}
+        if artwork_enabled and library_current_providers:
+            labels = {
+                "tmdb": "TMDb",
+                "fanart": "Fanart.tv",
+                "plex": "Plex",
+                "existing": "Existing/manual",
+                "unknown": "Unknown",
+            }
+            provider_text = ", ".join(
+                f"{labels.get(name, name.title())}: {count}"
+                for name, count in sorted(library_current_providers.items())
+            )
+            lines.extend(box_line(
+                f"Library: {lib} | Artwork current sources | {provider_text}",
                 box_width,
             ))
 

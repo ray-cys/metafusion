@@ -1153,22 +1153,26 @@ async def _record_asset_observation(
     flags = {"update_timestamp": False}
     if asset_type == "poster":
         flags["poster_checked"] = True
-        kwargs["poster_average"] = vote
-        kwargs["poster_provider"] = _candidate_provider(candidate)
+        kwargs["poster_candidate_average"] = vote
+        kwargs["poster_candidate_provider"] = _candidate_provider(candidate)
         kwargs["poster_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
+                poster_average=vote,
+                poster_provider=_candidate_provider(candidate),
                 poster_source_path=source_path,
                 poster_path=str(asset_path.resolve()),
                 poster_checksum=checksum,
             )
     elif asset_type == "background":
         flags["background_checked"] = True
-        kwargs["bg_average"] = vote
-        kwargs["background_provider"] = _candidate_provider(candidate)
+        kwargs["background_candidate_average"] = vote
+        kwargs["background_candidate_provider"] = _candidate_provider(candidate)
         kwargs["background_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
+                bg_average=vote,
+                background_provider=_candidate_provider(candidate),
                 background_source_path=source_path,
                 background_path=str(asset_path.resolve()),
                 background_checksum=checksum,
@@ -1176,11 +1180,14 @@ async def _record_asset_observation(
     elif asset_type == "season":
         kwargs.update(
             season_number=season_number,
-            season_average=vote,
-            season_provider=_candidate_provider(candidate),
+            season_candidate_average=vote,
+            season_candidate_provider=_candidate_provider(candidate),
+            season_candidate_source_path=source_path,
         )
         if asset_path is not None and checksum:
             kwargs.update(
+                season_average=vote,
+                season_provider=_candidate_provider(candidate),
                 season_source_path=source_path,
                 season_path=str(asset_path.resolve()),
                 season_checksum=checksum,
@@ -1560,6 +1567,7 @@ async def _build_movie(
         "poster": {"size": 0},
         "background": {"size": 0},
         "artwork_providers": {},
+        "artwork_ownership": {},
         "artwork_selection_stages": {},
     }
     metadata_provenance = []
@@ -2032,6 +2040,7 @@ async def _build_movie(
             shared_managed=bool(shared_checksum),
             automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
+        result["artwork_ownership"]["poster"] = protection_status
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
                 config, meta, cache_key, asset_path, best, session,
@@ -2119,12 +2128,8 @@ async def _build_movie(
                     cache_key=cache_key, stale_days=stale_days,
                     cached_entry=load_cache().get(cache_key, {}),
                 )
-                await meta_cache_async(
-                    cache_key, tmdb_id, title, year, "movie",
-                    update_timestamp=False, poster_checked=True,
-                    poster_average=best.get("vote_average", 0),
-                    poster_provider=_candidate_provider(best),
-                    poster_source_path=best.get("file_path"),
+                await _record_asset_observation(
+                    cache_key, tmdb_id, title, year, "movie", "poster", best,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2145,6 +2150,7 @@ async def _build_movie(
                         cache_key, tmdb_id, title, year, "movie",
                         poster_average=best.get("vote_average", 0),
                         poster_provider=_candidate_provider(best),
+                        poster_source_path=best.get("file_path"),
                         poster_path=str(asset_path.resolve()),
                         poster_checksum=asset_checksum,
                         poster_upgraded=True,
@@ -2284,6 +2290,7 @@ async def _build_movie(
             shared_managed=bool(shared_checksum),
             automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
+        result["artwork_ownership"]["background"] = protection_status
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
                 config, meta, cache_key, asset_path, best, session,
@@ -2371,12 +2378,8 @@ async def _build_movie(
                     cache_key=cache_key, stale_days=stale_days,
                     cached_entry=load_cache().get(cache_key, {}),
                 )
-                await meta_cache_async(
-                    cache_key, tmdb_id, title, year, "movie",
-                    update_timestamp=False, background_checked=True,
-                    bg_average=best.get("vote_average", 0),
-                    background_provider=_candidate_provider(best),
-                    background_source_path=best.get("file_path"),
+                await _record_asset_observation(
+                    cache_key, tmdb_id, title, year, "movie", "background", best,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2397,6 +2400,7 @@ async def _build_movie(
                         cache_key, tmdb_id, title, year, "movie",
                         bg_average=best.get("vote_average", 0),
                         background_provider=_candidate_provider(best),
+                        background_source_path=best.get("file_path"),
                         background_path=str(asset_path.resolve()),
                         background_checksum=asset_checksum,
                         background_upgraded=True,
@@ -2503,8 +2507,10 @@ async def _build_tv(
         "season_poster": {"size": 0},
         "season_posters": {}, 
         "artwork_providers": {},
+        "artwork_ownership": {},
         "artwork_selection_stages": {},
         "season_artwork_providers": {},
+        "season_artwork_ownership": {},
         "season_artwork_selection_stages": {},
         "season_artwork_attempts": {},
     }
@@ -3239,8 +3245,26 @@ async def _build_tv(
             poster_action = "not_due"
             return
         if preserve_split_show:
+            asset_path = get_asset_path(config, meta, asset_type="poster")
+            present = bool(asset_path and asset_path.is_file())
+            if present:
+                try:
+                    poster_size = asset_path.stat().st_size
+                    existing_assets.add(str(asset_path.resolve()))
+                except OSError:
+                    present = False
+                    poster_size = 0
+            if not present:
+                _record_artwork_gap(
+                    config,
+                    "policy_preserved_missing",
+                    "TV Show",
+                    full_title,
+                    "poster",
+                    "Split-series preserve policy prevents an ambiguous top-level replacement",
+                )
             result["poster"]["size"] = poster_size
-            poster_action = "skipped"
+            poster_action = "policy_preserved" if present else "policy_missing"
             return
         images = get_meta_field(details, "posters", [], path=["images"])
         best = await _select_artwork_with_fallback(
@@ -3322,6 +3346,7 @@ async def _build_tv(
             source_path=best.get("file_path"),
             automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
+        result["artwork_ownership"]["poster"] = protection_status
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
                 config, meta, cache_key, asset_path, best, session,
@@ -3402,12 +3427,8 @@ async def _build_tv(
                     cache_key=cache_key, stale_days=stale_days,
                     cached_entry=load_cache().get(cache_key, {}),
                 )
-                await meta_cache_async(
-                    cache_key, tmdb_id, title, year, "tv",
-                    update_timestamp=False, poster_checked=True,
-                    poster_average=best.get("vote_average", 0),
-                    poster_provider=_candidate_provider(best),
-                    poster_source_path=best.get("file_path"),
+                await _record_asset_observation(
+                    cache_key, tmdb_id, title, year, "tv", "poster", best,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3428,6 +3449,7 @@ async def _build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         poster_average=best.get("vote_average", 0),
                         poster_provider=_candidate_provider(best),
+                        poster_source_path=best.get("file_path"),
                         poster_path=str(asset_path.resolve()),
                         poster_checksum=asset_checksum,
                         poster_upgraded=True,
@@ -3475,8 +3497,26 @@ async def _build_tv(
             background_action = "not_due"
             return
         if preserve_split_show:
+            asset_path = get_asset_path(config, meta, asset_type="background")
+            present = bool(asset_path and asset_path.is_file())
+            if present:
+                try:
+                    background_size = asset_path.stat().st_size
+                    existing_assets.add(str(asset_path.resolve()))
+                except OSError:
+                    present = False
+                    background_size = 0
+            if not present:
+                _record_artwork_gap(
+                    config,
+                    "policy_preserved_missing",
+                    "TV Show",
+                    full_title,
+                    "background",
+                    "Split-series preserve policy prevents an ambiguous top-level replacement",
+                )
             result["background"]["size"] = background_size
-            background_action = "skipped"
+            background_action = "policy_preserved" if present else "policy_missing"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
         best = await _select_artwork_with_fallback(
@@ -3558,6 +3598,7 @@ async def _build_tv(
             source_path=best.get("file_path"),
             automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
+        result["artwork_ownership"]["background"] = protection_status
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
                 config, meta, cache_key, asset_path, best, session,
@@ -3638,12 +3679,8 @@ async def _build_tv(
                     cache_key=cache_key, stale_days=stale_days,
                     cached_entry=load_cache().get(cache_key, {}),
                 )
-                await meta_cache_async(
-                    cache_key, tmdb_id, title, year, "tv",
-                    update_timestamp=False, background_checked=True,
-                    bg_average=best.get("vote_average", 0),
-                    background_provider=_candidate_provider(best),
-                    background_source_path=best.get("file_path"),
+                await _record_asset_observation(
+                    cache_key, tmdb_id, title, year, "tv", "background", best,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3664,6 +3701,7 @@ async def _build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         bg_average=best.get("vote_average", 0),
                         background_provider=_candidate_provider(best),
+                        background_source_path=best.get("file_path"),
                         background_path=str(asset_path.resolve()),
                         background_checksum=asset_checksum,
                         background_upgraded=True,
@@ -3806,6 +3844,7 @@ async def _build_tv(
             source_path=best.get("file_path"),
             automatic_relaxed=bool(best.get("automatic_relaxed")),
         )
+        result["season_artwork_ownership"][season_number] = protection_status
         if not allowed:
             adopted = await adopt_exact_tmdb_asset(
                 config, meta, cache_key, asset_path, best, session,
@@ -3897,12 +3936,9 @@ async def _build_tv(
                     stale_days=stale_days,
                     cached_entry=load_cache().get(cache_key, {}),
                 )
-                await meta_cache_async(
-                    cache_key, tmdb_id, title, year, "tv",
-                    update_timestamp=False, season_number=season_number,
-                    season_average=best.get("vote_average", 0),
-                    season_provider=_candidate_provider(best),
-                    season_source_path=best.get("file_path"),
+                await _record_asset_observation(
+                    cache_key, tmdb_id, title, year, "tv", "season", best,
+                    season_number=season_number,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3924,6 +3960,7 @@ async def _build_tv(
                         season_number=season_number,
                         season_average=best.get("vote_average", 0),
                         season_provider=_candidate_provider(best),
+                        season_source_path=best.get("file_path"),
                         season_path=str(asset_path.resolve()),
                         season_checksum=asset_checksum,
                         season_upgraded=season_number,

@@ -157,6 +157,7 @@ def get_disabled_features(config, logger):
         (("assets", "run_season"), "Season Assets Download"),
         (("assets", "run_background"), "Background Assets Download"),
         (("cleanup", "run_cleanup"), "Cleanup Libraries"),
+        (("output", "dashboard_enabled"), "Automatic HTML Dashboard"),
     ]
     for key_tuple, feature in features:
         sub_config = config
@@ -194,6 +195,9 @@ def get_disabled_features(config, logger):
             config.get("assets", {}).get("run_background", False)
         ),
         cleanup=enabled_label(config.get("cleanup", {}).get("run_cleanup", False)),
+        dashboard=enabled_label(
+            config.get("output", {}).get("dashboard_enabled", False)
+        ),
         dry_run=enabled_label(config.get("settings", {}).get("dry_run", False)),
     )
 

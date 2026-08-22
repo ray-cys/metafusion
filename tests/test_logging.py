@@ -118,6 +118,23 @@ def test_builder_asset_details_are_debug_to_avoid_duplicate_item_outcomes(caplog
         )
 
     assert "Example (2024)" not in caplog.text
+
+
+def test_split_series_policy_outcomes_distinguish_present_from_missing(caplog):
+    with caplog.at_level(logging.DEBUG):
+        log_item_outcomes(
+            "TV Shows",
+            "Split Show (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "policy_preserved",
+                "background_action": "policy_missing",
+            },
+            {"mode": "kometa"},
+        )
+
+    assert "Poster policy preserved | Source: Existing" in caplog.text
+    assert "Background policy-preserved missing | Source: None" in caplog.text
     assert "Unchanged (2024)" not in caplog.text
 
     caplog.clear()

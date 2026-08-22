@@ -97,6 +97,7 @@ output:
   validate_schema: true
   backup_count: 3
   report_retention: 10
+  dashboard_enabled: false
 safety:
   allow_ambiguous_editions: false
 poster_set:

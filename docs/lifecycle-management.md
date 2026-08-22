@@ -224,8 +224,10 @@ For the same bounded evidence in a browser-friendly offline view:
 python metafusion.py --dashboard-report
 ```
 
-Completed non-dry runs also refresh
-`/config/reports/metafusion-dashboard-latest.html` automatically. The file has
+Set `output.dashboard_enabled: true` in YAML or `DASHBOARD_ENABLED=True` to
+refresh `/config/reports/metafusion-dashboard-latest.html` after successful
+non-dry runs. Automatic refresh is disabled by default; the explicit command
+above works regardless of this setting. The file has
 inline styling and behavior and never starts a web server or needs network
 access. Timestamped dashboards follow `REPORT_RETENTION`; the stable `latest`
 file is replaced atomically and is not counted against retention.

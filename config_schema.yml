@@ -105,6 +105,7 @@ defaults:
     validate_schema: true
     backup_count: 3
     report_retention: 10
+    dashboard_enabled: false
   safety:
     allow_ambiguous_editions: false
   poster_set:
@@ -1642,6 +1643,17 @@ settings:
     mask: false
     value: '10'
     order: 72
+- name: DASHBOARD_ENABLED
+  section: Runtime, incremental, cache, and output
+  description: Automatically refresh the self-contained HTML diagnostics dashboard after successful non-dry runs; the explicit --dashboard-report command remains available when disabled.
+  path:
+  - output
+  - dashboard_enabled
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 80
+  compose: ${DASHBOARD_ENABLED-}
+  compose_order: 76
 - name: POSTER_MAX_WIDTH
   section: Artwork selection
   description: Preferred high-resolution width threshold; this does not cap download dimensions.

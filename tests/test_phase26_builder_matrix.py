@@ -225,6 +225,88 @@ def test_tv_missing_provider_tracks_show_and_season_outcomes(monkeypatch, tmp_pa
     assert result["season_artwork_attempts"][0][0]["status"] == "missing"
 
 
+def test_split_series_preserve_policy_reconciles_top_level_files(
+    monkeypatch, tmp_path
+):
+    _patch_identity(monkeypatch)
+    monkeypatch.setattr(
+        builder,
+        "resolve_split_series_mapping",
+        lambda *_args, **_kwargs: {
+            "show_policy": "preserve",
+            "seasons": {1: {"tmdb_id": "200", "season_number": 1}},
+        },
+    )
+    config = _config(tmp_path)
+    config["_artwork_gaps"] = []
+    root = tmp_path / "assets" / "tv" / "Example Show (2020)"
+    root.mkdir(parents=True)
+    (root / "poster.jpg").write_bytes(b"show-poster")
+
+    result = asyncio.run(
+        builder._build_tv(
+            config,
+            {"metadata": {}},
+            feature_flags=_flags(season=False),
+            existing_assets=set(),
+            meta=_show_meta(),
+            session=object(),
+        )
+    )
+
+    assert result["poster_action"] == "policy_preserved"
+    assert result["poster"]["size"] == len(b"show-poster")
+    assert result["background_action"] == "policy_missing"
+    assert any(
+        gap["category"] == "policy_preserved_missing"
+        and gap["asset_type"] == "background"
+        for gap in config["_artwork_gaps"]
+    )
+
+
+def test_candidate_observation_does_not_replace_installed_provider(monkeypatch, tmp_path):
+    calls = []
+
+    async def cache(*args, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(builder, "meta_cache_async", cache)
+    candidate = {
+        "provider": "fanart",
+        "file_path": "https://assets.fanart.tv/poster.jpg",
+        "vote_average": 7,
+    }
+    asyncio.run(
+        builder._record_asset_observation(
+            "movie:1", "1", "Movie", 2020, "movie", "poster", candidate
+        )
+    )
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"poster")
+    asyncio.run(
+        builder._record_asset_observation(
+            "movie:1",
+            "1",
+            "Movie",
+            2020,
+            "movie",
+            "poster",
+            candidate,
+            asset_path=destination,
+            checksum="checksum",
+        )
+    )
+
+    assert calls[0]["poster_candidate_provider"] == "fanart"
+    assert calls[0]["poster_candidate_average"] == 7
+    assert "poster_provider" not in calls[0]
+    assert "poster_average" not in calls[0]
+    assert "poster_source_path" not in calls[0]
+    assert calls[1]["poster_provider"] == "fanart"
+    assert calls[1]["poster_average"] == 7
+    assert calls[1]["poster_source_path"].endswith("poster.jpg")
+
+
 def test_tv_dry_run_selects_every_artwork_type_without_writes(monkeypatch, tmp_path):
     _patch_identity(monkeypatch)
 

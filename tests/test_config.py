@@ -219,6 +219,22 @@ def test_provider_mapping_json_environment_is_parsed_and_validated(tmp_path):
     assert config["output"]["report_retention"] == 4
 
 
+def test_dashboard_automatic_refresh_is_opt_in(tmp_path):
+    default_config = load_config_file(
+        config_file=tmp_path / "default.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"PLEX_TOKEN": "token"},
+    )
+    enabled_config = load_config_file(
+        config_file=tmp_path / "enabled.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"PLEX_TOKEN": "token", "DASHBOARD_ENABLED": "true"},
+    )
+
+    assert default_config["output"]["dashboard_enabled"] is False
+    assert enabled_config["output"]["dashboard_enabled"] is True
+
+
 def test_invalid_provider_mapping_environment_fails_validation(tmp_path):
     config = load_config_file(
         config_file=tmp_path / "config.yml",
@@ -410,6 +426,7 @@ def test_feature_reporting_library_override_and_invalid_upgrade_interval(monkeyp
     assert profile["metadata"] == "Basic"
     assert profile["poster"] == "Disabled"
     assert profile["cleanup"] == "Disabled"
+    assert profile["dashboard"] == "Disabled"
 
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["library_overrides"] = {

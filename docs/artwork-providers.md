@@ -92,12 +92,21 @@ policy remain stronger than the content score.
 
 Changed item logs identify `Source=TMDb`, `Source=Fanart.tv`, or `Source=Plex`
 and distinguish the Kometa-assets or Plex-local-media target. Preserved output
-uses `Source=Existing`; a missing outcome uses `Source=None`. Season warnings
+uses `Source=Existing`; a missing outcome uses `Source=None`. Split-series
+top-level artwork protected by `show_policy: preserve` is reported as `Policy
+preserved` when the destination exists and `Policy-preserved missing` when it
+does not; season and episode mapping remains active in either case. Season warnings
 name missing season numbers and report whether TMDb and Fanart.tv had no
 candidates and whether Plex exposed an explicit season thumbnail. The final
 summary separates writes, adoption, unchanged, not-due, preserved, missing,
 deferred, and failed outcomes and counts successful writes/adoptions by
-provider. It also counts successful `Automatic relaxation` writes and reports
+provider. A separate destination reconciliation counts every enabled expected
+file as `Present` or `Absent`, independently of the selection action, so a
+false zero in the action counters cannot conceal a missing file. `Artwork
+current sources` describes present files as TMDb, Fanart.tv, Plex,
+Existing/manual, or Unknown from checksum-proven installed state; `Artwork
+write sources` describes only files written or adopted during the current run.
+It also counts successful `Automatic relaxation` writes and reports
 missing-only transport recovery separately as `Download failover`. Detailed
 request/cache activity is available at `LOG_LEVEL=DEBUG`;
 authorization, rate limiting, malformed responses, and provider exhaustion are

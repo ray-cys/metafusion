@@ -546,6 +546,34 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
     assert metafusion.run_metafusion_job(config, logging.getLogger("plex-report")) is False
 
 
+def test_run_job_refreshes_dashboard_only_when_opted_in(monkeypatch, tmp_path):
+    _patch_job_services(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        metafusion,
+        "write_dashboard_report",
+        lambda **kwargs: calls.append(kwargs) or tmp_path / "dashboard.html",
+    )
+    config = {
+        "settings": {"mode": "kometa", "dry_run": False},
+        "plex": {},
+        "tmdb": {},
+        "output": {"dashboard_enabled": False},
+        "_execution": {},
+    }
+
+    assert metafusion.run_metafusion_job(
+        config, logging.getLogger("dashboard-disabled")
+    ) is True
+    assert calls == []
+
+    config["output"]["dashboard_enabled"] = True
+    assert metafusion.run_metafusion_job(
+        config, logging.getLogger("dashboard-enabled")
+    ) is True
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     ("execution", "writer"),
     [

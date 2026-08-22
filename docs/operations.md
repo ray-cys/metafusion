@@ -575,6 +575,9 @@ rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
 Every retained text report and timestamped HTML dashboard has a same-name
 `.json` companion with a stable report envelope and structured records.
+Automatic HTML-dashboard refresh is disabled by default. Set
+`output.dashboard_enabled: true` or `DASHBOARD_ENABLED=True` to refresh it
+after successful non-dry runs; `--dashboard-report` always works on demand.
 Identity-inspection,
 destination-history, unresolved-work, adoption-audit, and item-explanation
 reports can contain media titles or computed/actual paths and must be reviewed
@@ -606,8 +609,10 @@ provider requests, cache details, and internal API batches remain at `DEBUG`.
 Missing or deferred outcomes are warnings and failed outcomes are errors.
 Season-poster warnings name the missing Plex season and summarize the provider
 attempts. One final report combines only the libraries processed by that run
-and includes written, adopted, unchanged, not-due, preserved, missing,
-deferred, failed, and provider totals. The older standalone per-library summary
+and includes written, adopted, unchanged, not-due, preserved, policy-preserved,
+missing, deferred, failed, and provider totals. It also independently
+reconciles enabled expected artwork destinations as present or absent and
+separates current installed sources from write sources for the run. The older standalone per-library summary
 blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
 totals are warnings; the corresponding `plex-metadata-*.txt` report retains
 field-level audit details.
