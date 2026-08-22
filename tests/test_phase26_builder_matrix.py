@@ -242,6 +242,7 @@ def test_split_series_preserve_policy_reconciles_top_level_files(
     root = tmp_path / "assets" / "tv" / "Example Show (2020)"
     root.mkdir(parents=True)
     (root / "poster.jpg").write_bytes(b"show-poster")
+    (root / "fanart.jpg").write_bytes(b"show-background")
 
     result = asyncio.run(
         builder._build_tv(
@@ -256,12 +257,9 @@ def test_split_series_preserve_policy_reconciles_top_level_files(
 
     assert result["poster_action"] == "policy_preserved"
     assert result["poster"]["size"] == len(b"show-poster")
-    assert result["background_action"] == "policy_missing"
-    assert any(
-        gap["category"] == "policy_preserved_missing"
-        and gap["asset_type"] == "background"
-        for gap in config["_artwork_gaps"]
-    )
+    assert result["background_action"] == "policy_preserved"
+    assert result["background"]["size"] == len(b"show-background")
+    assert config["_artwork_gaps"] == []
 
 
 def test_split_series_preserve_policy_handles_disappearing_top_level_files(
