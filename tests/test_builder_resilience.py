@@ -325,6 +325,38 @@ def test_cached_source_skip_requires_verified_managed_status(
     )
 
 
+def test_cached_source_is_downloaded_again_when_bounded_verification_is_due(
+    monkeypatch, tmp_path
+):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"artwork")
+    config = build_config(tmp_path)
+    config["image_upgrades"] = {
+        "default_days": 30,
+        "movie_days": 30,
+    }
+    monkeypatch.setattr(
+        builder,
+        "load_cache",
+        lambda: {
+            "movie": {
+                "poster_source_path": "/poster.jpg",
+                "poster_last_upgraded": "2020-01-01T00:00:00+00:00",
+            }
+        },
+    )
+
+    assert not builder.managed_source_matches(
+        "managed",
+        "movie",
+        "/poster.jpg",
+        destination,
+        "poster",
+        config=config,
+        media_type="movie",
+    )
+
+
 def movie_meta():
     return {
         "library_type": "movie",

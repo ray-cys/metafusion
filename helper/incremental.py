@@ -291,6 +291,66 @@ def adaptive_artwork_days(cached, asset_type, configured_days):
     return min(max(base_days, 180.0), base_days * (2 ** min(3, unchanged_checks)))
 
 
+def same_source_verification_days(config, media_type, asset_type):
+    """Return the bounded interval for re-downloading an unchanged source ID."""
+    normalized_type = _media_type(media_type)
+    interval_type = (
+        "season"
+        if asset_type == "season"
+        else ("movie" if normalized_type == "movie" else "series")
+    )
+    base_days = get_image_upgrade_days(config, interval_type)
+    if base_days <= 0:
+        return 0.0
+    # Provider CDNs rarely mutate bytes behind one stable source identifier.
+    # Rechecking no sooner than 90 days catches that edge case without turning
+    # ordinary incremental runs into full artwork downloads.
+    return min(365.0, max(90.0, base_days * 3.0))
+
+
+def same_source_verification_due(
+    cached,
+    media_type,
+    asset_type,
+    config,
+    *,
+    season_number=None,
+    source_path=None,
+    now=None,
+):
+    """Return whether a managed source needs a byte-level periodic recheck."""
+    if not isinstance(cached, dict) or not config:
+        return False
+    interval_days = same_source_verification_days(
+        config, media_type, asset_type
+    )
+    if interval_days <= 0:
+        return False
+    if asset_type == "season":
+        seasons = cached.get("seasons") or {}
+        record = (
+            seasons.get(str(season_number), {})
+            if isinstance(seasons, dict)
+            else {}
+        )
+        verified_at = record.get("season_source_verified_at")
+        verified_path = record.get("season_source_verified_path")
+        checked_at = (
+            verified_at
+            if source_path and verified_path == source_path
+            else record.get("season_last_upgraded")
+        )
+    else:
+        verified_at = cached.get(f"{asset_type}_source_verified_at")
+        verified_path = cached.get(f"{asset_type}_source_verified_path")
+        checked_at = (
+            verified_at
+            if source_path and verified_path == source_path
+            else cached.get(f"{asset_type}_last_upgraded")
+        )
+    return timestamp_due(checked_at, interval_days, now=now)
+
+
 def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=None):
     """Return the artwork operations due for an otherwise unchanged item."""
     causes = due_selection_causes(

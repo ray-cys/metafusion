@@ -330,9 +330,15 @@ The values are adaptive bases, not a filesystem age scan:
 - A repeatedly unchanged candidate doubles its base up to 180 days, while an
   explicitly longer base remains respected.
 - A different candidate or successful upgrade resets the unchanged backoff.
+- Under the default `managed` policy, an unchanged provider image identifier
+  receives a byte-level verification re-download after the longer of 90 days
+  or three times its configured base, capped at 365 days. Identical bytes are
+  discarded; changed bytes continue through normal validation and non-downgrade
+  checks. This is automatic and does not add a configuration variable.
 
-Candidate identity and observations are saved in SQLite. MetaFusion does not
-walk the media tree or read file mtimes to calculate artwork age.
+Candidate identity, observations, and successful same-source verification
+timestamps are saved in SQLite. MetaFusion does not walk the media tree or read
+file mtimes to calculate artwork age.
 
 ## Log retention
 

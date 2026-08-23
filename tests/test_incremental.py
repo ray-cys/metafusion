@@ -14,6 +14,8 @@ from helper.incremental import (
     mark_full_scan_complete,
     metadata_schedule_summary,
     plan_items,
+    same_source_verification_days,
+    same_source_verification_due,
     select_items,
     should_run_full_scan,
 )
@@ -168,6 +170,68 @@ def test_selection_causes_distinguish_triggers_from_selected_work():
     assert due.reasons == frozenset({"poster"})
     assert targeted.selection_causes == frozenset({"targeted_rating_key"})
     assert full.selection_causes == frozenset({"full_scan"})
+
+
+def test_same_source_verification_is_bounded_and_uses_per_asset_history():
+    now = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["image_upgrades"].update(
+        {"movie_days": 30, "series_days": 15, "season_days": 200}
+    )
+
+    assert same_source_verification_days(config, "movie", "poster") == 90
+    assert same_source_verification_days(config, "tv", "background") == 90
+    assert same_source_verification_days(config, "tv", "season") == 365
+    assert not same_source_verification_due(
+        None, "movie", "poster", config, now=now
+    )
+
+    cached = {
+        "poster_last_upgraded": (now - timedelta(days=91)).isoformat(),
+        "background_source_verified_at": (now - timedelta(days=20)).isoformat(),
+        "background_source_verified_path": "/background.jpg",
+        "seasons": {
+            "1": {
+                "season_source_verified_at": (
+                    now - timedelta(days=366)
+                ).isoformat(),
+                "season_source_verified_path": "/season.jpg",
+            }
+        },
+    }
+    assert same_source_verification_due(
+        cached, "movie", "poster", config, now=now
+    )
+    assert not same_source_verification_due(
+        cached,
+        "tv",
+        "background",
+        config,
+        source_path="/background.jpg",
+        now=now,
+    )
+    assert same_source_verification_due(
+        cached,
+        "tv",
+        "background",
+        config,
+        source_path="/different-background.jpg",
+        now=now,
+    )
+    assert same_source_verification_due(
+        cached,
+        "tv",
+        "season",
+        config,
+        season_number=1,
+        source_path="/season.jpg",
+        now=now,
+    )
+
+    config["image_upgrades"]["movie_days"] = 0
+    assert not same_source_verification_due(
+        cached, "movie", "poster", config, now=now
+    )
 
 
 def test_configuration_changes_invalidate_incremental_entries():

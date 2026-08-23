@@ -124,7 +124,11 @@ not download every candidate merely to score it.
 After a policy permits an existing destination to be considered, the artwork
 upgrade engine still decides whether to write:
 
-- The same recorded provider source is skipped when the managed file still exists.
+- The same recorded provider source normally uses the managed-file shortcut. A
+  bounded byte-level verification re-download occurs automatically after the
+  longer of 90 days or three times the configured artwork interval, capped at
+  365 days. This detects providers silently changing bytes behind an unchanged
+  source identifier without downloading every managed image on normal runs.
 - Byte-identical downloaded artwork is skipped.
 - Before the timed refresh age, better vote scores, configured vote thresholds,
   and improved dimensions can trigger an upgrade.
@@ -138,8 +142,11 @@ the file's mtime. `MOVIE_IMAGE_UPGRADE_DAYS`, `SERIES_IMAGE_UPGRADE_DAYS`, and
 retry sooner; repeatedly unchanged candidates back off to 180 days; a longer
 explicit base remains respected. A changed candidate resets the backoff.
 Setting an interval to `0` disables
-timed rechecks for that type. Changed items and full scans can still install
-missing or objectively better artwork.
+timed rechecks and same-source verification for that type. Changed items and
+full scans can still install missing or objectively better artwork. Successful
+same-source verification timestamps are stored per poster, background, and
+individual season in SQLite; no additional setting or environment variable is
+required.
 
 ### Canonical ownership and collisions
 

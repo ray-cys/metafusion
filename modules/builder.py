@@ -17,6 +17,7 @@ from helper.identity import (
     metadata_key_for_meta,
     plex_identity_fingerprint,
 )
+from helper.incremental import same_source_verification_due
 from helper.io import atomic_replace_file, sha256_file
 from helper.logging import format_fields, log_asset_status, log_builder_event
 from helper.metadata_provenance import kometa_provenance_records
@@ -921,17 +922,27 @@ def regional_tv_certification(content_ratings, region="US"):
     return ""
 
 
-def cached_source_matches(cache_key, source_path, asset_path, asset_type, season_number=None):
-    """Avoid downloading a known provider source when its managed file still exists."""
-    if not source_path or not asset_path.exists():
-        return False
-    cached = load_cache().get(cache_key, {})
+def _cached_entry_source_matches(
+    cached, source_path, asset_type, season_number=None
+):
     if not isinstance(cached, dict):
         return False
     if asset_type == "season":
         season = (cached.get("seasons") or {}).get(str(season_number), {})
         return season.get("season_source_path") == source_path
     return cached.get(f"{asset_type}_source_path") == source_path
+
+
+def cached_source_matches(cache_key, source_path, asset_path, asset_type, season_number=None):
+    """Avoid downloading a known provider source when its managed file still exists."""
+    if not source_path or not asset_path.exists():
+        return False
+    return _cached_entry_source_matches(
+        load_cache().get(cache_key, {}),
+        source_path,
+        asset_type,
+        season_number=season_number,
+    )
 
 
 def protected_asset_destination(
@@ -1145,14 +1156,30 @@ def managed_source_matches(
     asset_path,
     asset_type,
     season_number=None,
+    *,
+    config=None,
+    media_type=None,
 ):
-    """Skip a known source only after managed ownership was checksum-verified."""
-    return protection_status == "managed" and cached_source_matches(
-        cache_key,
+    """Skip a verified source except when its bounded byte recheck is due."""
+    if protection_status != "managed" or not source_path or not asset_path.exists():
+        return False
+    cached = load_cache().get(cache_key, {})
+    if not _cached_entry_source_matches(
+        cached,
         source_path,
-        asset_path,
         asset_type,
         season_number=season_number,
+    ):
+        return False
+    if config is None:
+        return True
+    return not same_source_verification_due(
+        cached,
+        media_type,
+        asset_type,
+        config,
+        season_number=season_number,
+        source_path=source_path,
     )
 
 
@@ -1168,6 +1195,7 @@ async def _record_asset_observation(
     asset_path=None,
     checksum=None,
     season_number=None,
+    source_verified=False,
 ):
     """Record an artwork check, adding ownership only after exact verification."""
     source_path = candidate.get("file_path")
@@ -1176,6 +1204,7 @@ async def _record_asset_observation(
     flags = {"update_timestamp": False}
     if asset_type == "poster":
         flags["poster_checked"] = True
+        flags["poster_source_verified"] = source_verified
         kwargs["poster_candidate_average"] = vote
         kwargs["poster_candidate_provider"] = _candidate_provider(candidate)
         kwargs["poster_candidate_source_path"] = source_path
@@ -1189,6 +1218,7 @@ async def _record_asset_observation(
             )
     elif asset_type == "background":
         flags["background_checked"] = True
+        flags["background_source_verified"] = source_verified
         kwargs["background_candidate_average"] = vote
         kwargs["background_candidate_provider"] = _candidate_provider(candidate)
         kwargs["background_candidate_source_path"] = source_path
@@ -1201,6 +1231,7 @@ async def _record_asset_observation(
                 background_checksum=checksum,
             )
     elif asset_type == "season":
+        flags["season_source_verified"] = source_verified
         kwargs.update(
             season_number=season_number,
             season_candidate_average=vote,
@@ -1394,6 +1425,7 @@ async def adopt_exact_tmdb_asset(
             asset_path=asset_path,
             checksum=existing_checksum,
             season_number=season_number,
+            source_verified=True,
         )
         log_builder_event(
             "builder_asset_ownership_adopted",
@@ -2093,7 +2125,8 @@ async def _build_movie(
 
         if managed_source_matches(
             protection_status,
-            cache_key, best.get("file_path"), asset_path, "poster"
+            cache_key, best.get("file_path"), asset_path, "poster",
+            config=config, media_type="movie",
         ):
             poster_size = asset_path.stat().st_size
             existing_assets.add(str(asset_path.resolve()))
@@ -2153,6 +2186,7 @@ async def _build_movie(
                 )
                 await _record_asset_observation(
                     cache_key, tmdb_id, title, year, "movie", "poster", best,
+                    source_verified=True,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2343,7 +2377,8 @@ async def _build_movie(
 
         if managed_source_matches(
             protection_status,
-            cache_key, best.get("file_path"), asset_path, "background"
+            cache_key, best.get("file_path"), asset_path, "background",
+            config=config, media_type="movie",
         ):
             background_size = asset_path.stat().st_size
             existing_assets.add(str(asset_path.resolve()))
@@ -2403,6 +2438,7 @@ async def _build_movie(
                 )
                 await _record_asset_observation(
                     cache_key, tmdb_id, title, year, "movie", "background", best,
+                    source_verified=True,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3391,7 +3427,8 @@ async def _build_tv(
 
         if managed_source_matches(
             protection_status,
-            cache_key, best.get("file_path"), asset_path, "poster"
+            cache_key, best.get("file_path"), asset_path, "poster",
+            config=config, media_type="tv",
         ):
             poster_size = asset_path.stat().st_size
             existing_assets.add(str(asset_path.resolve()))
@@ -3452,6 +3489,7 @@ async def _build_tv(
                 )
                 await _record_asset_observation(
                     cache_key, tmdb_id, title, year, "tv", "poster", best,
+                    source_verified=True,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3643,7 +3681,8 @@ async def _build_tv(
 
         if managed_source_matches(
             protection_status,
-            cache_key, best.get("file_path"), asset_path, "background"
+            cache_key, best.get("file_path"), asset_path, "background",
+            config=config, media_type="tv",
         ):
             background_size = asset_path.stat().st_size
             existing_assets.add(str(asset_path.resolve()))
@@ -3704,6 +3743,7 @@ async def _build_tv(
                 )
                 await _record_asset_observation(
                     cache_key, tmdb_id, title, year, "tv", "background", best,
+                    source_verified=True,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3895,6 +3935,8 @@ async def _build_tv(
             asset_path,
             "season",
             season_number=season_number,
+            config=config,
+            media_type="tv",
         ):
             season_poster_size = asset_path.stat().st_size
             existing_assets.add(str(asset_path.resolve()))
@@ -3962,6 +4004,7 @@ async def _build_tv(
                 await _record_asset_observation(
                     cache_key, tmdb_id, title, year, "tv", "season", best,
                     season_number=season_number,
+                    source_verified=True,
                 )
                 if should_upgrade:
                     asset_path.parent.mkdir(parents=True, exist_ok=True)
