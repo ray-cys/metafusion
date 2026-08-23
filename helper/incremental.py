@@ -428,26 +428,30 @@ def _media_type(value):
 
 
 def _season_destination_records(item, cached):
-    """Return one optional state record per known Plex season destination."""
+    """Return state records and whether Plex season inventory is unavailable."""
     cached = cached if isinstance(cached, dict) else {}
     seasons = cached.get("seasons") or {}
     if not isinstance(seasons, dict):
         seasons = {}
     inventory_counts = []
     for field_name in ("seasonCount", "childCount"):
+        raw_value = getattr(item, field_name, None)
+        if raw_value is None:
+            continue
         try:
-            value = int(getattr(item, field_name, 0) or 0)
+            value = int(raw_value)
         except (TypeError, ValueError):
             continue
         if value >= 0:
             inventory_counts.append(value)
+    inventory_unknown = not inventory_counts and not seasons
     destination_count = max([len(seasons), *inventory_counts], default=0)
     records = [record for record in seasons.values() if isinstance(record, dict)]
     if not records and cached.get("season_last_checked"):
         records = [cached] * destination_count
     if len(records) < destination_count:
         records.extend([None] * (destination_count - len(records)))
-    return records
+    return records, inventory_unknown
 
 
 def artwork_schedule_summary(
@@ -494,6 +498,7 @@ def artwork_schedule_summary(
         )
         for lane in ("poster", "background", "season_poster")
     }
+    summary["season_poster"]["inventory_unknown"] = 0
     check_time = utc_now() if now is None else now
 
     def classify(lane, timestamp, days, selected):
@@ -539,7 +544,12 @@ def artwork_schedule_summary(
         season_days = adaptive_artwork_days(
             cached_record, "season", get_image_upgrade_days(config, "season")
         )
-        for season_record in _season_destination_records(item, cached_record):
+        season_records, inventory_unknown = _season_destination_records(
+            item, cached_record
+        )
+        if inventory_unknown:
+            summary["season_poster"]["inventory_unknown"] += 1
+        for season_record in season_records:
             timestamp = None
             if season_record is not None:
                 timestamp = (

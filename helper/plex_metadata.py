@@ -8,6 +8,7 @@ from pathlib import Path
 from helper.concurrency import runtime_slot
 from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
 from helper.identity import cache_key_for_meta
+from helper.logging import format_fields
 from helper.metadata_provenance import provenance_record
 from helper.report_identity import item_report_record
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
@@ -267,19 +268,22 @@ class PlexMetadataReporter:
             path = written_path
         retain_diagnostic_reports(report_dir, "plex-metadata", self.retention)
         logger = logging.getLogger(__name__)
-        logger.info(
-            "[Metadata] Plex summary | API batches: %d/%d, fields filled: %d, "
-            "tags added: %d, values removed: %d, unchanged: %d, "
-            "existing values preserved: %d, source missing: %d, failed: %d.",
-            self.writes,
-            self.max_writes,
-            self.counts.get("filled", 0),
-            self.counts.get("tags_added", 0),
-            self.counts.get("removed", 0),
-            self.counts.get("unchanged", 0),
-            self.counts.get("existing_skipped", 0),
-            self.counts.get("source_missing", 0),
-            self.counts.get("failed", 0),
+        logger.debug(
+            "[Metadata] Plex report | %s",
+            format_fields(
+                ("API batches", f"{self.writes}/{self.max_writes}"),
+                ("Fields filled", self.counts.get("filled", 0)),
+                ("Tags added", self.counts.get("tags_added", 0)),
+                ("Values removed", self.counts.get("removed", 0)),
+                ("Unchanged", self.counts.get("unchanged", 0)),
+                (
+                    "Existing values preserved",
+                    self.counts.get("existing_skipped", 0),
+                ),
+                ("Source missing", self.counts.get("source_missing", 0)),
+                ("Failed", self.counts.get("failed", 0)),
+                ("Report", path),
+            ),
         )
         safety_counts = {
             "locked fields": self.counts.get("locked_skipped", 0),
@@ -288,17 +292,24 @@ class PlexMetadataReporter:
         }
         if any(safety_counts.values()):
             logger.warning(
-                "[Metadata] Plex safety | %s | Report: %s",
-                ", ".join(
-                    f"{name}: {count}" for name, count in safety_counts.items()
+                "[Metadata] Plex safety | %s",
+                format_fields(
+                    ("Locked fields", safety_counts["locked fields"]),
+                    (
+                        "Conflicts preserved",
+                        safety_counts["conflicts preserved"],
+                    ),
+                    ("Write-limit skips", safety_counts["write-limit skips"]),
+                    ("Report", path),
                 ),
-                path,
             )
         if self.dry_run:
             logger.info(
-                "[Dry Run] [Metadata] Plex | Would fill: %d, would remove: %d",
-                self.counts.get("would_fill", 0),
-                self.counts.get("would_remove", 0),
+                "[Dry Run] [Metadata] Plex | %s",
+                format_fields(
+                    ("Would fill", self.counts.get("would_fill", 0)),
+                    ("Would remove", self.counts.get("would_remove", 0)),
+                ),
             )
         return path
 

@@ -658,9 +658,14 @@ reported destination count:
 
 Metadata destinations count titles. Poster and background destinations also
 count titles, while season-poster destinations count individual known Plex
-seasons. `Not selected` on the incremental inventory line remains an item-level
-total across all work; it is not a substitute for the metadata or artwork
-lane-specific `Not due` figures.
+seasons. A season-poster schedule also reports `Season inventories unavailable`,
+which counts TV titles for which neither the current Plex object nor durable
+state provides a season count. Those titles are not falsely reported as having
+zero season destinations; their unknown season destinations are excluded from
+the numeric destination total until Plex supplies an inventory. `Not selected`
+on the incremental inventory line remains an item-level total across all work;
+it is not a substitute for the metadata or artwork lane-specific `Not due`
+figures.
 
 Metadata result lines identify the target (`Kometa YAML` or `Plex`) and report
 created/updated or changed, unchanged, API batches where applicable, and failed
@@ -685,6 +690,15 @@ result and coverage lines account only for titles evaluated during this run;
 their totals can therefore be much smaller than `Destinations`. In Plex mode,
 the same schedule is used, while the result line changes its target and reports
 field writes and API batches instead of YAML creation/update counts.
+
+At runtime, MetaFusion verifies that `Required + Due + Forced + Not due` equals
+`Destinations` for every enabled metadata and artwork lane in every processed
+library. A mismatch does not hide or rewrite the reported figures: it emits a
+`[Diagnostics] Schedule reconciliation` warning with the library, lane,
+destination total, accounted total, and difference. This is a regression guard
+for reporting logic rather than a media-processing failure. Unknown season
+inventories are reported separately because their destination count cannot be
+calculated safely.
 
 Artwork result lines report evaluated, downloaded, upgraded, adopted,
 unchanged, preserved, missing, deferred, failed, and applicable policy
@@ -730,13 +744,22 @@ and large libraries every 100 items or 5%, whichever interval is larger. A
 shows, and start/final progress is always logged. TV progress counts top-level
 shows while their seasons and episodes remain part of each show operation.
 
+The field-level Plex metadata report emits one detailed `[Metadata] Plex report`
+record at `DEBUG`. It is intentionally not repeated at `INFO`; the target-aware
+metadata result in the final summary is the canonical operator summary. Plex
+locked-field, conflict, and write-limit protection remains at `WARNING`, with a
+path to the retained diagnostic report.
+
 Every completed job also logs one local performance summary: total, Plex
 inventory and library-processing time; items per minute; TMDb requests,
 cache hits/misses, retries and rate-limit waits; Fanart.tv activity when the
-fallback was used; and the five slowest items by
-library plus Plex rating key. It intentionally omits media paths and metadata
-values. Use it to compare full and incremental runs without adding a metrics
-service.
+fallback was used; and the five slowest items by library plus Plex rating key.
+Run timing and provider activity use shared `Label: value` fields. Slow-item
+observations remain available at `DEBUG` without flooding normal `INFO` logs.
+Recovery, provider-circuit, heartbeat, job-history, and disk-pressure warnings
+use the same fields while retaining their existing severity. The performance
+records intentionally omit media paths and metadata values. Use them to compare
+full and incremental runs without adding a metrics service.
 
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` and an automatic

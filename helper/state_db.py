@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
+from helper.logging import format_fields
 from helper.report_identity import report_identity
 
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
@@ -2115,21 +2116,28 @@ def record_item_failure(
         logger = logging.getLogger(__name__)
         if status == "pending":
             logger.info(
-                "[Recovery] Deferred %s/%s for automatic retry %s "
-                "(attempt %d).",
-                library_name or library_uuid,
-                rating_key,
-                next_retry,
-                attempts,
+                "[Recovery] Item deferred | %s",
+                format_fields(
+                    ("Library", library_name or library_uuid),
+                    ("Plex rating key", rating_key),
+                    ("Status", "Pending"),
+                    ("Attempt", attempts),
+                    ("Retry at", next_retry),
+                ),
             )
         else:
             logger.warning(
-                "[Recovery] Parked %s/%s after %d attempt(s); deadline retries "
-                "stop until the item changes or a full, targeted, or "
-                "configuration-triggered evaluation succeeds.",
-                library_name or library_uuid,
-                rating_key,
-                attempts,
+                "[Recovery] Item parked | %s",
+                format_fields(
+                    ("Library", library_name or library_uuid),
+                    ("Plex rating key", rating_key),
+                    ("Status", "Parked"),
+                    ("Attempts", attempts),
+                    (
+                        "Resume condition",
+                        "Item change, full scan, targeted run, or configuration change",
+                    ),
+                ),
             )
         return result
     finally:

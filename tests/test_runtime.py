@@ -289,6 +289,7 @@ def test_heartbeat_retries_after_transient_write_failure(tmp_path, caplog):
 
     assert attempts == [True]
     assert "retrying" in caplog.text
+    assert "Status: Retryable failure | Action: retrying | Error: temporary" in caplog.text
 
 
 def test_plex_show_inventory_merges_explicit_seasons_and_episode_fallbacks():

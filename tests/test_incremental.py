@@ -576,6 +576,7 @@ def test_artwork_schedule_summary_counts_due_required_forced_and_not_due():
         "required": 1,
         "forced": 0,
         "not_due": 2,
+        "inventory_unknown": 0,
     }
 
     full_plan = plan_items(
@@ -608,6 +609,7 @@ def test_artwork_schedule_summary_counts_due_required_forced_and_not_due():
         "required": 1,
         "forced": 2,
         "not_due": 0,
+        "inventory_unknown": 0,
     }
 
 
@@ -655,6 +657,28 @@ def test_artwork_schedule_summary_handles_legacy_seasons_and_plural_movies():
         "required": 0,
         "forced": 0,
         "not_due": 2,
+        "inventory_unknown": 0,
+    }
+
+
+def test_artwork_schedule_summary_reports_unavailable_season_inventory():
+    show = SimpleNamespace(ratingKey="show", type="show")
+
+    schedule = artwork_schedule_summary(
+        [show],
+        {},
+        [],
+        incremental_config(),
+        feature_flags={"season": True},
+    )
+
+    assert schedule["season_poster"] == {
+        "destinations": 0,
+        "due": 0,
+        "required": 0,
+        "forced": 0,
+        "not_due": 0,
+        "inventory_unknown": 1,
     }
 
 

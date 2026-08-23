@@ -180,7 +180,7 @@ def test_performance_fanart_summary(caplog):
     tracker.increment("fanart_requests")
     with caplog.at_level(logging.INFO):
         performance.log_performance_summary(logging.getLogger("test"), tracker)
-    assert "Fanart.tv requests" in caplog.text
+    assert "Provider: Fanart.tv | Requests: 1" in caplog.text
 
 
 def test_runtime_cache_relief_failure_and_kometa_preflight(monkeypatch, tmp_path):

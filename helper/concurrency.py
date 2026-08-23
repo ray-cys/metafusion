@@ -438,20 +438,34 @@ class AdaptiveConcurrencyController:
         logger = logging.getLogger(__name__)
         if str(reason).startswith("circuit_open"):
             logger.warning(
-                "[Concurrency] %s circuit opened (%s) | Limit: %d.",
-                kind,
-                str(reason).split(":", 1)[-1],
-                current,
+                "[Concurrency] Adjustment | %s",
+                format_fields(
+                    ("Lane", kind),
+                    ("State", "circuit opened"),
+                    ("Cooldown", str(reason).split(":", 1)[-1]),
+                    ("Previous limit", previous),
+                    ("Current limit", current),
+                ),
             )
         elif reason == "circuit_closed":
-            logger.info("[Concurrency] %s circuit closed | Limit: %d.", kind, current)
+            logger.info(
+                "[Concurrency] Adjustment | %s",
+                format_fields(
+                    ("Lane", kind),
+                    ("State", "circuit closed"),
+                    ("Previous limit", previous),
+                    ("Current limit", current),
+                ),
+            )
         else:
             logger.info(
-                "[Concurrency] %s limit %d -> %d (%s).",
-                kind,
-                previous,
-                current,
-                reason,
+                "[Concurrency] Adjustment | %s",
+                format_fields(
+                    ("Lane", kind),
+                    ("Previous limit", previous),
+                    ("Current limit", current),
+                    ("Reason", reason),
+                ),
             )
 
     def lane(self, kind):
@@ -528,8 +542,12 @@ def begin_adaptive_concurrency(config, **kwargs):
             }
         except StateDatabaseError as error:
             logging.getLogger(__name__).warning(
-                "[Concurrency] Provider health state unavailable; using fresh limits: %s",
-                error,
+                "[Concurrency] Provider health | %s",
+                format_fields(
+                    ("Status", "Unavailable"),
+                    ("Action", "using fresh limits"),
+                    ("Error", error),
+                ),
             )
     controller = AdaptiveConcurrencyController(
         config,

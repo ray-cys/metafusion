@@ -4,6 +4,7 @@ from helper.logging import (
     PlexMetadataProgress,
     _format_event_message,
     _metadata_change_details,
+    artwork_schedule_line,
     format_fields,
     get_meta_banner,
     log_builder_event,
@@ -13,6 +14,7 @@ from helper.logging import (
     log_tmdb_event,
     metadata_action_summary,
     plex_progress_item_interval,
+    schedule_reconciliation_warning,
 )
 
 
@@ -252,6 +254,35 @@ def test_metadata_summaries_are_mode_specific():
     ) == (
         "Metadata result | Target: Plex | Changed: 3 | API batches: 5 | "
         "Unchanged: 4 | Failed: 1"
+    )
+
+
+def test_schedule_reconciliation_and_unknown_season_inventory_are_explicit():
+    counts = {
+        "metadata_schedule_destinations": 5,
+        "metadata_schedule_due": 1,
+        "metadata_schedule_required": 1,
+        "metadata_schedule_forced": 1,
+        "metadata_schedule_not_due": 2,
+        "season_poster_schedule_destinations": 3,
+        "season_poster_schedule_due": 0,
+        "season_poster_schedule_required": 1,
+        "season_poster_schedule_forced": 0,
+        "season_poster_schedule_not_due": 2,
+        "season_poster_schedule_inventory_unknown": 1,
+    }
+
+    assert schedule_reconciliation_warning(
+        counts, "metadata", "Movies", "Metadata"
+    ) is None
+    counts["metadata_schedule_not_due"] = 1
+    warning = schedule_reconciliation_warning(
+        counts, "metadata", "Movies", "Metadata"
+    )
+    assert "Status: Mismatch" in warning
+    assert "Destinations: 5 | Accounted: 4 | Difference: 1" in warning
+    assert artwork_schedule_line(counts, "season_poster", "Season poster").endswith(
+        "Season inventories unavailable: 1"
     )
 
 

@@ -526,9 +526,15 @@ def _asset_temp_path_or_defer(config, meta):
         config["_deferred_artwork"] = int(config.get("_deferred_artwork", 0)) + 1
         if not config.get("_disk_pressure_logged"):
             logging.getLogger(__name__).warning(
-                "[Artwork] Disk pressure detected; artwork writes are deferred "
-                "while metadata processing continues: %s",
-                error,
+                "[Artwork] Disk pressure | %s",
+                format_fields(
+                    ("Status", "Writes deferred"),
+                    ("Metadata processing", "Continuing"),
+                    ("Path", error.path),
+                    ("Free bytes", error.free_bytes),
+                    ("Required bytes", error.required_bytes),
+                    ("Error", error),
+                ),
             )
             config["_disk_pressure_logged"] = True
         return None

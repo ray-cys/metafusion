@@ -213,6 +213,7 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     assert library["metadata_schedule_destinations"] == len(actions)
     assert library["metadata_schedule_required"] == len(actions)
     assert library["metadata_schedule_not_due"] == 0
+    assert library["season_poster_schedule_inventory_unknown"] == 0
     assert library["artwork_deferred"] == 3
     assert library["artwork_automatic_relaxed"] >= 1
     assert library["artwork_download_failover"] >= 1

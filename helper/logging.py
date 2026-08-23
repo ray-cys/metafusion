@@ -1286,9 +1286,30 @@ def metadata_schedule_line(library_summary):
     )
 
 
+def schedule_reconciliation_warning(library_summary, prefix, scope, label):
+    """Return a warning when exclusive schedule states do not reconcile."""
+    destinations = int(
+        library_summary.get(f"{prefix}_schedule_destinations", 0) or 0
+    )
+    accounted = sum(
+        int(library_summary.get(f"{prefix}_schedule_{state}", 0) or 0)
+        for state in ("due", "required", "forced", "not_due")
+    )
+    if destinations == accounted:
+        return None
+    return "[Diagnostics] Schedule reconciliation | " + format_fields(
+        ("Status", "Mismatch"),
+        ("Scope", scope),
+        ("Lane", label),
+        ("Destinations", destinations),
+        ("Accounted", accounted),
+        ("Difference", destinations - accounted),
+    )
+
+
 def artwork_schedule_line(library_summary, prefix, label):
     """Return reconciled cadence accounting for one artwork destination type."""
-    return (
+    line = (
         f"{label} schedule | Destinations: "
         f"{library_summary.get(f'{prefix}_schedule_destinations', 0)} | "
         f"Due: {library_summary.get(f'{prefix}_schedule_due', 0)} | "
@@ -1296,6 +1317,12 @@ def artwork_schedule_line(library_summary, prefix, label):
         f"Forced: {library_summary.get(f'{prefix}_schedule_forced', 0)} | "
         f"Not due: {library_summary.get(f'{prefix}_schedule_not_due', 0)}"
     )
+    if prefix == "season_poster":
+        line += (
+            " | Season inventories unavailable: "
+            f"{library_summary.get('season_poster_schedule_inventory_unknown', 0)}"
+        )
+    return line
 
 
 def artwork_result_line(library_summary, prefix, label, *, policy=False):
@@ -1514,6 +1541,7 @@ def log_final_summary(
     box_width = None
     lines = []
     storage_warnings = []
+    reconciliation_warnings: list[str] = []
     log_section(logger, "Summary", "Final run summary")
     minutes, seconds = divmod(int(elapsed_time), 60)
     run_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -1644,7 +1672,9 @@ def log_final_summary(
         f"Due: {artwork_schedule['due']} | "
         f"Required: {artwork_schedule['required']} | "
         f"Forced: {artwork_schedule['forced']} | "
-        f"Not due: {artwork_schedule['not_due']}",
+        f"Not due: {artwork_schedule['not_due']} | "
+        "Season inventories unavailable: "
+        f"{overall['season_poster_schedule_inventory_unknown']}",
         box_width,
     ))
     lines.extend(box_line(
@@ -1739,6 +1769,10 @@ def log_final_summary(
                 )
             )
         if metadata_enabled:
+            warning = schedule_reconciliation_warning(
+                libsum, "metadata", lib, "Metadata"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
             lines.extend(box_line(
                 f"Library: {lib} | {metadata_schedule_line(libsum)}", box_width
             ))
@@ -1756,6 +1790,10 @@ def log_final_summary(
                 f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
+            warning = schedule_reconciliation_warning(
+                libsum, "poster", lib, "Series poster" if library_type in ("tv", "show") else "Poster"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
             poster_label = (
                 "Series poster" if library_type in ("tv", "show") else "Poster"
             )
@@ -1771,6 +1809,10 @@ def log_final_summary(
             ))
 
         if feature_flags and feature_flags.get("background", False) and library_type in ("movie", "tv", "show"):
+            warning = schedule_reconciliation_warning(
+                libsum, "background", lib, "Background"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
             lines.extend(box_line(
                 f"Library: {lib} | "
                 f"{artwork_schedule_line(libsum, 'background', 'Background')}",
@@ -1786,6 +1828,10 @@ def log_final_summary(
             feature_flags and feature_flags.get("season", False)
             and library_type in ("tv", "show")
         ):
+            warning = schedule_reconciliation_warning(
+                libsum, "season_poster", lib, "Season poster"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
             lines.extend(box_line(
                 f"Library: {lib} | "
                 f"{artwork_schedule_line(libsum, 'season_poster', 'Season poster')}",
@@ -2012,6 +2058,8 @@ def log_final_summary(
             free,
             required,
         )
+    for warning in reconciliation_warnings:
+        logger.warning(warning)
             
 def human_readable_size(size, decimal_places=2):
     for unit in ['bytes', 'KB', 'MB', 'GB', 'TB']:

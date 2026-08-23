@@ -355,6 +355,7 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
                 "poster_schedule_required": 1,
                 "poster_schedule_forced": 3,
                 "poster_schedule_not_due": 4,
+                "background_schedule_destinations": 1,
                 "poster_policy_preserved": 1,
                 "background_policy_missing": 1,
                 "artwork_bytes": 20,
@@ -441,6 +442,11 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     assert "Missing this run:" in text
     assert "Plex metadata: Server-managed" in text
     assert "Low free space" in text
+    assert (
+        "[Diagnostics] Schedule reconciliation | Status: Mismatch | "
+        "Scope: Shows | Lane: Background | Destinations: 1 | Accounted: 0 | "
+        "Difference: 1"
+    ) in text
     assert app_logging.human_readable_size(1024) == "1.00 KB"
 
 
