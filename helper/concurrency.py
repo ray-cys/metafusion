@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import logging
 import math
 import os
@@ -512,14 +511,19 @@ class AdaptiveConcurrencyController:
 
 
 def _provider_state_keys(config):
-    values = {
-        "tmdb": config.get("tmdb", {}).get("api_key") or "default",
-        "fanart": "metafusion-project",
-        "plex": config.get("plex", {}).get("url") or "default",
-    }
+    """Return durable health scopes without deriving identifiers from secrets."""
     return {
-        provider: f"{provider}:{hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:20]}"
-        for provider, value in values.items()
+        "tmdb": (
+            "tmdb:configured"
+            if config.get("tmdb", {}).get("api_key")
+            else "tmdb:default"
+        ),
+        "fanart": "fanart:metafusion-project",
+        "plex": (
+            "plex:configured"
+            if config.get("plex", {}).get("url")
+            else "plex:default"
+        ),
     }
 
 

@@ -606,29 +606,36 @@ def test_adaptive_provider_health_is_loaded_saved_and_failure_tolerant(
 ):
     resources = concurrency.RuntimeResources(4, 4 * 1024**3)
     config = {"tmdb": {"api_key": "secret"}, "plex": {"url": "http://plex"}}
-    monkeypatch.setattr(
-        concurrency,
-        "load_provider_health",
-        lambda keys: {
-            next(key for key in keys if key.startswith("tmdb:")): {
+    loaded_keys = []
+
+    def load_health(keys):
+        loaded_keys.extend(keys)
+        return {
+            next(key for key in loaded_keys if key.startswith("tmdb:")): {
                 "consecutive_failures": 2,
                 "cooldown_seconds": 5,
             }
-        },
-    )
+        }
+
+    monkeypatch.setattr(concurrency, "load_provider_health", load_health)
     saved = []
     monkeypatch.setattr(
         concurrency,
         "save_provider_health",
         lambda *args, **kwargs: saved.append((args, kwargs)) or True,
     )
-
     controller, token = concurrency.begin_adaptive_concurrency(
         config,
         resources=resources,
         clock=lambda: 100.0,
         persist_provider_health=True,
     )
+    assert set(loaded_keys) == {
+        "tmdb:configured",
+        "fanart:metafusion-project",
+        "plex:configured",
+    }
+    assert all("secret" not in key for key in loaded_keys)
     assert controller.lane("tmdb").consecutive_failures == 2
     controller.lane("tmdb").successes = 1
     concurrency.finish_adaptive_concurrency(controller, token)
