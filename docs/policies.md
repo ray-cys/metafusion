@@ -102,13 +102,20 @@ deterministic 0-100 quality score:
 | Component | Weight | Meaning |
 | --- | ---: | --- |
 | Resolution | 45 | Image area relative to the configured preferred dimensions, capped at full credit. |
-| Provider score | 35 | TMDb vote average or Fanart.tv likes proxy, capped at 10. Plex candidates have no pre-download score. |
+| Provider score | 35 | Confidence-adjusted TMDb image vote average and vote count, or Fanart.tv likes proxy and engagement count. Raw scores remain capped at 10. Plex candidates have no pre-download score. |
 | Aspect ratio | 10 | Closeness to 2:3 for posters/season posters or 16:9 for backgrounds. |
 | Language | 10 | Preferred language gets 10, configured fallback 7, untagged 4, and another language 0. |
 | Cached content quality | up to 8 | A bounded sharpness bonus from a previously validated download; the final score remains capped at 100. |
 
-The highest score wins within the current provider stage; vote, pixel area,
-and source path provide stable tie breakers. A cached blank-image result makes
+The provider contribution discounts a high TMDb average supported by very few
+votes, so a single 10/10 vote does not automatically outrank a well-supported
+candidate. Fanart.tv likes provide both its score proxy and confidence count;
+the two providers remain separate fallback stages rather than a global popularity
+contest. The configured preferred, relaxed, and upgrade thresholds continue to
+use the raw 0-10 provider score, so existing threshold meanings do not change.
+The highest score wins within the current provider stage; confidence-adjusted
+provider score, raw vote, pixel area, and source path provide stable tie breakers.
+A cached blank-image result makes
 the candidate ineligible, while a perceptual hash identifies visually duplicate
 candidates in selection explanations. A perceptual hash is not treated as a
 quality measurement. Scoring does not allow a lower-priority language to jump
@@ -130,11 +137,24 @@ upgrade engine still decides whether to write:
   365 days. This detects providers silently changing bytes behind an unchanged
   source identifier without downloading every managed image on normal runs.
 - Byte-identical downloaded artwork is skipped.
-- Before the timed refresh age, better vote scores, configured vote thresholds,
-  and improved dimensions can trigger an upgrade.
-- Once stale, a candidate is rejected if its width, height, or saved provider score
-  would be lower than the saved/current artwork comparison.
+- Before the timed refresh age, a replacement must improve the normalized
+  quality score by at least one point, preserve overall quality while gaining at
+  least 10% pixel area, or provide a better confidence-adjusted provider rating
+  without reducing dimensions or aspect suitability.
+- Crossing a configured vote threshold identifies the reason for an approved
+  replacement; it does not bypass the quality guard. One larger dimension alone
+  and a lower within-threshold score are no longer sufficient.
+- Once stale, a candidate must be no worse in normalized score,
+  confidence-adjusted provider rating, width, height, aspect suitability, and
+  image validation. Otherwise the existing artwork is preserved.
+- TMDb vote count, Fanart.tv likes/count, provider score, language, dimensions,
+  content signals, and the resulting comparison are retained for subsequent
+  managed-artwork decisions.
 - A rejected or failed candidate leaves the existing file intact.
+
+Missing destinations are still populated immediately from the normal provider
+fallback chain. Manual or externally modified artwork remains protected by
+`managed`; the quality guard does not weaken ownership enforcement.
 
 Artwork age and candidate observations are saved in SQLite, not derived from
 the file's mtime. `MOVIE_IMAGE_UPGRADE_DAYS`, `SERIES_IMAGE_UPGRADE_DAYS`, and

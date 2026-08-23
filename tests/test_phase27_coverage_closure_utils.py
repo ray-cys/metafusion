@@ -167,6 +167,70 @@ def test_movie_upgrade_remaining_decisions(monkeypatch, tmp_path):
     assert decision(2, 5) == (False, "ERROR_IMAGE_COMPARE")
 
 
+def test_upgrade_quality_guard_uses_confidence_dimensions_and_content(
+    monkeypatch, tmp_path
+):
+    config = _config()
+    asset = tmp_path / "poster.jpg"
+    candidate = tmp_path / "candidate.jpg"
+    asset.write_bytes(_encoded("red", (100, 150)))
+    candidate.write_bytes(_encoded("blue", (100, 150)))
+    monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)
+
+    confidence_upgrade = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 100,
+            "height": 150,
+            "vote_average": 8,
+            "vote_count": 100,
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 10, "poster_vote_count": 1},
+    )
+    assert confidence_upgrade[0:2] == (True, "UPGRADE_VOTES")
+
+    candidate.write_bytes(_encoded("green", (120, 120)))
+    one_dimension_only = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 120,
+            "height": 120,
+            "vote_average": 8,
+            "vote_count": 100,
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 8, "poster_vote_count": 100},
+    )
+    assert one_dimension_only[0:2] == (False, "QUALITY_GUARD_REJECTED")
+
+    candidate.write_bytes(_encoded("blue", (100, 150)))
+    content_upgrade = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 100,
+            "height": 150,
+            "vote_average": 8,
+            "vote_count": 100,
+            "content_analysis": {
+                "width": 100,
+                "height": 150,
+                "blank": False,
+                "sharpness": 100,
+            },
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 8, "poster_vote_count": 100},
+    )
+    assert content_upgrade[0:2] == (True, "UPGRADE_QUALITY")
+
+
 def test_season_upgrade_remaining_decisions(monkeypatch, tmp_path):
     config = _config()
     asset = tmp_path / "Season01.jpg"
@@ -194,10 +258,13 @@ def test_season_upgrade_remaining_decisions(monkeypatch, tmp_path):
             cached_entry={"seasons": {"1": {"season_average": cached_votes}}},
         )[0:2]
 
-    assert decision(0, 0, width=32, height=48) == (True, "UPGRADE_VOTES_SEASON")
+    assert decision(0, 0, width=32, height=48) == (
+        True,
+        "UPGRADE_ZERO_VOTE_SEASON",
+    )
     assert decision(2, 4) == (True, "UPGRADE_RELAXED_SEASON")
     assert decision(5, 5, width=32, height=48) == (True, "UPGRADE_DIMENSIONS_SEASON")
-    assert decision(5, 1) == (False, "NO_UPGRADE_NEEDED_SEASON")
+    assert decision(5, 1) == (False, "QUALITY_GUARD_REJECTED_SEASON")
     assert decision(5, 1, image_path=None) == (False, "NO_IMAGE_FOR_COMPARE_SEASON")
 
     monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: True)

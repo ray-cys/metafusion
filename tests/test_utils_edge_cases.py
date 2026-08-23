@@ -178,7 +178,7 @@ def test_movie_asset_upgrade_decision_matrix(monkeypatch, tmp_path):
         new_image_path=candidate,
         cache_key="movie",
     )
-    assert decision[0:2] == (True, "UPGRADE_DIMENSIONS")
+    assert decision[0:2] == (False, "QUALITY_GUARD_REJECTED")
 
     decision = utils.smart_asset_upgrade(
         config,
@@ -187,7 +187,7 @@ def test_movie_asset_upgrade_decision_matrix(monkeypatch, tmp_path):
         new_image_path=candidate,
         cache_key="movie",
     )
-    assert decision[0:2] == (False, "NO_UPGRADE_NEEDED")
+    assert decision[0:2] == (False, "QUALITY_GUARD_REJECTED")
 
     assert utils.smart_asset_upgrade(
         config,
@@ -221,7 +221,7 @@ def test_asset_upgrade_stale_background_and_corrupt_existing(monkeypatch, tmp_pa
         new_image_path=candidate,
         cache_key="movie",
         asset_type="background",
-    )[0:2] == (True, "FORCE_UPGRADE_STALE")
+    )[0:2] == (False, "STALE_CANDIDATE_DOWNGRADE")
 
     monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)
     asset.write_bytes(b"not-an-image")
@@ -373,7 +373,7 @@ def test_season_asset_upgrade_decision_matrix(monkeypatch, tmp_path):
         cache_key="show",
         season_number=0,
     )
-    assert decision[0:2] == (True, "UPGRADE_ZERO_VOTE_SEASON")
+    assert decision[0:2] == (False, "QUALITY_GUARD_REJECTED_SEASON")
 
     cache_state["show"]["seasons"]["0"]["season_average"] = 5
     decision = utils.smart_season_asset_upgrade(
@@ -384,7 +384,7 @@ def test_season_asset_upgrade_decision_matrix(monkeypatch, tmp_path):
         cache_key="show",
         season_number=0,
     )
-    assert decision[0:2] == (True, "UPGRADE_VOTES_SEASON")
+    assert decision[0:2] == (False, "QUALITY_GUARD_REJECTED_SEASON")
 
     decision = utils.smart_season_asset_upgrade(
         config,

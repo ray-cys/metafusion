@@ -24,6 +24,8 @@ from helper.tmdb import tmdb_api_request
 
 _CACHE_ENTRY_UNSET = object()
 _ARTWORK_ANALYSIS_MEMORY = {}
+_ARTWORK_QUALITY_MARGIN = 1.0
+_ARTWORK_DIMENSION_AREA_GAIN = 1.10
 _UNORDERED_METADATA_LIST_FIELDS = {
     "collection",
     "country",
@@ -187,7 +189,8 @@ def artwork_quality_score(
             or 0
         ),
     )
-    vote = max(0.0, min(10.0, float(image.get("vote_average") or 0)))
+    provider_rating = artwork_provider_rating(image)
+    vote = provider_rating["adjusted_average"]
     target_width = max(1, int(settings.get("max_width") or width or 1))
     target_height = max(1, int(settings.get("max_height") or height or 1))
     target_area = target_width * target_height
@@ -240,7 +243,182 @@ def artwork_quality_score(
         "perceptual_hash": perceptual_hash,
         "validated_width": width if analysis else None,
         "validated_height": height if analysis else None,
+        "provider_average": provider_rating["average"],
+        "provider_count": provider_rating["count"],
+        "provider_confidence": provider_rating["confidence"],
     }
+
+
+def artwork_provider_rating(image):
+    """Normalize provider engagement without treating one vote as certainty."""
+    average = max(0.0, min(10.0, float(image.get("vote_average") or 0)))
+    raw_count = image.get("vote_count")
+    if raw_count is None:
+        raw_count = image.get("provider_likes")
+    try:
+        count = max(0, int(float(raw_count or 0)))
+    except (TypeError, ValueError):
+        count = 0
+    confidence = count / (count + 5.0) if count else 0.0
+    adjusted_average = average * (0.5 + 0.5 * confidence)
+    return {
+        "average": round(average, 4),
+        "count": count,
+        "confidence": round(confidence, 4),
+        "adjusted_average": round(adjusted_average, 4),
+    }
+
+
+def _upgrade_quality_comparison(
+    config,
+    asset_path,
+    new_image_data,
+    cached,
+    *,
+    asset_type,
+    existing_width,
+    existing_height,
+    average_key,
+    count_key,
+    provider_key,
+    source_key,
+    language_key,
+):
+    preferred_language = str(
+        config.get("tmdb", {}).get("language") or "en-US"
+    ).split("-", 1)[0].lower()
+    cached_average = float(cached.get(average_key) or 0)
+    candidate_language = new_image_data.get("iso_639_1")
+    existing_image = {
+        "provider": cached.get(provider_key) or "tmdb",
+        "file_path": cached.get(source_key) or str(asset_path),
+        "width": existing_width,
+        "height": existing_height,
+        "vote_average": cached_average,
+        "vote_count": cached.get(count_key, 0),
+        # Older state did not retain language. Treat it as equal to the new
+        # candidate so an unknown historical value cannot manufacture a gain.
+        "iso_639_1": cached.get(language_key, candidate_language),
+    }
+    new_quality = artwork_quality_score(
+        config,
+        new_image_data,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )
+    existing_quality = artwork_quality_score(
+        config,
+        existing_image,
+        asset_type=asset_type,
+        preferred_language=preferred_language,
+    )
+    new_width = int(
+        new_quality.get("validated_width") or new_image_data.get("width") or 0
+    )
+    new_height = int(
+        new_quality.get("validated_height") or new_image_data.get("height") or 0
+    )
+    existing_area = max(1, existing_width * existing_height)
+    new_area = max(0, new_width * new_height)
+    quality_delta = round(new_quality["score"] - existing_quality["score"], 2)
+    new_rating = artwork_provider_rating(new_image_data)
+    existing_rating = artwork_provider_rating(existing_image)
+    provider_delta = round(
+        new_rating["adjusted_average"] - existing_rating["adjusted_average"], 4
+    )
+    return {
+        "new_width": new_width,
+        "new_height": new_height,
+        "existing_width": existing_width,
+        "existing_height": existing_height,
+        "new_quality": new_quality,
+        "existing_quality": existing_quality,
+        "new_quality_score": new_quality["score"],
+        "existing_quality_score": existing_quality["score"],
+        "quality_delta": quality_delta,
+        "provider_delta": provider_delta,
+        "quality_improved": quality_delta >= _ARTWORK_QUALITY_MARGIN,
+        "quality_not_worse": quality_delta >= 0,
+        "provider_improved": provider_delta > 0,
+        "provider_not_worse": provider_delta >= 0,
+        "dimensions_no_worse": (
+            new_width >= existing_width and new_height >= existing_height
+        ),
+        "material_dimension_gain": (
+            new_width >= existing_width
+            and new_height >= existing_height
+            and new_area >= existing_area * _ARTWORK_DIMENSION_AREA_GAIN
+        ),
+        "aspect_not_worse": (
+            float(new_quality["aspect"]) >= float(existing_quality["aspect"])
+        ),
+        "candidate_valid": not bool(new_quality.get("blank_penalty")),
+    }
+
+
+def _quality_guard_decision(
+    comparison,
+    *,
+    new_votes,
+    cached_votes,
+    vote_relaxed,
+    vote_threshold,
+    stale,
+    season=False,
+):
+    suffix = "_SEASON" if season else ""
+    no_score = float(new_votes or 0) == 0
+    meets_vote_floor = no_score or float(new_votes) >= float(vote_relaxed)
+    strict_no_downgrade = all(
+        comparison[key]
+        for key in (
+            "candidate_valid",
+            "quality_not_worse",
+            "provider_not_worse",
+            "dimensions_no_worse",
+            "aspect_not_worse",
+        )
+    )
+    if stale:
+        if meets_vote_floor and strict_no_downgrade:
+            return True, f"FORCE_UPGRADE_STALE{suffix}"
+        return False, f"STALE_CANDIDATE_DOWNGRADE{suffix}"
+
+    quality_upgrade = meets_vote_floor and comparison["quality_improved"]
+    dimension_upgrade = (
+        meets_vote_floor
+        and comparison["quality_not_worse"]
+        and comparison["provider_not_worse"]
+        and comparison["aspect_not_worse"]
+        and comparison["material_dimension_gain"]
+    )
+    confidence_upgrade = (
+        meets_vote_floor
+        and comparison["quality_not_worse"]
+        and comparison["provider_improved"]
+        and comparison["dimensions_no_worse"]
+        and comparison["aspect_not_worse"]
+    )
+    if not (
+        comparison["candidate_valid"]
+        and (quality_upgrade or dimension_upgrade or confidence_upgrade)
+    ):
+        return False, f"QUALITY_GUARD_REJECTED{suffix}"
+    if float(cached_votes or 0) < float(vote_threshold) <= float(new_votes or 0):
+        return True, f"UPGRADE_THRESHOLD{suffix}"
+    if (
+        float(cached_votes or 0) < float(vote_relaxed)
+        <= float(new_votes or 0)
+        < float(vote_threshold)
+    ):
+        return True, f"UPGRADE_RELAXED{suffix}"
+    if float(new_votes or 0) > float(cached_votes or 0) or confidence_upgrade:
+        return True, f"UPGRADE_VOTES{suffix}"
+    if dimension_upgrade:
+        if season and no_score and float(cached_votes or 0) == 0:
+            return True, "UPGRADE_ZERO_VOTE_SEASON"
+        return True, f"UPGRADE_DIMENSIONS{suffix}"
+    return True, f"UPGRADE_QUALITY{suffix}"
 
 
 def artwork_candidate_explanations(
@@ -633,22 +811,29 @@ def smart_asset_upgrade(
 ):
     from PIL import Image
 
-    new_width = new_image_data.get("width", 0)
-    new_height = new_image_data.get("height", 0)
     new_votes = new_image_data.get("vote_average", 0)
     if asset_type == "background":
         vote_relaxed = config["background_set"].get("vote_relaxed", 3.5)
         vote_threshold = config["background_set"].get("vote_threshold", 5.0)
         cache_key_name = "bg_average"
+        count_key_name = "background_vote_count"
+        provider_key_name = "background_provider"
+        source_key_name = "background_source_path"
+        language_key_name = "background_language"
         last_upgraded_key = "background_last_upgraded"
     elif asset_type == "poster":
         vote_relaxed = config["poster_set"].get("vote_relaxed", 3.5)
         vote_threshold = config["poster_set"].get("vote_threshold", 5.0)
         cache_key_name = "poster_average"
+        count_key_name = "poster_vote_count"
+        provider_key_name = "poster_provider"
+        source_key_name = "poster_source_path"
+        language_key_name = "poster_language"
         last_upgraded_key = "poster_last_upgraded"
 
     cached_votes = 0
     last_upgraded = None
+    cached = {}
     if cache_key:
         cached = (
             load_cache().get(cache_key, {})
@@ -659,8 +844,8 @@ def smart_asset_upgrade(
         last_upgraded = cached.get(last_upgraded_key)
 
     context = {
-        "new_width": new_width,
-        "new_height": new_height,
+        "new_width": new_image_data.get("width", 0),
+        "new_height": new_image_data.get("height", 0),
         "new_votes": new_votes,
         "cached_votes": cached_votes,
         "vote_threshold": vote_threshold,
@@ -696,25 +881,30 @@ def smart_asset_upgrade(
         context["error"] = str(e)
         return False, "ERROR_IMAGE_COMPARE", context
 
-    if stale_image(last_upgraded, stale_days):
-        if (
-            new_width >= existing_width
-            and new_height >= existing_height
-            and new_votes >= cached_votes
-        ):
-            return True, "FORCE_UPGRADE_STALE", context
-        return False, "STALE_CANDIDATE_DOWNGRADE", context
-
-    if cached_votes < vote_threshold and new_votes >= vote_threshold:
-        return True, "UPGRADE_THRESHOLD", context
-    if cached_votes < vote_threshold and vote_relaxed <= new_votes < vote_threshold:
-        return True, "UPGRADE_RELAXED", context
-    if cached_votes > 0 and new_votes > cached_votes:
-        return True, "UPGRADE_VOTES", context
-    if new_width > existing_width or new_height > existing_height:
-        return True, "UPGRADE_DIMENSIONS", context
-
-    return False, "NO_UPGRADE_NEEDED", context
+    comparison = _upgrade_quality_comparison(
+        config,
+        asset_path,
+        new_image_data,
+        cached if isinstance(cached, dict) else {},
+        asset_type=asset_type,
+        existing_width=existing_width,
+        existing_height=existing_height,
+        average_key=cache_key_name,
+        count_key=count_key_name,
+        provider_key=provider_key_name,
+        source_key=source_key_name,
+        language_key=language_key_name,
+    )
+    context.update(comparison)
+    decision, status = _quality_guard_decision(
+        comparison,
+        new_votes=new_votes,
+        cached_votes=cached_votes,
+        vote_relaxed=vote_relaxed,
+        vote_threshold=vote_threshold,
+        stale=stale_image(last_upgraded, stale_days),
+    )
+    return decision, status, context
 
 def smart_season_asset_upgrade(
     config, asset_path, new_image_data, new_image_path=None, cache_key=None, 
@@ -722,8 +912,6 @@ def smart_season_asset_upgrade(
 ):
     from PIL import Image
 
-    new_width = new_image_data.get("width", 0)
-    new_height = new_image_data.get("height", 0)
     new_votes = new_image_data.get("vote_average", 0)
 
     vote_relaxed = config["season_set"].get("vote_relaxed", 0.5)
@@ -732,6 +920,7 @@ def smart_season_asset_upgrade(
 
     cached_votes = 0
     last_upgraded = None
+    cached = {}
     if cache_key:
         cached = (
             load_cache().get(cache_key)
@@ -745,8 +934,8 @@ def smart_season_asset_upgrade(
             last_upgraded = season_entry.get("season_last_upgraded")
 
     context = {
-        "new_width": new_width,
-        "new_height": new_height,
+        "new_width": new_image_data.get("width", 0),
+        "new_height": new_image_data.get("height", 0),
         "new_votes": new_votes,
         "cached_votes": cached_votes,
         "vote_threshold": vote_threshold,
@@ -782,32 +971,34 @@ def smart_season_asset_upgrade(
         context["error"] = str(e)
         return False, "ERROR_IMAGE_COMPARE_SEASON", context
 
-    if stale_image(last_upgraded, stale_days):
-        if (
-            new_width >= existing_width
-            and new_height >= existing_height
-            and new_votes >= cached_votes
-        ):
-            return True, "FORCE_UPGRADE_STALE_SEASON", context
-        return False, "STALE_CANDIDATE_DOWNGRADE_SEASON", context
-
-    if cached_votes == 0:
-        if new_votes > 0 and (new_width > existing_width or new_height > existing_height or new_votes > cached_votes):
-            return True, "UPGRADE_ZERO_VOTE_SEASON", context
-        if new_votes == 0 and (new_width > existing_width or new_height > existing_height):
-            return True, "UPGRADE_VOTES_SEASON", context
-    if new_votes < cached_votes and (
-        new_width > existing_width or new_height > existing_height
-    ):
-        return True, "UPGRADE_VOTES_SEASON", context
-    if vote_relaxed <= new_votes < vote_threshold and new_votes > cached_votes:
-        return True, "UPGRADE_RELAXED_SEASON", context
-    if new_votes >= vote_threshold:
-        return True, "UPGRADE_THRESHOLD_SEASON", context
-    if new_width > existing_width or new_height > existing_height:
-        return True, "UPGRADE_DIMENSIONS_SEASON", context
-
-    return False, "NO_UPGRADE_NEEDED_SEASON", context
+    season_entry = {}
+    if isinstance(cached, dict) and season_number is not None:
+        season_entry = (cached.get("seasons") or {}).get(str(season_number), {})
+    comparison = _upgrade_quality_comparison(
+        config,
+        asset_path,
+        new_image_data,
+        season_entry if isinstance(season_entry, dict) else {},
+        asset_type="season",
+        existing_width=existing_width,
+        existing_height=existing_height,
+        average_key="season_average",
+        count_key="season_vote_count",
+        provider_key="season_provider",
+        source_key="season_source_path",
+        language_key="season_language",
+    )
+    context.update(comparison)
+    decision, status = _quality_guard_decision(
+        comparison,
+        new_votes=new_votes,
+        cached_votes=cached_votes,
+        vote_relaxed=vote_relaxed,
+        vote_threshold=vote_threshold,
+        stale=stale_image(last_upgraded, stale_days),
+        season=True,
+    )
+    return decision, status, context
 
 async def _download_external_artwork(
     config, url, *, provider, session, retries=3

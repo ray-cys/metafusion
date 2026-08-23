@@ -232,7 +232,12 @@ def test_asset_observation_records_each_asset_shape(monkeypatch, tmp_path):
                 2020,
                 "movie",
                 asset_type,
-                {"file_path": f"/{asset_type}.jpg", "vote_average": 8},
+                {
+                    "file_path": f"/{asset_type}.jpg",
+                    "vote_average": 8,
+                    "vote_count": 42,
+                    "iso_639_1": "en",
+                },
                 asset_path=path,
                 checksum="checksum",
                 season_number=2,
@@ -240,8 +245,12 @@ def test_asset_observation_records_each_asset_shape(monkeypatch, tmp_path):
         )
 
     assert calls[0][1]["poster_checksum"] == "checksum"
+    assert calls[0][1]["poster_vote_count"] == 42
+    assert calls[0][1]["poster_language"] == "en"
     assert calls[1][1]["background_checksum"] == "checksum"
+    assert calls[1][1]["background_vote_count"] == 42
     assert calls[2][1]["season_checksum"] == "checksum"
+    assert calls[2][1]["season_vote_count"] == 42
 
 
 def test_exact_asset_adoption_preserves_symlink_and_failed_download(

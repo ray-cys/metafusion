@@ -186,6 +186,7 @@ def test_fanart_adapter_uses_project_header_and_normalizes_movie_candidate():
     assert session.calls[0][1]["headers"]["api-key"] == "project-secret"
     assert session.calls[0][1]["allow_redirects"] is False
     assert normalized[0]["provider"] == "fanart"
+    assert normalized[0]["vote_count"] == 8
     assert normalized[0]["provider_image_id"] == "44"
     assert normalized[0]["width"] == 1000
 

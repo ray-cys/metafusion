@@ -700,6 +700,9 @@ def _candidate_summary(config, candidate, asset_type, candidate_pool=None):
         "width": int(candidate.get("width") or 0),
         "height": int(candidate.get("height") or 0),
         "vote": float(candidate.get("vote_average") or 0),
+        "vote_count": int(
+            candidate.get("vote_count", candidate.get("provider_likes", 0)) or 0
+        ),
         "quality_score": quality["score"],
         "quality_components": quality,
     }
@@ -1200,17 +1203,24 @@ async def _record_asset_observation(
     """Record an artwork check, adding ownership only after exact verification."""
     source_path = candidate.get("file_path")
     vote = candidate.get("vote_average", 0)
+    vote_count = candidate.get(
+        "vote_count", candidate.get("provider_likes", 0)
+    )
+    language = candidate.get("iso_639_1")
     kwargs = {}
     flags = {"update_timestamp": False}
     if asset_type == "poster":
         flags["poster_checked"] = True
         flags["poster_source_verified"] = source_verified
         kwargs["poster_candidate_average"] = vote
+        kwargs["poster_candidate_vote_count"] = vote_count
         kwargs["poster_candidate_provider"] = _candidate_provider(candidate)
         kwargs["poster_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
                 poster_average=vote,
+                poster_vote_count=vote_count,
+                poster_language=language,
                 poster_provider=_candidate_provider(candidate),
                 poster_source_path=source_path,
                 poster_path=str(asset_path.resolve()),
@@ -1220,11 +1230,14 @@ async def _record_asset_observation(
         flags["background_checked"] = True
         flags["background_source_verified"] = source_verified
         kwargs["background_candidate_average"] = vote
+        kwargs["background_candidate_vote_count"] = vote_count
         kwargs["background_candidate_provider"] = _candidate_provider(candidate)
         kwargs["background_candidate_source_path"] = source_path
         if asset_path is not None and checksum:
             kwargs.update(
                 bg_average=vote,
+                background_vote_count=vote_count,
+                background_language=language,
                 background_provider=_candidate_provider(candidate),
                 background_source_path=source_path,
                 background_path=str(asset_path.resolve()),
@@ -1235,12 +1248,15 @@ async def _record_asset_observation(
         kwargs.update(
             season_number=season_number,
             season_candidate_average=vote,
+            season_candidate_vote_count=vote_count,
             season_candidate_provider=_candidate_provider(candidate),
             season_candidate_source_path=source_path,
         )
         if asset_path is not None and checksum:
             kwargs.update(
                 season_average=vote,
+                season_vote_count=vote_count,
+                season_language=language,
                 season_provider=_candidate_provider(candidate),
                 season_source_path=source_path,
                 season_path=str(asset_path.resolve()),
@@ -2082,6 +2098,8 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, poster_checked=True,
                 poster_average=best.get("vote_average", 0),
+                poster_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                poster_language=best.get("iso_639_1"),
                 poster_provider=_candidate_provider(best),
                 poster_source_path=source_path,
                 poster_path=str(asset_path.resolve()),
@@ -2134,6 +2152,8 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, poster_checked=True,
                 poster_average=best.get("vote_average", 0),
+                poster_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                poster_language=best.get("iso_639_1"),
                 poster_provider=_candidate_provider(best),
                 poster_source_path=best.get("file_path"),
             )
@@ -2206,6 +2226,8 @@ async def _build_movie(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
                         poster_average=best.get("vote_average", 0),
+                        poster_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                        poster_language=best.get("iso_639_1"),
                         poster_provider=_candidate_provider(best),
                         poster_source_path=best.get("file_path"),
                         poster_path=str(asset_path.resolve()),
@@ -2237,7 +2259,8 @@ async def _build_movie(
                     poster_size = asset_path.stat().st_size if asset_path.exists() else 0
                     log_asset_status(
                         status_code, media_type="Movie", asset_type="poster", full_title=full_title,
-                        filesize=poster_size, error=context.get("error") if context else None, extra="", season_number=None
+                        filesize=poster_size, error=context.get("error") if context else None, extra="", season_number=None,
+                        context=context,
                     )
                     poster_action = "skipped"
                     if asset_path.exists():
@@ -2334,6 +2357,8 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, background_checked=True,
                 bg_average=best.get("vote_average", 0),
+                background_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                background_language=best.get("iso_639_1"),
                 background_provider=_candidate_provider(best),
                 background_source_path=source_path,
                 background_path=str(asset_path.resolve()),
@@ -2386,6 +2411,8 @@ async def _build_movie(
                 cache_key, tmdb_id, title, year, "movie",
                 update_timestamp=False, background_checked=True,
                 bg_average=best.get("vote_average", 0),
+                background_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                background_language=best.get("iso_639_1"),
                 background_provider=_candidate_provider(best),
                 background_source_path=best.get("file_path"),
             )
@@ -2458,6 +2485,8 @@ async def _build_movie(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "movie",
                         bg_average=best.get("vote_average", 0),
+                        background_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                        background_language=best.get("iso_639_1"),
                         background_provider=_candidate_provider(best),
                         background_source_path=best.get("file_path"),
                         background_path=str(asset_path.resolve()),
@@ -2489,7 +2518,8 @@ async def _build_movie(
                     background_size = asset_path.stat().st_size if asset_path.exists() else 0
                     log_asset_status(
                         status_code, media_type="Movie", asset_type="background", full_title=full_title,
-                        filesize=background_size, error=context.get("error") if context else None, extra="", season_number=None
+                        filesize=background_size, error=context.get("error") if context else None, extra="", season_number=None,
+                        context=context,
                     )
                     background_action = "skipped"
                     if asset_path.exists():
@@ -3436,6 +3466,8 @@ async def _build_tv(
                 cache_key, tmdb_id, title, year, "tv",
                 update_timestamp=False, poster_checked=True,
                 poster_average=best.get("vote_average", 0),
+                poster_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                poster_language=best.get("iso_639_1"),
                 poster_provider=_candidate_provider(best),
                 poster_source_path=best.get("file_path"),
             )
@@ -3509,6 +3541,8 @@ async def _build_tv(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
                         poster_average=best.get("vote_average", 0),
+                        poster_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                        poster_language=best.get("iso_639_1"),
                         poster_provider=_candidate_provider(best),
                         poster_source_path=best.get("file_path"),
                         poster_path=str(asset_path.resolve()),
@@ -3540,7 +3574,8 @@ async def _build_tv(
                     poster_size = asset_path.stat().st_size if asset_path.exists() else 0
                     log_asset_status(
                         status_code, media_type="TV Show", asset_type="poster", full_title=full_title,
-                        filesize=poster_size, error=context.get("error") if context else None, extra="", season_number=None
+                        filesize=poster_size, error=context.get("error") if context else None, extra="", season_number=None,
+                        context=context,
                     )
                     poster_action = "skipped"
                     if asset_path.exists():
@@ -3690,6 +3725,8 @@ async def _build_tv(
                 cache_key, tmdb_id, title, year, "tv",
                 update_timestamp=False, background_checked=True,
                 bg_average=best.get("vote_average", 0),
+                background_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                background_language=best.get("iso_639_1"),
                 background_provider=_candidate_provider(best),
                 background_source_path=best.get("file_path"),
             )
@@ -3763,6 +3800,8 @@ async def _build_tv(
                     await meta_cache_async(
                         cache_key, tmdb_id, title, year, "tv",
                         bg_average=best.get("vote_average", 0),
+                        background_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                        background_language=best.get("iso_639_1"),
                         background_provider=_candidate_provider(best),
                         background_source_path=best.get("file_path"),
                         background_path=str(asset_path.resolve()),
@@ -3794,7 +3833,8 @@ async def _build_tv(
                     background_size = asset_path.stat().st_size if asset_path.exists() else 0
                     log_asset_status(
                         status_code, media_type="TV Show", asset_type="background", full_title=full_title,
-                        filesize=background_size, error=context.get("error") if context else None, extra="", season_number=None
+                        filesize=background_size, error=context.get("error") if context else None, extra="", season_number=None,
+                        context=context,
                     )
                     background_action = "skipped"
                     if asset_path.exists():
@@ -3944,6 +3984,8 @@ async def _build_tv(
                 cache_key, tmdb_id, title, year, "tv",
                 update_timestamp=False, season_number=season_number,
                 season_average=best.get("vote_average", 0),
+                season_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                season_language=best.get("iso_639_1"),
                 season_provider=_candidate_provider(best),
                 season_source_path=best.get("file_path"),
             )
@@ -4025,6 +4067,8 @@ async def _build_tv(
                         cache_key, tmdb_id, title, year, "tv",
                         season_number=season_number,
                         season_average=best.get("vote_average", 0),
+                        season_vote_count=best.get("vote_count", best.get("provider_likes", 0)),
+                        season_language=best.get("iso_639_1"),
                         season_provider=_candidate_provider(best),
                         season_source_path=best.get("file_path"),
                         season_path=str(asset_path.resolve()),
@@ -4057,7 +4101,8 @@ async def _build_tv(
                     season_poster_size = asset_path.stat().st_size if asset_path.exists() else 0
                     log_asset_status(
                         status_code, media_type="TV Show", asset_type="poster", full_title=full_title,
-                        filesize=season_poster_size, error=context.get("error") if context else None, extra="", season_number=season_number
+                        filesize=season_poster_size, error=context.get("error") if context else None, extra="", season_number=season_number,
+                        context=context,
                     )
                     season_poster_actions[season_number] = "skipped"
                     if asset_path.exists():
