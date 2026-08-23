@@ -244,13 +244,13 @@ def test_metadata_summaries_are_mode_specific():
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": False}
     ) == (
-        "Metadata | Target: Kometa YAML | Created: 2 | Updated: 3 | "
+        "Metadata result | Target: Kometa YAML | Created: 2 | Updated: 3 | "
         "Unchanged: 4 | Failed: 1"
     )
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": True}
     ) == (
-        "Metadata | Target: Plex | Changed: 3 | API batches: 5 | "
+        "Metadata result | Target: Plex | Changed: 3 | API batches: 5 | "
         "Unchanged: 4 | Failed: 1"
     )
 

@@ -12,6 +12,7 @@ from helper.incremental import (
     library_full_scan_decisions,
     load_state,
     mark_full_scan_complete,
+    metadata_schedule_summary,
     plan_items,
     select_items,
     should_run_full_scan,
@@ -654,4 +655,120 @@ def test_artwork_schedule_summary_handles_legacy_seasons_and_plural_movies():
         "required": 0,
         "forced": 0,
         "not_due": 2,
+    }
+
+
+def test_metadata_schedule_summary_reconciles_all_selection_states():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["plex_metadata"] = {"recheck_days": 30}
+    config["incremental"]["metadata_pending_recheck_hours"] = 24
+    fingerprint = config_fingerprint(config)
+    items = [
+        SimpleNamespace(ratingKey=key, updatedAt=updated, type="movie")
+        for key in ("new", "pending", "plex-due", "forced", "current")
+    ]
+    current_check = (now - timedelta(days=1)).isoformat()
+    cache = {
+        "pending": {
+            "rating_key": "pending",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "metadata_pending_count": 1,
+            "metadata_pending_at": (now - timedelta(days=2)).isoformat(),
+            "plex_metadata_last_checked": current_check,
+        },
+        "plex-due": {
+            "rating_key": "plex-due",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "plex_metadata_last_checked": (now - timedelta(days=31)).isoformat(),
+        },
+        "forced": {
+            "rating_key": "forced",
+            "media_type": "movie",
+            "plex_updated_at": "older",
+            "config_fingerprint": fingerprint,
+            "plex_metadata_last_checked": current_check,
+        },
+        "current": {
+            "rating_key": "current",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "plex_metadata_last_checked": current_check,
+        },
+    }
+    flags = {
+        "metadata_basic": True,
+        "metadata_enhanced": True,
+        "plex_metadata": True,
+        "poster": False,
+        "background": False,
+        "season": False,
+    }
+    planned = plan_items(
+        items,
+        cache,
+        fingerprint,
+        config=config,
+        feature_flags=flags,
+        now=now,
+    )
+
+    schedule = metadata_schedule_summary(
+        items,
+        cache,
+        planned,
+        config,
+        feature_flags=flags,
+        now=now,
+    )
+    assert schedule == {
+        "destinations": 5,
+        "due": 2,
+        "required": 1,
+        "forced": 1,
+        "not_due": 1,
+    }
+
+    full_plan = plan_items(
+        items,
+        cache,
+        fingerprint,
+        full_scan=True,
+        config=config,
+        feature_flags=flags,
+        now=now,
+    )
+    assert metadata_schedule_summary(
+        items,
+        cache,
+        full_plan,
+        config,
+        feature_flags=flags,
+        now=now,
+    ) == {
+        "destinations": 5,
+        "due": 2,
+        "required": 1,
+        "forced": 2,
+        "not_due": 0,
+    }
+    assert metadata_schedule_summary(
+        items,
+        cache,
+        [],
+        config,
+        feature_flags={},
+        now=now,
+    ) == {
+        "destinations": 0,
+        "due": 0,
+        "required": 0,
+        "forced": 0,
+        "not_due": 0,
     }

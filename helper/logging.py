@@ -1255,7 +1255,7 @@ def metadata_action_summary(library_summary, feature_flags):
     library_summary = library_summary or {}
     if feature_flags.get("plex_metadata", False):
         return (
-            "Metadata | Target: Plex | Changed: "
+            "Metadata result | Target: Plex | Changed: "
             f"{library_summary.get('meta_upgraded', 0)} | "
             f"API batches: {library_summary.get('plex_metadata_writes', 0)} | "
             f"Unchanged: {library_summary.get('meta_skipped', 0)} | "
@@ -1265,13 +1265,25 @@ def metadata_action_summary(library_summary, feature_flags):
         "metadata_enhanced", False
     ):
         return (
-            "Metadata | Target: Kometa YAML | Created: "
+            "Metadata result | Target: Kometa YAML | Created: "
             f"{library_summary.get('meta_downloaded', 0)} | "
             f"Updated: {library_summary.get('meta_upgraded', 0)} | "
             f"Unchanged: {library_summary.get('meta_skipped', 0)} | "
             f"Failed: {library_summary.get('meta_failed', 0)}"
         )
     return None
+
+
+def metadata_schedule_line(library_summary):
+    """Return reconciled title-level scheduling for metadata work."""
+    return (
+        "Metadata schedule | Destinations: "
+        f"{library_summary.get('metadata_schedule_destinations', 0)} | "
+        f"Due: {library_summary.get('metadata_schedule_due', 0)} | "
+        f"Required: {library_summary.get('metadata_schedule_required', 0)} | "
+        f"Forced: {library_summary.get('metadata_schedule_forced', 0)} | "
+        f"Not due: {library_summary.get('metadata_schedule_not_due', 0)}"
+    )
 
 
 def artwork_schedule_line(library_summary, prefix, label):
@@ -1535,6 +1547,13 @@ def log_final_summary(
             for name in ("poster", "background", "season")
         )
     )
+    metadata_enabled = bool(
+        feature_flags
+        and any(
+            feature_flags.get(name, False)
+            for name in ("metadata_basic", "metadata_enhanced", "plex_metadata")
+        )
+    )
     overall: Counter[str] = Counter()
     providers: Counter[str] = Counter()
     current_providers: Counter[str] = Counter()
@@ -1614,13 +1633,12 @@ def log_final_summary(
             "failed",
         )
     ) + artwork_policy_preserved + artwork_policy_missing
-    lines.extend(box_line(
-        f"Overall | Titles: {total_titles} | Metadata changed: "
-        f"{overall['meta_downloaded'] + overall['meta_upgraded']} | "
-        f"Metadata unchanged: {overall['meta_skipped']} | "
-        f"Metadata failed: {overall['meta_failed']}",
-        box_width,
-    ))
+    lines.extend(box_line(f"Overall | Titles processed: {total_titles}", box_width))
+    if metadata_enabled:
+        lines.extend(box_line(metadata_schedule_line(overall), box_width))
+        overall_metadata_summary = metadata_action_summary(overall, feature_flags)
+        if overall_metadata_summary:
+            lines.extend(box_line(overall_metadata_summary, box_width))
     lines.extend(box_line(
         f"Artwork schedule | Destinations: {artwork_schedule['destinations']} | "
         f"Due: {artwork_schedule['due']} | "
@@ -1720,6 +1738,10 @@ def log_final_summary(
                     box_width,
                 )
             )
+        if metadata_enabled:
+            lines.extend(box_line(
+                f"Library: {lib} | {metadata_schedule_line(libsum)}", box_width
+            ))
         metadata_summary = metadata_action_summary(libsum, feature_flags)
         if metadata_summary:
             lines.extend(box_line(f"Library: {lib} | {metadata_summary}", box_width))

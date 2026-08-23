@@ -645,13 +645,49 @@ provider requests, cache details, and internal API batches remain at `DEBUG`.
 Missing or deferred outcomes are warnings and failed outcomes are errors.
 Season-poster warnings name the missing Plex season and summarize the provider
 attempts. One final summary combines only the libraries processed by that run.
-Each enabled artwork lane has a schedule line and a result line. Schedule states
-are mutually exclusive: `Required` has never completed an artwork check, `Due`
-has reached its configured cadence, `Forced` is current but was selected by a
-full/targeted/configuration or Plex-change trigger, and `Not due` remained
-outside processing. Season schedule counts represent individual known Plex
-season destinations. Result lines then report evaluated, downloaded, upgraded,
-adopted, unchanged, preserved, missing, deferred, failed, and applicable policy
+Metadata and every enabled artwork lane have separate schedule and result
+lines. Schedule states are mutually exclusive and always reconcile with the
+reported destination count:
+
+| State | Metadata meaning | Artwork meaning |
+| --- | --- | --- |
+| `Required` | A new Plex title has no prior durable processing state. | The artwork destination has never completed an artwork check, including a newly discovered title or season. |
+| `Due` | A pending metadata retry, periodic Plex metadata recheck, TMDb change notification, or deferred retry selected the title. | The configured adaptive artwork-refresh cadence has expired. |
+| `Forced` | A current title was selected by a full scan, targeted request, configuration change, Plex item change, or TV child-inventory change. | A current destination was selected by one of those non-cadence triggers. |
+| `Not due` | The title did not require metadata work and stayed outside metadata processing. | The destination remained current and outside artwork processing. |
+
+Metadata destinations count titles. Poster and background destinations also
+count titles, while season-poster destinations count individual known Plex
+seasons. `Not selected` on the incremental inventory line remains an item-level
+total across all work; it is not a substitute for the metadata or artwork
+lane-specific `Not due` figures.
+
+Metadata result lines identify the target (`Kometa YAML` or `Plex`) and report
+created/updated or changed, unchanged, API batches where applicable, and failed
+items. Metadata coverage is separate: it reports how many processed records met
+the configured field-completeness threshold. Consequently, a metadata record
+may be unchanged but below the threshold, or changed while already at 100%
+coverage. Item-level logs name changed field categories; complete unchanged
+items stay at `DEBUG`, while incomplete unchanged items remain visible at
+`INFO`.
+
+A Kometa library summary therefore reads as three separate questions rather
+than treating `100%` coverage as proof that a write occurred:
+
+```text
+[Summary] Movies | Metadata schedule | Destinations: 2,000 | Required: 12 | Due: 31 | Forced: 7 | Not due: 1,950
+[Summary] Movies | Metadata result | Target: Kometa YAML | Created: 8 | Updated: 6 | Unchanged: 34 | Failed: 2
+[Summary] Movies | Metadata coverage | Complete: 42 | Incomplete: 6 | Threshold: 100%
+```
+
+The schedule line accounts for the complete selected-library inventory. The
+result and coverage lines account only for titles evaluated during this run;
+their totals can therefore be much smaller than `Destinations`. In Plex mode,
+the same schedule is used, while the result line changes its target and reports
+field writes and API batches instead of YAML creation/update counts.
+
+Artwork result lines report evaluated, downloaded, upgraded, adopted,
+unchanged, preserved, missing, deferred, failed, and applicable policy
 outcomes. Enabled TV libraries always receive season-poster schedule and result
 lines, including zero-evaluated lines. The
 persistent artwork-gap summary is separate so known not-due gaps remain visible.

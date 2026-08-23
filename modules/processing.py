@@ -23,6 +23,7 @@ from helper.identity import (
 from helper.incremental import (
     artwork_schedule_summary,
     child_inventory_fingerprint,
+    metadata_schedule_summary,
     plan_items,
     utc_now,
 )
@@ -764,6 +765,17 @@ async def process_library(
             now=schedule_now,
         )
         artwork_schedule = artwork_schedule_summary(
+            all_items,
+            incremental_cache,
+            planned_items,
+            config,
+            feature_flags=feature_flags,
+            rating_keys=rating_keys,
+            now=schedule_now,
+            server_id=server_id,
+            library_uuid=library_uuid,
+        )
+        metadata_schedule = metadata_schedule_summary(
             all_items,
             incremental_cache,
             planned_items,
@@ -1593,6 +1605,8 @@ async def process_library(
         for lane, counts in artwork_schedule.items():
             for state, count in counts.items():
                 library_summary[f"{lane}_schedule_{state}"] = count
+        for state, count in metadata_schedule.items():
+            library_summary[f"metadata_schedule_{state}"] = count
 
         if metadata_summaries is not None:
             metadata_summaries[library_name] = {

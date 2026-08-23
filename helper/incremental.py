@@ -557,6 +557,88 @@ def artwork_schedule_summary(
     return summary
 
 
+def metadata_schedule_summary(
+    items,
+    cache,
+    planned_items,
+    config,
+    *,
+    feature_flags=None,
+    rating_keys=None,
+    now=None,
+    server_id=None,
+    library_uuid=None,
+):
+    """Classify each enabled metadata destination into one schedule state."""
+    flags = feature_flags or {}
+    enabled = any(
+        flags.get(name, False)
+        for name in ("metadata_basic", "metadata_enhanced", "plex_metadata")
+    )
+    summary = dict.fromkeys(
+        ("destinations", "due", "required", "forced", "not_due"), 0
+    )
+    if not enabled:
+        return summary
+    target_keys = {
+        str(value) for value in (rating_keys or []) if str(value).strip()
+    }
+    candidates = [
+        item
+        for item in items
+        if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
+    ]
+    cache_by_rating_key = _scoped_cache_by_rating_key(
+        cache,
+        candidates,
+        server_id=server_id,
+        library_uuid=library_uuid,
+    )
+    planned_by_rating_key = {
+        str(getattr(planned.item, "ratingKey", "")): planned
+        for planned in planned_items
+    }
+    metadata_due_causes = {
+        "metadata_pending_recheck",
+        "plex_metadata_recheck",
+        "tmdb_change_detected",
+        "deferred_retry_due",
+    }
+    check_time = utc_now() if now is None else now
+    for item in candidates:
+        rating_key = str(getattr(item, "ratingKey", ""))
+        cached = cache_by_rating_key.get(rating_key)
+        cached_record = cached if isinstance(cached, dict) else {}
+        media_type = _media_type(
+            getattr(item, "type", None) or cached_record.get("media_type")
+        )
+        if media_type not in {"movie", "tv"}:
+            continue
+        summary["destinations"] += 1
+        if not cached_record:
+            summary["required"] += 1
+            continue
+        planned = planned_by_rating_key.get(rating_key)
+        reasons = planned.reasons if planned is not None else frozenset()
+        causes = set(planned.selection_causes if planned is not None else ())
+        causes.update(
+            due_selection_causes(
+                cached_record,
+                media_type,
+                config,
+                feature_flags=flags,
+                now=check_time,
+            )
+        )
+        if "metadata" in reasons and causes & metadata_due_causes:
+            summary["due"] += 1
+        elif "metadata" in reasons:
+            summary["forced"] += 1
+        else:
+            summary["not_due"] += 1
+    return summary
+
+
 def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
     """Return whether enabled artwork makes an unchanged item eligible."""
     return bool(

@@ -333,6 +333,11 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
             "percent_complete": 100,
             "library_summary": {
                 "meta_upgraded": 1,
+                "metadata_schedule_destinations": 10,
+                "metadata_schedule_due": 2,
+                "metadata_schedule_required": 1,
+                "metadata_schedule_forced": 3,
+                "metadata_schedule_not_due": 4,
                 "poster_downloaded": 1,
                 "background_downloaded": 1,
                 "season_poster_downloaded": 1,
@@ -422,6 +427,11 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     assert "Artwork current sources | Existing/manual: 1, TMDb: 1, Unknown: 1" in text
     assert "Policy preserved: 1" in text
     assert "Policy missing: 1" in text
+    assert (
+        "Metadata schedule | Destinations: 10 | Due: 2 | Required: 1 | "
+        "Forced: 3 | Not due: 4"
+    ) in text
+    assert "Metadata result | Target: Plex | Changed: 1" in text
     assert (
         "Series poster schedule | Destinations: 10 | Due: 2 | Required: 1 | "
         "Forced: 3 | Not due: 4"
