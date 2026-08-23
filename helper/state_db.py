@@ -775,15 +775,47 @@ def _unresolved_work_class(asset_type):
     return "metadata"
 
 
+def _unresolved_resolution_key(record):
+    identity = report_identity(record)
+    media_type = str(record.get("media_type") or "unknown").strip().casefold()
+    if media_type in {"show", "shows", "tv show"}:
+        media_type = "tv"
+    elif media_type in {"movies"}:
+        media_type = "movie"
+    item_key: tuple[str, ...]
+    if identity["plex_rating_key"]:
+        item_key = ("plex", identity["plex_rating_key"])
+    elif identity["tmdb_id"]:
+        item_key = (
+            "tmdb",
+            identity["tmdb_id"],
+            str(identity["edition"] or "").strip().casefold(),
+        )
+    else:
+        item_key = (
+            "title",
+            str(record.get("title") or "Unknown title").strip().casefold(),
+        )
+    return (
+        str(record.get("library") or record.get("library_name") or "Unknown library")
+        .strip()
+        .casefold(),
+        media_type,
+        str(record.get("asset_type") or "metadata").strip().casefold(),
+        item_key,
+    )
+
+
 def reconcile_unresolved_work(
     records,
     *,
     resolved_libraries=None,
     resolved_work=None,
+    evaluated_records=None,
     path=None,
     now=None,
 ):
-    """Upsert current problems and resolve absent ones only for full-scan libraries."""
+    """Upsert problems and resolve absent ones after full or exact evaluation."""
     connection = _connect(path, writable=True)
     current = _as_utc(now).isoformat()
     normalized = {}
@@ -821,6 +853,12 @@ def reconcile_unresolved_work(
         if str(library)
     }
     resolved_scope.update(work_scope)
+    evaluated_scope = {
+        _unresolved_resolution_key(record)
+        for record in evaluated_records or []
+        if isinstance(record, dict)
+        and str(record.get("destination_state") or "").casefold() == "present"
+    }
     try:
         with connection:
             for row in normalized.values():
@@ -856,24 +894,30 @@ def reconcile_unresolved_work(
                     """,
                     (*row, current, current),
                 )
-            if resolved_scope:
+            if resolved_scope or evaluated_scope:
                 open_rows = connection.execute(
-                    "SELECT fingerprint, library_name, asset_type "
+                    "SELECT fingerprint, library_name, media_type, title, "
+                    "asset_type, plex_rating_key, tmdb_id, edition "
                     "FROM unresolved_work "
                     "WHERE status = 'open'"
                 ).fetchall()
                 resolved = [
                     str(row["fingerprint"])
                     for row in open_rows
-                    if str(row["library_name"]).casefold() in resolved_scope
+                    if str(row["fingerprint"]) not in normalized
                     and (
-                        not work_scope
-                        or _unresolved_work_class(row["asset_type"])
-                        in work_scope.get(
-                            str(row["library_name"]).casefold(), set()
+                        (
+                            str(row["library_name"]).casefold() in resolved_scope
+                            and (
+                                not work_scope
+                                or _unresolved_work_class(row["asset_type"])
+                                in work_scope.get(
+                                    str(row["library_name"]).casefold(), set()
+                                )
+                            )
                         )
+                        or _unresolved_resolution_key(dict(row)) in evaluated_scope
                     )
-                    and str(row["fingerprint"]) not in normalized
                 ]
                 connection.executemany(
                     "UPDATE unresolved_work SET status = 'resolved', "

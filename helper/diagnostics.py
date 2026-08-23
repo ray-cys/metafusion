@@ -3,7 +3,7 @@ import os
 import platform
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from helper.build_info import build_info
@@ -12,10 +12,17 @@ from helper.config import (
     CACHE_DIR,
     ENV_BINDINGS,
     SECRET_FILE_BINDINGS,
+    config_for_library,
+    get_image_upgrade_days,
     report_retention,
 )
+from helper.incremental import adaptive_artwork_days
 from helper.io import sha256_file
-from helper.report_identity import item_report_record, item_report_records
+from helper.report_identity import (
+    item_report_record,
+    item_report_records,
+    report_identity,
+)
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import SCHEMA_VERSION as STATE_SCHEMA_VERSION
 from helper.state_db import STATE_DATABASE
@@ -555,22 +562,442 @@ def _tmdb_cache_status(path):
         return f"unreadable ({type(error).__name__})"
 
 
-def write_artwork_gap_report(gaps, base_dir=None, retention=10):
-    """Write a bounded, value-safe list of artwork and identity gaps."""
-    unique = {}
-    for gap in gaps or []:
-        if not isinstance(gap, dict):
-            continue
-        key = (
-            str(gap.get("library") or "Unknown library"),
-            str(gap.get("media_type") or "Unknown"),
-            str(gap.get("title") or "Unknown title"),
-            str(gap.get("asset_type") or "metadata"),
-            str(gap.get("category") or "unknown"),
+def _gap_key(record):
+    identity = report_identity(record)
+    if identity["plex_rating_key"]:
+        item_key = ("plex", identity["plex_rating_key"])
+    elif identity["tmdb_id"]:
+        item_key = (
+            "tmdb",
+            identity["tmdb_id"],
+            str(identity["edition"] or "").strip().casefold(),
         )
-        unique[key] = item_report_record(gap)
-    if not unique:
-        return None
+    else:
+        item_key = (
+            "title",
+            str(record.get("title") or "Unknown title").strip().casefold(),
+        )
+    return (
+        str(record.get("library") or record.get("library_name") or "Unknown library"),
+        str(record.get("media_type") or "Unknown"),
+        item_key,
+        str(record.get("asset_type") or "metadata"),
+        str(record.get("category") or "unknown"),
+    )
+
+
+def _artwork_gap(record):
+    asset_type = str(record.get("asset_type") or "").strip().casefold()
+    return asset_type in {"poster", "background"} or asset_type.startswith("season")
+
+
+def _recorded_title(entry):
+    title = str(entry.get("title") or "Unknown title")
+    year = entry.get("year")
+    display = f"{title} ({year})" if year not in (None, "") else title
+    edition = entry.get("edition") or entry.get("edition_title")
+    if edition and str(entry.get("media_type") or "").casefold() == "movie":
+        display += f" [{edition}]"
+    return display
+
+
+def _non_negative_int(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def recorded_missing_artwork_gaps(cache, config):
+    """Recover still-missing artwork evidence recorded before the durable ledger."""
+    assets = config.get("assets", {}) if isinstance(config, dict) else {}
+    enabled = {
+        "poster": assets.get("run_poster", True),
+        "background": assets.get("run_background", False),
+        "season": assets.get("run_season", True),
+    }
+    recovered = {}
+    values = cache.values() if hasattr(cache, "values") else []
+    for entry in values:
+        if not isinstance(entry, dict):
+            continue
+        media_type = str(entry.get("media_type") or "unknown").casefold()
+        if media_type in {"show", "shows"}:
+            media_type = "tv"
+        identity = {
+            "plex_rating_key": entry.get("rating_key"),
+            "tmdb_id": entry.get("tmdb_id"),
+            "imdb_id": entry.get("imdb_id"),
+            "tvdb_id": entry.get("tvdb_id"),
+            "edition": entry.get("edition"),
+            "identity_source": entry.get("identity_source"),
+        }
+
+        def add(
+            asset_type,
+            *,
+            season_number=None,
+            last_checked=None,
+            missing_checks=0,
+            cached_entry=entry,
+            cached_media_type=media_type,
+            cached_identity=identity,
+        ):
+            record = item_report_record(
+                {
+                    "library": cached_entry.get("library_name")
+                    or "Unknown library",
+                    "media_type": (
+                        "Movie" if cached_media_type == "movie" else "TV Show"
+                    ),
+                    "title": _recorded_title(cached_entry),
+                    "asset_type": asset_type,
+                    "category": "artwork_missing",
+                    "detail": (
+                        "Recorded provider check found no candidate; the destination "
+                        "remained absent"
+                    ),
+                    "last_checked": last_checked,
+                    "missing_checks": _non_negative_int(missing_checks),
+                    "record_source": "media_state",
+                },
+                cached_identity,
+                season_number=season_number,
+            )
+            recovered[_gap_key(record)] = record
+
+        for asset_type in ("poster", "background"):
+            if not enabled[asset_type]:
+                continue
+            missing_checks = _non_negative_int(
+                entry.get(f"{asset_type}_missing_checks")
+            )
+            fingerprint = str(entry.get(f"{asset_type}_candidate_fingerprint") or "")
+            if (
+                missing_checks > 0
+                and not fingerprint
+                and not entry.get(f"{asset_type}_path")
+                and not entry.get(f"{asset_type}_checksum")
+            ):
+                add(
+                    asset_type,
+                    last_checked=entry.get(f"{asset_type}_last_checked"),
+                    missing_checks=missing_checks,
+                )
+
+        if media_type != "tv" or not enabled["season"]:
+            continue
+        missing_checks = _non_negative_int(entry.get("season_missing_checks"))
+        fingerprint = str(entry.get("season_candidate_fingerprint") or "")
+        if missing_checks <= 0 or not fingerprint:
+            continue
+        seasons = entry.get("seasons") if isinstance(entry.get("seasons"), dict) else {}
+        for component in fingerprint.split("|"):
+            number, separator, source = component.partition(":")
+            if not separator or source or not number.lstrip("-").isdigit():
+                continue
+            season_number = int(number)
+            season = seasons.get(str(season_number), {})
+            if isinstance(season, dict) and (
+                season.get("season_path") or season.get("season_checksum")
+            ):
+                continue
+            add(
+                f"season {season_number} poster",
+                season_number=season_number,
+                last_checked=entry.get("season_last_checked"),
+                missing_checks=missing_checks,
+            )
+    return list(recovered.values())
+
+
+def _cache_index(cache):
+    by_rating_key = {}
+    by_provider_id = {}
+    values = cache.values() if hasattr(cache, "values") else []
+    for entry in values:
+        if not isinstance(entry, dict):
+            continue
+        library = str(entry.get("library_name") or "Unknown library").casefold()
+        media_type = str(entry.get("media_type") or "unknown").casefold()
+        if media_type in {"show", "shows"}:
+            media_type = "tv"
+        rating_key = entry.get("rating_key")
+        if rating_key not in (None, ""):
+            by_rating_key[(library, str(rating_key))] = entry
+        tmdb_id = entry.get("tmdb_id")
+        if tmdb_id not in (None, ""):
+            by_provider_id[(library, media_type, str(tmdb_id))] = entry
+    return by_rating_key, by_provider_id
+
+
+def _cached_gap_entry(record, indexes):
+    library = str(
+        record.get("library") or record.get("library_name") or "Unknown library"
+    ).casefold()
+    rating_key = record.get("plex_rating_key") or record.get("rating_key")
+    if rating_key not in (None, ""):
+        cached = indexes[0].get((library, str(rating_key)))
+        if cached is not None:
+            return cached
+    media_type = str(record.get("media_type") or "unknown").casefold()
+    media_type = "tv" if media_type in {"show", "shows", "tv show"} else media_type
+    tmdb_id = record.get("tmdb_id")
+    if tmdb_id not in (None, ""):
+        return indexes[1].get((library, media_type, str(tmdb_id)))
+    return None
+
+
+def _gap_lane(record):
+    asset_type = str(record.get("asset_type") or "").casefold()
+    if asset_type.startswith("season"):
+        return "season"
+    return asset_type if asset_type in {"poster", "background"} else None
+
+
+def _gap_destination_state(record, cached):
+    if record.get("status") == "resolved":
+        return "resolved"
+    category = str(record.get("category") or "").casefold()
+    if category == "artwork_preserved":
+        return "recorded_present"
+    if category == "path_invalid":
+        return "unavailable"
+    lane = _gap_lane(record)
+    if lane and isinstance(cached, dict) and lane == "season":
+        season = (cached.get("seasons") or {}).get(
+            str(record.get("season_number")), {}
+        )
+        if (
+            isinstance(season, dict)
+            and season.get("season_path")
+            and season.get("season_checksum")
+        ):
+            return "recorded_present"
+    elif lane and isinstance(cached, dict):
+        if cached.get(f"{lane}_path") and cached.get(f"{lane}_checksum"):
+            return "recorded_present"
+    if category in {"artwork_missing", "policy_preserved_missing"}:
+        return "recorded_missing"
+    return "unknown"
+
+
+def _gap_recheck(record, cached, config, now):
+    lane = _gap_lane(record)
+    if not lane or record.get("status") == "resolved":
+        return None, None, None
+    assets = config.get("assets", {}) if isinstance(config, dict) else {}
+    enabled = {
+        "poster": assets.get("run_poster", True),
+        "background": assets.get("run_background", False),
+        "season": assets.get("run_season", True),
+    }
+    if not enabled[lane]:
+        return record.get("last_checked"), None, "disabled"
+    if not isinstance(cached, dict):
+        return record.get("last_checked"), None, "unknown"
+    last_checked = cached.get(f"{lane}_last_checked") or record.get("last_checked")
+    media_type = str(record.get("media_type") or "").casefold()
+    cadence_type = "season" if lane == "season" else (
+        "movie" if media_type == "movie" else "series"
+    )
+    library_config = config_for_library(
+        config,
+        record.get("library") or record.get("library_name") or "Unknown library",
+    )
+    days = adaptive_artwork_days(
+        cached,
+        lane,
+        get_image_upgrade_days(library_config, cadence_type),
+    )
+    if float(days) <= 0:
+        return last_checked, None, "disabled"
+    try:
+        checked = datetime.fromisoformat(str(last_checked).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return last_checked, None, "due"
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=timezone.utc)
+    next_check = checked + timedelta(days=float(days))
+    return last_checked, next_check.isoformat(), (
+        "due" if now >= next_check else "not_due"
+    )
+
+
+def artwork_gap_snapshot(
+    gaps,
+    *,
+    persistent_records=None,
+    recorded_gaps=None,
+    cache=None,
+    config=None,
+    now=None,
+):
+    """Combine current observations with durable and pre-ledger missing evidence."""
+    current = {
+        _gap_key(record): item_report_record(record)
+        for record in gaps or []
+        if isinstance(record, dict)
+    }
+    persistent = [
+        item_report_record(
+            {
+                **record,
+                "library": record.get("library") or record.get("library_name"),
+            }
+        )
+        for record in persistent_records or []
+        if isinstance(record, dict)
+    ]
+    open_records = {
+        _gap_key(record): record
+        for record in persistent
+        if record.get("status") == "open"
+    }
+    inferred = {
+        _gap_key(record): item_report_record(record)
+        for record in recorded_gaps or []
+        if isinstance(record, dict)
+    }
+    combined = {}
+    observations = {}
+    for key, record in current.items():
+        combined[key] = record
+        observations[key] = "current_run"
+    for key, record in open_records.items():
+        if key not in combined:
+            combined[key] = record
+            observations[key] = "carried_forward"
+    for key, record in inferred.items():
+        if key not in combined:
+            combined[key] = record
+            observations[key] = "recorded_state"
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    indexes = _cache_index(cache)
+    enriched = []
+    for key, record in sorted(
+        combined.items(),
+        key=lambda value: tuple(str(part).casefold() for part in value[0]),
+    ):
+        cached = _cached_gap_entry(record, indexes)
+        last_checked, next_recheck, recheck_status = _gap_recheck(
+            record,
+            cached,
+            config or {},
+            now,
+        )
+        enriched.append(
+            item_report_record(
+                {
+                    **record,
+                    "status": "open",
+                    "observation": observations[key],
+                    "destination_state": _gap_destination_state(record, cached),
+                    "last_checked": last_checked or record.get("last_seen"),
+                    "next_recheck": next_recheck,
+                    "recheck_status": recheck_status,
+                }
+            )
+        )
+    resolved = [
+        {
+            **record,
+            "observation": "resolved",
+            "destination_state": "resolved",
+        }
+        for record in persistent
+        if record.get("status") == "resolved"
+    ][:100]
+    artwork_open = [record for record in enriched if _artwork_gap(record)]
+    artwork_current = [
+        record for record in artwork_open if record.get("observation") == "current_run"
+    ]
+    artwork_carried = [
+        record for record in artwork_open if record.get("observation") != "current_run"
+    ]
+    artwork_resolved = [record for record in resolved if _artwork_gap(record)]
+    library_summary = {}
+    for record in artwork_open:
+        library = str(record.get("library") or "Unknown library")
+        summary = library_summary.setdefault(
+            library,
+            {"open": 0, "current_run": 0, "carried_forward": 0, "not_due": 0},
+        )
+        summary["open"] += 1
+        if record.get("observation") == "current_run":
+            summary["current_run"] += 1
+        else:
+            summary["carried_forward"] += 1
+        if record.get("recheck_status") == "not_due":
+            summary["not_due"] += 1
+    return {
+        "summary": {
+            "current_run": len(current),
+            "open": len(enriched),
+            "carried_forward": len(enriched) - len(current),
+            "resolved": len(resolved),
+            "artwork_current_run": len(artwork_current),
+            "artwork_open": len(artwork_open),
+            "artwork_carried_forward": len(artwork_carried),
+            "artwork_resolved": len(artwork_resolved),
+            "artwork_not_due": sum(
+                record.get("recheck_status") == "not_due" for record in artwork_open
+            ),
+        },
+        "libraries": dict(sorted(library_summary.items())),
+        "entries": enriched,
+        "current_run": [
+            record for record in enriched if record.get("observation") == "current_run"
+        ],
+        "carried_forward": [
+            record for record in enriched if record.get("observation") != "current_run"
+        ],
+        "resolved": resolved,
+    }
+
+
+def _gap_report_line(record):
+    line = (
+        f"- [{record.get('category') or 'unknown'}] "
+        f"{record.get('library') or 'Unknown library'} | "
+        f"{record.get('media_type') or 'Unknown'} | "
+        f"{record.get('title') or 'Unknown title'} | "
+        f"{record.get('asset_type') or 'metadata'} | "
+        f"destination={record.get('destination_state') or 'unknown'}"
+    )
+    if record.get("detail"):
+        line += f" | {record['detail']}"
+    if record.get("last_checked"):
+        line += f" | last checked={record['last_checked']}"
+    if record.get("next_recheck"):
+        line += f" | next recheck={record['next_recheck']}"
+    if record.get("recheck_status"):
+        line += f" | recheck={record['recheck_status']}"
+    return line
+
+
+def write_artwork_gap_report(
+    gaps,
+    base_dir=None,
+    retention=10,
+    *,
+    persistent_records=None,
+    recorded_gaps=None,
+    cache=None,
+    config=None,
+    snapshot=None,
+):
+    """Write an always-present snapshot of current and carried-forward gaps."""
+    snapshot = snapshot or artwork_gap_snapshot(
+        gaps,
+        persistent_records=persistent_records,
+        recorded_gaps=recorded_gaps,
+        cache=cache,
+        config=config,
+    )
 
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
@@ -581,24 +1008,30 @@ def write_artwork_gap_report(gaps, base_dir=None, retention=10):
         f"Generated: {datetime.now(timezone.utc).isoformat()}",
         f"Version: {current_build['version']}",
         f"Commit: {current_build['commit']}",
-        f"Entries: {len(unique)}",
+        f"Entries: {snapshot['summary']['open']}",
+        f"Open: {snapshot['summary']['open']}",
+        f"Current run: {snapshot['summary']['current_run']}",
+        f"Carried forward: {snapshot['summary']['carried_forward']}",
+        f"Recently resolved: {snapshot['summary']['resolved']}",
         "",
+        "Current run",
     ]
-    for key in sorted(unique, key=lambda value: tuple(part.casefold() for part in value)):
-        library, media_type, title, asset_type, category = key
-        detail = unique[key].get("detail") or ""
-        line = (
-            f"- [{category}] {library} | {media_type} | {title} | {asset_type}"
-        )
-        if detail:
-            line += f" | {detail}"
-        lines.append(line)
-    records = [record for _key, record in sorted(unique.items())]
+    lines.extend(_gap_report_line(record) for record in snapshot["current_run"])
+    if not snapshot["current_run"]:
+        lines.append("- none")
+    lines.extend(("", "Carried-forward open gaps"))
+    lines.extend(_gap_report_line(record) for record in snapshot["carried_forward"])
+    if not snapshot["carried_forward"]:
+        lines.append("- none")
+    lines.extend(("", "Recently resolved"))
+    lines.extend(_gap_report_line(record) for record in snapshot["resolved"])
+    if not snapshot["resolved"]:
+        lines.append("- none")
     return _write_report(
         path,
         lines,
         "artwork_gaps",
-        {"entries": records},
+        snapshot,
         retention,
     )
 

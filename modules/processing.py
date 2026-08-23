@@ -17,6 +17,7 @@ from helper.config import mode_check
 from helper.identity import (
     cache_key_for_meta,
     item_identity,
+    metadata_key_for_meta,
     plex_identity_fingerprint,
 )
 from helper.incremental import child_inventory_fingerprint, plan_items
@@ -30,6 +31,7 @@ from helper.logging import (
 from helper.performance import tracker_for
 from helper.plex import get_plex_metadata, plex_operation
 from helper.plex_metadata import apply_plex_metadata
+from helper.report_identity import item_report_record
 from helper.state_db import (
     clear_item_retries,
     load_due_item_retries,
@@ -144,6 +146,44 @@ def _current_artwork_provider(
         asset_type,
         path,
         season_number=season_number,
+    )
+
+
+def _record_artwork_evaluation(
+    config,
+    meta,
+    library_name,
+    asset_type,
+    action,
+    path,
+    *,
+    season_number=None,
+):
+    """Record an exact, successful destination check for ledger reconciliation."""
+    records = config.get("_artwork_evaluations")
+    if not isinstance(records, list):
+        return
+    media_type = str(meta.get("library_type") or "unknown").casefold()
+    report_type = "TV Show" if media_type in {"show", "tv"} else "Movie"
+    report_asset = (
+        f"season {int(season_number)} poster"
+        if asset_type == "season" and season_number is not None
+        else asset_type
+    )
+    records.append(
+        item_report_record(
+            {
+                "library": library_name,
+                "media_type": report_type,
+                "title": metadata_key_for_meta(meta),
+                "asset_type": report_asset,
+                "action": action,
+                "destination_state": "present",
+                "destination": str(path.resolve()),
+            },
+            meta,
+            season_number=season_number,
+        )
     )
 
 
@@ -589,6 +629,15 @@ async def process_item(
                         season_number=season_number,
                     )
                 ] += 1
+                _record_artwork_evaluation(
+                    config,
+                    meta,
+                    library_name,
+                    asset_type,
+                    action,
+                    path,
+                    season_number=season_number,
+                )
             except OSError:
                 artwork_file_counts["absent"] += 1
                 continue

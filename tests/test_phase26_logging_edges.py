@@ -28,6 +28,43 @@ class CaptureLogger:
         self._add("error", message, *args)
 
 
+def test_artwork_gap_snapshot_logging_warns_for_open_and_infos_for_zero(tmp_path):
+    logger = CaptureLogger()
+    report = tmp_path / "artwork-gaps.txt"
+    app_logging.log_artwork_gap_snapshot(
+        logger,
+        {
+            "summary": {
+                "artwork_current_run": 1,
+                "artwork_carried_forward": 2,
+                "artwork_open": 3,
+                "artwork_not_due": 2,
+                "artwork_resolved": 1,
+            },
+            "libraries": {
+                "Movies": {
+                    "open": 3,
+                    "current_run": 1,
+                    "carried_forward": 2,
+                    "not_due": 2,
+                }
+            },
+        },
+        report,
+    )
+    app_logging.log_artwork_gap_snapshot(logger, None, report)
+
+    assert logger.records[0][0] == "warning"
+    assert "Current run: 1 | Carried forward: 2 | Open: 3" in logger.records[0][1]
+    assert logger.records[1] == (
+        "warning",
+        "[Artwork] Movies | Persistent gaps | Open: 3 | Current run: 1 | "
+        "Carried forward: 2 | Not due: 2",
+    )
+    assert logger.records[2][0] == "info"
+    assert "Open: 0" in logger.records[2][1]
+
+
 def test_size_handler_rollover_retention_and_error_path(tmp_path, monkeypatch):
     path = tmp_path / "metafusion-2026-08-22_01-02-03_000001.log"
     path.write_text("old", encoding="utf-8")
@@ -374,12 +411,14 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     assert "Fanart.tv: 2" in text
     assert "Artwork write sources" in text
     assert (
-        "Artwork files | Scope: processed items | Expected destinations: 4 | "
+        "Artwork files | Scope: processed items | Evaluated destinations: 4 | "
         "Present: 3 | Absent: 1"
     ) in text
     assert "Artwork current sources | Existing/manual: 1, TMDb: 1, Unknown: 1" in text
     assert "Policy preserved: 1" in text
     assert "Policy missing: 1" in text
+    assert "Artwork season posters | Downloaded: 1" in text
+    assert "Missing this run:" in text
     assert "Plex metadata: Server-managed" in text
     assert "Low free space" in text
     assert app_logging.human_readable_size(1024) == "1.00 KB"

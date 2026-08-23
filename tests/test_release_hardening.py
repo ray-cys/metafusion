@@ -355,6 +355,107 @@ def test_unresolved_ledger_resolves_only_work_evaluated_by_full_scan(tmp_path):
     assert records["background"]["status"] == "open"
 
 
+def test_unresolved_ledger_resolves_one_exact_evaluated_destination(tmp_path):
+    database = tmp_path / "meta_db.sqlite3"
+    common = {
+        "library": "TV Shows",
+        "media_type": "TV Show",
+        "title": "Example (2024)",
+        "category": "artwork_missing",
+        "plex_rating_key": "101",
+        "tmdb_id": "202",
+    }
+    state_db.reconcile_unresolved_work(
+        [
+            {**common, "asset_type": "poster"},
+            {
+                **common,
+                "asset_type": "season 1 poster",
+                "season_number": 1,
+            },
+        ],
+        path=database,
+    )
+
+    records = state_db.reconcile_unresolved_work(
+        [],
+        evaluated_records=[
+            {
+                "library": "TV Shows",
+                "media_type": "show",
+                "title": "Localized title does not need to match",
+                "asset_type": "season 1 poster",
+                "plex_rating_key": "101",
+                "season_number": 1,
+                "destination_state": "present",
+            },
+            {
+                "library": "TV Shows",
+                "media_type": "show",
+                "title": "Example (2024)",
+                "asset_type": "poster",
+                "plex_rating_key": "101",
+                "destination_state": "missing",
+            },
+            "invalid",
+        ],
+        path=database,
+    )
+
+    statuses = {record["asset_type"]: record["status"] for record in records}
+    assert statuses == {"poster": "open", "season 1 poster": "resolved"}
+
+
+def test_unresolved_exact_evaluation_uses_tmdb_edition_or_title_fallback(tmp_path):
+    database = tmp_path / "meta_db.sqlite3"
+    state_db.reconcile_unresolved_work(
+        [
+            {
+                "library": "Movies",
+                "media_type": "movies",
+                "title": "Edition (2024)",
+                "asset_type": "poster",
+                "category": "artwork_missing",
+                "tmdb_id": "9",
+                "edition": "Extended",
+            },
+            {
+                "library": "Movies",
+                "media_type": "Movie",
+                "title": "Title only (2024)",
+                "asset_type": "background",
+                "category": "artwork_missing",
+            },
+        ],
+        path=database,
+    )
+
+    records = state_db.reconcile_unresolved_work(
+        [],
+        evaluated_records=[
+            {
+                "library_name": "Movies",
+                "media_type": "movie",
+                "title": "Different localized title",
+                "asset_type": "poster",
+                "tmdb_id": "9",
+                "edition": "Extended",
+                "destination_state": "present",
+            },
+            {
+                "library_name": "Movies",
+                "media_type": "movie",
+                "title": "Title only (2024)",
+                "asset_type": "background",
+                "destination_state": "present",
+            },
+        ],
+        path=database,
+    )
+
+    assert {record["status"] for record in records} == {"resolved"}
+
+
 def test_managed_destination_reconciliation_is_checksum_and_root_bounded(tmp_path):
     kometa = tmp_path / "kometa"
     assets = kometa / "assets" / "movie" / "Example"

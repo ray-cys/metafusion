@@ -118,4 +118,20 @@ and provider stages attempted, including the missing-only relaxed stage when it
 is eligible. `--explain-item` reports the saved provider and
 destinations but does not perform live candidate scoring. When every stage
 fails, `/config/reports/artwork-gaps-*.txt` retains the bounded
-missing/preserved entry. Reports never include API keys.
+missing/preserved entry. A successful non-dry run now writes this report even
+when the open count is zero. Its sections distinguish gaps observed during the
+current run, open gaps carried forward from durable SQLite state, and recently
+resolved gaps. Per-library warnings show persistent open and not-due counts,
+so incremental scheduling cannot make a known gap silently disappear from an
+`INFO` log merely because that title was not selected on the current run.
+
+For installations that recorded missing artwork before the durable gap ledger
+was introduced, MetaFusion also infers still-missing poster, background, and
+individual-season records from its existing media-state observations. This
+uses recorded cache fields only: it does not contact a provider, read image
+contents, or scan the media filesystem. The report labels this evidence as
+recorded state and includes the last check, next scheduled recheck, and whether
+the recheck is due when those values can be determined. A later incremental
+check that verifies the exact destination as present resolves the matching
+ledger entry without waiting for a full-library scan. Reports never include
+API keys.

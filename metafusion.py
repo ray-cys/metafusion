@@ -47,6 +47,8 @@ from helper.database_maintenance import (
     maintain_databases,
 )
 from helper.diagnostics import (
+    artwork_gap_snapshot,
+    recorded_missing_artwork_gaps,
     write_adoption_audit_report,
     write_artwork_gap_report,
     write_asset_audit_report,
@@ -80,6 +82,7 @@ from helper.logging import (
     format_fields,
     get_meta_banner,
     get_setup_logging,
+    log_artwork_gap_snapshot,
     log_cleanup_event,
     log_config_event,
     log_final_summary,
@@ -1481,6 +1484,9 @@ async def metafusion_main(config, logger):
                         library_config["_artwork_gaps"] = config.setdefault(
                             "_artwork_gaps", []
                         )
+                        library_config["_artwork_evaluations"] = config.setdefault(
+                            "_artwork_evaluations", []
+                        )
                         library_config["_asset_audit_records"] = config.setdefault(
                             "_asset_audit_records", []
                         )
@@ -1730,6 +1736,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
     error = None
     config["_job_library_results"] = {}
     config["_artwork_gaps"] = []
+    config["_artwork_evaluations"] = []
     config["_asset_audit_records"] = []
     config["_library_audit_records"] = []
     config["_adoption_audit_records"] = []
@@ -1791,15 +1798,39 @@ def run_metafusion_job(config, logger, runtime_status=None):
             if not config.get("settings", {}).get("dry_run", False):
                 try:
                     retention = report_retention(config)
-                    gap_report = write_artwork_gap_report(
-                        config.get("_artwork_gaps"), retention=retention
+                    cache_snapshot = dict(load_cache().items())
+                    recorded_gaps = recorded_missing_artwork_gaps(
+                        cache_snapshot,
+                        config,
                     )
-                    if gap_report:
-                        logger.info(
-                            "[Diagnostics] Artwork gap report saved to %s", gap_report
-                        )
+                    observed_gaps = [
+                        *(config.get("_artwork_gaps") or []),
+                        *recorded_gaps,
+                    ]
+                    ledger = reconcile_unresolved_work(
+                        observed_gaps,
+                        resolved_work=config.get("_successful_full_scan_work", {}),
+                        evaluated_records=config.get("_artwork_evaluations"),
+                    )
+                    gap_snapshot = artwork_gap_snapshot(
+                        config.get("_artwork_gaps"),
+                        persistent_records=ledger,
+                        recorded_gaps=recorded_gaps,
+                        cache=cache_snapshot,
+                        config=config,
+                    )
+                    gap_report = write_artwork_gap_report(
+                        config.get("_artwork_gaps"),
+                        retention=retention,
+                        snapshot=gap_snapshot,
+                    )
+                    log_artwork_gap_snapshot(
+                        logger,
+                        gap_snapshot,
+                        gap_report,
+                    )
                     destination_report = write_destination_history_report(
-                        load_cache(),
+                        cache_snapshot,
                         retention=retention,
                         config=config,
                     )
@@ -1808,10 +1839,6 @@ def run_metafusion_job(config, logger, runtime_status=None):
                             "[Diagnostics] Artwork destination history saved to %s",
                             destination_report,
                         )
-                    ledger = reconcile_unresolved_work(
-                        config.get("_artwork_gaps"),
-                        resolved_work=config.get("_successful_full_scan_work", {}),
-                    )
                     identity_reviews = reconcile_identity_reviews(
                         config.get("_artwork_gaps")
                     )

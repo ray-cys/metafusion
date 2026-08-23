@@ -1132,6 +1132,36 @@ def log_item_outcomes(
                 ),
             )
 
+
+def log_artwork_gap_snapshot(logger, snapshot, report_path):
+    """Log durable artwork-gap visibility without repeating every open item."""
+    snapshot = snapshot or {}
+    summary = snapshot.get("summary") or {}
+    artwork_open = int(summary.get("artwork_open") or 0)
+    message = (
+        "[Diagnostics] Artwork gaps | "
+        f"Current run: {int(summary.get('artwork_current_run') or 0)} | "
+        f"Carried forward: {int(summary.get('artwork_carried_forward') or 0)} | "
+        f"Open: {artwork_open} | "
+        f"Not due: {int(summary.get('artwork_not_due') or 0)} | "
+        f"Resolved history: {int(summary.get('artwork_resolved') or 0)} | "
+        f"Report: {report_path}"
+    )
+    (logger.warning if artwork_open else logger.info)(message)
+    for library, values in (snapshot.get("libraries") or {}).items():
+        library_open = int(values.get("open") or 0)
+        level = logger.warning if library_open else logger.info
+        level(
+            "[Artwork] %s | Persistent gaps | Open: %d | Current run: %d | "
+            "Carried forward: %d | Not due: %d",
+            library,
+            library_open,
+            int(values.get("current_run") or 0),
+            int(values.get("carried_forward") or 0),
+            int(values.get("not_due") or 0),
+        )
+
+
 def log_cleanup_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logger or logging.getLogger()
     messages = {
@@ -1524,7 +1554,7 @@ def log_final_summary(
     lines.extend(box_line(
         f"Artwork | Written: {artwork_written} | Adopted: {artwork_adopted} | "
         f"Unchanged: {artwork_unchanged} | Not due: {artwork_not_due} | "
-        f"Preserved: {artwork_preserved} | Missing: {artwork_missing} | "
+        f"Preserved: {artwork_preserved} | Missing this run: {artwork_missing} | "
         f"Policy preserved: {artwork_policy_preserved} | "
         f"Policy missing: {artwork_policy_missing} | "
         f"Deferred: {artwork_deferred} | Failed: {artwork_failed} | "
@@ -1551,7 +1581,7 @@ def log_final_summary(
             "full inventory" if storage_scopes == {"full inventory"} else "processed items"
         )
         lines.extend(box_line(
-            f"Artwork files | Scope: {reconciliation_scope} | Expected destinations: "
+            f"Artwork files | Scope: {reconciliation_scope} | Evaluated destinations: "
             f"{overall['artwork_file_expected']} | Present: "
             f"{overall['artwork_file_present']} | Absent: "
             f"{overall['artwork_file_absent']}",
@@ -1629,7 +1659,7 @@ def log_final_summary(
                 f"Library: {lib} | Artwork poster | Downloaded: {libsum.get('poster_downloaded', 0)} | "
                 f"Upgraded: {libsum.get('poster_upgraded', 0)} | Adopted: {libsum.get('poster_adopted', 0)} | "
                 f"Unchanged: {libsum.get('poster_skipped', 0)} | Not due: {libsum.get('poster_not_due', 0)} | "
-                f"Preserved: {libsum.get('poster_preserved', 0)} | Missing: {libsum.get('poster_missing', 0)} | "
+                f"Preserved: {libsum.get('poster_preserved', 0)} | Missing this run: {libsum.get('poster_missing', 0)} | "
                 f"Policy preserved: {libsum.get('poster_policy_preserved', 0)} | "
                 f"Policy missing: {libsum.get('poster_policy_missing', 0)} | "
                 f"Deferred: {libsum.get('poster_deferred', 0)} | Failed: {libsum.get('poster_failed', 0)}", box_width))
@@ -1639,7 +1669,7 @@ def log_final_summary(
                 f"Library: {lib} | Artwork background | Downloaded: {libsum.get('background_downloaded', 0)} | "
                 f"Upgraded: {libsum.get('background_upgraded', 0)} | Adopted: {libsum.get('background_adopted', 0)} | "
                 f"Unchanged: {libsum.get('background_skipped', 0)} | Not due: {libsum.get('background_not_due', 0)} | "
-                f"Preserved: {libsum.get('background_preserved', 0)} | Missing: {libsum.get('background_missing', 0)} | "
+                f"Preserved: {libsum.get('background_preserved', 0)} | Missing this run: {libsum.get('background_missing', 0)} | "
                 f"Policy preserved: {libsum.get('background_policy_preserved', 0)} | "
                 f"Policy missing: {libsum.get('background_policy_missing', 0)} | "
                 f"Deferred: {libsum.get('background_deferred', 0)} | Failed: {libsum.get('background_failed', 0)}", box_width))
@@ -1647,23 +1677,12 @@ def log_final_summary(
         if (
             feature_flags and feature_flags.get("season", False)
             and library_type in ("tv", "show")
-            and (
-                libsum.get('season_poster_downloaded', 0) > 0 or
-                libsum.get('season_poster_upgraded', 0) > 0 or
-                libsum.get('season_poster_adopted', 0) > 0 or
-                libsum.get('season_poster_skipped', 0) > 0 or
-                libsum.get('season_poster_not_due', 0) > 0 or
-                libsum.get('season_poster_preserved', 0) > 0 or
-                libsum.get('season_poster_missing', 0) > 0 or
-                libsum.get('season_poster_deferred', 0) > 0 or
-                libsum.get('season_poster_failed', 0) > 0
-            )
         ):
             lines.extend(box_line(
                 f"Library: {lib} | Artwork season posters | Downloaded: {libsum.get('season_poster_downloaded', 0)} | "
                 f"Upgraded: {libsum.get('season_poster_upgraded', 0)} | Adopted: {libsum.get('season_poster_adopted', 0)} | "
                 f"Unchanged: {libsum.get('season_poster_skipped', 0)} | Not due: {libsum.get('season_poster_not_due', 0)} | "
-                f"Preserved: {libsum.get('season_poster_preserved', 0)} | Missing: {libsum.get('season_poster_missing', 0)} | "
+                f"Preserved: {libsum.get('season_poster_preserved', 0)} | Missing this run: {libsum.get('season_poster_missing', 0)} | "
                 f"Deferred: {libsum.get('season_poster_deferred', 0)} | Failed: {libsum.get('season_poster_failed', 0)}", box_width))
 
         library_providers = libsum.get("artwork_provider_writes") or {}
@@ -1682,7 +1701,7 @@ def log_final_summary(
             lines.extend(box_line(
                 f"Library: {lib} | Artwork files | Scope: "
                 f"{libsum.get('storage_scope', 'processed items')} | "
-                f"Expected destinations: {libsum.get('artwork_file_expected', 0)} | "
+                f"Evaluated destinations: {libsum.get('artwork_file_expected', 0)} | "
                 f"Present: {libsum.get('artwork_file_present', 0)} | "
                 f"Absent: {libsum.get('artwork_file_absent', 0)}",
                 box_width,

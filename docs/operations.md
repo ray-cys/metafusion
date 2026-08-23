@@ -578,9 +578,15 @@ Shared reports and logs are:
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
-They are also the final output when TMDb, Fanart.tv, Plex, and the
-best-available reserve cannot provide a usable candidate. Provider decisions
-and selected source are included in read-only artwork audits.
+A successful non-dry job always writes one, including when the open count is
+zero. It combines current-run observations with open SQLite-ledger records and
+pre-ledger missing evidence already recorded in media state. Current,
+carried-forward, not-due, and recently resolved counts are logged and retained;
+the report also records the last check, next recheck, and recorded destination
+state when known. This snapshot does not add provider calls or a physical
+artwork scan. It applies to movie/show posters and backgrounds plus individual
+season posters in Kometa and Plex modes. Provider decisions and selected source
+are included in read-only artwork audits.
 Asset-audit reports include the selected candidate's language, dimensions,
 vote score, ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
@@ -620,11 +626,14 @@ Routine accepted identities, successful mappings, unchanged/preserved checks,
 provider requests, cache details, and internal API batches remain at `DEBUG`.
 Missing or deferred outcomes are warnings and failed outcomes are errors.
 Season-poster warnings name the missing Plex season and summarize the provider
-attempts. One final report combines only the libraries processed by that run
+attempts. One final summary combines only the libraries processed by that run
 and includes written, adopted, unchanged, not-due, preserved, policy-preserved,
-missing, deferred, failed, and provider totals. It also independently
-reconciles enabled expected artwork destinations as present or absent and
-separates current installed sources from write sources for the run. The older standalone per-library summary
+missing-this-run, deferred, failed, and provider totals. Enabled TV libraries
+always receive a season-poster line, including a zero-evaluated line. The
+persistent artwork-gap summary is separate so known not-due gaps remain visible.
+The run summary also reconciles artwork destinations evaluated during that run
+as present or absent and separates current installed sources from write sources
+for the run. The older standalone per-library summary
 blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
 totals are warnings; the corresponding `plex-metadata-*.txt` report retains
 field-level audit details.

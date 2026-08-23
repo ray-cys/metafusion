@@ -1,6 +1,8 @@
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 
+from helper import diagnostics
 from helper.diagnostics import (
     _database_status,
     _tmdb_cache_status,
@@ -215,6 +217,318 @@ def test_artwork_gap_reports_are_deduplicated_and_retained(tmp_path):
     assert len(list((tmp_path / "reports").glob("artwork-gaps-*.txt"))) == 2
     assert not first.exists()
     assert second.exists()
+
+
+def test_recorded_missing_artwork_gaps_recover_movie_and_season_state():
+    cache = {
+        "movie:plex:1": {
+            "library_name": "Movies",
+            "media_type": "movie",
+            "rating_key": 1,
+            "tmdb_id": 11,
+            "title": "Missing Movie",
+            "year": 2024,
+            "edition": "Extended",
+            "poster_missing_checks": 2,
+            "poster_candidate_fingerprint": "",
+            "poster_last_checked": "2026-08-22T00:00:00+00:00",
+            "background_missing_checks": "invalid",
+        },
+        "tv:plex:2": {
+            "library_name": "TV Shows",
+            "media_type": "show",
+            "rating_key": 2,
+            "tmdb_id": 22,
+            "tvdb_id": 33,
+            "title": "Missing Season",
+            "year": 2025,
+            "season_missing_checks": 3,
+            "season_candidate_fingerprint": "0:|10:|bad|x:",
+            "season_last_checked": "2026-08-22T00:00:00+00:00",
+            "seasons": {
+                "0": {
+                    "season_path": "/assets/season00.jpg",
+                    "season_checksum": "abc",
+                }
+            },
+        },
+        "tv:plex:3": {
+            "library_name": "TV Shows",
+            "media_type": "tv",
+            "title": "No recorded gaps",
+            "season_missing_checks": 0,
+            "season_candidate_fingerprint": "",
+        },
+        "invalid": [],
+    }
+    config = {
+        "assets": {
+            "run_poster": True,
+            "run_background": True,
+            "run_season": True,
+        }
+    }
+
+    recovered = diagnostics.recorded_missing_artwork_gaps(cache, config)
+
+    assert [(entry["asset_type"], entry["title"]) for entry in recovered] == [
+        ("poster", "Missing Movie (2024) [Extended]"),
+        ("season 10 poster", "Missing Season (2025)"),
+    ]
+    assert recovered[0]["plex_rating_key"] == "1"
+    assert recovered[1]["season_number"] == 10
+    assert recovered[1]["tvdb_id"] == "33"
+    disabled = diagnostics.recorded_missing_artwork_gaps(
+        cache,
+        {
+            "assets": {
+                "run_poster": False,
+                "run_background": False,
+                "run_season": False,
+            }
+        },
+    )
+    assert disabled == []
+
+
+def test_artwork_gap_snapshot_combines_current_carried_and_resolved(tmp_path):
+    now = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    cache = {
+        "movie:plex:1": {
+            "library_name": "Movies",
+            "media_type": "movie",
+            "rating_key": "1",
+            "poster_path": "/assets/poster.jpg",
+            "poster_checksum": "abc",
+            "poster_missing_checks": 1,
+            "poster_last_checked": (now - timedelta(hours=12)).isoformat(),
+        },
+        "tv:plex:2": {
+            "library_name": "TV Shows",
+            "media_type": "tv",
+            "tmdb_id": "22",
+            "season_missing_checks": 2,
+            "season_last_checked": (now - timedelta(days=1)).isoformat(),
+            "seasons": {},
+        },
+    }
+    current = [
+        {
+            "library": "Movies",
+            "media_type": "Movie",
+            "title": "Current (2024)",
+            "asset_type": "poster",
+            "category": "artwork_missing",
+            "plex_rating_key": "1",
+            "detail": "No candidate",
+        },
+        {
+            "library": "Movies",
+            "media_type": "Movie",
+            "title": "Identity (2024)",
+            "asset_type": "metadata",
+            "category": "identity_rejected",
+        },
+    ]
+    persistent = [
+        {
+            "library_name": "TV Shows",
+            "media_type": "TV Show",
+            "title": "Carried (2025)",
+            "asset_type": "season 10 poster",
+            "category": "artwork_missing",
+            "tmdb_id": "22",
+            "season_number": 10,
+            "status": "open",
+        },
+        {
+            "library_name": "Movies",
+            "media_type": "Movie",
+            "title": "Disabled (2024)",
+            "asset_type": "background",
+            "category": "policy_preserved_missing",
+            "status": "open",
+        },
+        {
+            "library_name": "Movies",
+            "media_type": "Movie",
+            "title": "Manual (2024)",
+            "asset_type": "poster",
+            "category": "artwork_preserved",
+            "status": "open",
+        },
+        {
+            "library_name": "Movies",
+            "media_type": "Movie",
+            "title": "Resolved (2024)",
+            "asset_type": "poster",
+            "category": "artwork_missing",
+            "status": "resolved",
+        },
+    ]
+    config = {
+        "assets": {
+            "run_poster": True,
+            "run_background": False,
+            "run_season": True,
+        },
+        "image_upgrades": {
+            "movie_days": 30,
+            "series_days": 15,
+            "season_days": 15,
+            "default_days": 30,
+        },
+        "library_overrides": {
+            "TV Shows": {"image_upgrades": {"season_days": 20}}
+        },
+    }
+
+    snapshot = diagnostics.artwork_gap_snapshot(
+        current,
+        persistent_records=persistent,
+        recorded_gaps=[persistent[0]],
+        cache=cache,
+        config=config,
+        now=now,
+    )
+
+    assert snapshot["summary"] == {
+        "current_run": 2,
+        "open": 5,
+        "carried_forward": 3,
+        "resolved": 1,
+        "artwork_current_run": 1,
+        "artwork_open": 4,
+        "artwork_carried_forward": 3,
+        "artwork_resolved": 1,
+        "artwork_not_due": 2,
+    }
+    entries = {entry["title"]: entry for entry in snapshot["entries"]}
+    assert entries["Current (2024)"]["destination_state"] == "recorded_present"
+    assert entries["Current (2024)"]["recheck_status"] == "not_due"
+    assert entries["Carried (2025)"]["recheck_status"] == "not_due"
+    assert entries["Disabled (2024)"]["recheck_status"] == "disabled"
+    assert entries["Manual (2024)"]["destination_state"] == "recorded_present"
+    assert snapshot["libraries"]["TV Shows"]["carried_forward"] == 1
+
+    report = write_artwork_gap_report(
+        current,
+        base_dir=tmp_path,
+        snapshot=snapshot,
+    )
+    text = report.read_text(encoding="utf-8")
+    assert "Current run\n- [artwork_missing]" in text
+    assert "Carried-forward open gaps" in text
+    assert "Recently resolved" in text
+    assert "next recheck=" in text
+
+
+def test_artwork_gap_edge_states_and_snapshot_deduplication():
+    indexes = diagnostics._cache_index(
+        {
+            "invalid": [],
+            "show": {
+                "library_name": "TV Shows",
+                "media_type": "show",
+                "tmdb_id": 22,
+            },
+        }
+    )
+    assert indexes[1][("tv shows", "tv", "22")]["tmdb_id"] == 22
+    assert diagnostics._gap_destination_state(
+        {"status": "resolved"}, None
+    ) == "resolved"
+    assert diagnostics._gap_destination_state(
+        {"category": "path_invalid"}, None
+    ) == "unavailable"
+    assert diagnostics._gap_destination_state(
+        {
+            "category": "artwork_missing",
+            "asset_type": "season 1 poster",
+            "season_number": 1,
+        },
+        {
+            "seasons": {
+                "1": {"season_path": "/asset.jpg", "season_checksum": "abc"}
+            }
+        },
+    ) == "recorded_present"
+    assert diagnostics._gap_destination_state(
+        {"category": "artwork_missing", "asset_type": "background"},
+        {},
+    ) == "recorded_missing"
+
+    record = {
+        "library": "Movies",
+        "media_type": "Movie",
+        "title": "Example (2024)",
+        "asset_type": "poster",
+        "category": "artwork_missing",
+    }
+    now = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    disabled = diagnostics._gap_recheck(
+        record,
+        {"poster_last_checked": now.isoformat()},
+        {
+            "assets": {"run_poster": True},
+            "image_upgrades": {"movie_days": 0},
+        },
+        now,
+    )
+    assert disabled[2] == "disabled"
+    invalid = diagnostics._gap_recheck(
+        record,
+        {"poster_last_checked": "invalid"},
+        {
+            "assets": {"run_poster": True},
+            "image_upgrades": {"movie_days": 30},
+        },
+        now,
+    )
+    assert invalid[2] == "due"
+    naive = diagnostics._gap_recheck(
+        record,
+        {"poster_last_checked": "2026-08-01T00:00:00"},
+        {
+            "assets": {"run_poster": True},
+            "image_upgrades": {"movie_days": 30},
+        },
+        now,
+    )
+    assert naive[2] == "not_due"
+
+    snapshot = diagnostics.artwork_gap_snapshot(
+        [record],
+        persistent_records=[{**record, "status": "open"}],
+        recorded_gaps=[
+            {
+                **record,
+                "title": "Recorded only (2024)",
+                "plex_rating_key": "2",
+            }
+        ],
+        now=datetime(2026, 8, 23, tzinfo=timezone.utc).replace(tzinfo=None),
+    )
+    assert snapshot["summary"]["open"] == 2
+    assert {entry["observation"] for entry in snapshot["entries"]} == {
+        "current_run",
+        "recorded_state",
+    }
+
+
+def test_compatibility_report_without_warnings(tmp_path):
+    report = diagnostics.write_compatibility_report(
+        {
+            "profile": "default",
+            "mode": "kometa",
+            "contract": "supported",
+            "checks": [],
+            "capabilities": [],
+            "warnings": [],
+        },
+        base_dir=tmp_path,
+    )
+    assert "Warnings" not in report.read_text(encoding="utf-8")
 
 
 def test_destination_history_report_marks_events_without_deleting_paths(tmp_path):

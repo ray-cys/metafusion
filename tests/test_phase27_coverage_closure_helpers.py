@@ -141,7 +141,10 @@ def test_empty_diagnostics_and_support_error_report(tmp_path):
     assert plan_text.count("- none") >= 3
     audit = diagnostics.write_library_asset_audit_report([], [], mode="plex", base_dir=tmp_path)
     assert audit.read_text(encoding="utf-8").count("- none") >= 3
-    assert diagnostics.write_artwork_gap_report(["invalid"], base_dir=tmp_path) is None
+    empty_gaps = diagnostics.write_artwork_gap_report(
+        ["invalid"], base_dir=tmp_path
+    )
+    assert "Open: 0" in empty_gaps.read_text(encoding="utf-8")
     history = diagnostics.write_destination_history_report(
         {"invalid": [], "empty": {}}, base_dir=tmp_path
     )

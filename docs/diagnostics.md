@@ -330,9 +330,14 @@ identity fields are retained in the JSON companion.
 
 Every text report above has a same-name machine-readable `.json` companion.
 `REPORT_RETENTION` keeps the newest text/JSON pairs independently for each
-report type; the default is `10`. Routine processing can additionally produce
+report type; the default is `10`. Routine processing additionally produces
 artwork-gap, destination-history, unresolved-work, post-application adoption,
-and Plex-metadata report pairs. See
+and Plex-metadata report pairs. The artwork-gap pair is an always-present run
+snapshot, including an explicit zero-open result. It separates current
+observations, carried-forward open work, and recently resolved history; its
+JSON companion also records destination state and recheck timing. This applies
+to movie posters and backgrounds as well as show posters, backgrounds, and
+individual season posters in both output modes. See
 [generated output and reports](operations.md#generated-output-and-reports).
 
 Every item-level JSON record uses the same nullable identity fields:

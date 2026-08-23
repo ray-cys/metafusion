@@ -17,6 +17,58 @@ class _Section:
         return list(self._items)
 
 
+def test_artwork_evaluation_records_stable_movie_and_season_identity(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"artwork")
+    records = []
+    config = {"_artwork_evaluations": records}
+
+    processing._record_artwork_evaluation(
+        config,
+        {
+            "library_type": "movie",
+            "title": "Movie",
+            "year": 2024,
+            "ratingKey": 1,
+            "tmdb_id": 2,
+            "edition_title": "Extended",
+        },
+        "Movies",
+        "poster",
+        "adopted",
+        destination,
+    )
+    processing._record_artwork_evaluation(
+        config,
+        {
+            "library_type": "show",
+            "title": "Show",
+            "year": 2025,
+            "ratingKey": 3,
+            "tmdb_id": 4,
+        },
+        "TV Shows",
+        "season",
+        "downloaded",
+        destination,
+        season_number=10,
+    )
+    processing._record_artwork_evaluation(
+        {},
+        {"library_type": "movie"},
+        "Movies",
+        "poster",
+        "skipped",
+        destination,
+    )
+
+    assert records[0]["title"] == "Movie (2024) [Extended]"
+    assert records[0]["plex_rating_key"] == "1"
+    assert records[0]["destination_state"] == "present"
+    assert records[1]["asset_type"] == "season 10 poster"
+    assert records[1]["season_number"] == 10
+
+
 def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     actions = [
         "downloaded",
