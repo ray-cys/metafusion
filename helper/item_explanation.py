@@ -301,7 +301,7 @@ def write_item_explanation_report(records, *, base_dir=None, retention=10):
                 f"- season {destination.get('season')}: {_display(destination.get('path'))}"
             )
         lines.append("")
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines).rstrip() + "\n",
         report_type="item_explanation",

@@ -3,8 +3,8 @@
 These tools handle exceptional operator work without weakening MetaFusion's
 normal processing safeguards. Commands either read SQLite/live Plex without
 changing them, or require an exact target and hold the normal single-job lock.
-Every retained text report has a same-name JSON companion under
-`/config/reports`.
+Conventional reports under `/config/reports` follow `REPORT_FORMAT` (`text`,
+`json`, or `both`) and `REPORT_RETENTION`.
 
 ## Safe targeted output management
 

@@ -250,7 +250,7 @@ class PlexMetadataReporter:
                 lines.append(
                     f"- [{library}] {title} | {child} | {field}: {action}{suffix}"
                 )
-        write_diagnostic_report(
+        written_path = write_diagnostic_report(
             path,
             "\n".join(lines),
             report_type="plex_metadata",
@@ -263,6 +263,8 @@ class PlexMetadataReporter:
                 "items": self.item_entries,
             },
         )
+        if written_path.suffix == ".json":
+            path = written_path
         retain_diagnostic_reports(report_dir, "plex-metadata", self.retention)
         logger = logging.getLogger(__name__)
         logger.info(

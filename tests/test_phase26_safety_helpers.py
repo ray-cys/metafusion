@@ -421,3 +421,81 @@ def test_report_retention_tolerates_races_and_orphan_failures(tmp_path, monkeypa
     monkeypatch.setattr(reporting.Path, "unlink", guarded_unlink)
     reporting.retain_diagnostic_reports(tmp_path, "report", 1)
     assert second.exists()
+
+
+@pytest.mark.parametrize("selected,extension", [("text", ".txt"), ("json", ".json")])
+def test_diagnostic_report_format_can_emit_one_representation(tmp_path, selected, extension):
+    previous = reporting.report_format()
+    try:
+        reporting.configure_reporting(report_format=selected)
+        report = reporting.write_diagnostic_report(
+            tmp_path / "sample-1.txt",
+            "sample\n",
+            report_type="sample",
+            data={"value": 1},
+        )
+        reporting.retain_diagnostic_reports(tmp_path, "sample", 1)
+        assert report.suffix == extension
+        assert report.is_file()
+        assert not report.with_suffix(".json" if extension == ".txt" else ".txt").exists()
+    finally:
+        reporting.configure_reporting(report_format=previous)
+
+
+def test_reporting_format_fallback_and_format_specific_retention(tmp_path, monkeypatch):
+    previous = reporting.report_format()
+    try:
+        assert reporting.configure_reporting(report_format="invalid") == "both"
+
+        reporting.configure_reporting(report_format="json")
+        orphan_json = tmp_path / "json-0.json"
+        orphan_json.write_text("{}", encoding="utf-8")
+        old_json = reporting.write_diagnostic_report(
+            tmp_path / "json-1.txt", "old\n", report_type="json"
+        )
+        old_json.with_suffix(".txt").write_text("legacy", encoding="utf-8")
+        current_json = reporting.write_diagnostic_report(
+            tmp_path / "json-2.txt", "new\n", report_type="json"
+        )
+        reporting.retain_diagnostic_reports(tmp_path, "json", 1)
+        assert current_json.exists()
+        assert not old_json.exists()
+        assert not old_json.with_suffix(".txt").exists()
+
+        reporting.configure_reporting(report_format="both")
+        old_text = reporting.write_diagnostic_report(
+            tmp_path / "text-1.txt", "old\n", report_type="text"
+        )
+        reporting.write_diagnostic_report(
+            tmp_path / "text-2.txt", "new\n", report_type="text"
+        )
+        old_text.with_suffix(".json").unlink()
+        real_unlink = reporting.Path.unlink
+
+        def fail_old_text(path, *args, **kwargs):
+            if path == old_text:
+                raise OSError("busy")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(reporting.Path, "unlink", fail_old_text)
+        reporting.retain_diagnostic_reports(tmp_path, "text", 1)
+        assert old_text.exists()
+
+        monkeypatch.setattr(reporting.Path, "unlink", real_unlink)
+        missing_pair = reporting.write_diagnostic_report(
+            tmp_path / "pair-1.txt", "old\n", report_type="pair"
+        )
+        missing_pair.with_suffix(".json").unlink()
+        reporting.write_diagnostic_report(
+            tmp_path / "pair-2.txt", "new\n", report_type="pair"
+        )
+        reporting.retain_diagnostic_reports(tmp_path, "pair", 1)
+        assert not missing_pair.exists()
+
+        reporting.configure_reporting(report_format="text")
+        orphan = tmp_path / "only-text-orphan.json"
+        orphan.write_text("{}", encoding="utf-8")
+        reporting.retain_diagnostic_reports(tmp_path, "only-text", 1)
+        assert not orphan.exists()
+    finally:
+        reporting.configure_reporting(report_format=previous)

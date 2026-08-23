@@ -207,7 +207,7 @@ def write_quarantine_report(*, base_dir=None, retention=10):
             f"{record.get('output_type')} | expires={record.get('expires_at')} | "
             f"bytes={record.get('size_bytes')}"
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="cleanup_quarantine",

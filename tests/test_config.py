@@ -228,11 +228,26 @@ def test_dashboard_automatic_refresh_is_opt_in(tmp_path):
     enabled_config = load_config_file(
         config_file=tmp_path / "enabled.yml",
         template_file=TEMPLATE_FILE,
-        environ={"PLEX_TOKEN": "token", "DASHBOARD_ENABLED": "true"},
+        environ={
+            "PLEX_TOKEN": "token",
+            "DASHBOARD_ENABLED": "true",
+            "REPORT_FORMAT": "json",
+            "ADOPTION_AUDIT": "all",
+        },
     )
 
     assert default_config["output"]["dashboard_enabled"] is False
+    assert default_config["output"]["report_format"] == "both"
+    assert default_config["output"]["adoption_audit"] == "anomalies"
     assert enabled_config["output"]["dashboard_enabled"] is True
+    assert enabled_config["output"]["report_format"] == "json"
+    assert enabled_config["output"]["adoption_audit"] == "all"
+
+    enabled_config["output"]["report_format"] = "xml"
+    enabled_config["output"]["adoption_audit"] = "sometimes"
+    errors = validate_config(enabled_config)
+    assert "output.report_format must be text, json, or both" in errors
+    assert "output.adoption_audit must be anomalies, all, or off" in errors
 
 
 def test_invalid_provider_mapping_environment_fails_validation(tmp_path):

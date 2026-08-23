@@ -406,6 +406,13 @@ def validate_config(config):
         errors.append(
             "plex_metadata.allow_overwrite must be true for overwrite policy"
         )
+    output = config.get("output", {})
+    report_format_value = str(output.get("report_format", "both")).lower()
+    if report_format_value not in {"text", "json", "both"}:
+        errors.append("output.report_format must be text, json, or both")
+    adoption_audit = str(output.get("adoption_audit", "anomalies")).lower()
+    if adoption_audit not in {"anomalies", "all", "off"}:
+        errors.append("output.adoption_audit must be anomalies, all, or off")
     fields = plex_metadata.get("fields", [])
     if not isinstance(fields, list):
         errors.append("plex_metadata.fields must be a list")

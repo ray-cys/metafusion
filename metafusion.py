@@ -47,6 +47,7 @@ from helper.database_maintenance import (
     maintain_databases,
 )
 from helper.diagnostics import (
+    adoption_audit_records,
     artwork_gap_snapshot,
     recorded_missing_artwork_gaps,
     write_adoption_audit_report,
@@ -135,6 +136,7 @@ from helper.recovery import (
     create_recovery_bundle,
     verify_recovery_bundle,
 )
+from helper.reporting import configure_reporting
 from helper.run_history import write_run_history_report
 from helper.runtime import (
     JobAlreadyRunningError,
@@ -189,8 +191,10 @@ from helper.tmdb_changes import (
     prepare_tmdb_change_plan,
 )
 from helper.upgrade_canary import (
+    UpgradeCanaryError,
     commit_upgrade_canary,
     run_upgrade_canary,
+    write_upgrade_canary_report_from_state,
 )
 from modules.cleanup import CleanupError, CleanupResult, cleanup_title_orphans
 from modules.processing import plex_metadata_dict, process_library
@@ -523,6 +527,11 @@ def parse_cli_args(argv=None):
         "--kometa-application-audit",
         action="store_true",
         help="Verify generated Kometa metadata and artwork against live Plex",
+    )
+    parser.add_argument(
+        "--upgrade-canary-report",
+        action="store_true",
+        help="Generate a report from the latest upgrade canary result in SQLite",
     )
     return parser.parse_args(argv)
 
@@ -1429,7 +1438,7 @@ async def metafusion_main(config, logger):
                     )
                     return
 
-                canary_result, canary_report = await run_upgrade_canary(
+                canary_result, _canary_report = await run_upgrade_canary(
                     sections,
                     section_inventory_records,
                     config,
@@ -1443,9 +1452,9 @@ async def metafusion_main(config, logger):
                 if canary_result:
                     config["_upgrade_canary_result"] = canary_result
                     logger.info(
-                        "[Canary] Upgrade qualification passed | Samples: %d | Report: %s",
+                        "[Canary] Upgrade qualification passed | Samples: %d | "
+                        "Details: stored in SQLite",
                         len(canary_result.get("samples", [])),
-                        canary_report,
                     )
 
                 asset_destination_registry = AssetDestinationRegistry()
@@ -1697,6 +1706,7 @@ def request_shutdown(_signum=None, _frame=None):
 
 
 def run_metafusion_job(config, logger, runtime_status=None):
+    configure_reporting(config)
     global _active_loop, _active_task
     job_lock = None
     run_log_handler = None
@@ -1860,8 +1870,14 @@ def run_metafusion_job(config, logger, runtime_status=None):
                             "[Diagnostics] Unresolved-work ledger saved to %s",
                             ledger_report,
                         )
+                    audit_policy = config.get("output", {}).get(
+                        "adoption_audit", "anomalies"
+                    )
+                    audit_records = adoption_audit_records(
+                        config.get("_adoption_audit_records"), audit_policy
+                    )
                     adoption_report = write_adoption_audit_report(
-                        config.get("_adoption_audit_records"),
+                        audit_records,
                         retention=retention,
                     )
                     if adoption_report:
@@ -2091,6 +2107,11 @@ async def plex_artwork_verification_connectors(config, rating_keys):
 
 
 def _handle_sqlite_only_command(args):
+    retention = max(1, int(getattr(args, "_report_retention", 10)))
+    if args.upgrade_canary_report:
+        report = write_upgrade_canary_report_from_state(retention=retention)
+        print(f"Upgrade canary report saved to {report}")
+        return 0
     if args.dashboard_report:
         report = write_dashboard_report(path=STATE_DATABASE)
         print(f"Offline diagnostics dashboard saved to {report}")
@@ -2392,6 +2413,7 @@ def main(argv=None):
         args.config_impact,
         args.plex_artwork_verify,
         args.kometa_application_audit,
+        args.upgrade_canary_report,
     ]
     if sum(bool(value) for value in new_primary_commands) > 1:
         print(
@@ -2501,12 +2523,23 @@ def main(argv=None):
             args.cleanup_quarantine_report,
             args.identity_review_queue,
             args.verify_recovery,
+            args.upgrade_canary_report,
         )
     )
     if sqlite_only:
         try:
+            report_config, _report_sources = load_effective_config(args)
+            configure_reporting(report_config)
+            args._report_retention = report_retention(report_config)
             result = _handle_sqlite_only_command(args)
-        except (OSError, ValueError, StateDatabaseError, RecoveryBundleError) as error:
+        except (
+            ConfigError,
+            OSError,
+            ValueError,
+            StateDatabaseError,
+            RecoveryBundleError,
+            UpgradeCanaryError,
+        ) as error:
             print(f"Diagnostic command failed: {error}", file=sys.stderr)
             return 1
         if result is not None:
@@ -2830,6 +2863,7 @@ def main(argv=None):
     except ConfigError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
+    configure_reporting(config)
 
     database_operator = any(
         (

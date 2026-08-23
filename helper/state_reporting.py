@@ -319,7 +319,7 @@ def write_state_report(
         "cleanup_history": cleanup_history,
         "library_rebinding_history": rebinding,
     }
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="sqlite_state",
@@ -391,7 +391,7 @@ def write_cleanup_history_report(
             + (f" | destination={record.get('destination')}" if record.get("destination") else "")
             + (f" | {record.get('reason')}" if record.get("reason") else "")
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="cleanup_history",
@@ -424,7 +424,7 @@ def write_identity_review_report(records, *, base_dir=None, retention=10):
             f"| proposed TMDb={record.get('proposed_tmdb_id') or 'none'} "
             f"| {record.get('category')}: {record.get('reason') or 'no detail'}"
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="identity_review",
@@ -458,7 +458,7 @@ def write_rebinding_report(records, *, applied=False, base_dir=None, retention=1
             f"{source.get('rating_key')} -> {destination.get('library_name') or 'unmatched'}/"
             f"{destination.get('rating_key') or '-'} | {record.get('reason')}"
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="library_rebinding",

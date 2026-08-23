@@ -148,7 +148,7 @@ def write_run_history_report(
                 f"items/min={float(metrics.get('items_per_minute') or 0.0):.1f} | "
                 f"libraries={len(record.get('library_results') or {})}"
             )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type=stem.replace("-", "_"),

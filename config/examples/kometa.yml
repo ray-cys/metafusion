@@ -97,6 +97,8 @@ output:
   validate_schema: true
   backup_count: 3
   report_retention: 10
+  report_format: both
+  adoption_audit: anomalies
   dashboard_enabled: false
 safety:
   allow_ambiguous_editions: false

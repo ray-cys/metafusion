@@ -26,6 +26,7 @@ for every public flag and supported value.
 | Explain identity, scheduling, policy, mapping, retry, and destinations together | `--explain-item --rating-key KEY` | Plex and TMDb | `item-explanation-*.txt` |
 | Capture sanitized item evidence for a reproducible support case | `--capture-replay --rating-key KEY` | Plex and TMDb | `provider-replay-capture-*.txt` |
 | Inspect durable state without opening raw SQLite | `--state-report` | None | `state-report-*.txt` and `.json` |
+| Review the latest automatically stored upgrade qualification | `--upgrade-canary-report` | None | `upgrade-canary-*.txt`, `.json`, or both according to `REPORT_FORMAT` |
 | Browse run, library, problem, cleanup, provider, and provenance state offline | `--dashboard-report` | None | `metafusion-dashboard-*.html` and `.json` |
 | Review pending and completed cleanup actions | `--cleanup-history-report` | None | `cleanup-history-*.txt` and `.json` |
 | Review unresolved identity work | `--identity-review-queue` | None | `identity-review-*.txt` and `.json` |
@@ -304,8 +305,8 @@ files; an earlier run naturally reports output as not yet applied.
 
 Without `--rating-key`, it verifies the selected libraries. With one or more
 rating keys it reports only those items plus explicit not-found entries. The
-text report is concise; field mismatches and normalized TMDb/IMDb/TVDb/Plex
-identity fields are retained in the JSON companion.
+text form is concise; the JSON form retains field mismatches and normalized
+TMDb/IMDb/TVDb/Plex identity fields. Choose either or both with `REPORT_FORMAT`.
 
 ### Retained report inventory
 
@@ -323,19 +324,21 @@ identity fields are retained in the JSON companion.
 | `/config/reports/release-qualification-*.txt` | `--release-check` |
 | `/config/reports/provider-replay-capture-*.txt` | `--capture-replay` |
 | `/config/reports/kometa-application-audit-*.txt` | `--kometa-application-audit` |
-| `/config/reports/upgrade-canary-*.txt` | Automatic once per published commit/server/mode/profile |
+| `/config/reports/upgrade-canary-*.txt` | `--upgrade-canary-report`; the automatic check stores details in SQLite without creating files |
 | `/config/reports/run-history-*.txt` | `--run-history` |
 | `/config/reports/schedule-advice-*.txt` | `--schedule-advice` |
 | `/config/reports/cleanup-quarantine-*.txt` | `--cleanup-quarantine-report`, restore, or purge |
 
-Every text report above has a same-name machine-readable `.json` companion.
-`REPORT_RETENTION` keeps the newest text/JSON pairs independently for each
-report type; the default is `10`. Routine processing additionally produces
+`REPORT_FORMAT` controls conventional diagnostic output: `text`, `json`, or
+`both` (the default). `REPORT_RETENTION` keeps the newest logical reports
+independently for each report type; the default is `10`. The HTML dashboard
+always keeps its JSON data companion, and sanitized replay capture always keeps
+its required JSON payload. Routine processing additionally produces
 artwork-gap, destination-history, unresolved-work, post-application adoption,
-and Plex-metadata report pairs. The artwork-gap pair is an always-present run
+and Plex-metadata reports. The artwork-gap report is an always-present run
 snapshot, including an explicit zero-open result. It separates current
 observations, carried-forward open work, and recently resolved history; its
-JSON companion also records destination state and recheck timing. This applies
+structured JSON form also records destination state and recheck timing. This applies
 to movie posters and backgrounds as well as show posters, backgrounds, and
 individual season posters in both output modes. See
 [generated output and reports](operations.md#generated-output-and-reports).

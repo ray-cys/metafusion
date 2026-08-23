@@ -1386,6 +1386,21 @@ def write_adoption_audit_report(records, base_dir=None, retention=10):
     )
 
 
+def adoption_audit_records(records, policy="anomalies"):
+    """Apply reporting policy without changing post-write verification itself."""
+    records = item_report_records(records)
+    selected = str(policy or "anomalies").strip().lower()
+    if selected == "off":
+        return []
+    if selected == "all":
+        return records
+    return [
+        record
+        for record in records
+        if str(record.get("status") or "unknown") != "filesystem_verified"
+    ]
+
+
 def write_support_report(config, validation_errors=None, base_dir=None, environ=None):
     """Write a value-free diagnostic report suitable for a GitHub issue."""
     environ = os.environ if environ is None else environ

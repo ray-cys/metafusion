@@ -203,6 +203,8 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
+| `REPORT_FORMAT` | `both` | Write conventional diagnostic reports as `text`, `json`, or `both`. The offline dashboard and sanitized replay keep their required structured companions. |
+| `ADOPTION_AUDIT` | `anomalies` | Report only abnormal post-write artwork verification; use `all` for every verification or `off` to suppress this report without disabling verification or unresolved-work tracking. |
 | `DASHBOARD_ENABLED` | `False` | Refresh the offline HTML dashboard automatically after successful non-dry runs. The explicit `--dashboard-report` command remains available when false. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |
@@ -211,7 +213,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 
 `TMDB_CHANGE_RECHECKS` and `UPGRADE_CANARY` require no per-library values. Their
-checkpoint, first-run, failure, and report behavior is documented in [runtime
+checkpoint, first-run, failure, SQLite history, and on-demand report behavior is documented in [runtime
 safeguards and application verification](runtime-safeguards.md).
 
 Artwork age comes from saved MetaFusion observations, not filesystem mtime.

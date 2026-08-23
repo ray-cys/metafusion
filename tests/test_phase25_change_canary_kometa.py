@@ -269,7 +269,7 @@ def test_tmdb_changed_detail_requests_refresh_instead_of_reading_stale_cache():
     assert not _change_refresh_requested(config, "https://image.tmdb.org/poster.jpg")
 
 
-def test_upgrade_canary_passes_reports_and_commits_only_after_job(monkeypatch, tmp_path):
+def test_upgrade_canary_persists_details_and_reports_only_on_command(monkeypatch, tmp_path):
     config = complete_config(tmp_path)
     database = tmp_path / "meta_db.sqlite3"
     section = SimpleNamespace(title="Movies")
@@ -303,6 +303,14 @@ def test_upgrade_canary_passes_reports_and_commits_only_after_job(monkeypatch, t
     )
 
     assert result["passed"] is True
+    assert report is None
+    assert not list((tmp_path / "reports").glob("upgrade-canary-*"))
+    history = upgrade_canary.load_upgrade_canary_history(path=database)
+    assert history[0]["commit"] == "abc123"
+    report = upgrade_canary.write_upgrade_canary_report_from_state(
+        base_dir=tmp_path,
+        path=database,
+    )
     assert report.is_file()
     assert report.with_suffix(".json").is_file()
     assert upgrade_canary.upgrade_canary_required(config, "server", current=current, path=database)
@@ -401,6 +409,11 @@ def test_upgrade_canary_accepts_empty_libraries_and_reports_no_samples(
         )
     )
     assert result["passed"] is True
+    assert report is None
+    report = upgrade_canary.write_upgrade_canary_report_from_state(
+        base_dir=tmp_path,
+        path=tmp_path / "state.sqlite3",
+    )
     assert "No items were available" in report.read_text(encoding="utf-8")
 
 
@@ -437,6 +450,28 @@ def test_upgrade_canary_rejects_pass_without_qualification_scope(tmp_path):
     assert not upgrade_canary.commit_upgrade_canary(
         {"passed": True}, path=tmp_path / "state.sqlite3"
     )
+
+
+def test_upgrade_canary_report_requires_stored_result(tmp_path):
+    with pytest.raises(upgrade_canary.UpgradeCanaryError, match="No stored"):
+        upgrade_canary.write_upgrade_canary_report_from_state(
+            base_dir=tmp_path,
+            path=tmp_path / "missing.sqlite3",
+        )
+
+
+def test_upgrade_canary_report_cli_reads_sqlite_without_rerunning(monkeypatch, tmp_path, capsys):
+    report = tmp_path / "upgrade-canary.json"
+    monkeypatch.setattr(
+        metafusion,
+        "write_upgrade_canary_report_from_state",
+        lambda **kwargs: report,
+    )
+    args = metafusion.parse_cli_args(["--upgrade-canary-report"])
+    args._report_retention = 4
+
+    assert metafusion._handle_sqlite_only_command(args) == 0
+    assert str(report) in capsys.readouterr().out
 
 
 class Reloadable(SimpleNamespace):

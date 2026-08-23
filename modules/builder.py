@@ -1094,8 +1094,7 @@ def _mark_asset_verified(
             )
     except OSError:
         status = "verification_failed"
-    config.setdefault("_adoption_audit_records", []).append(
-        item_report_record({
+    record = item_report_record({
             "library": config.get("_library_name") or "Unknown library",
             "title": full_title or str(cache_key),
             "media_type": media_type,
@@ -1111,7 +1110,25 @@ def _mark_asset_verified(
                 else "not_applicable"
             ),
         }, identity, tmdb_id=tmdb_id, season_number=season_number)
-    )
+    config.setdefault("_adoption_audit_records", []).append(record)
+    if status != "filesystem_verified":
+        report_asset_type = (
+            f"season {season_number} {asset_type}"
+            if season_number is not None
+            else asset_type
+        )
+        _record_artwork_gap(
+            config,
+            f"post_write_{status}",
+            "TV Show" if str(media_type).lower() in {"tv", "show"} else "Movie",
+            full_title or str(cache_key),
+            report_asset_type,
+            (
+                f"Post-write verification status={status}; "
+                f"provider={provider or 'unknown'}; destination={asset_path}"
+            ),
+            identity,
+        )
     return verified_checksum
 
 

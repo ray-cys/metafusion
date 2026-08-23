@@ -95,6 +95,7 @@ or `config.yml` values.
 | Diagnostics | `--capture-replay` | None | Capture sanitized support data for items selected by `--rating-key`; writes a text manifest and JSON companion without changing metadata, artwork, or state. |
 | SQLite reports | `--state-report` | None | Generate human-readable and JSON reports entirely from recorded SQLite state; no provider, Plex, YAML, or artwork access occurs. |
 | SQLite reports | `--dashboard-report` | None | Generate a self-contained offline HTML dashboard plus JSON companion from recorded SQLite state. |
+| SQLite reports | `--upgrade-canary-report` | None | Generate the configured report format from the latest detailed upgrade-canary result stored in SQLite. It does not rerun the canary or contact providers. |
 | SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `provenance`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
 | SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
 | SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
@@ -257,8 +258,10 @@ two items per non-empty selected library through the existing identity,
 mapping, policy, and destination explanation pipeline. It runs before media
 output writes and never edits Plex, YAML, or artwork.
 
-The canary writes `upgrade-canary-*.txt` plus a JSON companion. A failure stops
-the job before output processing. A pass is remembered in `meta_db.sqlite3`
+The canary stores its detailed checks and samples in `meta_db.sqlite3` without
+creating files during startup or normal processing. A failure stops the job
+before output processing. Generate the latest stored result on demand with
+`python metafusion.py --upgrade-canary-report`. A pass is remembered in SQLite
 only after the surrounding job also completes successfully, so a later failure
 causes the canary to run again. Development builds, dry runs, and an unchanged
 published commit do not rerun it. Disable this advanced safety gate only with
@@ -370,7 +373,7 @@ throughput, library result counts, provider/cache/retry totals, cleanup outcome,
 full-scan scope, slow rating keys, and final adaptive-concurrency state. Media
 paths, metadata values, response bodies, tokens, and API keys are not retained.
 
-Generate paired text/JSON reports without contacting Plex or providers:
+Generate the configured report format without contacting Plex or providers:
 
 ```bash
 python metafusion.py --run-history
@@ -559,6 +562,7 @@ Shared reports and logs are:
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/unresolved-work-YYYYMMDD-HHMMSS.txt
 /config/reports/adoption-audit-YYYYMMDD-HHMMSS.txt
+/config/reports/upgrade-canary-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/provider-replay-capture-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/support-report-YYYYMMDD-HHMMSSffffff.txt
@@ -591,11 +595,25 @@ Asset-audit reports include the selected candidate's language, dimensions,
 vote score, ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
-Every retained text report and timestamped HTML dashboard has a same-name
-`.json` companion with a stable report envelope and structured records.
+Conventional diagnostic reports use `REPORT_FORMAT=both` by default. Select
+`text` to retain only human-readable `.txt` files or `json` to retain only
+machine-readable `.json` files. Retention treats the selected representation
+as one logical report. The offline HTML dashboard and sanitized provider replay
+remain paired with JSON because their structured files are part of the command's
+core output rather than optional companions.
 Automatic HTML-dashboard refresh is disabled by default. Set
 `output.dashboard_enabled: true` or `DASHBOARD_ENABLED=True` to refresh it
 after successful non-dry runs; `--dashboard-report` always works on demand.
+
+Post-write artwork verification always runs. `ADOPTION_AUDIT=anomalies` writes
+an adoption report only for checksum mismatches, missing destinations, or
+verification failures; `all` also reports successful verified writes and
+adoptions; `off` suppresses only this report. An abnormal verification is also
+added to the persistent artwork-gap/unresolved-work ledger regardless of this
+setting. Adoption audits remain separate from artwork-gap reports because the
+former proves what happened after a write while the latter tracks unresolved
+provider, identity, destination, and verification work.
+
 Identity-inspection,
 destination-history, unresolved-work, adoption-audit, and item-explanation
 reports can contain media titles or computed/actual paths and must be reviewed
@@ -610,7 +628,7 @@ Item-level JSON records consistently include nullable `plex_rating_key`,
 results can be correlated without title-only matching.
 Modified, unproven, symlinked, and out-of-scope files are preserved. Plex
 metadata reports identify fields and outcomes. `REPORT_RETENTION` retains the
-newest text/JSON pairs for each report type; its default is `10`.
+newest logical reports for each report type; its default is `10`.
 
 At the default `LOG_LEVEL=INFO`, each changed item uses the same compact
 `[Component] Library | Title | Outcome | Source | Target` structure. Metadata

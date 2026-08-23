@@ -105,6 +105,8 @@ defaults:
     validate_schema: true
     backup_count: 3
     report_retention: 10
+    report_format: both
+    adoption_audit: anomalies
     dashboard_enabled: false
   safety:
     allow_ambiguous_editions: false
@@ -1643,6 +1645,28 @@ settings:
     mask: false
     value: '10'
     order: 72
+- name: REPORT_FORMAT
+  section: Runtime, incremental, cache, and output
+  description: Diagnostic file format. Use text for human-readable files only, json for machine-readable files only, or both.
+  path:
+  - output
+  - report_format
+  converter: string
+  env_example: both
+  env_order: 80
+  compose: ${REPORT_FORMAT-}
+  compose_order: 75
+- name: ADOPTION_AUDIT
+  section: Runtime, incremental, cache, and output
+  description: Post-write artwork audit reporting policy. Anomalies reports only verification problems, all reports every verified write or adoption, and off suppresses this report without disabling verification.
+  path:
+  - output
+  - adoption_audit
+  converter: string
+  env_example: anomalies
+  env_order: 81
+  compose: ${ADOPTION_AUDIT-}
+  compose_order: 77
 - name: DASHBOARD_ENABLED
   section: Runtime, incremental, cache, and output
   description: Automatically refresh the self-contained HTML diagnostics dashboard after successful non-dry runs; the explicit --dashboard-report command remains available when disabled.

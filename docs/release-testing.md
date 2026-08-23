@@ -310,8 +310,8 @@ without mutating provider, cache, state, or output. Its focused tests also
 prove that inspecting an installation with no SQLite database does not create
 one.
 
-Retained diagnostic text now has a same-name structured JSON companion and is
-retained as one pair. Routine runs maintain a persistent unresolved-work ledger
+Retained diagnostics can be text, structured JSON, or both and are retained as
+logical reports. Routine runs maintain a persistent unresolved-work ledger
 that is resolved only by a later successful full scan of the same library, and
 a post-application artwork audit verifies installed bytes and ownership. The
 support replay command sanitizes credentials, rating keys, private hosts, and
@@ -320,7 +320,9 @@ only checksum-proven obsolete artwork inside configured roots; any modified,
 unproven, symlinked, out-of-scope, or still-claimed file remains untouched.
 
 Phase 25 adds TMDb change-feed checkpoints, the one-time published-build
-upgrade canary, and post-Kometa application verification. Their three modules
+upgrade canary, and post-Kometa application verification. The canary stores
+detailed results in SQLite and creates a report only through
+`--upgrade-canary-report`. Their three modules
 have an independently enforced 100% line-and-branch coverage gate. This strict
 boundary covers corrupt/future/stale checkpoints, incomplete or excessive TMDb
 pagination, nonmatching local inventory, canary skip/pass/failure/retry states,
