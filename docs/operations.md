@@ -598,7 +598,7 @@ artwork scan. It applies to movie/show posters and backgrounds plus individual
 season posters in Kometa and Plex modes. Provider decisions and selected source
 are included in read-only artwork audits.
 Asset-audit reports include the selected candidate's language, dimensions,
-raw vote/likes score, supporting count, confidence-adjusted score contribution,
+raw vote/likes score, supporting count and confidence, provider-score contribution,
 ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.

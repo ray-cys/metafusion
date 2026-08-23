@@ -220,9 +220,9 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
         preferred_language="en",
     )
     assert exact == {
-        "score": 79.0,
+        "score": 93.0,
         "resolution": 45.0,
-        "vote": 14.0,
+        "vote": 28.0,
         "aspect": 10.0,
         "language": 10.0,
         "content": 0.0,
@@ -246,7 +246,7 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
         preferred_language="en",
     )
     assert fallback["score"] <= 100
-    assert fallback["vote"] == 17.5
+    assert fallback["vote"] == 35
     assert fallback["provider_average"] == 10
     assert fallback["language"] == 7
 
@@ -259,7 +259,7 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
     assert malformed["score"] == 4
 
 
-def test_provider_vote_count_confidence_prevents_single_vote_dominance():
+def test_provider_vote_average_remains_primary_over_vote_count():
     config = complete_config()
     sparse = artwork_quality_score(
         config,
@@ -283,8 +283,38 @@ def test_provider_vote_count_confidence_prevents_single_vote_dominance():
         },
         preferred_language="en",
     )
-    assert established["vote"] > sparse["vote"]
+    assert sparse["vote"] > established["vote"]
     assert established["provider_confidence"] > sparse["provider_confidence"]
+    config["poster_set"].update(
+        {
+            "prefer_vote": 5,
+            "max_width": 1000,
+            "max_height": 1500,
+            "min_width": 500,
+            "min_height": 750,
+        }
+    )
+    sparse_candidate = {
+        "file_path": "/sparse.jpg",
+        "width": 1000,
+        "height": 1500,
+        "vote_average": 10,
+        "vote_count": 1,
+        "iso_639_1": "en",
+    }
+    established_candidate = {
+        "file_path": "/established.jpg",
+        "width": 1000,
+        "height": 1500,
+        "vote_average": 8,
+        "vote_count": 100,
+        "iso_639_1": "en",
+    }
+    assert get_best_poster(
+        config,
+        [established_candidate, sparse_candidate],
+        preferred_language="en",
+    ) == sparse_candidate
     assert artwork_provider_rating(
         {"vote_average": 7, "vote_count": object()}
     )["count"] == 0

@@ -102,19 +102,22 @@ deterministic 0-100 quality score:
 | Component | Weight | Meaning |
 | --- | ---: | --- |
 | Resolution | 45 | Image area relative to the configured preferred dimensions, capped at full credit. |
-| Provider score | 35 | Confidence-adjusted TMDb image vote average and vote count, or Fanart.tv likes proxy and engagement count. Raw scores remain capped at 10. Plex candidates have no pre-download score. |
+| Provider score | 35 | TMDb image vote average or the Fanart.tv likes proxy, capped at 10. Vote/like count is retained only as supporting confidence and a final tie-breaker. Plex candidates have no pre-download score. |
 | Aspect ratio | 10 | Closeness to 2:3 for posters/season posters or 16:9 for backgrounds. |
 | Language | 10 | Preferred language gets 10, configured fallback 7, untagged 4, and another language 0. |
 | Cached content quality | up to 8 | A bounded sharpness bonus from a previously validated download; the final score remains capped at 100. |
 
-The provider contribution discounts a high TMDb average supported by very few
-votes, so a single 10/10 vote does not automatically outrank a well-supported
-candidate. Fanart.tv likes provide both its score proxy and confidence count;
-the two providers remain separate fallback stages rather than a global popularity
-contest. The configured preferred, relaxed, and upgrade thresholds continue to
-use the raw 0-10 provider score, so existing threshold meanings do not change.
-The highest score wins within the current provider stage; confidence-adjusted
-provider score, raw vote, pixel area, and source path provide stable tie breakers.
+The provider contribution and configured preferred, relaxed, and upgrade
+thresholds use the raw 0-10 provider score. TMDb vote count cannot make a
+lower-rated image outrank a higher-rated image by itself. Candidate ordering
+uses count only after normalized quality and raw average, making it a final
+tie-breaker for otherwise equivalent ratings. During upgrades it is supporting
+confidence only inside a 0.5-point band where the new average is not lower.
+Fanart.tv likes remain the primary score within the Fanart.tv stage; their count
+is the equivalent supporting tie-break signal. The two
+providers remain separate fallback stages rather than a global popularity
+contest. The highest score wins within the current provider stage; raw provider
+score, supporting count, pixel area, and source path provide stable tie breakers.
 A cached blank-image result makes
 the candidate ineligible, while a perceptual hash identifies visually duplicate
 candidates in selection explanations. A perceptual hash is not treated as a
@@ -139,13 +142,13 @@ upgrade engine still decides whether to write:
 - Byte-identical downloaded artwork is skipped.
 - Before the timed refresh age, a replacement must improve the normalized
   quality score by at least one point, preserve overall quality while gaining at
-  least 10% pixel area, or provide a better confidence-adjusted provider rating
+  least 10% pixel area, or provide a better provider rating
   without reducing dimensions or aspect suitability.
 - Crossing a configured vote threshold identifies the reason for an approved
   replacement; it does not bypass the quality guard. One larger dimension alone
   and a lower within-threshold score are no longer sufficient.
 - Once stale, a candidate must be no worse in normalized score,
-  confidence-adjusted provider rating, width, height, aspect suitability, and
+  provider rating, width, height, aspect suitability, and
   image validation. Otherwise the existing artwork is preserved.
 - TMDb vote count, Fanart.tv likes/count, provider score, language, dimensions,
   content signals, and the resulting comparison are retained for subsequent

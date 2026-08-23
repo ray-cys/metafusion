@@ -190,7 +190,7 @@ def artwork_quality_score(
         ),
     )
     provider_rating = artwork_provider_rating(image)
-    vote = provider_rating["adjusted_average"]
+    vote = provider_rating["average"]
     target_width = max(1, int(settings.get("max_width") or width or 1))
     target_height = max(1, int(settings.get("max_height") or height or 1))
     target_area = target_width * target_height
@@ -250,7 +250,7 @@ def artwork_quality_score(
 
 
 def artwork_provider_rating(image):
-    """Normalize provider engagement without treating one vote as certainty."""
+    """Expose the raw provider rating with supporting engagement confidence."""
     average = max(0.0, min(10.0, float(image.get("vote_average") or 0)))
     raw_count = image.get("vote_count")
     if raw_count is None:
@@ -260,12 +260,10 @@ def artwork_provider_rating(image):
     except (TypeError, ValueError):
         count = 0
     confidence = count / (count + 5.0) if count else 0.0
-    adjusted_average = average * (0.5 + 0.5 * confidence)
     return {
         "average": round(average, 4),
         "count": count,
         "confidence": round(confidence, 4),
-        "adjusted_average": round(adjusted_average, 4),
     }
 
 
@@ -323,8 +321,10 @@ def _upgrade_quality_comparison(
     quality_delta = round(new_quality["score"] - existing_quality["score"], 2)
     new_rating = artwork_provider_rating(new_image_data)
     existing_rating = artwork_provider_rating(existing_image)
-    provider_delta = round(
-        new_rating["adjusted_average"] - existing_rating["adjusted_average"], 4
+    provider_delta = round(new_rating["average"] - existing_rating["average"], 4)
+    provider_count_delta = new_rating["count"] - existing_rating["count"]
+    provider_count_tiebreak = (
+        0 <= provider_delta <= 0.5 and provider_count_delta > 0
     )
     return {
         "new_width": new_width,
@@ -337,9 +337,11 @@ def _upgrade_quality_comparison(
         "existing_quality_score": existing_quality["score"],
         "quality_delta": quality_delta,
         "provider_delta": provider_delta,
+        "provider_count_delta": provider_count_delta,
+        "provider_count_tiebreak": provider_count_tiebreak,
         "quality_improved": quality_delta >= _ARTWORK_QUALITY_MARGIN,
         "quality_not_worse": quality_delta >= 0,
-        "provider_improved": provider_delta > 0,
+        "provider_improved": provider_delta > 0 or provider_count_tiebreak,
         "provider_not_worse": provider_delta >= 0,
         "dimensions_no_worse": (
             new_width >= existing_width and new_height >= existing_height
@@ -392,7 +394,7 @@ def _quality_guard_decision(
         and comparison["aspect_not_worse"]
         and comparison["material_dimension_gain"]
     )
-    confidence_upgrade = (
+    provider_upgrade = (
         meets_vote_floor
         and comparison["quality_not_worse"]
         and comparison["provider_improved"]
@@ -401,7 +403,7 @@ def _quality_guard_decision(
     )
     if not (
         comparison["candidate_valid"]
-        and (quality_upgrade or dimension_upgrade or confidence_upgrade)
+        and (quality_upgrade or dimension_upgrade or provider_upgrade)
     ):
         return False, f"QUALITY_GUARD_REJECTED{suffix}"
     if float(cached_votes or 0) < float(vote_threshold) <= float(new_votes or 0):
@@ -412,7 +414,7 @@ def _quality_guard_decision(
         < float(vote_threshold)
     ):
         return True, f"UPGRADE_RELAXED{suffix}"
-    if float(new_votes or 0) > float(cached_votes or 0) or confidence_upgrade:
+    if float(new_votes or 0) > float(cached_votes or 0) or provider_upgrade:
         return True, f"UPGRADE_VOTES{suffix}"
     if dimension_upgrade:
         if season and no_score and float(cached_votes or 0) == 0:
@@ -554,6 +556,7 @@ def _artwork_quality_key(config, image, asset_type, preferred_language=None):
     return (
         score,
         float(image.get("vote_average") or 0),
+        artwork_provider_rating(image)["count"],
         int(image.get("width") or 0) * int(image.get("height") or 0),
         str(image.get("file_path") or ""),
     )

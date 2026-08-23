@@ -177,7 +177,7 @@ def test_upgrade_quality_guard_uses_confidence_dimensions_and_content(
     candidate.write_bytes(_encoded("blue", (100, 150)))
     monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)
 
-    confidence_upgrade = utils.smart_asset_upgrade(
+    lower_average = utils.smart_asset_upgrade(
         config,
         asset,
         {
@@ -190,7 +190,22 @@ def test_upgrade_quality_guard_uses_confidence_dimensions_and_content(
         cache_key="movie",
         cached_entry={"poster_average": 10, "poster_vote_count": 1},
     )
-    assert confidence_upgrade[0:2] == (True, "UPGRADE_VOTES")
+    assert lower_average[0:2] == (False, "QUALITY_GUARD_REJECTED")
+
+    count_tiebreak = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 100,
+            "height": 150,
+            "vote_average": 8,
+            "vote_count": 100,
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 8, "poster_vote_count": 1},
+    )
+    assert count_tiebreak[0:2] == (True, "UPGRADE_VOTES")
 
     candidate.write_bytes(_encoded("green", (120, 120)))
     one_dimension_only = utils.smart_asset_upgrade(
