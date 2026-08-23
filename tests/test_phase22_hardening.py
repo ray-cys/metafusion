@@ -412,6 +412,7 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "UPGRADE_RELAXED",
             "UPGRADE_DIMENSIONS",
             "UPGRADE_QUALITY",
+            "UPGRADE_TMDB_CANONICAL",
             "OTHER",
         ):
             logging_module.log_builder_event(
@@ -431,6 +432,7 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "UPGRADE_RELAXED_SEASON",
             "UPGRADE_DIMENSIONS_SEASON",
             "UPGRADE_QUALITY_SEASON",
+            "UPGRADE_TMDB_CANONICAL_SEASON",
             "OTHER",
         ):
             logging_module.log_builder_event(
@@ -448,6 +450,7 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "ALREADY_UP_TO_DATE",
             "NO_UPGRADE_NEEDED",
             "QUALITY_GUARD_REJECTED",
+            "TMDB_CANONICAL_CHANGE_PENDING",
             "STALE_CANDIDATE_DOWNGRADE",
             "NO_IMAGE_FOR_COMPARE",
             "ERROR_IMAGE_COMPARE",
@@ -455,6 +458,7 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "ALREADY_UP_TO_DATE_SEASON",
             "NO_UPGRADE_NEEDED_SEASON",
             "QUALITY_GUARD_REJECTED_SEASON",
+            "TMDB_CANONICAL_CHANGE_PENDING_SEASON",
             "STALE_CANDIDATE_DOWNGRADE_SEASON",
             "NO_IMAGE_FOR_COMPARE_SEASON",
             "ERROR_IMAGE_COMPARE_SEASON",

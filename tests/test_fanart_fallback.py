@@ -463,6 +463,48 @@ def test_selector_falls_through_fanart_plex_and_best_available(monkeypatch):
     assert "best available" in selected["selection_reason"]
 
 
+def test_selector_prefers_valid_tmdb_canonical_and_rejects_invalid_canonical():
+    config = artwork_config()
+    canonical = candidate("/canonical.jpg", 1000, 1500)
+    canonical["vote_average"] = 2
+    ranked = candidate("/ranked.jpg", 2000, 3000)
+    ranked["vote_average"] = 10
+    assert builder._tmdb_canonical_candidate([ranked], "/missing.jpg") is None
+
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            {},
+            [ranked, canonical],
+            asset_type="poster",
+            media_type="movie",
+            tmdb_id=1,
+            canonical_path="/canonical.jpg",
+        )
+    )
+
+    assert selected["file_path"] == "/canonical.jpg"
+    assert selected["tmdb_canonical"] is True
+    assert selected["selection_stage"] == "tmdb_canonical"
+    assert selected["provider_attempts"][0]["status"] == "selected_canonical"
+
+    invalid = candidate("/invalid.jpg", 500, 750)
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            {},
+            [ranked, invalid],
+            asset_type="poster",
+            media_type="movie",
+            tmdb_id=1,
+            canonical_path="/invalid.jpg",
+        )
+    )
+
+    assert selected["file_path"] == "/ranked.jpg"
+    assert not selected.get("tmdb_canonical")
+
+
 def test_season_selector_uses_source_number_for_providers_and_plex_target(
     monkeypatch,
 ):

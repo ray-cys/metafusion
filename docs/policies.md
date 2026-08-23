@@ -93,11 +93,18 @@ Plex metadata.
 `overwrite` means eligible for replacement, not unconditional rewriting. It
 does not bypass source, quality, path, or collision checks.
 
-### Quality and refresh behavior
+### Canonical selection, quality, and refresh behavior
 
-TMDb candidates first pass the configured language and minimum/preferred
-threshold tiers. Candidates within the same eligible tier receive a
-deterministic 0-100 quality score:
+MetaFusion first looks for the canonical `poster_path` or `backdrop_path`
+selected by TMDb's localized detail response. Season posters use the season
+detail `poster_path`. When that canonical candidate meets the configured
+minimum dimensions and later passes download decoding, format, aspect, blank
+image, and declared-dimension validation, it is preferred without attempting
+to reproduce TMDb's internal ordering from vote fields. This applies to movie,
+show, background, and season artwork in both Kometa and Plex modes.
+
+The deterministic 0-100 score is used only when TMDb has no usable canonical
+candidate and MetaFusion must rank candidates within a fallback provider stage:
 
 | Component | Weight | Meaning |
 | --- | ---: | --- |
@@ -107,12 +114,10 @@ deterministic 0-100 quality score:
 | Language | 10 | Preferred language gets 10, configured fallback 7, untagged 4, and another language 0. |
 | Cached content quality | up to 8 | A bounded sharpness bonus from a previously validated download; the final score remains capped at 100. |
 
-The provider contribution and configured preferred, relaxed, and upgrade
-thresholds use the raw 0-10 provider score. TMDb vote count cannot make a
-lower-rated image outrank a higher-rated image by itself. Candidate ordering
-uses count only after normalized quality and raw average, making it a final
-tie-breaker for otherwise equivalent ratings. During upgrades it is supporting
-confidence only inside a 0.5-point band where the new average is not lower.
+Fallback provider contribution and configured preferred, relaxed, and upgrade
+thresholds use the raw 0-10 provider score. Candidate ordering uses count only
+after normalized quality and raw average, making it a final tie-breaker for
+otherwise equivalent fallback candidates.
 Fanart.tv likes remain the primary score within the Fanart.tv stage; their count
 is the equivalent supporting tie-break signal. The two
 providers remain separate fallback stages rather than a global popularity
@@ -132,22 +137,37 @@ has been downloaded and validated on an earlier attempt or run; MetaFusion does
 not download every candidate merely to score it.
 
 After a policy permits an existing destination to be considered, the artwork
-upgrade engine still decides whether to write:
+upgrade engine follows these rules:
 
+- Missing artwork installs a valid canonical image immediately.
+- A different canonical TMDb source for an existing managed destination is
+  recorded as pending. It must be returned by two consecutive provider checks
+  before replacement. A built-in 24-hour follow-up makes confirmation
+  independent of a longer artwork interval. If the canonical path changes
+  again or is no longer usable, confirmation resets. An interval of `0`
+  continues to disable this timed follow-up.
+- Once confirmed, a valid canonical replacement may be applied even when its
+  vote average, vote count, resolution, or combined score is lower than the
+  previous image. It must still meet absolute configured minimums and every
+  download/content safety check.
+- An unchanged canonical source is preserved without rescoring. Its bounded
+  byte verification can still detect the exceptional case where a provider
+  changes content behind the same identifier.
 - The same recorded provider source normally uses the managed-file shortcut. A
   bounded byte-level verification re-download occurs automatically after the
   longer of 90 days or three times the configured artwork interval, capped at
   365 days. This detects providers silently changing bytes behind an unchanged
   source identifier without downloading every managed image on normal runs.
 - Byte-identical downloaded artwork is skipped.
-- Before the timed refresh age, a replacement must improve the normalized
-  quality score by at least one point, preserve overall quality while gaining at
-  least 10% pixel area, or provide a better provider rating
+- For noncanonical fallback artwork, before the timed refresh age a replacement
+  must improve the normalized quality score by at least one point, preserve
+  overall quality while gaining at least 10% pixel area, or provide a better
+  provider rating
   without reducing dimensions or aspect suitability.
 - Crossing a configured vote threshold identifies the reason for an approved
   replacement; it does not bypass the quality guard. One larger dimension alone
   and a lower within-threshold score are no longer sufficient.
-- Once stale, a candidate must be no worse in normalized score,
+- Once stale, a noncanonical candidate must be no worse in normalized score,
   provider rating, width, height, aspect suitability, and
   image validation. Otherwise the existing artwork is preserved.
 - TMDb vote count, Fanart.tv likes/count, provider score, language, dimensions,
@@ -155,15 +175,19 @@ upgrade engine still decides whether to write:
   managed-artwork decisions.
 - A rejected or failed candidate leaves the existing file intact.
 
-Missing destinations are still populated immediately from the normal provider
-fallback chain. Manual or externally modified artwork remains protected by
-`managed`; the quality guard does not weaken ownership enforcement.
+If TMDb has no usable canonical candidate, the established provider order and
+fallback scoring remain TMDb candidate pool, Fanart.tv, Plex, and best
+available. Manual or externally modified artwork remains protected by
+`managed`; canonical authority and the quality guard do not weaken ownership
+enforcement.
 
 Artwork age and candidate observations are saved in SQLite, not derived from
 the file's mtime. `MOVIE_IMAGE_UPGRADE_DAYS`, `SERIES_IMAGE_UPGRADE_DAYS`, and
 `SEASON_IMAGE_UPGRADE_DAYS` are adaptive base intervals. Missing candidates
 retry sooner; repeatedly unchanged candidates back off to 180 days; a longer
-explicit base remains respected. A changed candidate resets the backoff.
+explicit base remains respected. A changed candidate resets the backoff. A
+pending canonical change receives its fixed follow-up check before the normal
+adaptive interval.
 Setting an interval to `0` disables
 timed rechecks and same-source verification for that type. Changed items and
 full scans can still install missing or objectively better artwork. Successful

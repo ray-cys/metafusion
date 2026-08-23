@@ -227,10 +227,67 @@ def test_same_source_verification_is_bounded_and_uses_per_asset_history():
         source_path="/season.jpg",
         now=now,
     )
-
     config["image_upgrades"]["movie_days"] = 0
     assert not same_source_verification_due(
         cached, "movie", "poster", config, now=now
+    )
+
+
+def test_pending_canonical_change_gets_bounded_follow_up_recheck():
+    now = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    config = incremental_config()
+    cached = {
+        "media_type": "tv",
+        "poster_last_checked": now.isoformat(),
+        "season_last_checked": now.isoformat(),
+        "poster_canonical_pending_path": "/poster.jpg",
+        "poster_canonical_pending_at": (now - timedelta(hours=25)).isoformat(),
+        "seasons": {
+            "bad": "not-a-record",
+            "1": {
+                "season_canonical_pending_path": "/season.jpg",
+                "season_canonical_pending_at": (
+                    now - timedelta(hours=25)
+                ).isoformat(),
+            }
+        },
+    }
+
+    assert image_upgrade_reasons(
+        cached,
+        "tv",
+        config,
+        feature_flags={"poster": True, "season": True},
+        now=now,
+    ) == {"poster", "season"}
+
+    cached["poster_canonical_pending_at"] = (
+        now - timedelta(hours=23)
+    ).isoformat()
+    cached["seasons"]["1"]["season_canonical_pending_at"] = (
+        now - timedelta(hours=23)
+    ).isoformat()
+    assert not image_upgrade_reasons(
+        cached,
+        "tv",
+        config,
+        feature_flags={"poster": True, "season": True},
+        now=now,
+    )
+
+    config["image_upgrades"]["default_days"] = 0
+    cached["poster_canonical_pending_at"] = (
+        now - timedelta(hours=25)
+    ).isoformat()
+    cached["seasons"]["1"]["season_canonical_pending_at"] = (
+        now - timedelta(hours=25)
+    ).isoformat()
+    assert not image_upgrade_reasons(
+        cached,
+        "tv",
+        config,
+        feature_flags={"poster": True, "season": True},
+        now=now,
     )
 
 

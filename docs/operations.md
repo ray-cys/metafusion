@@ -330,11 +330,18 @@ The values are adaptive bases, not a filesystem age scan:
 - A repeatedly unchanged candidate doubles its base up to 180 days, while an
   explicitly longer base remains respected.
 - A different candidate or successful upgrade resets the unchanged backoff.
+- TMDb's localized canonical `poster_path`/`backdrop_path` is preferred when it
+  passes absolute validation. A changed canonical path for existing managed
+  artwork is confirmed on two provider observations; a built-in 24-hour
+  follow-up prevents a long library interval from delaying that confirmation.
+  Missing artwork installs a valid canonical image immediately. Setting the
+  applicable interval to `0` also disables the timed confirmation follow-up.
 - Under the default `managed` policy, an unchanged provider image identifier
   receives a byte-level verification re-download after the longer of 90 days
   or three times its configured base, capped at 365 days. Identical bytes are
-  discarded; changed bytes continue through normal validation and non-downgrade
-  checks. This is automatic and does not add a configuration variable.
+  discarded; changed bytes continue through normal validation. Noncanonical
+  fallback replacements retain the relative quality guard. This is automatic
+  and does not add a configuration variable.
 
 Candidate identity, observations, and successful same-source verification
 timestamps are saved in SQLite. MetaFusion does not walk the media tree or read
@@ -599,7 +606,8 @@ season posters in Kometa and Plex modes. Provider decisions and selected source
 are included in read-only artwork audits.
 Asset-audit reports include the selected candidate's language, dimensions,
 raw vote/likes score, supporting count and confidence, provider-score contribution,
-ownership status, existing dimensions, score components, the top
+TMDb canonical status and selection stage, ownership status, existing
+dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
 Conventional diagnostic reports use `REPORT_FORMAT=both` by default. Select

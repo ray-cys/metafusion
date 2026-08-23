@@ -95,7 +95,18 @@ def test_cache_identity_change_resets_all_artwork_observations(monkeypatch):
                     "unchanged_checks",
                     "missing_checks",
                     "last_checked",
+                    "canonical_pending_path",
+                    "canonical_pending_observations",
+                    "canonical_pending_at",
                 )
+            },
+            "seasons": {
+                "1": {
+                    "season_canonical_pending_path": "/old.jpg",
+                    "season_canonical_pending_observations": 2,
+                    "season_canonical_pending_at": "stale",
+                },
+                "bad": "not-a-record",
             },
         }
     }
@@ -104,6 +115,15 @@ def test_cache_identity_change_resets_all_artwork_observations(monkeypatch):
     assert document["movie"]["tmdb_id"] == "2"
     assert not any("candidate_fingerprint" in key for key in document["movie"])
     assert not any("unchanged_checks" in key for key in document["movie"])
+    assert not any("canonical_pending" in key for key in document["movie"])
+    assert not any(
+        "canonical_pending" in key for key in document["movie"]["seasons"]["1"]
+    )
+
+    document["movie"]["tmdb_id"] = "2"
+    document["movie"]["seasons"] = "not-a-season-map"
+    asyncio.run(cache.meta_cache_async("movie", "3", "Movie", 2026, "movie"))
+    assert document["movie"]["tmdb_id"] == "3"
 
 
 def test_docker_status_symlink_and_main_guard_paths(monkeypatch, tmp_path):

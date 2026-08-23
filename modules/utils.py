@@ -808,6 +808,47 @@ def claim_asset_destination(registry, cache_key, asset_path):
     return True, cache_key
 
 
+def _canonical_upgrade_decision(
+    cached,
+    new_image_data,
+    *,
+    asset_type,
+    source_key,
+    season=False,
+):
+    """Follow a validated TMDb canonical change after two observations."""
+    if (
+        not new_image_data.get("tmdb_canonical")
+        or str(new_image_data.get("provider") or "tmdb").lower() != "tmdb"
+    ):
+        return None
+    source_path = str(new_image_data.get("file_path") or "")
+    if not source_path:
+        return None
+    applied_source = str(cached.get(source_key) or "")
+    pending_path = str(
+        cached.get(f"{asset_type}_canonical_pending_path") or ""
+    )
+    try:
+        pending_observations = int(
+            cached.get(f"{asset_type}_canonical_pending_observations") or 0
+        )
+    except (TypeError, ValueError):
+        pending_observations = 0
+    context = {
+        "canonical_source_path": source_path,
+        "applied_source_path": applied_source,
+        "canonical_pending_path": pending_path,
+        "canonical_observations": pending_observations,
+    }
+    suffix = "_SEASON" if season else ""
+    if applied_source == source_path:
+        return True, f"UPGRADE_TMDB_CANONICAL{suffix}", context
+    if pending_path == source_path and pending_observations >= 1:
+        return True, f"UPGRADE_TMDB_CANONICAL{suffix}", context
+    return False, f"TMDB_CANONICAL_CHANGE_PENDING{suffix}", context
+
+
 def smart_asset_upgrade(
     config, asset_path, new_image_data, new_image_path=None, cache_key=None,
     asset_type="poster", stale_days=30, cached_entry=_CACHE_ENTRY_UNSET,
@@ -883,6 +924,17 @@ def smart_asset_upgrade(
     except Exception as e:
         context["error"] = str(e)
         return False, "ERROR_IMAGE_COMPARE", context
+
+    canonical_decision = _canonical_upgrade_decision(
+        cached if isinstance(cached, dict) else {},
+        new_image_data,
+        asset_type=asset_type,
+        source_key=source_key_name,
+    )
+    if canonical_decision is not None:
+        decision, status, canonical_context = canonical_decision
+        context.update(canonical_context)
+        return decision, status, context
 
     comparison = _upgrade_quality_comparison(
         config,
@@ -977,6 +1029,17 @@ def smart_season_asset_upgrade(
     season_entry = {}
     if isinstance(cached, dict) and season_number is not None:
         season_entry = (cached.get("seasons") or {}).get(str(season_number), {})
+    canonical_decision = _canonical_upgrade_decision(
+        season_entry if isinstance(season_entry, dict) else {},
+        new_image_data,
+        asset_type="season",
+        source_key="season_source_path",
+        season=True,
+    )
+    if canonical_decision is not None:
+        decision, status, canonical_context = canonical_decision
+        context.update(canonical_context)
+        return decision, status, context
     comparison = _upgrade_quality_comparison(
         config,
         asset_path,

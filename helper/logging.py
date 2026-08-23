@@ -681,6 +681,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_already_up_to_date": "[Artwork] {media_type} | {full_title} | Unchanged {asset_type} | Size: {filesize}",
         "builder_no_upgrade_needed": "[Artwork] {media_type} | {full_title} | Unchanged {asset_type} | Size: {filesize}",
         "builder_quality_guard_rejected": "[Artwork] {media_type} | {full_title} | Preserved {asset_type} | Candidate score: {new_quality_score} | Existing score: {existing_quality_score} | Quality delta: {quality_delta}",
+        "builder_tmdb_canonical_pending": "[Artwork] {media_type} | {full_title} | Preserved {asset_type} | TMDb canonical change awaiting confirmation | Observations: {canonical_observations}/2",
         "builder_stale_candidate_downgrade": "[Artwork] {media_type} | {full_title} | Preserved higher-quality {asset_type} | Reason: Replacement candidate scored lower",
         "builder_no_image_for_compare": "[Artwork] {media_type} | {full_title} | Image comparison unavailable | Detail: {extra}",
         "builder_error_image_compare": "[Artwork] {media_type} | {full_title} | Image comparison failed | Detail: {extra} | Error: {error}",
@@ -695,6 +696,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_already_up_to_date_season": "[Artwork] {media_type} | {full_title} | Unchanged Season {season_number} {asset_type} | Size: {filesize}",
         "builder_no_upgrade_needed_season": "[Artwork] {media_type} | {full_title} | Unchanged Season {season_number} {asset_type} | Size: {filesize}",
         "builder_quality_guard_rejected_season": "[Artwork] {media_type} | {full_title} | Preserved Season {season_number} {asset_type} | Candidate score: {new_quality_score} | Existing score: {existing_quality_score} | Quality delta: {quality_delta}",
+        "builder_tmdb_canonical_pending_season": "[Artwork] {media_type} | {full_title} | Preserved Season {season_number} {asset_type} | TMDb canonical change awaiting confirmation | Observations: {canonical_observations}/2",
         "builder_stale_candidate_downgrade_season": "[Artwork] {media_type} | {full_title} | Preserved higher-quality Season {season_number} {asset_type} | Reason: Replacement candidate scored lower",
         "builder_no_image_for_compare_season": "[Artwork] {media_type} | {full_title} | Season {season_number} image comparison unavailable",
         "builder_error_image_compare_season": "[Artwork] {media_type} | {full_title} | Season {season_number} image comparison failed | Error: {error}",
@@ -739,6 +741,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_already_up_to_date": "debug",
         "builder_no_upgrade_needed": "debug",
         "builder_quality_guard_rejected": "debug",
+        "builder_tmdb_canonical_pending": "debug",
         "builder_stale_candidate_downgrade": "warning",
         "builder_no_image_for_compare": "warning",
         "builder_error_image_compare": "error",
@@ -753,6 +756,7 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_already_up_to_date_season": "debug",
         "builder_no_upgrade_needed_season": "debug",
         "builder_quality_guard_rejected_season": "debug",
+        "builder_tmdb_canonical_pending_season": "debug",
         "builder_stale_candidate_downgrade_season": "warning",
         "builder_no_image_for_compare_season": "warning",
         "builder_error_image_compare_season": "error",
@@ -775,6 +779,8 @@ def log_builder_event(event, logger=None, **kwargs):
             reason = f"Candidate dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
         elif status_code == "UPGRADE_QUALITY":
             reason = f"Quality score: {context.get('new_quality_score')} (Existing: {context.get('existing_quality_score')}, Delta: {context.get('quality_delta')})"
+        elif status_code == "UPGRADE_TMDB_CANONICAL":
+            reason = "TMDb canonical change confirmed"
         else:
             reason = ""
         kwargs["reason"] = reason
@@ -795,6 +801,8 @@ def log_builder_event(event, logger=None, **kwargs):
             reason = f"Candidate dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
         elif status_code == "UPGRADE_QUALITY_SEASON":
             reason = f"Quality score: {context.get('new_quality_score')} (Existing: {context.get('existing_quality_score')}, Delta: {context.get('quality_delta')})"
+        elif status_code == "UPGRADE_TMDB_CANONICAL_SEASON":
+            reason = "TMDb canonical change confirmed"
         else:
             reason = ""
         kwargs["reason"] = reason
@@ -820,6 +828,7 @@ def log_asset_status(
         "ALREADY_UP_TO_DATE": "builder_already_up_to_date",
         "NO_UPGRADE_NEEDED": "builder_no_upgrade_needed",
         "QUALITY_GUARD_REJECTED": "builder_quality_guard_rejected",
+        "TMDB_CANONICAL_CHANGE_PENDING": "builder_tmdb_canonical_pending",
         "STALE_CANDIDATE_DOWNGRADE": "builder_stale_candidate_downgrade",
         "NO_IMAGE_FOR_COMPARE": "builder_no_image_for_compare",
         "ERROR_IMAGE_COMPARE": "builder_error_image_compare",
@@ -827,6 +836,7 @@ def log_asset_status(
         "ALREADY_UP_TO_DATE_SEASON": "builder_already_up_to_date_season",
         "NO_UPGRADE_NEEDED_SEASON": "builder_no_upgrade_needed_season",
         "QUALITY_GUARD_REJECTED_SEASON": "builder_quality_guard_rejected_season",
+        "TMDB_CANONICAL_CHANGE_PENDING_SEASON": "builder_tmdb_canonical_pending_season",
         "STALE_CANDIDATE_DOWNGRADE_SEASON": "builder_stale_candidate_downgrade_season",
         "NO_IMAGE_FOR_COMPARE_SEASON": "builder_no_image_for_compare_season",
         "ERROR_IMAGE_COMPARE_SEASON": "builder_error_image_compare_season",
@@ -851,6 +861,10 @@ def log_asset_status(
             new_quality_score=comparison.get("new_quality_score", "?"),
             existing_quality_score=comparison.get("existing_quality_score", "?"),
             quality_delta=comparison.get("quality_delta", "?"),
+        )
+    if status_code.startswith("TMDB_CANONICAL_CHANGE_PENDING"):
+        kwargs["canonical_observations"] = (context or {}).get(
+            "canonical_observations", 0
         )
     if season_number is not None:
         kwargs["season_number"] = season_number
