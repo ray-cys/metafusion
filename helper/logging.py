@@ -1274,6 +1274,61 @@ def metadata_action_summary(library_summary, feature_flags):
     return None
 
 
+def artwork_schedule_line(library_summary, prefix, label):
+    """Return reconciled cadence accounting for one artwork destination type."""
+    return (
+        f"{label} schedule | Destinations: "
+        f"{library_summary.get(f'{prefix}_schedule_destinations', 0)} | "
+        f"Due: {library_summary.get(f'{prefix}_schedule_due', 0)} | "
+        f"Required: {library_summary.get(f'{prefix}_schedule_required', 0)} | "
+        f"Forced: {library_summary.get(f'{prefix}_schedule_forced', 0)} | "
+        f"Not due: {library_summary.get(f'{prefix}_schedule_not_due', 0)}"
+    )
+
+
+def artwork_result_line(library_summary, prefix, label, *, policy=False):
+    """Return run outcomes for artwork destinations that reached processing."""
+    outcome_keys = (
+        "downloaded",
+        "upgraded",
+        "adopted",
+        "skipped",
+        "preserved",
+        "missing",
+        "deferred",
+        "failed",
+    )
+    evaluated = sum(
+        int(library_summary.get(f"{prefix}_{suffix}", 0) or 0)
+        for suffix in outcome_keys
+    )
+    if policy:
+        evaluated += int(
+            library_summary.get(f"{prefix}_policy_preserved", 0) or 0
+        )
+        evaluated += int(library_summary.get(f"{prefix}_policy_missing", 0) or 0)
+    text = (
+        f"{label} result | Evaluated: {evaluated} | "
+        f"Downloaded: {library_summary.get(f'{prefix}_downloaded', 0)} | "
+        f"Upgraded: {library_summary.get(f'{prefix}_upgraded', 0)} | "
+        f"Adopted: {library_summary.get(f'{prefix}_adopted', 0)} | "
+        f"Unchanged: {library_summary.get(f'{prefix}_skipped', 0)} | "
+        f"Preserved: {library_summary.get(f'{prefix}_preserved', 0)} | "
+        f"Missing: {library_summary.get(f'{prefix}_missing', 0)}"
+    )
+    if policy:
+        text += (
+            f" | Policy preserved: "
+            f"{library_summary.get(f'{prefix}_policy_preserved', 0)}"
+            f" | Policy missing: "
+            f"{library_summary.get(f'{prefix}_policy_missing', 0)}"
+        )
+    return (
+        f"{text} | Deferred: {library_summary.get(f'{prefix}_deferred', 0)} | "
+        f"Failed: {library_summary.get(f'{prefix}_failed', 0)}"
+    )
+
+
 def plex_progress_item_interval(total_items):
     """Return the built-in top-level item interval for Plex progress logs."""
     total_items = max(0, int(total_items))
@@ -1512,12 +1567,6 @@ def log_final_summary(
             "poster_skipped", "background_skipped", "season_poster_skipped"
         )
     )
-    artwork_not_due = sum(
-        overall[key]
-        for key in (
-            "poster_not_due", "background_not_due", "season_poster_not_due"
-        )
-    )
     artwork_preserved = sum(
         overall[key]
         for key in ("poster_preserved", "background_preserved", "season_poster_preserved")
@@ -1544,6 +1593,27 @@ def log_final_summary(
             "poster_deferred", "background_deferred", "season_poster_deferred"
         )
     )
+    artwork_schedule = {
+        state: sum(
+            overall[f"{prefix}_schedule_{state}"]
+            for prefix in ("poster", "background", "season_poster")
+        )
+        for state in ("destinations", "due", "required", "forced", "not_due")
+    }
+    artwork_evaluated = sum(
+        overall[f"{prefix}_{suffix}"]
+        for prefix in ("poster", "background", "season_poster")
+        for suffix in (
+            "downloaded",
+            "upgraded",
+            "adopted",
+            "skipped",
+            "preserved",
+            "missing",
+            "deferred",
+            "failed",
+        )
+    ) + artwork_policy_preserved + artwork_policy_missing
     lines.extend(box_line(
         f"Overall | Titles: {total_titles} | Metadata changed: "
         f"{overall['meta_downloaded'] + overall['meta_upgraded']} | "
@@ -1552,8 +1622,17 @@ def log_final_summary(
         box_width,
     ))
     lines.extend(box_line(
-        f"Artwork | Written: {artwork_written} | Adopted: {artwork_adopted} | "
-        f"Unchanged: {artwork_unchanged} | Not due: {artwork_not_due} | "
+        f"Artwork schedule | Destinations: {artwork_schedule['destinations']} | "
+        f"Due: {artwork_schedule['due']} | "
+        f"Required: {artwork_schedule['required']} | "
+        f"Forced: {artwork_schedule['forced']} | "
+        f"Not due: {artwork_schedule['not_due']}",
+        box_width,
+    ))
+    lines.extend(box_line(
+        f"Artwork result | Evaluated: {artwork_evaluated} | "
+        f"Written: {artwork_written} | Adopted: {artwork_adopted} | "
+        f"Unchanged: {artwork_unchanged} | "
         f"Preserved: {artwork_preserved} | Missing this run: {artwork_missing} | "
         f"Policy preserved: {artwork_policy_preserved} | "
         f"Policy missing: {artwork_policy_missing} | "
@@ -1637,7 +1716,7 @@ def log_final_summary(
             lines.extend(
                 box_line(
                     f"Library: {lib} | Incremental | Library items: {library_items} | "
-                    f"Processed: {summary['total_items']} | Unchanged skipped: {incremental_skipped}",
+                    f"Processed: {summary['total_items']} | Not selected: {incremental_skipped}",
                     box_width,
                 )
             )
@@ -1655,35 +1734,46 @@ def log_final_summary(
                 f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
+            poster_label = (
+                "Series poster" if library_type in ("tv", "show") else "Poster"
+            )
             lines.extend(box_line(
-                f"Library: {lib} | Artwork poster | Downloaded: {libsum.get('poster_downloaded', 0)} | "
-                f"Upgraded: {libsum.get('poster_upgraded', 0)} | Adopted: {libsum.get('poster_adopted', 0)} | "
-                f"Unchanged: {libsum.get('poster_skipped', 0)} | Not due: {libsum.get('poster_not_due', 0)} | "
-                f"Preserved: {libsum.get('poster_preserved', 0)} | Missing this run: {libsum.get('poster_missing', 0)} | "
-                f"Policy preserved: {libsum.get('poster_policy_preserved', 0)} | "
-                f"Policy missing: {libsum.get('poster_policy_missing', 0)} | "
-                f"Deferred: {libsum.get('poster_deferred', 0)} | Failed: {libsum.get('poster_failed', 0)}", box_width))
+                f"Library: {lib} | "
+                f"{artwork_schedule_line(libsum, 'poster', poster_label)}",
+                box_width,
+            ))
+            lines.extend(box_line(
+                f"Library: {lib} | "
+                f"{artwork_result_line(libsum, 'poster', poster_label, policy=True)}",
+                box_width,
+            ))
 
         if feature_flags and feature_flags.get("background", False) and library_type in ("movie", "tv", "show"):
             lines.extend(box_line(
-                f"Library: {lib} | Artwork background | Downloaded: {libsum.get('background_downloaded', 0)} | "
-                f"Upgraded: {libsum.get('background_upgraded', 0)} | Adopted: {libsum.get('background_adopted', 0)} | "
-                f"Unchanged: {libsum.get('background_skipped', 0)} | Not due: {libsum.get('background_not_due', 0)} | "
-                f"Preserved: {libsum.get('background_preserved', 0)} | Missing this run: {libsum.get('background_missing', 0)} | "
-                f"Policy preserved: {libsum.get('background_policy_preserved', 0)} | "
-                f"Policy missing: {libsum.get('background_policy_missing', 0)} | "
-                f"Deferred: {libsum.get('background_deferred', 0)} | Failed: {libsum.get('background_failed', 0)}", box_width))
+                f"Library: {lib} | "
+                f"{artwork_schedule_line(libsum, 'background', 'Background')}",
+                box_width,
+            ))
+            lines.extend(box_line(
+                f"Library: {lib} | "
+                f"{artwork_result_line(libsum, 'background', 'Background', policy=True)}",
+                box_width,
+            ))
 
         if (
             feature_flags and feature_flags.get("season", False)
             and library_type in ("tv", "show")
         ):
             lines.extend(box_line(
-                f"Library: {lib} | Artwork season posters | Downloaded: {libsum.get('season_poster_downloaded', 0)} | "
-                f"Upgraded: {libsum.get('season_poster_upgraded', 0)} | Adopted: {libsum.get('season_poster_adopted', 0)} | "
-                f"Unchanged: {libsum.get('season_poster_skipped', 0)} | Not due: {libsum.get('season_poster_not_due', 0)} | "
-                f"Preserved: {libsum.get('season_poster_preserved', 0)} | Missing this run: {libsum.get('season_poster_missing', 0)} | "
-                f"Deferred: {libsum.get('season_poster_deferred', 0)} | Failed: {libsum.get('season_poster_failed', 0)}", box_width))
+                f"Library: {lib} | "
+                f"{artwork_schedule_line(libsum, 'season_poster', 'Season poster')}",
+                box_width,
+            ))
+            lines.extend(box_line(
+                f"Library: {lib} | "
+                f"{artwork_result_line(libsum, 'season_poster', 'Season poster')}",
+                box_width,
+            ))
 
         library_providers = libsum.get("artwork_provider_writes") or {}
         if library_providers:

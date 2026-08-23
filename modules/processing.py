@@ -20,7 +20,12 @@ from helper.identity import (
     metadata_key_for_meta,
     plex_identity_fingerprint,
 )
-from helper.incremental import child_inventory_fingerprint, plan_items
+from helper.incremental import (
+    artwork_schedule_summary,
+    child_inventory_fingerprint,
+    plan_items,
+    utc_now,
+)
 from helper.io import sha256_file
 from helper.logging import (
     PlexMetadataProgress,
@@ -742,9 +747,11 @@ async def process_library(
             if persistent_recovery
             else {}
         )
+        incremental_cache = load_cache()
+        schedule_now = utc_now()
         planned_items = plan_items(
             all_items,
-            load_cache(),
+            incremental_cache,
             incremental_fingerprint,
             full_scan=full_scan,
             rating_keys=rating_keys,
@@ -754,6 +761,18 @@ async def process_library(
             library_uuid=library_uuid,
             retry_rating_keys=due_retries,
             change_rating_keys=change_rating_keys,
+            now=schedule_now,
+        )
+        artwork_schedule = artwork_schedule_summary(
+            all_items,
+            incremental_cache,
+            planned_items,
+            config,
+            feature_flags=feature_flags,
+            rating_keys=rating_keys,
+            now=schedule_now,
+            server_id=server_id,
+            library_uuid=library_uuid,
         )
         items = [planned.item for planned in planned_items]
         total_library_items = len(all_items)
@@ -1571,6 +1590,9 @@ async def process_library(
             "metadata_bytes": metadata_bytes,
             "storage_scope": "full inventory" if full_scan else "processed items",
         }
+        for lane, counts in artwork_schedule.items():
+            for state, count in counts.items():
+                library_summary[f"{lane}_schedule_{state}"] = count
 
         if metadata_summaries is not None:
             metadata_summaries[library_name] = {

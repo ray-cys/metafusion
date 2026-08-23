@@ -396,6 +396,167 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
     return causes
 
 
+def _scoped_cache_by_rating_key(
+    cache, items, *, server_id=None, library_uuid=None
+):
+    """Return the relevant durable records indexed by Plex rating key."""
+    scoped_cache = (
+        cache.entries_for_scope(
+            server_id,
+            library_uuid,
+            rating_keys=[getattr(item, "ratingKey", "") for item in items],
+        ).values()
+        if server_id is not None
+        and library_uuid is not None
+        and hasattr(cache, "entries_for_scope")
+        else cache.values()
+    )
+    return {
+        str(entry.get("rating_key")): entry
+        for entry in scoped_cache
+        if isinstance(entry, dict) and entry.get("rating_key") is not None
+    }
+
+
+def _media_type(value):
+    normalized = str(value or "").lower()
+    if normalized in {"show", "shows"}:
+        return "tv"
+    if normalized == "movies":
+        return "movie"
+    return normalized
+
+
+def _season_destination_records(item, cached):
+    """Return one optional state record per known Plex season destination."""
+    cached = cached if isinstance(cached, dict) else {}
+    seasons = cached.get("seasons") or {}
+    if not isinstance(seasons, dict):
+        seasons = {}
+    inventory_counts = []
+    for field_name in ("seasonCount", "childCount"):
+        try:
+            value = int(getattr(item, field_name, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            inventory_counts.append(value)
+    destination_count = max([len(seasons), *inventory_counts], default=0)
+    records = [record for record in seasons.values() if isinstance(record, dict)]
+    if not records and cached.get("season_last_checked"):
+        records = [cached] * destination_count
+    if len(records) < destination_count:
+        records.extend([None] * (destination_count - len(records)))
+    return records
+
+
+def artwork_schedule_summary(
+    items,
+    cache,
+    planned_items,
+    config,
+    *,
+    feature_flags=None,
+    rating_keys=None,
+    now=None,
+    server_id=None,
+    library_uuid=None,
+):
+    """Classify every enabled artwork destination into one schedule state.
+
+    The states are mutually exclusive. ``required`` means the destination has
+    never completed an artwork check, ``due`` means its cadence has expired,
+    ``forced`` means another run trigger selected a current destination, and
+    ``not_due`` means the destination stayed outside processing.
+    """
+    flags = feature_flags or {}
+    target_keys = {
+        str(value) for value in (rating_keys or []) if str(value).strip()
+    }
+    candidates = [
+        item
+        for item in items
+        if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
+    ]
+    cache_by_rating_key = _scoped_cache_by_rating_key(
+        cache,
+        candidates,
+        server_id=server_id,
+        library_uuid=library_uuid,
+    )
+    planned_by_rating_key = {
+        str(getattr(planned.item, "ratingKey", "")): planned
+        for planned in planned_items
+    }
+    summary = {
+        lane: dict.fromkeys(
+            ("destinations", "due", "required", "forced", "not_due"), 0
+        )
+        for lane in ("poster", "background", "season_poster")
+    }
+    check_time = utc_now() if now is None else now
+
+    def classify(lane, timestamp, days, selected):
+        values = summary[lane]
+        values["destinations"] += 1
+        if not timestamp:
+            values["required"] += 1
+        elif timestamp_due(timestamp, days, now=check_time):
+            values["due"] += 1
+        elif selected:
+            values["forced"] += 1
+        else:
+            values["not_due"] += 1
+
+    for item in candidates:
+        rating_key = str(getattr(item, "ratingKey", ""))
+        cached = cache_by_rating_key.get(rating_key)
+        cached_record = cached if isinstance(cached, dict) else {}
+        planned = planned_by_rating_key.get(rating_key)
+        reasons = planned.reasons if planned is not None else frozenset()
+        media_type = _media_type(
+            getattr(item, "type", None) or cached_record.get("media_type")
+        )
+        if media_type not in {"movie", "tv"}:
+            continue
+        artwork_days = get_image_upgrade_days(
+            config, "movie" if media_type == "movie" else "series"
+        )
+        for lane in ("poster", "background"):
+            if not flags.get(lane, False):
+                continue
+            timestamp = cached_record.get(f"{lane}_last_checked") or cached_record.get(
+                f"{lane}_last_upgraded"
+            )
+            classify(
+                lane,
+                timestamp,
+                adaptive_artwork_days(cached_record, lane, artwork_days),
+                lane in reasons,
+            )
+        if media_type != "tv" or not flags.get("season", False):
+            continue
+        season_days = adaptive_artwork_days(
+            cached_record, "season", get_image_upgrade_days(config, "season")
+        )
+        for season_record in _season_destination_records(item, cached_record):
+            timestamp = None
+            if season_record is not None:
+                timestamp = (
+                    season_record.get("season_last_checked")
+                    or season_record.get("season_last_upgraded")
+                    or cached_record.get("season_last_checked")
+                    or cached_record.get("season_last_upgraded")
+                )
+            classify(
+                "season_poster",
+                timestamp,
+                season_days,
+                "season" in reasons,
+            )
+    return summary
+
+
 def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
     """Return whether enabled artwork makes an unchanged item eligible."""
     return bool(
@@ -475,22 +636,12 @@ def plan_items(
             for item in candidates
         ]
 
-    scoped_cache = (
-        cache.entries_for_scope(
-            server_id,
-            library_uuid,
-            rating_keys=[getattr(item, "ratingKey", "") for item in candidates],
-        ).values()
-        if server_id is not None
-        and library_uuid is not None
-        and hasattr(cache, "entries_for_scope")
-        else cache.values()
+    cache_by_rating_key = _scoped_cache_by_rating_key(
+        cache,
+        candidates,
+        server_id=server_id,
+        library_uuid=library_uuid,
     )
-    cache_by_rating_key = {
-        str(entry.get("rating_key")): entry
-        for entry in scoped_cache
-        if isinstance(entry, dict) and entry.get("rating_key") is not None
-    }
     planned = []
     for item in candidates:
         rating_key = str(getattr(item, "ratingKey", ""))

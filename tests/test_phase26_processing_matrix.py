@@ -206,6 +206,10 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     for action in actions:
         if action not in {"policy_preserved", "policy_missing"}:
             assert library[f"season_poster_{action}"] == 1
+    for prefix in ("poster", "background", "season_poster"):
+        assert library[f"{prefix}_schedule_destinations"] == len(actions)
+        assert library[f"{prefix}_schedule_required"] == len(actions)
+        assert library[f"{prefix}_schedule_not_due"] == 0
     assert library["artwork_deferred"] == 3
     assert library["artwork_automatic_relaxed"] >= 1
     assert library["artwork_download_failover"] >= 1

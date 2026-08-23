@@ -644,10 +644,16 @@ Routine accepted identities, successful mappings, unchanged/preserved checks,
 provider requests, cache details, and internal API batches remain at `DEBUG`.
 Missing or deferred outcomes are warnings and failed outcomes are errors.
 Season-poster warnings name the missing Plex season and summarize the provider
-attempts. One final summary combines only the libraries processed by that run
-and includes written, adopted, unchanged, not-due, preserved, policy-preserved,
-missing-this-run, deferred, failed, and provider totals. Enabled TV libraries
-always receive a season-poster line, including a zero-evaluated line. The
+attempts. One final summary combines only the libraries processed by that run.
+Each enabled artwork lane has a schedule line and a result line. Schedule states
+are mutually exclusive: `Required` has never completed an artwork check, `Due`
+has reached its configured cadence, `Forced` is current but was selected by a
+full/targeted/configuration or Plex-change trigger, and `Not due` remained
+outside processing. Season schedule counts represent individual known Plex
+season destinations. Result lines then report evaluated, downloaded, upgraded,
+adopted, unchanged, preserved, missing, deferred, failed, and applicable policy
+outcomes. Enabled TV libraries always receive season-poster schedule and result
+lines, including zero-evaluated lines. The
 persistent artwork-gap summary is separate so known not-due gaps remain visible.
 The run summary also reconciles artwork destinations evaluated during that run
 as present or absent and separates current installed sources from write sources

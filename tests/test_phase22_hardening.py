@@ -381,7 +381,7 @@ def test_logging_setup_system_checks_and_full_summaries(monkeypatch, tmp_path):
         feature_flags=flags,
     )
 
-    assert "Artwork season posters | Downloaded: " in (
+    assert "Season poster result | Evaluated: 1 | Downloaded: 0" in (
         run_log.read_text(encoding="utf-8")
     )
     logging_module.finish_run_file_logging(config, logger, run_handler)

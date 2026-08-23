@@ -345,6 +345,11 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
                 "artwork_file_expected": 4,
                 "artwork_file_present": 3,
                 "artwork_file_absent": 1,
+                "poster_schedule_destinations": 10,
+                "poster_schedule_due": 2,
+                "poster_schedule_required": 1,
+                "poster_schedule_forced": 3,
+                "poster_schedule_not_due": 4,
                 "poster_policy_preserved": 1,
                 "background_policy_missing": 1,
                 "artwork_bytes": 20,
@@ -417,7 +422,12 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     assert "Artwork current sources | Existing/manual: 1, TMDb: 1, Unknown: 1" in text
     assert "Policy preserved: 1" in text
     assert "Policy missing: 1" in text
-    assert "Artwork season posters | Downloaded: 1" in text
+    assert (
+        "Series poster schedule | Destinations: 10 | Due: 2 | Required: 1 | "
+        "Forced: 3 | Not due: 4"
+    ) in text
+    assert "Season poster schedule | Destinations: 0" in text
+    assert "Season poster result | Evaluated: 1 | Downloaded: 1" in text
     assert "Missing this run:" in text
     assert "Plex metadata: Server-managed" in text
     assert "Low free space" in text
