@@ -70,6 +70,7 @@ defaults:
     run_cleanup: false
     confirmation_scans: 2
     grace_hours: 48.0
+    quarantine_days: 14
     plex_remove_managed_artwork: false
   runtime:
     max_concurrency: 0
@@ -79,6 +80,7 @@ defaults:
     plex_retries: 3
     plex_retry_delay: 1.0
     shutdown_timeout: 15.0
+    config_reload: true
     max_image_mb: 25
     validate_media_mounts: true
     min_free_space_mb: 256
@@ -103,6 +105,9 @@ defaults:
     validate_schema: true
     backup_count: 3
     report_retention: 10
+    report_format: both
+    adoption_audit: anomalies
+    dashboard_enabled: false
   safety:
     allow_ambiguous_editions: false
   poster_set:
@@ -691,7 +696,7 @@ settings:
     order: 28
 - name: LOG_MAX_MB
   section: Scheduling and processing
-  description: Rotate the active log at this size as well as daily. Set 0 to disable only size rotation.
+  description: Split an individual per-run log at this size. Set 0 to keep every run in exactly one file.
   path:
   - settings
   - log_max_mb
@@ -710,7 +715,7 @@ settings:
     order: 29
 - name: LOG_BACKUP_COUNT
   section: Scheduling and processing
-  description: Number of daily or size-rotated log files retained.
+  description: Number of newest per-run log groups retained.
   path:
   - settings
   - log_backup_count
@@ -1072,9 +1077,18 @@ settings:
     mask: false
     value: '48'
     order: 101
+- name: CLEANUP_QUARANTINE_DAYS
+  section: Runtime, incremental, cache, and output
+  description: Days to retain checksum-proven artwork removed by automated cleanup before automatic purge.
+  path:
+  - cleanup
+  - quarantine_days
+  converter: safe_int
+  env_example: '14'
+  env_order: 105
 - name: PLEX_CLEANUP_MANAGED_ARTWORK
   section: Scheduling and processing
-  description: Opt in to deleting only checksum-verified MetaFusion-owned local artwork for Plex items confirmed absent; state-only cleanup is the default.
+  description: Opt in to quarantining only checksum-verified MetaFusion-owned local artwork for Plex items confirmed absent; state-only cleanup is the default.
   path:
   - cleanup
   - plex_remove_managed_artwork
@@ -1225,6 +1239,15 @@ settings:
     mask: false
     value: '15'
     order: 54
+- name: CONFIG_RELOAD
+  section: Runtime, incremental, cache, and output
+  description: Reload and validate the selected YAML safely between scheduled jobs.
+  path:
+  - runtime
+  - config_reload
+  converter: safe_bool
+  env_example: 'True'
+  env_order: 106
 - name: STOP_GRACE_PERIOD
   section: Container paths and lifecycle
   description: Docker graceful-stop deadline.
@@ -1622,6 +1645,39 @@ settings:
     mask: false
     value: '10'
     order: 72
+- name: REPORT_FORMAT
+  section: Runtime, incremental, cache, and output
+  description: Diagnostic file format. Use text for human-readable files only, json for machine-readable files only, or both.
+  path:
+  - output
+  - report_format
+  converter: string
+  env_example: both
+  env_order: 80
+  compose: ${REPORT_FORMAT-}
+  compose_order: 75
+- name: ADOPTION_AUDIT
+  section: Runtime, incremental, cache, and output
+  description: Post-write artwork audit reporting policy. Anomalies reports only verification problems, all reports every verified write or adoption, and off suppresses this report without disabling verification.
+  path:
+  - output
+  - adoption_audit
+  converter: string
+  env_example: anomalies
+  env_order: 81
+  compose: ${ADOPTION_AUDIT-}
+  compose_order: 77
+- name: DASHBOARD_ENABLED
+  section: Runtime, incremental, cache, and output
+  description: Automatically refresh the self-contained HTML diagnostics dashboard after successful non-dry runs; the explicit --dashboard-report command remains available when disabled.
+  path:
+  - output
+  - dashboard_enabled
+  converter: safe_bool
+  env_example: 'False'
+  env_order: 80
+  compose: ${DASHBOARD_ENABLED-}
+  compose_order: 76
 - name: POSTER_MAX_WIDTH
   section: Artwork selection
   description: Preferred high-resolution width threshold; this does not cap download dimensions.

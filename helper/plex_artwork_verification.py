@@ -229,7 +229,7 @@ def write_plex_artwork_verification_report(records, *, base_dir=None, retention=
             f"| {record.get('title') or 'unknown item'} | rating key={record.get('plex_rating_key')} "
             f"| {asset} | {record.get('reason')}"
         )
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines) + "\n",
         report_type="plex_artwork_verification",

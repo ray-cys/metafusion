@@ -304,7 +304,7 @@ def write_output_management_report(
             f"- [{record.get('status')}] {label} | {record.get('destination')} "
             f"| {record.get('reason')}"
         )
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines) + "\n",
         report_type="output_management",

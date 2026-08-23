@@ -157,6 +157,7 @@ def get_disabled_features(config, logger):
         (("assets", "run_season"), "Season Assets Download"),
         (("assets", "run_background"), "Background Assets Download"),
         (("cleanup", "run_cleanup"), "Cleanup Libraries"),
+        (("output", "dashboard_enabled"), "Automatic HTML Dashboard"),
     ]
     for key_tuple, feature in features:
         sub_config = config
@@ -194,6 +195,9 @@ def get_disabled_features(config, logger):
             config.get("assets", {}).get("run_background", False)
         ),
         cleanup=enabled_label(config.get("cleanup", {}).get("run_cleanup", False)),
+        dashboard=enabled_label(
+            config.get("output", {}).get("dashboard_enabled", False)
+        ),
         dry_run=enabled_label(config.get("settings", {}).get("dry_run", False)),
     )
 
@@ -402,6 +406,13 @@ def validate_config(config):
         errors.append(
             "plex_metadata.allow_overwrite must be true for overwrite policy"
         )
+    output = config.get("output", {})
+    report_format_value = str(output.get("report_format", "both")).lower()
+    if report_format_value not in {"text", "json", "both"}:
+        errors.append("output.report_format must be text, json, or both")
+    adoption_audit = str(output.get("adoption_audit", "anomalies")).lower()
+    if adoption_audit not in {"anomalies", "all", "off"}:
+        errors.append("output.adoption_audit must be anomalies, all, or off")
     fields = plex_metadata.get("fields", [])
     if not isinstance(fields, list):
         errors.append("plex_metadata.fields must be a list")
@@ -500,6 +511,12 @@ def validate_config(config):
             config.get("output", {}).get("report_retention"),
             1,
             1000,
+        ),
+        (
+            "cleanup.quarantine_days",
+            config.get("cleanup", {}).get("quarantine_days"),
+            1,
+            3650,
         ),
         ("plex_metadata.recheck_days", plex_metadata.get("recheck_days"), 0, 3650),
         (

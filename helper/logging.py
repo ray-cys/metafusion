@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import platform
+import re
 import shutil
 import sys
 import time
@@ -18,32 +19,22 @@ from helper.storage import storage_pressure_threshold
 
 BASE_CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 LOGS_DIR = BASE_CONFIG_DIR / "logs"
-LOG_FILE = LOGS_DIR / "metafusion.log"
+RUN_LOG_PREFIX = "metafusion-"
+RUN_LOG_SUFFIX = ".log"
 MIN_PYTHON = (3, 10)
 MIN_CPU_CORES = 4
 MIN_RAM_GB = 4
 
 
-class SizeAndTimeRotatingFileHandler(logging.FileHandler):
-    """Rotate at local midnight or before the active log exceeds its size cap."""
+class SizeRotatingFileHandler(logging.FileHandler):
+    """Split an unusually large run log without crossing run boundaries."""
 
     def __init__(self, filename, max_bytes, backup_count, encoding="utf-8"):
         self.max_bytes = max(0, int(max_bytes))
         self.backup_count = max(1, int(backup_count))
         super().__init__(filename, encoding=encoding)
-        self.next_rollover_at = self._next_midnight()
-
-    @staticmethod
-    def _next_midnight(now=None):
-        current = now or datetime.datetime.now().astimezone()
-        tomorrow = current.date() + datetime.timedelta(days=1)
-        return datetime.datetime.combine(
-            tomorrow, datetime.time.min, tzinfo=current.tzinfo
-        ).timestamp()
 
     def shouldRollover(self, record):
-        if time.time() >= self.next_rollover_at:
-            return True
         if not self.max_bytes:
             return False
         message_bytes = len(
@@ -81,7 +72,6 @@ class SizeAndTimeRotatingFileHandler(logging.FileHandler):
             with suppress(OSError):
                 expired.unlink()
         self.stream = self._open()
-        self.next_rollover_at = self._next_midnight()
 
     def emit(self, record):
         try:
@@ -90,6 +80,39 @@ class SizeAndTimeRotatingFileHandler(logging.FileHandler):
         except OSError:
             self.handleError(record)
         super().emit(record)
+
+
+def _run_log_path(logs_dir, now=None):
+    started_at = now or datetime.datetime.now().astimezone()
+    timestamp = started_at.strftime("%Y-%m-%d_%H-%M-%S_%f")
+    return Path(logs_dir) / f"{RUN_LOG_PREFIX}{timestamp}{RUN_LOG_SUFFIX}"
+
+
+def _run_log_files(logs_dir):
+    pattern = re.compile(
+        rf"^{re.escape(RUN_LOG_PREFIX)}\d{{4}}-\d{{2}}-\d{{2}}_"
+        rf"\d{{2}}-\d{{2}}-\d{{2}}_\d{{6}}{re.escape(RUN_LOG_SUFFIX)}$"
+    )
+    return sorted(
+        (
+            path
+            for path in Path(logs_dir).glob(f"{RUN_LOG_PREFIX}*{RUN_LOG_SUFFIX}")
+            if pattern.fullmatch(path.name)
+        ),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+
+
+def retain_run_logs(logs_dir, retention):
+    """Keep the newest completed/current run groups and all of their size parts."""
+    keep = max(1, int(retention))
+    expired_logs = _run_log_files(logs_dir)[keep:]
+    for log_file in expired_logs:
+        for path in (log_file, *log_file.parent.glob(f"{log_file.name}.*")):
+            with suppress(OSError):
+                path.unlink()
+    return len(expired_logs)
 
 
 def redact_secrets(value, *secrets):
@@ -140,10 +163,22 @@ class SecretRedactionFilter(logging.Filter):
         record.args = ()
         return True
 
-def get_setup_logging(config):
-    log_file = LOG_FILE
-    dry_run = config.get("settings", {}).get("dry_run", False)
 
+def _log_formatter():
+    return logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+
+def _secret_filter(config):
+    return SecretRedactionFilter(
+        (
+            config.get("plex", {}).get("token"),
+            config.get("tmdb", {}).get("api_key"),
+            fanart_project_api_key(),
+        )
+    )
+
+
+def get_setup_logging(config):
     log_level_str = config["settings"].get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
 
@@ -151,38 +186,63 @@ def get_setup_logging(config):
     logger.setLevel(log_level)
 
     if logger.hasHandlers():
-        logger.handlers.clear()
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+    formatter = _log_formatter()
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
-    secret_filter = SecretRedactionFilter(
-        (
-            config.get("plex", {}).get("token"),
-            config.get("tmdb", {}).get("api_key"),
-            fanart_project_api_key(),
-        )
-    )
-    console_handler.addFilter(secret_filter)
-
-    if not dry_run:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = SizeAndTimeRotatingFileHandler(
-            log_file,
-            max_bytes=max(
-                0,
-                int(float(config["settings"].get("log_max_mb", 10)) * 1024 * 1024),
-            ),
-            backup_count=config["settings"].get("log_backup_count", 14),
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(log_level)
-        file_handler.addFilter(secret_filter)
-        logger.addHandler(file_handler)
+    console_handler.addFilter(_secret_filter(config))
     logger.addHandler(console_handler)
     return logger
+
+
+def begin_run_file_logging(config, logger, *, logs_dir=None, now=None):
+    """Attach one persistent file for the lifetime of a single non-dry-run job."""
+    if config.get("settings", {}).get("dry_run", False):
+        config.pop("_run_log_path", None)
+        return None
+    directory = Path(logs_dir or LOGS_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    log_file = _run_log_path(directory, now=now)
+    settings = config.get("settings", {})
+    handler = SizeRotatingFileHandler(
+        log_file,
+        max_bytes=max(
+            0,
+            int(float(settings.get("log_max_mb", 10)) * 1024 * 1024),
+        ),
+        backup_count=settings.get("log_backup_count", 14),
+        encoding="utf-8",
+    )
+    handler.setFormatter(_log_formatter())
+    handler.setLevel(logger.level)
+    handler.addFilter(_secret_filter(config))
+    logger.addHandler(handler)
+    config["_run_log_path"] = str(log_file)
+    retain_run_logs(directory, settings.get("log_backup_count", 14))
+    logger.info("[Logging] Run log started | %s", format_fields(("Path", log_file)))
+    return handler
+
+
+def finish_run_file_logging(config, logger, handler):
+    """Flush, close, detach, and retain a completed per-run log file."""
+    if handler is None:
+        return None
+    log_file = Path(handler.baseFilename)
+    try:
+        logger.info("[Logging] Run log saved | %s", format_fields(("Path", log_file)))
+    finally:
+        logger.removeHandler(handler)
+        handler.flush()
+        handler.close()
+    retain_run_logs(
+        log_file.parent,
+        config.get("settings", {}).get("log_backup_count", 14),
+    )
+    return log_file
 
 def get_meta_banner(logger=None):
     return log_section(logger, "Startup", "M E T A F U S I O N")
@@ -343,7 +403,7 @@ def log_config_event(event, logger=None, **kwargs):
         "invalid_env_var": "[Configuration] Invalid environment variable for {key}: '{value}'. Using default: {default}",
         "feature_disabled": "[Configuration] {feature} is DISABLED and will not be processed.",
         "feature_enabled": "[Configuration] {feature} is ENABLED and will be processed.",
-        "feature_profile": "[Configuration] Run profile | Mode: {mode} | Metadata: {metadata} | Plex metadata: {plex_metadata} | Poster: {poster} | Season posters: {season} | Background: {background} | Cleanup: {cleanup} | Dry run: {dry_run}",
+        "feature_profile": "[Configuration] Run profile | Mode: {mode} | Metadata: {metadata} | Plex metadata: {plex_metadata} | Poster: {poster} | Season posters: {season} | Background: {background} | Cleanup: {cleanup} | Dashboard: {dashboard} | Dry run: {dry_run}",
         "unknown_feature": "[Configuration] Unknown configuration settings: {feature}",
         "unknown_key": "[Configuration] Unknown configuration key: {key}",
         "yaml_not_found": "[Configuration] YAML initialized | File: {config_file} | Source: packaged template",
@@ -553,6 +613,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_selection_summary": "[Processing] Selection summary for {library_name} | Selected: {selected} | Unchanged/not due: {skipped} | Causes: {causes}",
         "processing_ambiguous_editions": "[Processing] Unsafe duplicate editions in '{library_name}': {description}",
         "processing_ambiguous_editions_allowed": "[Processing] Ambiguous editions allowed in '{library_name}': {description}",
+        "processing_artwork_reconciliation": "[Artwork] {library_name} | {full_title} | Destination reconciliation | Expected: {expected} | Present: {present} | Absent: {absent}",
     }
     levels = {
         "processing_no_item": "warning",
@@ -570,6 +631,7 @@ def log_processing_event(event, logger=None, **kwargs):
         "processing_selection_summary": "info",
         "processing_ambiguous_editions": "error",
         "processing_ambiguous_editions_allowed": "warning",
+        "processing_artwork_reconciliation": "warning",
     }
     msg = messages.get(event, "[Processing] Unknown event")
     msg = _format_event_message(msg, kwargs, logger, "Processing")
@@ -778,6 +840,35 @@ def log_asset_status(
     log_builder_event(event, **kwargs)
 
 
+def _metadata_change_details(changes, *, limit=5):
+    """Summarize nested metadata diff paths without exposing metadata values."""
+    paths = [str(change) for change in (changes or []) if str(change).strip()]
+    labels = []
+    for path in paths:
+        tokens = [
+            token
+            for token in re.findall(r"\['([^']+)'\]", path)
+            if not token.lstrip("-").isdigit()
+        ]
+        if not tokens:
+            label = path
+        elif tokens[0] == "seasons" and "episodes" in tokens:
+            label = f"episode {tokens[-1]}"
+        elif tokens[0] == "seasons" and len(tokens) > 1:
+            label = f"season {tokens[-1]}"
+        else:
+            label = ".".join(tokens)
+        if label not in labels:
+            labels.append(label)
+    visible = labels[: max(1, int(limit))]
+    if len(labels) > len(visible):
+        visible.append(f"+{len(labels) - len(visible)} more")
+    return format_fields(
+        ("Changed fields", ", ".join(visible) or "Unknown"),
+        ("Field changes", len(paths)),
+    )
+
+
 def log_item_outcomes(
     library_name,
     full_title,
@@ -791,7 +882,15 @@ def log_item_outcomes(
     feature_flags = feature_flags or {}
     stats = stats or {}
 
-    def emit(component, subject, action, source, target=None, detail=None):
+    def emit(
+        component,
+        subject,
+        action,
+        source,
+        target,
+        detail=None,
+        level=None,
+    ):
         if action in {None, "not_due"}:
             return
         labels = {
@@ -800,6 +899,8 @@ def log_item_outcomes(
             "adopted": "Adopted",
             "skipped": "Unchanged",
             "preserved": "Preserved",
+            "policy_preserved": "Policy preserved",
+            "policy_missing": "Policy-preserved missing",
             "missing": "Missing",
             "failed": "Failed",
             "deferred": "Deferred",
@@ -809,17 +910,21 @@ def log_item_outcomes(
             outcome = f"{str(subject).title()} {outcome.lower()}"
         message = (
             f"[{component}] {library_name} | {full_title} | "
-            f"{outcome} | Source: {source}"
+            f"{outcome} | Source: {source} | Target: {target}"
         )
-        if target:
-            message += f" | Target: {target}"
         if detail:
             message += f" | {detail}"
-        if action == "failed":
+        if level == "error" or (level is None and action == "failed"):
             logger.error(message)
-        elif action in {"missing", "deferred"}:
+        elif level == "warning" or (
+            level is None and action in {"missing", "policy_missing", "deferred"}
+        ):
             logger.warning(message)
-        elif action in {"skipped", "preserved"}:
+        elif level == "info":
+            logger.info(message)
+        elif level == "debug" or (
+            level is None and action in {"skipped", "preserved", "policy_preserved"}
+        ):
             logger.debug(message)
         else:
             logger.info(message)
@@ -827,14 +932,46 @@ def log_item_outcomes(
     metadata_action = stats.get("metadata_action")
     if metadata_action != "not_due":
         mode = "Plex" if feature_flags.get("plex_metadata", False) else "Kometa YAML"
+        coverage_value = None
         try:
-            completeness = f"{float(stats.get('percent') or 0):g}%"
+            coverage_value = float(stats.get("percent"))
+            completeness = f"{coverage_value:g}%"
         except (TypeError, ValueError):
             completeness = "unknown"
         details = [f"Field coverage: {completeness}"]
+        try:
+            missing = f"{float(stats.get('incomplete_percent')):g}%"
+        except (TypeError, ValueError):
+            missing = "unknown"
+        details.append(f"Missing fields: {missing}")
+        if (
+            metadata_action == "upgraded"
+            and not feature_flags.get("plex_metadata", False)
+        ):
+            details.insert(
+                0,
+                _metadata_change_details(stats.get("metadata_changes")),
+            )
         if feature_flags.get("plex_metadata", False):
             details.append(f"API batches: {int(stats.get('plex_metadata_writes', 0))}")
-        emit("Metadata", None, metadata_action, "TMDb", mode, " | ".join(details))
+        metadata_level = (
+            "info"
+            if metadata_action == "skipped"
+            and coverage_value is not None
+            and coverage_value < 100
+            else None
+        )
+        if metadata_level:
+            details.append("Status: Incomplete but unchanged")
+        emit(
+            "Metadata",
+            None,
+            metadata_action,
+            "TMDb",
+            mode,
+            " | ".join(details),
+            level=metadata_level,
+        )
 
     providers = stats.get("artwork_providers") or {}
     artwork_target = (
@@ -852,7 +989,7 @@ def log_item_outcomes(
         }.get(provider_key)
         if known:
             return known
-        if action in {"skipped", "preserved"}:
+        if action in {"skipped", "preserved", "policy_preserved"}:
             return "Existing"
         return "None"
 
@@ -896,6 +1033,8 @@ def log_item_outcomes(
                 "adopted": "Adopted",
                 "skipped": "Unchanged",
                 "preserved": "Preserved",
+                "policy_preserved": "Policy preserved",
+                "policy_missing": "Policy-preserved missing",
                 "missing": "Missing",
                 "failed": "Failed",
                 "deferred": "Deferred",
@@ -939,7 +1078,9 @@ def log_item_outcomes(
                 missing_details.append(
                     f"{season_label} ({attempt_text or 'provider attempts unavailable'})"
                 )
-            quiet_actions = set(action_counts).issubset({"skipped", "preserved"})
+            quiet_actions = set(action_counts).issubset(
+                {"skipped", "preserved", "policy_preserved"}
+            )
             season_stages = stats.get("season_artwork_selection_stages") or {}
             relaxed_count = sum(
                 (
@@ -967,7 +1108,11 @@ def log_item_outcomes(
                 logger.error
                 if action_counts.get("failed")
                 else logger.warning
-                if action_counts.get("missing") or action_counts.get("deferred")
+                if (
+                    action_counts.get("missing")
+                    or action_counts.get("policy_missing")
+                    or action_counts.get("deferred")
+                )
                 else logger.debug
                 if quiet_actions
                 else logger.info
@@ -986,6 +1131,36 @@ def log_item_outcomes(
                     else ""
                 ),
             )
+
+
+def log_artwork_gap_snapshot(logger, snapshot, report_path):
+    """Log durable artwork-gap visibility without repeating every open item."""
+    snapshot = snapshot or {}
+    summary = snapshot.get("summary") or {}
+    artwork_open = int(summary.get("artwork_open") or 0)
+    message = (
+        "[Diagnostics] Artwork gaps | "
+        f"Current run: {int(summary.get('artwork_current_run') or 0)} | "
+        f"Carried forward: {int(summary.get('artwork_carried_forward') or 0)} | "
+        f"Open: {artwork_open} | "
+        f"Not due: {int(summary.get('artwork_not_due') or 0)} | "
+        f"Resolved history: {int(summary.get('artwork_resolved') or 0)} | "
+        f"Report: {report_path}"
+    )
+    (logger.warning if artwork_open else logger.info)(message)
+    for library, values in (snapshot.get("libraries") or {}).items():
+        library_open = int(values.get("open") or 0)
+        level = logger.warning if library_open else logger.info
+        level(
+            "[Artwork] %s | Persistent gaps | Open: %d | Current run: %d | "
+            "Carried forward: %d | Not due: %d",
+            library,
+            library_open,
+            int(values.get("current_run") or 0),
+            int(values.get("carried_forward") or 0),
+            int(values.get("not_due") or 0),
+        )
+
 
 def log_cleanup_event(event, logger=None, **kwargs):
     logger = kwargs.get("logger") or logger or logging.getLogger()
@@ -1006,11 +1181,14 @@ def log_cleanup_event(event, logger=None, **kwargs):
         "cleanup_failed_remove_metadata": "[Cleanup] Kometa YAML | {filename} | Failed cleanup | Error: {error}",
         "cleanup_skipping_valid_asset": "[Cleanup] Artwork | {path} | Preserved {description} | Reason: Not an eligible managed orphan",
         "cleanup_preserving_modified_asset": "[Cleanup] Artwork | {path} | Preserved {description} | Reason: {reason}",
-        "cleanup_removing_asset": "[Cleanup] Artwork | {path} | Removed {description} | Reason: Not present in complete Plex inventory",
+        "cleanup_removing_asset": "[Cleanup] Artwork | {path} | Quarantined {description} | Reason: Not present in complete Plex inventory",
+        "cleanup_quarantine_purged": "[Cleanup] Quarantine | Purged expired artwork | Records: {count}",
+        "cleanup_quarantine_purge_deferred": "[Cleanup] Quarantine | Expired purge deferred | Error: {error}",
         "cleanup_removing_empty_dir": "[Cleanup] Artwork | {parent} | Removed empty managed directory",
         "cleanup_failed_remove_asset": "[Cleanup] Artwork | {path} | Failed to remove {description} | Error: {error}",
         "cleanup_consolidated_removed": "[Cleanup] {summary}",
         "cleanup_dry_run": "[Cleanup] Preview | {path} | Would remove {description} | Reason: Not present in complete Plex inventory",
+        "cleanup_dry_run_artwork": "[Cleanup] Preview | {path} | Would quarantine {description} | Reason: Not present in complete Plex inventory",
     }
     levels = {
         "cleanup_start": "info",
@@ -1030,25 +1208,34 @@ def log_cleanup_event(event, logger=None, **kwargs):
         "cleanup_skipping_valid_asset": "debug",
         "cleanup_preserving_modified_asset": "warning",
         "cleanup_removing_asset": "debug",
+        "cleanup_quarantine_purged": "info",
+        "cleanup_quarantine_purge_deferred": "warning",
         "cleanup_removing_empty_dir": "debug",
         "cleanup_failed_remove_asset": "warning",
         "cleanup_consolidated_removed": "info",
         "cleanup_dry_run": "info",
+        "cleanup_dry_run_artwork": "info",
     }
     
     if event == "cleanup_consolidated_removed" and "removed_summary" in kwargs:
         summary_lines = []
         for (title, year), types in kwargs["removed_summary"].items():
-            parts = []
+            removed_parts = []
             if types.get("cache"):
-                parts.append("cache entry")
+                removed_parts.append("cache entry")
             if types.get("yaml"):
-                parts.append("Kometa YAML entry")
+                removed_parts.append("Kometa YAML entry")
+            actions = []
+            if removed_parts:
+                actions.append(f"Removed {', '.join(removed_parts)}")
+            quarantined = []
             for asset_type in types.get("asset", []):
-                parts.append(f"managed {asset_type}")
-            if parts:
+                quarantined.append(f"managed {asset_type}")
+            if quarantined:
+                actions.append(f"Quarantined {', '.join(quarantined)}")
+            if actions:
                 summary_lines.append(
-                    f"Inventory | {title} ({year}) | Removed {', '.join(parts)} "
+                    f"Inventory | {title} ({year}) | {'; '.join(actions)} "
                     "| Reason: Not present in complete Plex inventory"
                 )
         kwargs["summary"] = "\n[Cleanup] ".join(summary_lines)
@@ -1068,7 +1255,7 @@ def metadata_action_summary(library_summary, feature_flags):
     library_summary = library_summary or {}
     if feature_flags.get("plex_metadata", False):
         return (
-            "Metadata | Target: Plex | Changed: "
+            "Metadata result | Target: Plex | Changed: "
             f"{library_summary.get('meta_upgraded', 0)} | "
             f"API batches: {library_summary.get('plex_metadata_writes', 0)} | "
             f"Unchanged: {library_summary.get('meta_skipped', 0)} | "
@@ -1078,13 +1265,107 @@ def metadata_action_summary(library_summary, feature_flags):
         "metadata_enhanced", False
     ):
         return (
-            "Metadata | Target: Kometa YAML | Created: "
+            "Metadata result | Target: Kometa YAML | Created: "
             f"{library_summary.get('meta_downloaded', 0)} | "
             f"Updated: {library_summary.get('meta_upgraded', 0)} | "
             f"Unchanged: {library_summary.get('meta_skipped', 0)} | "
             f"Failed: {library_summary.get('meta_failed', 0)}"
         )
     return None
+
+
+def metadata_schedule_line(library_summary):
+    """Return reconciled title-level scheduling for metadata work."""
+    return (
+        "Metadata schedule | Destinations: "
+        f"{library_summary.get('metadata_schedule_destinations', 0)} | "
+        f"Due: {library_summary.get('metadata_schedule_due', 0)} | "
+        f"Required: {library_summary.get('metadata_schedule_required', 0)} | "
+        f"Forced: {library_summary.get('metadata_schedule_forced', 0)} | "
+        f"Not due: {library_summary.get('metadata_schedule_not_due', 0)}"
+    )
+
+
+def schedule_reconciliation_warning(library_summary, prefix, scope, label):
+    """Return a warning when exclusive schedule states do not reconcile."""
+    destinations = int(
+        library_summary.get(f"{prefix}_schedule_destinations", 0) or 0
+    )
+    accounted = sum(
+        int(library_summary.get(f"{prefix}_schedule_{state}", 0) or 0)
+        for state in ("due", "required", "forced", "not_due")
+    )
+    if destinations == accounted:
+        return None
+    return "[Diagnostics] Schedule reconciliation | " + format_fields(
+        ("Status", "Mismatch"),
+        ("Scope", scope),
+        ("Lane", label),
+        ("Destinations", destinations),
+        ("Accounted", accounted),
+        ("Difference", destinations - accounted),
+    )
+
+
+def artwork_schedule_line(library_summary, prefix, label):
+    """Return reconciled cadence accounting for one artwork destination type."""
+    line = (
+        f"{label} schedule | Destinations: "
+        f"{library_summary.get(f'{prefix}_schedule_destinations', 0)} | "
+        f"Due: {library_summary.get(f'{prefix}_schedule_due', 0)} | "
+        f"Required: {library_summary.get(f'{prefix}_schedule_required', 0)} | "
+        f"Forced: {library_summary.get(f'{prefix}_schedule_forced', 0)} | "
+        f"Not due: {library_summary.get(f'{prefix}_schedule_not_due', 0)}"
+    )
+    if prefix == "season_poster":
+        line += (
+            " | Season inventories unavailable: "
+            f"{library_summary.get('season_poster_schedule_inventory_unknown', 0)}"
+        )
+    return line
+
+
+def artwork_result_line(library_summary, prefix, label, *, policy=False):
+    """Return run outcomes for artwork destinations that reached processing."""
+    outcome_keys = (
+        "downloaded",
+        "upgraded",
+        "adopted",
+        "skipped",
+        "preserved",
+        "missing",
+        "deferred",
+        "failed",
+    )
+    evaluated = sum(
+        int(library_summary.get(f"{prefix}_{suffix}", 0) or 0)
+        for suffix in outcome_keys
+    )
+    if policy:
+        evaluated += int(
+            library_summary.get(f"{prefix}_policy_preserved", 0) or 0
+        )
+        evaluated += int(library_summary.get(f"{prefix}_policy_missing", 0) or 0)
+    text = (
+        f"{label} result | Evaluated: {evaluated} | "
+        f"Downloaded: {library_summary.get(f'{prefix}_downloaded', 0)} | "
+        f"Upgraded: {library_summary.get(f'{prefix}_upgraded', 0)} | "
+        f"Adopted: {library_summary.get(f'{prefix}_adopted', 0)} | "
+        f"Unchanged: {library_summary.get(f'{prefix}_skipped', 0)} | "
+        f"Preserved: {library_summary.get(f'{prefix}_preserved', 0)} | "
+        f"Missing: {library_summary.get(f'{prefix}_missing', 0)}"
+    )
+    if policy:
+        text += (
+            f" | Policy preserved: "
+            f"{library_summary.get(f'{prefix}_policy_preserved', 0)}"
+            f" | Policy missing: "
+            f"{library_summary.get(f'{prefix}_policy_missing', 0)}"
+        )
+    return (
+        f"{text} | Deferred: {library_summary.get(f'{prefix}_deferred', 0)} | "
+        f"Failed: {library_summary.get(f'{prefix}_failed', 0)}"
+    )
 
 
 def plex_progress_item_interval(total_items):
@@ -1211,6 +1492,9 @@ def _runtime_storage_bytes():
         )
     result["Logs"] = _file_group_bytes(LOGS_DIR.glob("*"))
     result["Reports"] = _file_group_bytes((BASE_CONFIG_DIR / "reports").glob("*"))
+    result["Quarantine"] = _file_group_bytes(
+        (BASE_CONFIG_DIR / "quarantine").rglob("*")
+    )
     return result
 
 
@@ -1257,6 +1541,7 @@ def log_final_summary(
     box_width = None
     lines = []
     storage_warnings = []
+    reconciliation_warnings: list[str] = []
     log_section(logger, "Summary", "Final run summary")
     minutes, seconds = divmod(int(elapsed_time), 60)
     run_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -1283,12 +1568,29 @@ def log_final_summary(
     summaries = [
         summary for summary in metadata_summaries.values() if isinstance(summary, dict)
     ]
+    artwork_enabled = bool(
+        feature_flags
+        and any(
+            feature_flags.get(name, False)
+            for name in ("poster", "background", "season")
+        )
+    )
+    metadata_enabled = bool(
+        feature_flags
+        and any(
+            feature_flags.get(name, False)
+            for name in ("metadata_basic", "metadata_enhanced", "plex_metadata")
+        )
+    )
     overall: Counter[str] = Counter()
     providers: Counter[str] = Counter()
+    current_providers: Counter[str] = Counter()
     for summary in summaries:
         for key, value in (summary.get("library_summary") or {}).items():
             if key == "artwork_provider_writes":
                 providers.update(value or {})
+            elif key == "artwork_current_providers":
+                current_providers.update(value or {})
             elif isinstance(value, (int, float)):
                 overall[key] += int(value)
     total_titles = sum(int(summary.get("total_items", 0)) for summary in summaries)
@@ -1312,15 +1614,17 @@ def log_final_summary(
             "poster_skipped", "background_skipped", "season_poster_skipped"
         )
     )
-    artwork_not_due = sum(
-        overall[key]
-        for key in (
-            "poster_not_due", "background_not_due", "season_poster_not_due"
-        )
-    )
     artwork_preserved = sum(
         overall[key]
         for key in ("poster_preserved", "background_preserved", "season_poster_preserved")
+    )
+    artwork_policy_preserved = sum(
+        overall[key]
+        for key in ("poster_policy_preserved", "background_policy_preserved")
+    )
+    artwork_policy_missing = sum(
+        overall[key]
+        for key in ("poster_policy_missing", "background_policy_missing")
     )
     artwork_missing = sum(
         overall[key]
@@ -1336,17 +1640,50 @@ def log_final_summary(
             "poster_deferred", "background_deferred", "season_poster_deferred"
         )
     )
+    artwork_schedule = {
+        state: sum(
+            overall[f"{prefix}_schedule_{state}"]
+            for prefix in ("poster", "background", "season_poster")
+        )
+        for state in ("destinations", "due", "required", "forced", "not_due")
+    }
+    artwork_evaluated = sum(
+        overall[f"{prefix}_{suffix}"]
+        for prefix in ("poster", "background", "season_poster")
+        for suffix in (
+            "downloaded",
+            "upgraded",
+            "adopted",
+            "skipped",
+            "preserved",
+            "missing",
+            "deferred",
+            "failed",
+        )
+    ) + artwork_policy_preserved + artwork_policy_missing
+    lines.extend(box_line(f"Overall | Titles processed: {total_titles}", box_width))
+    if metadata_enabled:
+        lines.extend(box_line(metadata_schedule_line(overall), box_width))
+        overall_metadata_summary = metadata_action_summary(overall, feature_flags)
+        if overall_metadata_summary:
+            lines.extend(box_line(overall_metadata_summary, box_width))
     lines.extend(box_line(
-        f"Overall | Titles: {total_titles} | Metadata changed: "
-        f"{overall['meta_downloaded'] + overall['meta_upgraded']} | "
-        f"Metadata unchanged: {overall['meta_skipped']} | "
-        f"Metadata failed: {overall['meta_failed']}",
+        f"Artwork schedule | Destinations: {artwork_schedule['destinations']} | "
+        f"Due: {artwork_schedule['due']} | "
+        f"Required: {artwork_schedule['required']} | "
+        f"Forced: {artwork_schedule['forced']} | "
+        f"Not due: {artwork_schedule['not_due']} | "
+        "Season inventories unavailable: "
+        f"{overall['season_poster_schedule_inventory_unknown']}",
         box_width,
     ))
     lines.extend(box_line(
-        f"Artwork | Written: {artwork_written} | Adopted: {artwork_adopted} | "
-        f"Unchanged: {artwork_unchanged} | Not due: {artwork_not_due} | "
-        f"Preserved: {artwork_preserved} | Missing: {artwork_missing} | "
+        f"Artwork result | Evaluated: {artwork_evaluated} | "
+        f"Written: {artwork_written} | Adopted: {artwork_adopted} | "
+        f"Unchanged: {artwork_unchanged} | "
+        f"Preserved: {artwork_preserved} | Missing this run: {artwork_missing} | "
+        f"Policy preserved: {artwork_policy_preserved} | "
+        f"Policy missing: {artwork_policy_missing} | "
         f"Deferred: {artwork_deferred} | Failed: {artwork_failed} | "
         f"Automatic relaxation: {overall['artwork_automatic_relaxed']} | "
         f"Download failover: {overall['artwork_download_failover']}",
@@ -1359,7 +1696,38 @@ def log_final_summary(
             for name, count in sorted(providers.items())
         )
         lines.extend(box_line(
-            f"Artwork providers | Selected: {provider_text}",
+            f"Artwork write sources | {provider_text}",
+            box_width,
+        ))
+    if artwork_enabled:
+        storage_scopes = {
+            str((summary.get("library_summary") or {}).get("storage_scope") or "processed items")
+            for summary in summaries
+        }
+        reconciliation_scope = (
+            "full inventory" if storage_scopes == {"full inventory"} else "processed items"
+        )
+        lines.extend(box_line(
+            f"Artwork files | Scope: {reconciliation_scope} | Evaluated destinations: "
+            f"{overall['artwork_file_expected']} | Present: "
+            f"{overall['artwork_file_present']} | Absent: "
+            f"{overall['artwork_file_absent']}",
+            box_width,
+        ))
+    if artwork_enabled and current_providers:
+        labels = {
+            "tmdb": "TMDb",
+            "fanart": "Fanart.tv",
+            "plex": "Plex",
+            "existing": "Existing/manual",
+            "unknown": "Unknown",
+        }
+        provider_text = ", ".join(
+            f"{labels.get(name, name.title())}: {count}"
+            for name, count in sorted(current_providers.items())
+        )
+        lines.extend(box_line(
+            f"Artwork current sources | {provider_text}",
             box_width,
         ))
 
@@ -1396,10 +1764,18 @@ def log_final_summary(
             lines.extend(
                 box_line(
                     f"Library: {lib} | Incremental | Library items: {library_items} | "
-                    f"Processed: {summary['total_items']} | Unchanged skipped: {incremental_skipped}",
+                    f"Processed: {summary['total_items']} | Not selected: {incremental_skipped}",
                     box_width,
                 )
             )
+        if metadata_enabled:
+            warning = schedule_reconciliation_warning(
+                libsum, "metadata", lib, "Metadata"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
+            lines.extend(box_line(
+                f"Library: {lib} | {metadata_schedule_line(libsum)}", box_width
+            ))
         metadata_summary = metadata_action_summary(libsum, feature_flags)
         if metadata_summary:
             lines.extend(box_line(f"Library: {lib} | {metadata_summary}", box_width))
@@ -1414,42 +1790,58 @@ def log_final_summary(
                 f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
+            warning = schedule_reconciliation_warning(
+                libsum, "poster", lib, "Series poster" if library_type in ("tv", "show") else "Poster"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
+            poster_label = (
+                "Series poster" if library_type in ("tv", "show") else "Poster"
+            )
             lines.extend(box_line(
-                f"Library: {lib} | Artwork poster | Downloaded: {libsum.get('poster_downloaded', 0)} | "
-                f"Upgraded: {libsum.get('poster_upgraded', 0)} | Adopted: {libsum.get('poster_adopted', 0)} | "
-                f"Unchanged: {libsum.get('poster_skipped', 0)} | Not due: {libsum.get('poster_not_due', 0)} | "
-                f"Preserved: {libsum.get('poster_preserved', 0)} | Missing: {libsum.get('poster_missing', 0)} | "
-                f"Deferred: {libsum.get('poster_deferred', 0)} | Failed: {libsum.get('poster_failed', 0)}", box_width))
+                f"Library: {lib} | "
+                f"{artwork_schedule_line(libsum, 'poster', poster_label)}",
+                box_width,
+            ))
+            lines.extend(box_line(
+                f"Library: {lib} | "
+                f"{artwork_result_line(libsum, 'poster', poster_label, policy=True)}",
+                box_width,
+            ))
 
         if feature_flags and feature_flags.get("background", False) and library_type in ("movie", "tv", "show"):
+            warning = schedule_reconciliation_warning(
+                libsum, "background", lib, "Background"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
             lines.extend(box_line(
-                f"Library: {lib} | Artwork background | Downloaded: {libsum.get('background_downloaded', 0)} | "
-                f"Upgraded: {libsum.get('background_upgraded', 0)} | Adopted: {libsum.get('background_adopted', 0)} | "
-                f"Unchanged: {libsum.get('background_skipped', 0)} | Not due: {libsum.get('background_not_due', 0)} | "
-                f"Preserved: {libsum.get('background_preserved', 0)} | Missing: {libsum.get('background_missing', 0)} | "
-                f"Deferred: {libsum.get('background_deferred', 0)} | Failed: {libsum.get('background_failed', 0)}", box_width))
+                f"Library: {lib} | "
+                f"{artwork_schedule_line(libsum, 'background', 'Background')}",
+                box_width,
+            ))
+            lines.extend(box_line(
+                f"Library: {lib} | "
+                f"{artwork_result_line(libsum, 'background', 'Background', policy=True)}",
+                box_width,
+            ))
 
         if (
             feature_flags and feature_flags.get("season", False)
             and library_type in ("tv", "show")
-            and (
-                libsum.get('season_poster_downloaded', 0) > 0 or
-                libsum.get('season_poster_upgraded', 0) > 0 or
-                libsum.get('season_poster_adopted', 0) > 0 or
-                libsum.get('season_poster_skipped', 0) > 0 or
-                libsum.get('season_poster_not_due', 0) > 0 or
-                libsum.get('season_poster_preserved', 0) > 0 or
-                libsum.get('season_poster_missing', 0) > 0 or
-                libsum.get('season_poster_deferred', 0) > 0 or
-                libsum.get('season_poster_failed', 0) > 0
-            )
         ):
+            warning = schedule_reconciliation_warning(
+                libsum, "season_poster", lib, "Season poster"
+            )
+            reconciliation_warnings.extend(filter(None, (warning,)))
             lines.extend(box_line(
-                f"Library: {lib} | Artwork season posters | Downloaded: {libsum.get('season_poster_downloaded', 0)} | "
-                f"Upgraded: {libsum.get('season_poster_upgraded', 0)} | Adopted: {libsum.get('season_poster_adopted', 0)} | "
-                f"Unchanged: {libsum.get('season_poster_skipped', 0)} | Not due: {libsum.get('season_poster_not_due', 0)} | "
-                f"Preserved: {libsum.get('season_poster_preserved', 0)} | Missing: {libsum.get('season_poster_missing', 0)} | "
-                f"Deferred: {libsum.get('season_poster_deferred', 0)} | Failed: {libsum.get('season_poster_failed', 0)}", box_width))
+                f"Library: {lib} | "
+                f"{artwork_schedule_line(libsum, 'season_poster', 'Season poster')}",
+                box_width,
+            ))
+            lines.extend(box_line(
+                f"Library: {lib} | "
+                f"{artwork_result_line(libsum, 'season_poster', 'Season poster')}",
+                box_width,
+            ))
 
         library_providers = libsum.get("artwork_provider_writes") or {}
         if library_providers:
@@ -1459,7 +1851,34 @@ def log_final_summary(
                 for name, count in sorted(library_providers.items())
             )
             lines.extend(box_line(
-                f"Library: {lib} | Artwork providers | Selected: {provider_text}",
+                f"Library: {lib} | Artwork write sources | {provider_text}",
+                box_width,
+            ))
+
+        if artwork_enabled:
+            lines.extend(box_line(
+                f"Library: {lib} | Artwork files | Scope: "
+                f"{libsum.get('storage_scope', 'processed items')} | "
+                f"Evaluated destinations: {libsum.get('artwork_file_expected', 0)} | "
+                f"Present: {libsum.get('artwork_file_present', 0)} | "
+                f"Absent: {libsum.get('artwork_file_absent', 0)}",
+                box_width,
+            ))
+        library_current_providers = libsum.get("artwork_current_providers") or {}
+        if artwork_enabled and library_current_providers:
+            labels = {
+                "tmdb": "TMDb",
+                "fanart": "Fanart.tv",
+                "plex": "Plex",
+                "existing": "Existing/manual",
+                "unknown": "Unknown",
+            }
+            provider_text = ", ".join(
+                f"{labels.get(name, name.title())}: {count}"
+                for name, count in sorted(library_current_providers.items())
+            )
+            lines.extend(box_line(
+                f"Library: {lib} | Artwork current sources | {provider_text}",
                 box_width,
             ))
 
@@ -1549,7 +1968,7 @@ def log_final_summary(
         )
         lines.extend(
             box_line(
-                f"Cleanup artwork | Removed: {cleanup_result.assets} | "
+                f"Cleanup artwork | Quarantined: {cleanup_result.assets} | "
                 f"Preserved: {cleanup_result.assets_preserved} | "
                 f"Unchanged: {cleanup_result.assets_skipped}",
                 box_width,
@@ -1571,6 +1990,9 @@ def log_final_summary(
     elif feature_flags and feature_flags.get("cleanup", False):
         if hasattr(cleanup_result, "titles"):
             action = "Would remove" if cleanup_result.dry_run else "Removed"
+            artwork_action = (
+                "Would quarantine" if cleanup_result.dry_run else "Quarantined"
+            )
             status = "Preview" if cleanup_result.dry_run else "Completed"
             cleanup_mode = str(getattr(cleanup_result, "mode", "unknown")).title()
             scope = (
@@ -1609,7 +2031,7 @@ def log_final_summary(
             )
             lines.extend(
                 box_line(
-                    f"Cleanup artwork | Action: {action} | Assets: {cleanup_result.assets} | "
+                    f"Cleanup artwork | Action: {artwork_action} | Assets: {cleanup_result.assets} | "
                     f"Preserved: {cleanup_result.assets_preserved} | "
                     f"Unchanged: {cleanup_result.assets_skipped}",
                     box_width,
@@ -1636,6 +2058,8 @@ def log_final_summary(
             free,
             required,
         )
+    for warning in reconciliation_warnings:
+        logger.warning(warning)
             
 def human_readable_size(size, decimal_places=2):
     for unit in ['bytes', 'KB', 'MB', 'GB', 'TB']:

@@ -318,10 +318,45 @@ def test_cached_source_skip_requires_verified_managed_status(
         "managed", "movie", "/poster.jpg", destination, "poster"
     )
     assert not builder.managed_source_matches(
+        "managed", "movie", "/different.jpg", destination, "poster"
+    )
+    assert not builder.managed_source_matches(
         "overwrite", "movie", "/poster.jpg", destination, "poster"
     )
     assert not builder.managed_source_matches(
         "no_ownership_record", "movie", "/poster.jpg", destination, "poster"
+    )
+
+
+def test_cached_source_is_downloaded_again_when_bounded_verification_is_due(
+    monkeypatch, tmp_path
+):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"artwork")
+    config = build_config(tmp_path)
+    config["image_upgrades"] = {
+        "default_days": 30,
+        "movie_days": 30,
+    }
+    monkeypatch.setattr(
+        builder,
+        "load_cache",
+        lambda: {
+            "movie": {
+                "poster_source_path": "/poster.jpg",
+                "poster_last_upgraded": "2020-01-01T00:00:00+00:00",
+            }
+        },
+    )
+
+    assert not builder.managed_source_matches(
+        "managed",
+        "movie",
+        "/poster.jpg",
+        destination,
+        "poster",
+        config=config,
+        media_type="movie",
     )
 
 
@@ -801,6 +836,7 @@ def test_movie_builder_unchanged_metadata_preserves_cache_identity(
     )
 
     assert result["metadata_action"] == "skipped"
+    assert result["metadata_changes"] == []
     assert calls[-1]["update_timestamp"] is False
 
 
@@ -999,7 +1035,7 @@ def test_tv_builder_applies_explicit_episode_number_override(tmp_path):
     assert result["metadata_pending_count"] == 0
 
 
-def test_split_series_preserve_policy_skips_top_level_artwork(tmp_path):
+def test_split_series_preserve_policy_reports_missing_top_level_artwork(tmp_path):
     meta = tv_meta()
     meta.update(
         {
@@ -1020,9 +1056,11 @@ def test_split_series_preserve_policy_skips_top_level_artwork(tmp_path):
     )
     tmdb_response_cache["tv/72844"] = details
 
+    config = build_config(tmp_path)
+    config["_artwork_gaps"] = []
     result = asyncio.run(
         builder.build_tv(
-            build_config(tmp_path),
+            config,
             {"metadata": {}},
             feature_flags=feature_flags(
                 metadata_basic=False,
@@ -1036,8 +1074,16 @@ def test_split_series_preserve_policy_skips_top_level_artwork(tmp_path):
         )
     )
 
-    assert result["poster_action"] == "skipped"
-    assert result["background_action"] == "skipped"
+    assert result["poster_action"] == "policy_missing"
+    assert result["background_action"] == "policy_missing"
+    assert {gap["asset_type"] for gap in config["_artwork_gaps"]} == {
+        "poster",
+        "background",
+    }
+    assert all(
+        gap["category"] == "policy_preserved_missing"
+        for gap in config["_artwork_gaps"]
+    )
 
 
 def test_tmdb_details_recovery_replaces_external_id_conflict(monkeypatch):

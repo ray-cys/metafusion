@@ -3,14 +3,18 @@ import logging
 from helper.logging import (
     PlexMetadataProgress,
     _format_event_message,
+    _metadata_change_details,
+    artwork_schedule_line,
     format_fields,
     get_meta_banner,
     log_builder_event,
     log_fanart_event,
+    log_item_outcomes,
     log_processing_event,
     log_tmdb_event,
     metadata_action_summary,
     plex_progress_item_interval,
+    schedule_reconciliation_warning,
 )
 
 
@@ -32,6 +36,72 @@ def test_unchanged_metadata_log_labels_completeness_percentages(caplog):
     assert "(100%/0%) completed" not in caplog.text
 
 
+def test_item_outcome_visibility_separates_changes_from_field_coverage(caplog):
+    flags = {"mode": "kometa", "plex_metadata": False}
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "Movies",
+            "Changed and complete (2024)",
+            {
+                "metadata_action": "upgraded",
+                "metadata_changes": ["['summary']", "['producer'][0]"],
+                "percent": 100,
+                "incomplete_percent": 0,
+                "is_complete": True,
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "TV Shows",
+            "Incomplete but stable (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 79,
+                "incomplete_percent": 21,
+                "is_complete": True,
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "TV Shows",
+            "Complete and stable (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 100,
+                "incomplete_percent": 0,
+                "is_complete": True,
+            },
+            flags,
+        )
+
+    assert "Changed and complete (2024) | Updated" in caplog.text
+    assert "Changed fields: summary, producer | Field changes: 2" in caplog.text
+    assert "Field coverage: 100% | Missing fields: 0%" in caplog.text
+    assert "Incomplete but stable (2024) | Unchanged" in caplog.text
+    assert "Status: Incomplete but unchanged" in caplog.text
+    assert "Complete and stable (2024)" not in caplog.text
+
+
+def test_metadata_change_details_are_bounded_and_collapse_nested_fields():
+    details = _metadata_change_details(
+        [
+            "plain fallback",
+            "['seasons']['1']['episodes']['2']['summary']",
+            "['seasons']['1']['episodes']['3']['summary']",
+            "['seasons']['1']['title']",
+            "['studio']",
+            "['tagline']",
+        ],
+        limit=4,
+    )
+
+    assert "plain fallback" in details
+    assert "episode summary" in details
+    assert "season title" in details
+    assert "+1 more" in details
+    assert "Field changes: 6" in details
+
+
 def test_builder_asset_details_are_debug_to_avoid_duplicate_item_outcomes(caplog):
     with caplog.at_level(logging.INFO):
         log_builder_event(
@@ -50,6 +120,23 @@ def test_builder_asset_details_are_debug_to_avoid_duplicate_item_outcomes(caplog
         )
 
     assert "Example (2024)" not in caplog.text
+
+
+def test_split_series_policy_outcomes_distinguish_present_from_missing(caplog):
+    with caplog.at_level(logging.DEBUG):
+        log_item_outcomes(
+            "TV Shows",
+            "Split Show (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "policy_preserved",
+                "background_action": "policy_missing",
+            },
+            {"mode": "kometa"},
+        )
+
+    assert "Poster policy preserved | Source: Existing" in caplog.text
+    assert "Background policy-preserved missing | Source: None" in caplog.text
     assert "Unchanged (2024)" not in caplog.text
 
     caplog.clear()
@@ -159,14 +246,43 @@ def test_metadata_summaries_are_mode_specific():
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": False}
     ) == (
-        "Metadata | Target: Kometa YAML | Created: 2 | Updated: 3 | "
+        "Metadata result | Target: Kometa YAML | Created: 2 | Updated: 3 | "
         "Unchanged: 4 | Failed: 1"
     )
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": True}
     ) == (
-        "Metadata | Target: Plex | Changed: 3 | API batches: 5 | "
+        "Metadata result | Target: Plex | Changed: 3 | API batches: 5 | "
         "Unchanged: 4 | Failed: 1"
+    )
+
+
+def test_schedule_reconciliation_and_unknown_season_inventory_are_explicit():
+    counts = {
+        "metadata_schedule_destinations": 5,
+        "metadata_schedule_due": 1,
+        "metadata_schedule_required": 1,
+        "metadata_schedule_forced": 1,
+        "metadata_schedule_not_due": 2,
+        "season_poster_schedule_destinations": 3,
+        "season_poster_schedule_due": 0,
+        "season_poster_schedule_required": 1,
+        "season_poster_schedule_forced": 0,
+        "season_poster_schedule_not_due": 2,
+        "season_poster_schedule_inventory_unknown": 1,
+    }
+
+    assert schedule_reconciliation_warning(
+        counts, "metadata", "Movies", "Metadata"
+    ) is None
+    counts["metadata_schedule_not_due"] = 1
+    warning = schedule_reconciliation_warning(
+        counts, "metadata", "Movies", "Metadata"
+    )
+    assert "Status: Mismatch" in warning
+    assert "Destinations: 5 | Accounted: 4 | Difference: 1" in warning
+    assert artwork_schedule_line(counts, "season_poster", "Season poster").endswith(
+        "Season inventories unavailable: 1"
     )
 
 

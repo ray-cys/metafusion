@@ -3,8 +3,8 @@
 These tools handle exceptional operator work without weakening MetaFusion's
 normal processing safeguards. Commands either read SQLite/live Plex without
 changing them, or require an exact target and hold the normal single-job lock.
-Every retained text report has a same-name JSON companion under
-`/config/reports`.
+Conventional reports under `/config/reports` follow `REPORT_FORMAT` (`text`,
+`json`, or `both`) and `REPORT_RETENTION`.
 
 ## Safe targeted output management
 
@@ -48,13 +48,15 @@ the candidate:
 ```text
 CLEANUP_CONFIRMATION_SCANS=2
 CLEANUP_GRACE_HOURS=48
+CLEANUP_QUARANTINE_DAYS=14
 PLEX_CLEANUP_MANAGED_ARTWORK=False
 ```
 
 Kometa cleanup can remove eligible generated YAML/state and checksum-proven
 artwork. Plex cleanup remains state-only unless the final setting is explicitly
-enabled; even then, only exact checksum-proven local artwork is eligible. It
-never removes Plex database records or media files.
+enabled; even then, only exact checksum-proven local artwork is eligible.
+Eligible artwork is quarantined rather than immediately deleted. Cleanup never
+removes Plex database records or media files.
 
 Generate a human and JSON audit trail without contacting Plex or disk outputs:
 
@@ -68,6 +70,50 @@ python metafusion.py --cleanup-history-report --history-source manual \
 History says whether MetaFusion acted automatically during full-scan cleanup
 or an operator acted through targeted output management. Pending candidates
 show their confirmation count and eligibility time.
+
+## Cleanup quarantine and restoration
+
+Automated cleanup moves eligible managed artwork to
+`/config/quarantine/cleanup`. It first verifies that the source is a regular,
+non-symbolic-link file inside the current managed root and that its SHA-256
+still matches MetaFusion ownership. The quarantine copy is verified before the
+original is removed. A database failure triggers restoration of the source, so
+cleanup does not intentionally leave an untracked quarantined file.
+
+Active files are retained for `CLEANUP_QUARANTINE_DAYS` (14 by default).
+Generate the paired text/JSON inventory without contacting Plex:
+
+```bash
+python metafusion.py --cleanup-quarantine-report
+```
+
+Restore one active record using the cleanup history ID shown in the report:
+
+```bash
+python metafusion.py --cleanup-restore 123
+```
+
+Restoration refuses to overwrite any existing destination, requires the stored
+checksum to remain valid, and requires the original destination to remain
+inside the currently configured managed roots. If cleanup removed the now-empty
+artwork directory, MetaFusion recreates only that required parent path.
+Restoration returns the artwork file only; it does not recreate deleted Plex
+media or stale MetaFusion state. If the item exists in Plex, its next eligible
+scan rebuilds current state and applies the configured artwork policy.
+
+Expired records are purged automatically during a later real cleanup. They can
+also be purged explicitly:
+
+```bash
+python metafusion.py --cleanup-purge
+```
+
+Purge removes only expired regular files whose path remains below the
+quarantine root and whose checksum matches the SQLite record. Missing or
+modified quarantine files are reported instead of followed or deleted.
+Quarantine, restore, purge, missing-file, and protected outcomes remain in
+cleanup history with their Plex/provider identities. Kometa YAML continues to
+use its bounded metadata backups; quarantine is for artwork bytes only.
 
 ## Persistent item exceptions
 
@@ -161,15 +207,30 @@ timestamps, contact Plex/providers, or inspect artwork/YAML:
 ```bash
 python metafusion.py --state-report
 python metafusion.py --state-report --state-section problems
+python metafusion.py --state-report --state-section provenance
 python metafusion.py --state-report --include-state-items --library Movies
 python metafusion.py --state-report --rating-key 12345
 ```
 
 It covers database health and size, table counts, library/full-scan state,
-recent jobs, ownership, retries, exceptions, overrides, identity reviews,
-cleanup candidates/history, and rebinding history. Recorded state is historical
-evidence; use live diagnostics before concluding Plex or a file currently
-matches it.
+recent jobs, ownership, value-free field provenance, retries, exceptions,
+overrides, identity reviews, cleanup candidates/history, and rebinding history.
+Recorded state is historical evidence; use live diagnostics before concluding
+Plex or a file currently matches it.
+
+For the same bounded evidence in a browser-friendly offline view:
+
+```bash
+python metafusion.py --dashboard-report
+```
+
+Set `output.dashboard_enabled: true` in YAML or `DASHBOARD_ENABLED=True` to
+refresh `/config/reports/metafusion-dashboard-latest.html` after successful
+non-dry runs. Automatic refresh is disabled by default; the explicit command
+above works regardless of this setting. The file has
+inline styling and behavior and never starts a web server or needs network
+access. Timestamped dashboards follow `REPORT_RETENTION`; the stable `latest`
+file is replaced atomically and is not counted against retention.
 
 ## Plex artwork adoption verification
 

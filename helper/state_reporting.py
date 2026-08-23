@@ -23,6 +23,7 @@ from helper.state_db import (
     load_item_exceptions,
     load_item_retries,
     load_library_rebinding_history,
+    load_metadata_provenance,
     recent_job_runs,
 )
 
@@ -31,8 +32,10 @@ STATE_TABLES = (
     "season_state",
     "library_scan_state",
     "job_runs",
+    "provider_health",
     "asset_ownership",
     "plex_metadata_ownership",
+    "metadata_field_provenance",
     "item_retry_queue",
     "plex_library_inventory",
     "identity_bindings",
@@ -41,6 +44,7 @@ STATE_TABLES = (
     "artwork_analysis",
     "cleanup_candidates",
     "cleanup_history",
+    "cleanup_quarantine",
     "item_exceptions",
     "identity_overrides",
     "identity_review_queue",
@@ -124,6 +128,7 @@ def write_state_report(
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
     report_path = report_dir / f"state-report-{generated.strftime('%Y%m%d-%H%M%S%f')}.txt"
     counts, scans, inventory = _database_counts(path)
+    targeted = bool(libraries or rating_keys or tmdb_ids or media_types)
     items = find_media_state(
         libraries=_filter_values(libraries),
         rating_keys=_filter_values(rating_keys),
@@ -133,6 +138,13 @@ def write_state_report(
     )
     cache_keys = [item["cache_key"] for item in items]
     assets = load_asset_ownership(cache_keys, path=path) if cache_keys else []
+    provenance = load_metadata_provenance(
+        cache_keys=cache_keys if targeted else None,
+        libraries=_filter_values(libraries),
+        rating_keys=_filter_values(rating_keys),
+        limit=10_000 if targeted or section == "provenance" else 250,
+        path=path,
+    )
     exceptions = load_item_exceptions(
         libraries=_filter_values(libraries),
         rating_keys=_filter_values(rating_keys),
@@ -234,6 +246,38 @@ def write_state_report(
             f"- active identity overrides: {sum(bool(row.get('active')) for row in overrides)}",
             "",
         ))
+    if "all" in sections or "provenance" in sections:
+        source_counts = Counter(
+            row.get("source_provider") or "Unknown" for row in provenance
+        )
+        action_counts = Counter(row.get("action") or "unknown" for row in provenance)
+        lines.extend((
+            "Recorded metadata provenance",
+            f"- retained field records: {len(provenance)}",
+            "- sources: "
+            + (
+                ", ".join(
+                    f"{key}={value}" for key, value in sorted(source_counts.items())
+                )
+                or "none"
+            ),
+            "- decisions: "
+            + (
+                ", ".join(
+                    f"{key}={value}" for key, value in sorted(action_counts.items())
+                )
+                or "none"
+            ),
+        ))
+        if targeted or section == "provenance":
+            for record in provenance:
+                lines.append(
+                    f"- {record.get('library_name')} | {record.get('title')} | "
+                    f"{record.get('target')} | {record.get('field_path')} | "
+                    f"source={record.get('source_provider')} | "
+                    f"action={record.get('action')} | policy={record.get('policy')}"
+                )
+        lines.append("")
     if "all" in sections or "problems" in sections:
         retry_counts = Counter(str(row.get("status") or "unknown") for row in retries)
         review_counts = Counter(str(row.get("status") or "unknown") for row in reviews)
@@ -246,7 +290,6 @@ def write_state_report(
             f"- recent rebinding history entries: {len(rebinding)}",
             "",
         ))
-    targeted = bool(libraries or rating_keys or tmdb_ids or media_types)
     if include_items or targeted or section == "items":
         lines.append("Selected item records")
         if not items:
@@ -267,6 +310,7 @@ def write_state_report(
         "recent_jobs": jobs,
         "items": items if include_items or targeted or section == "items" else [],
         "asset_ownership": assets if targeted or section == "ownership" else [],
+        "metadata_provenance": provenance,
         "exceptions": exceptions,
         "identity_overrides": overrides,
         "identity_reviews": reviews,
@@ -275,7 +319,7 @@ def write_state_report(
         "cleanup_history": cleanup_history,
         "library_rebinding_history": rebinding,
     }
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="sqlite_state",
@@ -347,7 +391,7 @@ def write_cleanup_history_report(
             + (f" | destination={record.get('destination')}" if record.get("destination") else "")
             + (f" | {record.get('reason')}" if record.get("reason") else "")
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="cleanup_history",
@@ -380,7 +424,7 @@ def write_identity_review_report(records, *, base_dir=None, retention=10):
             f"| proposed TMDb={record.get('proposed_tmdb_id') or 'none'} "
             f"| {record.get('category')}: {record.get('reason') or 'no detail'}"
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="identity_review",
@@ -414,7 +458,7 @@ def write_rebinding_report(records, *, applied=False, base_dir=None, retention=1
             f"{source.get('rating_key')} -> {destination.get('library_name') or 'unmatched'}/"
             f"{destination.get('rating_key') or '-'} | {record.get('reason')}"
         )
-    write_diagnostic_report(
+    report_path = write_diagnostic_report(
         report_path,
         "\n".join(lines) + "\n",
         report_type="library_rebinding",

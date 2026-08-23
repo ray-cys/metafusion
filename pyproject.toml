@@ -40,9 +40,11 @@ check_untyped_defs = true
 show_error_codes = true
 pretty = true
 files = [
+    "helper/dashboard.py",
     "helper/database_maintenance.py",
     "helper/fanart.py",
     "helper/logging.py",
+    "helper/metadata_provenance.py",
     "helper/provider_mappings.py",
     "helper/state_db.py",
     "helper/tmdb_cache.py",

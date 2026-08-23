@@ -92,12 +92,21 @@ policy remain stronger than the content score.
 
 Changed item logs identify `Source=TMDb`, `Source=Fanart.tv`, or `Source=Plex`
 and distinguish the Kometa-assets or Plex-local-media target. Preserved output
-uses `Source=Existing`; a missing outcome uses `Source=None`. Season warnings
+uses `Source=Existing`; a missing outcome uses `Source=None`. Split-series
+top-level artwork protected by `show_policy: preserve` is reported as `Policy
+preserved` when the destination exists and `Policy-preserved missing` when it
+does not; season and episode mapping remains active in either case. Season warnings
 name missing season numbers and report whether TMDb and Fanart.tv had no
 candidates and whether Plex exposed an explicit season thumbnail. The final
 summary separates writes, adoption, unchanged, not-due, preserved, missing,
 deferred, and failed outcomes and counts successful writes/adoptions by
-provider. It also counts successful `Automatic relaxation` writes and reports
+provider. A separate destination reconciliation counts every enabled expected
+file as `Present` or `Absent`, independently of the selection action, so a
+false zero in the action counters cannot conceal a missing file. `Artwork
+current sources` describes present files as TMDb, Fanart.tv, Plex,
+Existing/manual, or Unknown from checksum-proven installed state; `Artwork
+write sources` describes only files written or adopted during the current run.
+It also counts successful `Automatic relaxation` writes and reports
 missing-only transport recovery separately as `Download failover`. Detailed
 request/cache activity is available at `LOG_LEVEL=DEBUG`;
 authorization, rate limiting, malformed responses, and provider exhaustion are
@@ -109,4 +118,20 @@ and provider stages attempted, including the missing-only relaxed stage when it
 is eligible. `--explain-item` reports the saved provider and
 destinations but does not perform live candidate scoring. When every stage
 fails, `/config/reports/artwork-gaps-*.txt` retains the bounded
-missing/preserved entry. Reports never include API keys.
+missing/preserved entry. A successful non-dry run now writes this report even
+when the open count is zero. Its sections distinguish gaps observed during the
+current run, open gaps carried forward from durable SQLite state, and recently
+resolved gaps. Per-library warnings show persistent open and not-due counts,
+so incremental scheduling cannot make a known gap silently disappear from an
+`INFO` log merely because that title was not selected on the current run.
+
+For installations that recorded missing artwork before the durable gap ledger
+was introduced, MetaFusion also infers still-missing poster, background, and
+individual-season records from its existing media-state observations. This
+uses recorded cache fields only: it does not contact a provider, read image
+contents, or scan the media filesystem. The report labels this evidence as
+recorded state and includes the last check, next scheduled recheck, and whether
+the recheck is due when those values can be determined. A later incremental
+check that verifies the exact destination as present resolves the matching
+ledger entry without waiting for a full-library scan. Reports never include
+API keys.

@@ -350,7 +350,7 @@ def write_kometa_application_report(
         "metadata_items": metadata_records,
         "artwork_items": artwork_records,
     }
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines).rstrip() + "\n",
         report_type="kometa_application_audit",

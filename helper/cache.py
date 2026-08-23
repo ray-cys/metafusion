@@ -173,6 +173,9 @@ async def meta_cache_async(
     poster_checked=False,
     background_checked=False,
     season_checked=False,
+    poster_source_verified=False,
+    background_source_verified=False,
+    season_source_verified=False,
     plex_metadata_checked=False,
     metadata_pending_count=None,
     **kwargs,
@@ -192,6 +195,8 @@ async def meta_cache_async(
                     "unchanged_checks",
                     "missing_checks",
                     "last_checked",
+                    "source_verified_at",
+                    "source_verified_path",
                 ):
                     entry.pop(f"{asset_type}_{suffix}", None)
         identity_fields = {
@@ -215,6 +220,17 @@ async def meta_cache_async(
         if background_upgraded:
             entry["background_last_upgraded"] = now_iso
             entry["background_unchanged_checks"] = 0
+        if poster_source_verified:
+            entry["poster_source_verified_at"] = now_iso
+            entry["poster_source_verified_path"] = kwargs.get(
+                "poster_candidate_source_path", kwargs.get("poster_source_path")
+            )
+        if background_source_verified:
+            entry["background_source_verified_at"] = now_iso
+            entry["background_source_verified_path"] = kwargs.get(
+                "background_candidate_source_path",
+                kwargs.get("background_source_path"),
+            )
         if poster_checked:
             entry["poster_last_checked"] = now_iso
             _record_artwork_observation(
@@ -265,6 +281,12 @@ async def meta_cache_async(
         if season_number is not None:
             seasons = entry.setdefault("seasons", {})
             season_entry = seasons.setdefault(str(season_number), {})
+            if season_source_verified:
+                season_entry["season_source_verified_at"] = now_iso
+                season_entry["season_source_verified_path"] = kwargs.get(
+                    "season_candidate_source_path",
+                    kwargs.get("season_source_path"),
+                )
             if "season_path" in kwargs:
                 _record_destination_change(
                     entry,

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from helper.build_info import build_info
 from helper.compatibility import evaluate_compatibility, resolve_compatibility_profile
-from helper.config import BASE_CONFIG_DIR, report_retention
+from helper.config import BASE_CONFIG_DIR
 from helper.item_explanation import explain_item
 from helper.plex import load_plex_library_inventory
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
@@ -21,6 +21,10 @@ from helper.state_db import (
 
 class UpgradeCanaryError(RuntimeError):
     """Raised before output writes when a new build cannot pass its local canary."""
+
+
+CANARY_HISTORY_KEY = "upgrade_canary_history_v1"
+CANARY_HISTORY_LIMIT = 25
 
 
 def _state_key(server_id, mode, profile):
@@ -53,7 +57,35 @@ def upgrade_canary_required(config, server_id, *, current=None, path=None):
     )
 
 
-def _write_report(result, *, base_dir=None, retention=10):
+def load_upgrade_canary_history(*, path=None):
+    """Load recent detailed canary results from SQLite without creating state."""
+    saved = load_application_record(CANARY_HISTORY_KEY, path=path or STATE_DATABASE)
+    entries = saved.get("entries", []) if isinstance(saved, dict) else []
+    return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+
+def _store_upgrade_canary_result(result, *, path=None):
+    """Persist a bounded detailed result history before any output write occurs."""
+    recorded = dict(result)
+    recorded["recorded_at"] = datetime.now(timezone.utc).isoformat()
+    history = load_upgrade_canary_history(path=path)
+    identity = (recorded.get("qualification_scope"), recorded.get("commit"))
+    history = [
+        entry
+        for entry in history
+        if (entry.get("qualification_scope"), entry.get("commit")) != identity
+    ]
+    history.insert(0, recorded)
+    save_application_record(
+        CANARY_HISTORY_KEY,
+        {"entries": history[:CANARY_HISTORY_LIMIT]},
+        path=path or STATE_DATABASE,
+    )
+    return recorded
+
+
+def write_upgrade_canary_report(result, *, base_dir=None, retention=10):
+    """Generate an on-demand report from one stored detailed canary result."""
     generated = datetime.now(timezone.utc)
     report_dir = Path(base_dir or BASE_CONFIG_DIR) / "reports"
     path = report_dir / f"upgrade-canary-{generated.strftime('%Y%m%d-%H%M%S%f')}.txt"
@@ -82,7 +114,7 @@ def _write_report(result, *, base_dir=None, retention=10):
             f"{sample.get('title')} | rating key={sample.get('plex_rating_key')}"
             + (f" | {sample.get('detail')}" if sample.get("detail") else "")
         )
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines).rstrip() + "\n",
         report_type="upgrade_canary",
@@ -91,6 +123,18 @@ def _write_report(result, *, base_dir=None, retention=10):
     )
     retain_diagnostic_reports(report_dir, "upgrade-canary", retention)
     return path
+
+
+def write_upgrade_canary_report_from_state(*, base_dir=None, retention=10, path=None):
+    """Generate a report for the newest detailed canary result stored in SQLite."""
+    history = load_upgrade_canary_history(path=path)
+    if not history:
+        raise UpgradeCanaryError(
+            "No stored upgrade canary result is available; run a published build first"
+        )
+    return write_upgrade_canary_report(
+        history[0], base_dir=base_dir, retention=retention
+    )
 
 
 async def run_upgrade_canary(
@@ -212,14 +256,13 @@ async def run_upgrade_canary(
         "warnings": compatibility.get("warnings", []),
         "samples": samples,
     }
-    report = _write_report(
-        result,
-        base_dir=base_dir,
-        retention=report_retention(config),
-    )
+    _store_upgrade_canary_result(result, path=path or STATE_DATABASE)
     if not passed:
-        raise UpgradeCanaryError(f"Upgrade canary failed before output writes; review {report}")
-    return result, report
+        raise UpgradeCanaryError(
+            "Upgrade canary failed before output writes; run "
+            "--upgrade-canary-report for the stored details"
+        )
+    return result, None
 
 
 def commit_upgrade_canary(result, *, path=None):

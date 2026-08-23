@@ -142,6 +142,7 @@ async def collect_tmdb_change_rechecks(config, plan, inventory_by_library, sessi
             "rating_keys": {},
             "changed_ids": {"movie": [], "tv": []},
             "pages": {"movie": 0, "tv": 0},
+            "selected_items": {"movie": 0, "tv": 0},
         }
     local_ids = {"movie": set(), "tv": set()}
     for records in inventory_by_library.values():
@@ -158,6 +159,7 @@ async def collect_tmdb_change_rechecks(config, plan, inventory_by_library, sessi
     )
     changed_ids = {"movie": movie_result[0], "tv": tv_result[0]}
     rating_keys = {}
+    selected_items = {"movie": set(), "tv": set()}
     for library, records in inventory_by_library.items():
         selected = set()
         for record in records or []:
@@ -173,12 +175,16 @@ async def collect_tmdb_change_rechecks(config, plan, inventory_by_library, sessi
                 and rating_key is not None
             ):
                 selected.add(str(rating_key))
+                selected_items[media_type].add((str(library), str(rating_key)))
         if selected:
             rating_keys[str(library)] = selected
     return {
         "rating_keys": rating_keys,
         "changed_ids": {media_type: sorted(values) for media_type, values in changed_ids.items()},
         "pages": {"movie": movie_result[1], "tv": tv_result[1]},
+        "selected_items": {
+            media_type: len(values) for media_type, values in selected_items.items()
+        },
     }
 
 

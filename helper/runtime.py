@@ -9,6 +9,7 @@ from pathlib import Path
 
 from helper.build_info import build_info
 from helper.io import atomic_write_json
+from helper.logging import format_fields
 from helper.plex_paths import parse_path_mappings
 from helper.state_db import StateDatabaseError, record_job_run
 from helper.storage import storage_pressure_threshold
@@ -238,7 +239,7 @@ class RuntimeStatus:
         self,
         path,
         heartbeat_seconds=30,
-        history_limit=10,
+        history_limit=500,
         state_database=None,
     ):
         self.path = Path(path)
@@ -286,7 +287,12 @@ class RuntimeStatus:
                 self._update()
             except OSError as error:
                 logging.getLogger().warning(
-                    "[Runtime] Unable to update heartbeat; retrying: %s", error
+                    "[Runtime] Heartbeat update | %s",
+                    format_fields(
+                        ("Status", "Retryable failure"),
+                        ("Action", "retrying"),
+                        ("Error", error),
+                    ),
                 )
 
     def idle(self):
@@ -295,7 +301,13 @@ class RuntimeStatus:
     def run_started(self):
         self._update(state="running", last_run_started=utc_now(), last_error=None)
 
-    def run_finished(self, success, error=None, library_results=None):
+    def run_finished(
+        self,
+        success,
+        error=None,
+        library_results=None,
+        metrics=None,
+    ):
         now = utc_now()
         values = {
             "state": "idle",
@@ -316,13 +328,17 @@ class RuntimeStatus:
                     status=values["last_run_status"],
                     error=values["last_error"],
                     summary=library_results,
+                    metrics=metrics,
                     history_limit=self.history_limit,
                     path=self.state_database,
                 )
             except StateDatabaseError as state_error:
                 logging.getLogger().warning(
-                    "[Runtime] Unable to persist completed job history: %s",
-                    state_error,
+                    "[Runtime] Unable to persist completed job history | %s",
+                    format_fields(
+                        ("Status", "Failed"),
+                        ("Error", state_error),
+                    ),
                 )
         self._update(**values)
 

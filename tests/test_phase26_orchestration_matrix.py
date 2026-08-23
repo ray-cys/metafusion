@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -373,6 +374,12 @@ class _CacheFacade:
 def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
     _JobLock.instances.clear()
     monkeypatch.setattr(metafusion, "JobRunLock", _JobLock)
+    monkeypatch.setattr(
+        metafusion, "begin_run_file_logging", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        metafusion, "finish_run_file_logging", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(metafusion, "begin_cache_session", lambda **_kwargs: None)
     monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: None)
     monkeypatch.setattr(metafusion, "begin_fanart_cache", lambda _config: None)
@@ -402,6 +409,9 @@ def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
 
     monkeypatch.setattr(metafusion, "metafusion_main", job)
     monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: tmp_path / "plex.txt")
+    monkeypatch.setattr(
+        metafusion, "write_dashboard_report", lambda **_kwargs: tmp_path / "dashboard.html"
+    )
     monkeypatch.setattr(metafusion, "report_retention", lambda _config: 3)
     monkeypatch.setattr(metafusion, "load_cache", lambda: {"item": {}})
     monkeypatch.setattr(metafusion, "reconcile_unresolved_work", lambda *_a, **_k: [{"status": "open"}])
@@ -426,6 +436,7 @@ def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
     monkeypatch.setattr(metafusion, "flush_cache", lambda: True)
     monkeypatch.setattr(metafusion, "flush_tmdb_cache", lambda: True)
     monkeypatch.setattr(metafusion, "flush_fanart_cache", lambda: True)
+    monkeypatch.setattr(metafusion, "save_metadata_provenance", lambda _records: 1)
     monkeypatch.setattr(metafusion, "maintain_state_database", lambda: {"checkpointed": True})
     monkeypatch.setattr(metafusion, "retry_queue_summary", lambda: {"due": 1})
     monkeypatch.setattr(metafusion, "commit_upgrade_canary", lambda _result: True)
@@ -508,6 +519,7 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
         "settings": {"mode": "plex", "dry_run": False},
         "plex": {},
         "tmdb": {},
+        "output": {"dashboard_enabled": True},
         "_execution": {},
     }
     monkeypatch.setattr(
@@ -520,6 +532,16 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
         "maintain_state_database",
         lambda: (_ for _ in ()).throw(RuntimeError("maintenance")),
     )
+    monkeypatch.setattr(
+        metafusion,
+        "write_dashboard_report",
+        lambda **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("busy")),
+    )
+    monkeypatch.setattr(
+        metafusion,
+        "save_metadata_provenance",
+        lambda _records: (_ for _ in ()).throw(sqlite3.OperationalError("busy")),
+    )
     assert metafusion.run_metafusion_job(config, logging.getLogger("degraded")) is True
 
     _patch_job_services(monkeypatch, tmp_path)
@@ -529,6 +551,34 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
         lambda _config: (_ for _ in ()).throw(OSError("plex report")),
     )
     assert metafusion.run_metafusion_job(config, logging.getLogger("plex-report")) is False
+
+
+def test_run_job_refreshes_dashboard_only_when_opted_in(monkeypatch, tmp_path):
+    _patch_job_services(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        metafusion,
+        "write_dashboard_report",
+        lambda **kwargs: calls.append(kwargs) or tmp_path / "dashboard.html",
+    )
+    config = {
+        "settings": {"mode": "kometa", "dry_run": False},
+        "plex": {},
+        "tmdb": {},
+        "output": {"dashboard_enabled": False},
+        "_execution": {},
+    }
+
+    assert metafusion.run_metafusion_job(
+        config, logging.getLogger("dashboard-disabled")
+    ) is True
+    assert calls == []
+
+    config["output"]["dashboard_enabled"] = True
+    assert metafusion.run_metafusion_job(
+        config, logging.getLogger("dashboard-enabled")
+    ) is True
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -634,7 +684,9 @@ def test_plex_artwork_verification_connector_boundary(monkeypatch):
     assert result == {"verified": 1}
 
 
-def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_path):
+def test_metafusion_change_feed_canary_and_performance_success(
+    monkeypatch, tmp_path, caplog
+):
     section = _Section(items=[_item()])
     _patch_runtime(
         monkeypatch,
@@ -678,6 +730,7 @@ def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_
             "rating_keys": {"Movies": ["10"]},
             "changed_ids": {"movie": ["100"], "tv": []},
             "pages": {"movie": 1, "tv": 0},
+            "selected_items": {"movie": 1, "tv": 0},
         }
 
     durations = []
@@ -703,8 +756,10 @@ def test_metafusion_change_feed_canary_and_performance_success(monkeypatch, tmp_
 
     monkeypatch.setattr(metafusion, "process_library", process)
     config = _config(tmp_path)
-    asyncio.run(metafusion.metafusion_main(config, logging.getLogger("change-success")))
+    with caplog.at_level(logging.INFO, logger="change-success"):
+        asyncio.run(metafusion.metafusion_main(config, logging.getLogger("change-success")))
     assert config["_tmdb_change_summary"]["rating_keys"] == {"Movies": ["10"]}
+    assert "Selected Plex items: Movies: 1, TV Shows: 0" in caplog.text
     assert config["_upgrade_canary_result"]["samples"]
     assert {name for name, _value in durations} >= {
         "plex_inventory",

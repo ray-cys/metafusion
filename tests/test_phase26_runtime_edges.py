@@ -170,6 +170,8 @@ def test_lane_half_open_collision_and_adjustment_messages(caplog):
         asyncio.run(run())
     assert "circuit opened" in caplog.text
     assert "circuit closed" in caplog.text
+    assert "Lane: tmdb" in caplog.text
+    assert "Previous limit: 2 | Current limit: 3 | Reason: healthy_window" in caplog.text
 
 
 def _incremental_config():

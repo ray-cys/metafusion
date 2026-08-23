@@ -3,6 +3,8 @@ import time
 from collections import Counter
 from contextvars import ContextVar
 
+from helper.logging import format_fields
+
 _current_tracker = ContextVar("metafusion_performance_tracker", default=None)
 
 
@@ -78,23 +80,36 @@ def log_performance_summary(logger, tracker):
     counters = data["counters"]
     durations = data["durations"]
     logger.info(
-        "[Performance] Total %.1fs; Plex inventory %.1fs; library processing %.1fs; "
-        "items/min %.1f; TMDb requests %d; cache hits %d (%.1f%%); misses %d; "
-        "coalesced %d; retries %d; rate limits %d (waited %.1fs); "
-        "circuit rejections %d.",
-        data["elapsed_seconds"],
-        durations.get("plex_inventory", 0.0),
-        durations.get("library_processing", 0.0),
-        data["items_per_minute"],
-        int(counters.get("tmdb_requests", 0)),
-        int(counters.get("tmdb_cache_hits", 0)),
-        data["tmdb_cache_hit_percent"],
-        int(counters.get("tmdb_cache_misses", 0)),
-        int(counters.get("tmdb_coalesced_waits", 0)),
-        int(counters.get("tmdb_retries", 0)),
-        int(counters.get("tmdb_rate_limits", 0)),
-        float(counters.get("tmdb_rate_limit_wait_seconds", 0.0)),
-        int(counters.get("tmdb_circuit_rejections", 0)),
+        "[Performance] Run | %s",
+        format_fields(
+            ("Total duration", f"{data['elapsed_seconds']:.1f}s"),
+            ("Plex inventory", f"{durations.get('plex_inventory', 0.0):.1f}s"),
+            (
+                "Library processing",
+                f"{durations.get('library_processing', 0.0):.1f}s",
+            ),
+            ("Items/minute", f"{data['items_per_minute']:.1f}"),
+        ),
+    )
+    logger.info(
+        "[Performance] Provider: TMDb | %s",
+        format_fields(
+            ("Requests", int(counters.get("tmdb_requests", 0))),
+            ("Cache hits", int(counters.get("tmdb_cache_hits", 0))),
+            ("Cache hit rate", f"{data['tmdb_cache_hit_percent']:.1f}%"),
+            ("Cache misses", int(counters.get("tmdb_cache_misses", 0))),
+            ("Coalesced", int(counters.get("tmdb_coalesced_waits", 0))),
+            ("Retries", int(counters.get("tmdb_retries", 0))),
+            ("Rate limits", int(counters.get("tmdb_rate_limits", 0))),
+            (
+                "Rate-limit wait",
+                f"{float(counters.get('tmdb_rate_limit_wait_seconds', 0.0)):.1f}s",
+            ),
+            (
+                "Circuit rejections",
+                int(counters.get("tmdb_circuit_rejections", 0)),
+            ),
+        ),
     )
     fanart_activity = sum(
         int(counters.get(name, 0))
@@ -102,25 +117,32 @@ def log_performance_summary(logger, tracker):
             "fanart_requests",
             "fanart_cache_hits",
             "fanart_cache_misses",
+            "fanart_coalesced_waits",
             "fanart_rate_limits",
             "fanart_circuit_rejections",
         )
     )
     if fanart_activity:
         logger.info(
-            "[Performance] Fanart.tv requests %d; cache hits %d; misses %d; "
-            "coalesced %d; rate limits %d; circuit rejections %d.",
-            int(counters.get("fanart_requests", 0)),
-            int(counters.get("fanart_cache_hits", 0)),
-            int(counters.get("fanart_cache_misses", 0)),
-            int(counters.get("fanart_coalesced_waits", 0)),
-            int(counters.get("fanart_rate_limits", 0)),
-            int(counters.get("fanart_circuit_rejections", 0)),
+            "[Performance] Provider: Fanart.tv | %s",
+            format_fields(
+                ("Requests", int(counters.get("fanart_requests", 0))),
+                ("Cache hits", int(counters.get("fanart_cache_hits", 0))),
+                ("Cache misses", int(counters.get("fanart_cache_misses", 0))),
+                ("Coalesced", int(counters.get("fanart_coalesced_waits", 0))),
+                ("Rate limits", int(counters.get("fanart_rate_limits", 0))),
+                (
+                    "Circuit rejections",
+                    int(counters.get("fanart_circuit_rejections", 0)),
+                ),
+            ),
         )
     for seconds, library, rating_key in data["slow_items"]:
-        logger.info(
-            "[Performance] Slow item: library %s, rating key %s, %.1fs.",
-            library,
-            rating_key,
-            seconds,
+        logger.debug(
+            "[Performance] Slow item | %s",
+            format_fields(
+                ("Library", library),
+                ("Plex rating key", rating_key),
+                ("Duration", f"{seconds:.1f}s"),
+            ),
         )

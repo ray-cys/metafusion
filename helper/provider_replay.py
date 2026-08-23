@@ -189,12 +189,15 @@ def write_sanitized_replay_capture(records, *, base_dir=None, retention=10):
         "The JSON companion is sanitized for a GitHub issue; review it before sharing.",
         "Connector credentials and local media paths are not retained.",
     ]
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines) + "\n",
         report_type="provider_replay_capture",
         data=document,
         generated_at=generated,
+        output_format="both",
     )
-    retain_diagnostic_reports(report_dir, "provider-replay-capture", retention)
+    retain_diagnostic_reports(
+        report_dir, "provider-replay-capture", retention, output_format="both"
+    )
     return path.with_suffix(".json")

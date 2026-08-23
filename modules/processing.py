@@ -17,9 +17,16 @@ from helper.config import mode_check
 from helper.identity import (
     cache_key_for_meta,
     item_identity,
+    metadata_key_for_meta,
     plex_identity_fingerprint,
 )
-from helper.incremental import child_inventory_fingerprint, plan_items
+from helper.incremental import (
+    artwork_schedule_summary,
+    child_inventory_fingerprint,
+    metadata_schedule_summary,
+    plan_items,
+    utc_now,
+)
 from helper.io import sha256_file
 from helper.logging import (
     PlexMetadataProgress,
@@ -30,6 +37,7 @@ from helper.logging import (
 from helper.performance import tracker_for
 from helper.plex import get_plex_metadata, plex_operation
 from helper.plex_metadata import apply_plex_metadata
+from helper.report_identity import item_report_record
 from helper.state_db import (
     clear_item_retries,
     load_due_item_retries,
@@ -68,6 +76,121 @@ MAX_ITEM_FAILURE_DETAILS = 10
 def _output_snapshot(path):
     exists = path.exists()
     return exists, sha256_file(path) if exists else None
+
+
+def _normalized_artwork_provider(value):
+    provider = str(value or "").strip().lower()
+    return provider if provider in {"tmdb", "fanart", "plex"} else "unknown"
+
+
+def _recorded_artwork_provider(cached_entry, asset_type, path, season_number=None):
+    """Describe the installed source without hashing every artwork file again."""
+    if not isinstance(cached_entry, dict):
+        return "existing"
+    if asset_type == "season":
+        seasons = cached_entry.get("seasons") or {}
+        record = (
+            seasons.get(str(season_number), {})
+            if isinstance(seasons, dict)
+            else {}
+        )
+        path_key = "season_path"
+        checksum_key = "season_checksum"
+        provider_key = "season_provider"
+    else:
+        record = cached_entry
+        path_key = f"{asset_type}_path"
+        checksum_key = f"{asset_type}_checksum"
+        provider_key = f"{asset_type}_provider"
+    recorded_path = record.get(path_key) if isinstance(record, dict) else None
+    checksum = record.get(checksum_key) if isinstance(record, dict) else None
+    if not recorded_path or not checksum:
+        return "existing"
+    try:
+        path_matches = Path(recorded_path).absolute() == Path(path).absolute()
+    except (OSError, TypeError, ValueError):
+        return "existing"
+    if not path_matches:
+        return "existing"
+    return _normalized_artwork_provider(record.get(provider_key))
+
+
+def _current_artwork_provider(
+    stats,
+    cached_entry,
+    asset_type,
+    action,
+    path,
+    *,
+    season_number=None,
+):
+    if action in {"downloaded", "upgraded", "adopted"}:
+        if asset_type == "season":
+            providers = stats.get("season_artwork_providers") or {}
+            provider = providers.get(season_number)
+            if provider is None:
+                provider = providers.get(str(season_number))
+        else:
+            provider = (stats.get("artwork_providers") or {}).get(asset_type)
+        return _normalized_artwork_provider(provider)
+    if action in {"preserved", "policy_preserved"}:
+        return "existing"
+    if asset_type == "season":
+        ownership = (stats.get("season_artwork_ownership") or {}).get(
+            season_number
+        )
+        if ownership is None:
+            ownership = (stats.get("season_artwork_ownership") or {}).get(
+                str(season_number)
+            )
+    else:
+        ownership = (stats.get("artwork_ownership") or {}).get(asset_type)
+    if ownership not in {None, "managed", "shared"}:
+        return "unknown" if ownership == "overwrite" else "existing"
+    return _recorded_artwork_provider(
+        cached_entry,
+        asset_type,
+        path,
+        season_number=season_number,
+    )
+
+
+def _record_artwork_evaluation(
+    config,
+    meta,
+    library_name,
+    asset_type,
+    action,
+    path,
+    *,
+    season_number=None,
+):
+    """Record an exact, successful destination check for ledger reconciliation."""
+    records = config.get("_artwork_evaluations")
+    if not isinstance(records, list):
+        return
+    media_type = str(meta.get("library_type") or "unknown").casefold()
+    report_type = "TV Show" if media_type in {"show", "tv"} else "Movie"
+    report_asset = (
+        f"season {int(season_number)} poster"
+        if asset_type == "season" and season_number is not None
+        else asset_type
+    )
+    records.append(
+        item_report_record(
+            {
+                "library": library_name,
+                "media_type": report_type,
+                "title": metadata_key_for_meta(meta),
+                "asset_type": report_asset,
+                "action": action,
+                "destination_state": "present",
+                "destination": str(path.resolve()),
+            },
+            meta,
+            season_number=season_number,
+        )
+    )
 
 
 def _read_existing_metadata(path, validate_schema):
@@ -444,15 +567,27 @@ async def process_item(
                 "Builder or Plex metadata action reported a recoverable failure"
             )
     storage_files = []
+    artwork_file_counts = Counter()
+    artwork_current_providers = Counter()
     if not effective_flags.get("dry_run", False):
         storage_targets = []
         if effective_flags.get("poster", False):
             storage_targets.append(
-                ("poster", get_asset_path(item_config, meta, asset_type="poster"))
+                (
+                    "poster",
+                    None,
+                    stats.get("poster_action"),
+                    get_asset_path(item_config, meta, asset_type="poster"),
+                )
             )
         if effective_flags.get("background", False):
             storage_targets.append(
-                ("background", get_asset_path(item_config, meta, asset_type="background"))
+                (
+                    "background",
+                    None,
+                    stats.get("background_action"),
+                    get_asset_path(item_config, meta, asset_type="background"),
+                )
             )
         if effective_flags.get("season", False):
             for season_number in stats.get("season_poster_actions", {}):
@@ -461,6 +596,8 @@ async def process_item(
                 storage_targets.append(
                     (
                         "season",
+                        season_number,
+                        stats.get("season_poster_actions", {}).get(season_number),
                         get_asset_path(
                             item_config,
                             meta,
@@ -469,20 +606,59 @@ async def process_item(
                         ),
                     )
                 )
-        for asset_type, path in storage_targets:
+        cached_entry = load_cache().get(cache_key_for_meta(meta), {})
+        for asset_type, season_number, action, path in storage_targets:
+            artwork_file_counts["expected"] += 1
             if path is None:
+                artwork_file_counts["absent"] += 1
                 continue
             try:
+                if not path.is_file():
+                    artwork_file_counts["absent"] += 1
+                    continue
+                size = path.stat().st_size
                 storage_files.append(
                     {
                         "asset_type": asset_type,
                         "path": str(path.resolve()),
-                        "bytes": path.stat().st_size,
+                        "bytes": size,
                     }
                 )
+                artwork_file_counts["present"] += 1
+                artwork_current_providers[
+                    _current_artwork_provider(
+                        stats,
+                        cached_entry,
+                        asset_type,
+                        action,
+                        path,
+                        season_number=season_number,
+                    )
+                ] += 1
+                _record_artwork_evaluation(
+                    config,
+                    meta,
+                    library_name,
+                    asset_type,
+                    action,
+                    path,
+                    season_number=season_number,
+                )
             except OSError:
+                artwork_file_counts["absent"] += 1
                 continue
     stats["storage_files"] = storage_files
+    stats["artwork_file_counts"] = dict(artwork_file_counts)
+    stats["artwork_current_providers"] = dict(artwork_current_providers)
+    if artwork_file_counts.get("absent", 0):
+        log_processing_event(
+            "processing_artwork_reconciliation",
+            library_name=library_name,
+            full_title=full_title,
+            expected=artwork_file_counts.get("expected", 0),
+            present=artwork_file_counts.get("present", 0),
+            absent=artwork_file_counts.get("absent", 0),
+        )
     log_item_outcomes(
         library_name,
         full_title,
@@ -519,13 +695,18 @@ async def process_library(
     meta_downloaded = meta_upgraded = meta_skipped = meta_failed = 0
     plex_metadata_writes = 0
     poster_downloaded = poster_upgraded = poster_adopted = poster_skipped = poster_not_due = poster_preserved = poster_missing = poster_deferred = poster_failed = 0
+    poster_policy_preserved = poster_policy_missing = 0
     background_downloaded = background_upgraded = background_adopted = background_skipped = background_not_due = background_preserved = background_missing = background_deferred = background_failed = 0
+    background_policy_preserved = background_policy_missing = 0
     season_poster_downloaded = season_poster_upgraded = season_poster_adopted = season_poster_skipped = season_poster_not_due = season_poster_preserved = season_poster_missing = season_poster_deferred = season_poster_failed = 0
     artwork_provider_writes = Counter()
     artwork_deferred = 0
     artwork_storage_files = {}
     artwork_automatic_relaxed = 0
     artwork_download_failover = 0
+    artwork_file_expected = artwork_file_present = artwork_file_absent = 0
+    artwork_current_provider_counts = Counter()
+    metadata_provenance_records = []
 
     server = getattr(library_section, "_server", None)
     server_id = getattr(server, "machineIdentifier", None) or "unknown"
@@ -567,9 +748,11 @@ async def process_library(
             if persistent_recovery
             else {}
         )
+        incremental_cache = load_cache()
+        schedule_now = utc_now()
         planned_items = plan_items(
             all_items,
-            load_cache(),
+            incremental_cache,
             incremental_fingerprint,
             full_scan=full_scan,
             rating_keys=rating_keys,
@@ -579,6 +762,29 @@ async def process_library(
             library_uuid=library_uuid,
             retry_rating_keys=due_retries,
             change_rating_keys=change_rating_keys,
+            now=schedule_now,
+        )
+        artwork_schedule = artwork_schedule_summary(
+            all_items,
+            incremental_cache,
+            planned_items,
+            config,
+            feature_flags=feature_flags,
+            rating_keys=rating_keys,
+            now=schedule_now,
+            server_id=server_id,
+            library_uuid=library_uuid,
+        )
+        metadata_schedule = metadata_schedule_summary(
+            all_items,
+            incremental_cache,
+            planned_items,
+            config,
+            feature_flags=feature_flags,
+            rating_keys=rating_keys,
+            now=schedule_now,
+            server_id=server_id,
+            library_uuid=library_uuid,
         )
         items = [planned.item for planned in planned_items]
         total_library_items = len(all_items)
@@ -873,9 +1079,12 @@ async def process_library(
             nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_not_due, background_missing, background_deferred, background_failed
             nonlocal season_poster_downloaded, season_poster_upgraded, season_poster_adopted, season_poster_skipped, season_poster_not_due, season_poster_missing, season_poster_deferred, season_poster_failed
             nonlocal poster_preserved, background_preserved, season_poster_preserved
+            nonlocal poster_policy_preserved, poster_policy_missing
+            nonlocal background_policy_preserved, background_policy_missing
             nonlocal artwork_deferred
             nonlocal artwork_automatic_relaxed
             nonlocal artwork_download_failover
+            nonlocal artwork_file_expected, artwork_file_present, artwork_file_absent
 
             item = planned.item
             item_metadata = {"metadata": {}}
@@ -938,6 +1147,9 @@ async def process_library(
                 incremental_success = stats.pop("_incremental_success", True)
                 retry_error = stats.pop("_retry_error", None)
                 retry_failure_class = stats.pop("_retry_failure_class", None)
+                metadata_provenance_records.extend(
+                    stats.pop("_metadata_provenance", [])
+                )
                 if writable_state and rating_key is not None:
                     if retry_error:
                         await asyncio.to_thread(
@@ -959,6 +1171,13 @@ async def process_library(
                         generated_entries
                     )
                 all_stats.append(stats)
+                file_counts = stats.get("artwork_file_counts") or {}
+                artwork_file_expected += int(file_counts.get("expected", 0) or 0)
+                artwork_file_present += int(file_counts.get("present", 0) or 0)
+                artwork_file_absent += int(file_counts.get("absent", 0) or 0)
+                artwork_current_provider_counts.update(
+                    stats.get("artwork_current_providers") or {}
+                )
                 for storage_file in stats.get("storage_files", []):
                     path = storage_file.get("path")
                     if path:
@@ -1009,6 +1228,10 @@ async def process_library(
                     poster_not_due += 1
                 elif action == "preserved":
                     poster_preserved += 1
+                elif action == "policy_preserved":
+                    poster_policy_preserved += 1
+                elif action == "policy_missing":
+                    poster_policy_missing += 1
                 elif action == "missing":
                     poster_missing += 1
                 elif action == "failed":
@@ -1041,6 +1264,10 @@ async def process_library(
                     background_not_due += 1
                 elif action == "preserved":
                     background_preserved += 1
+                elif action == "policy_preserved":
+                    background_policy_preserved += 1
+                elif action == "policy_missing":
+                    background_policy_missing += 1
                 elif action == "missing":
                     background_missing += 1
                 elif action == "failed":
@@ -1319,6 +1546,15 @@ async def process_library(
                 metadata_pending_count=metadata_pending_count,
             )
 
+        if (
+            mode_check(config, "kometa")
+            and not feature_flags.get("dry_run", False)
+            and metadata_provenance_records
+        ):
+            config.setdefault("_metadata_provenance_records", []).extend(
+                metadata_provenance_records
+            )
+
         if persistent_recovery and successful_retry_keys:
             await asyncio.to_thread(
                 clear_item_retries,
@@ -1343,8 +1579,10 @@ async def process_library(
             "plex_metadata_writes": plex_metadata_writes,
             "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped, "poster_not_due": poster_not_due,
             "poster_preserved": poster_preserved, "poster_failed": poster_failed, "poster_missing": poster_missing, "poster_deferred": poster_deferred,
+            "poster_policy_preserved": poster_policy_preserved, "poster_policy_missing": poster_policy_missing,
             "background_downloaded": background_downloaded, "background_upgraded": background_upgraded, "background_adopted": background_adopted, "background_skipped": background_skipped, "background_not_due": background_not_due,
             "background_preserved": background_preserved, "background_failed": background_failed, "background_missing": background_missing, "background_deferred": background_deferred,
+            "background_policy_preserved": background_policy_preserved, "background_policy_missing": background_policy_missing,
             "season_poster_downloaded": season_poster_downloaded, "season_poster_upgraded": season_poster_upgraded, "season_poster_adopted": season_poster_adopted, "season_poster_skipped": season_poster_skipped, "season_poster_not_due": season_poster_not_due,
             "season_poster_preserved": season_poster_preserved, "season_poster_failed": season_poster_failed, "season_poster_missing": season_poster_missing, "season_poster_deferred": season_poster_deferred,
             "artwork_provider_writes": dict(sorted(artwork_provider_writes.items())),
@@ -1353,6 +1591,10 @@ async def process_library(
             "artwork_deferred": artwork_deferred,
             "artwork_automatic_relaxed": artwork_automatic_relaxed,
             "artwork_download_failover": artwork_download_failover,
+            "artwork_file_expected": artwork_file_expected,
+            "artwork_file_present": artwork_file_present,
+            "artwork_file_absent": artwork_file_absent,
+            "artwork_current_providers": dict(sorted(artwork_current_provider_counts.items())),
             "poster_bytes": poster_size,
             "background_bytes": background_size,
             "season_poster_bytes": season_poster_size,
@@ -1360,6 +1602,11 @@ async def process_library(
             "metadata_bytes": metadata_bytes,
             "storage_scope": "full inventory" if full_scan else "processed items",
         }
+        for lane, counts in artwork_schedule.items():
+            for state, count in counts.items():
+                library_summary[f"{lane}_schedule_{state}"] = count
+        for state, count in metadata_schedule.items():
+            library_summary[f"metadata_schedule_{state}"] = count
 
         if metadata_summaries is not None:
             metadata_summaries[library_name] = {

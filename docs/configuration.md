@@ -115,8 +115,8 @@ creating the two required user credentials.
 | `TZ` | `UTC` | Timezone used by the scheduler. |
 | `DRY_RUN` | `False` | Calculate without normal writes/deletions. A direct Plex metadata dry-run still writes a redacted audit report. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-| `LOG_MAX_MB` | `10` | Rotate the active log before it exceeds this many MiB; `0` disables only size rotation. |
-| `LOG_BACKUP_COUNT` | `14` | Number of daily/size-rotated log files retained. |
+| `LOG_MAX_MB` | `10` | Split an individual run log before it exceeds this many MiB; `0` keeps every run in exactly one file. |
+| `LOG_BACKUP_COUNT` | `14` | Number of newest per-run log groups retained. |
 | `RUN_BASIC` | `True` | Generate core Kometa fields or enable core direct Plex fields after Plex API opt-in. |
 | `RUN_ENHANCED` | `True` | Add supported director/writer/producer fields. Requires `RUN_BASIC=True`; cast remains with Plex's provider. |
 | `RUN_POSTER` | `True` | Generate movie and show posters. |
@@ -125,7 +125,8 @@ creating the two required user credentials.
 | `RUN_CLEANUP` | `False` | Enable guarded full-scan cleanup. Always test with dry-run. |
 | `CLEANUP_CONFIRMATION_SCANS` | `2` | Require this many separate authoritative full scans to confirm an absence before cleanup becomes eligible. |
 | `CLEANUP_GRACE_HOURS` | `48` | Keep a cleanup candidate pending for at least this many hours after first detection. |
-| `PLEX_CLEANUP_MANAGED_ARTWORK` | `False` | Plex mode only. Opt in to deleting exact checksum-proven MetaFusion-owned local artwork for confirmed stale items; state-only cleanup remains the default. |
+| `CLEANUP_QUARANTINE_DAYS` | `14` | Retain checksum-proven artwork removed by automated cleanup before automatic purge. |
+| `PLEX_CLEANUP_MANAGED_ARTWORK` | `False` | Plex mode only. Opt in to quarantining exact checksum-proven MetaFusion-owned local artwork for confirmed stale items; state-only cleanup remains the default. |
 
 ## Policy controls
 
@@ -163,6 +164,7 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 | `PLEX_RETRIES` | `3` | Plex startup connection attempts. |
 | `PLEX_RETRY_DELAY` | `1` | Base delay between Plex connection retries in seconds. |
 | `SHUTDOWN_TIMEOUT` | `15` | Internal graceful-shutdown deadline in seconds. |
+| `CONFIG_RELOAD` | `True` | Reload and validate the selected YAML between scheduled jobs. Invalid replacements retain the last working configuration. |
 | `STOP_GRACE_PERIOD` | `20s` | Docker Compose stop deadline; keep above `SHUTDOWN_TIMEOUT`. |
 | `MAX_IMAGE_MB` | `25` | Maximum accepted artwork download size in MiB. |
 | `VALIDATE_MEDIA_MOUNTS` | `True` | Validate configured Plex-mode mapping destinations before artwork processing. |
@@ -173,6 +175,10 @@ Availability still depends on item type and `RUN_BASIC`/`RUN_ENHANCED`. See
 Existing installations that explicitly saved `MAX_CONCURRENCY=8` remain
 adaptive but cannot grow past eight. Change the value to `0`, or remove the
 environment variable, to use the complete automatic range.
+
+Provider circuits retain only hashed connector identities, failure counts,
+and bounded cooldown deadlines in SQLite. No URL, token, or API key is stored
+in provider-health state.
 
 Do not use Compose `user:` or Docker `--user`; those options bypass
 `PUID`/`PGID` startup handling.
@@ -197,6 +203,9 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `VALIDATE_OUTPUT` | `True` | Kometa mode only. Validate YAML before replacing known-good output. |
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
+| `REPORT_FORMAT` | `both` | Write conventional diagnostic reports as `text`, `json`, or `both`. The offline dashboard and sanitized replay keep their required structured companions. |
+| `ADOPTION_AUDIT` | `anomalies` | Report only abnormal post-write artwork verification; use `all` for every verification or `off` to suppress this report without disabling verification or unresolved-work tracking. |
+| `DASHBOARD_ENABLED` | `False` | Refresh the offline HTML dashboard automatically after successful non-dry runs. The explicit `--dashboard-report` command remains available when false. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |
 | `UPGRADE_CANARY` | `True` | Qualify each published image commit once with read-only compatibility and deterministic local item checks before output writes. |
@@ -204,7 +213,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `HEALTH_MAX_HEARTBEAT_AGE` | `120` | Maximum scheduler heartbeat age in seconds. |
 
 `TMDB_CHANGE_RECHECKS` and `UPGRADE_CANARY` require no per-library values. Their
-checkpoint, first-run, failure, and report behavior is documented in [runtime
+checkpoint, first-run, failure, SQLite history, and on-demand report behavior is documented in [runtime
 safeguards and application verification](runtime-safeguards.md).
 
 Artwork age comes from saved MetaFusion observations, not filesystem mtime.

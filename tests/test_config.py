@@ -186,6 +186,7 @@ def test_runtime_limits_and_safety_flags_accept_environment_overrides(tmp_path):
         "plex_retries": 3,
         "plex_retry_delay": 1.0,
         "shutdown_timeout": 12.0,
+        "config_reload": True,
         "max_image_mb": 12,
         "validate_media_mounts": False,
         "min_free_space_mb": 64,
@@ -216,6 +217,37 @@ def test_provider_mapping_json_environment_is_parsed_and_validated(tmp_path):
     assert config["tmdb"]["episode_overrides"]["tvdb:42"]["S02E01"] == "S01E03"
     assert config["incremental"]["metadata_pending_recheck_hours"] == 6.0
     assert config["output"]["report_retention"] == 4
+
+
+def test_dashboard_automatic_refresh_is_opt_in(tmp_path):
+    default_config = load_config_file(
+        config_file=tmp_path / "default.yml",
+        template_file=TEMPLATE_FILE,
+        environ={"PLEX_TOKEN": "token"},
+    )
+    enabled_config = load_config_file(
+        config_file=tmp_path / "enabled.yml",
+        template_file=TEMPLATE_FILE,
+        environ={
+            "PLEX_TOKEN": "token",
+            "DASHBOARD_ENABLED": "true",
+            "REPORT_FORMAT": "json",
+            "ADOPTION_AUDIT": "all",
+        },
+    )
+
+    assert default_config["output"]["dashboard_enabled"] is False
+    assert default_config["output"]["report_format"] == "both"
+    assert default_config["output"]["adoption_audit"] == "anomalies"
+    assert enabled_config["output"]["dashboard_enabled"] is True
+    assert enabled_config["output"]["report_format"] == "json"
+    assert enabled_config["output"]["adoption_audit"] == "all"
+
+    enabled_config["output"]["report_format"] = "xml"
+    enabled_config["output"]["adoption_audit"] = "sometimes"
+    errors = validate_config(enabled_config)
+    assert "output.report_format must be text, json, or both" in errors
+    assert "output.adoption_audit must be anomalies, all, or off" in errors
 
 
 def test_invalid_provider_mapping_environment_fails_validation(tmp_path):
@@ -409,6 +441,7 @@ def test_feature_reporting_library_override_and_invalid_upgrade_interval(monkeyp
     assert profile["metadata"] == "Basic"
     assert profile["poster"] == "Disabled"
     assert profile["cleanup"] == "Disabled"
+    assert profile["dashboard"] == "Disabled"
 
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["library_overrides"] = {

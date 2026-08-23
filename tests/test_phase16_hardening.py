@@ -104,12 +104,15 @@ def test_performance_summary_is_value_safe(caplog):
     finally:
         reset_performance_tracking(token)
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         log_performance_summary(logging.getLogger("performance-test"), tracker)
 
-    assert "items/min 30.0" in caplog.text
-    assert "cache hits 3 (75.0%)" in caplog.text
-    assert "rating key 42" in caplog.text
+    assert "Items/minute: 30.0" in caplog.text
+    assert "Cache hits: 3" in caplog.text
+    assert "Cache hit rate: 75.0%" in caplog.text
+    assert "Slow item | Library: Movies | Plex rating key: 42" in caplog.text
+    slow_record = next(record for record in caplog.records if "Slow item" in record.message)
+    assert slow_record.levelno == logging.DEBUG
     assert "/media" not in caplog.text
     assert tracker_for({"_performance_tracker": tracker}) is tracker
     assert log_performance_summary(logging.getLogger("none"), None) is None

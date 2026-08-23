@@ -291,6 +291,66 @@ def adaptive_artwork_days(cached, asset_type, configured_days):
     return min(max(base_days, 180.0), base_days * (2 ** min(3, unchanged_checks)))
 
 
+def same_source_verification_days(config, media_type, asset_type):
+    """Return the bounded interval for re-downloading an unchanged source ID."""
+    normalized_type = _media_type(media_type)
+    interval_type = (
+        "season"
+        if asset_type == "season"
+        else ("movie" if normalized_type == "movie" else "series")
+    )
+    base_days = get_image_upgrade_days(config, interval_type)
+    if base_days <= 0:
+        return 0.0
+    # Provider CDNs rarely mutate bytes behind one stable source identifier.
+    # Rechecking no sooner than 90 days catches that edge case without turning
+    # ordinary incremental runs into full artwork downloads.
+    return min(365.0, max(90.0, base_days * 3.0))
+
+
+def same_source_verification_due(
+    cached,
+    media_type,
+    asset_type,
+    config,
+    *,
+    season_number=None,
+    source_path=None,
+    now=None,
+):
+    """Return whether a managed source needs a byte-level periodic recheck."""
+    if not isinstance(cached, dict) or not config:
+        return False
+    interval_days = same_source_verification_days(
+        config, media_type, asset_type
+    )
+    if interval_days <= 0:
+        return False
+    if asset_type == "season":
+        seasons = cached.get("seasons") or {}
+        record = (
+            seasons.get(str(season_number), {})
+            if isinstance(seasons, dict)
+            else {}
+        )
+        verified_at = record.get("season_source_verified_at")
+        verified_path = record.get("season_source_verified_path")
+        checked_at = (
+            verified_at
+            if source_path and verified_path == source_path
+            else record.get("season_last_upgraded")
+        )
+    else:
+        verified_at = cached.get(f"{asset_type}_source_verified_at")
+        verified_path = cached.get(f"{asset_type}_source_verified_path")
+        checked_at = (
+            verified_at
+            if source_path and verified_path == source_path
+            else cached.get(f"{asset_type}_last_upgraded")
+        )
+    return timestamp_due(checked_at, interval_days, now=now)
+
+
 def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=None):
     """Return the artwork operations due for an otherwise unchanged item."""
     causes = due_selection_causes(
@@ -396,6 +456,259 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
     return causes
 
 
+def _scoped_cache_by_rating_key(
+    cache, items, *, server_id=None, library_uuid=None
+):
+    """Return the relevant durable records indexed by Plex rating key."""
+    scoped_cache = (
+        cache.entries_for_scope(
+            server_id,
+            library_uuid,
+            rating_keys=[getattr(item, "ratingKey", "") for item in items],
+        ).values()
+        if server_id is not None
+        and library_uuid is not None
+        and hasattr(cache, "entries_for_scope")
+        else cache.values()
+    )
+    return {
+        str(entry.get("rating_key")): entry
+        for entry in scoped_cache
+        if isinstance(entry, dict) and entry.get("rating_key") is not None
+    }
+
+
+def _media_type(value):
+    normalized = str(value or "").lower()
+    if normalized in {"show", "shows"}:
+        return "tv"
+    if normalized == "movies":
+        return "movie"
+    return normalized
+
+
+def _season_destination_records(item, cached):
+    """Return state records and whether Plex season inventory is unavailable."""
+    cached = cached if isinstance(cached, dict) else {}
+    seasons = cached.get("seasons") or {}
+    if not isinstance(seasons, dict):
+        seasons = {}
+    inventory_counts = []
+    for field_name in ("seasonCount", "childCount"):
+        raw_value = getattr(item, field_name, None)
+        if raw_value is None:
+            continue
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            inventory_counts.append(value)
+    inventory_unknown = not inventory_counts and not seasons
+    destination_count = max([len(seasons), *inventory_counts], default=0)
+    records = [record for record in seasons.values() if isinstance(record, dict)]
+    if not records and cached.get("season_last_checked"):
+        records = [cached] * destination_count
+    if len(records) < destination_count:
+        records.extend([None] * (destination_count - len(records)))
+    return records, inventory_unknown
+
+
+def artwork_schedule_summary(
+    items,
+    cache,
+    planned_items,
+    config,
+    *,
+    feature_flags=None,
+    rating_keys=None,
+    now=None,
+    server_id=None,
+    library_uuid=None,
+):
+    """Classify every enabled artwork destination into one schedule state.
+
+    The states are mutually exclusive. ``required`` means the destination has
+    never completed an artwork check, ``due`` means its cadence has expired,
+    ``forced`` means another run trigger selected a current destination, and
+    ``not_due`` means the destination stayed outside processing.
+    """
+    flags = feature_flags or {}
+    target_keys = {
+        str(value) for value in (rating_keys or []) if str(value).strip()
+    }
+    candidates = [
+        item
+        for item in items
+        if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
+    ]
+    cache_by_rating_key = _scoped_cache_by_rating_key(
+        cache,
+        candidates,
+        server_id=server_id,
+        library_uuid=library_uuid,
+    )
+    planned_by_rating_key = {
+        str(getattr(planned.item, "ratingKey", "")): planned
+        for planned in planned_items
+    }
+    summary = {
+        lane: dict.fromkeys(
+            ("destinations", "due", "required", "forced", "not_due"), 0
+        )
+        for lane in ("poster", "background", "season_poster")
+    }
+    summary["season_poster"]["inventory_unknown"] = 0
+    check_time = utc_now() if now is None else now
+
+    def classify(lane, timestamp, days, selected):
+        values = summary[lane]
+        values["destinations"] += 1
+        if not timestamp:
+            values["required"] += 1
+        elif timestamp_due(timestamp, days, now=check_time):
+            values["due"] += 1
+        elif selected:
+            values["forced"] += 1
+        else:
+            values["not_due"] += 1
+
+    for item in candidates:
+        rating_key = str(getattr(item, "ratingKey", ""))
+        cached = cache_by_rating_key.get(rating_key)
+        cached_record = cached if isinstance(cached, dict) else {}
+        planned = planned_by_rating_key.get(rating_key)
+        reasons = planned.reasons if planned is not None else frozenset()
+        media_type = _media_type(
+            getattr(item, "type", None) or cached_record.get("media_type")
+        )
+        if media_type not in {"movie", "tv"}:
+            continue
+        artwork_days = get_image_upgrade_days(
+            config, "movie" if media_type == "movie" else "series"
+        )
+        for lane in ("poster", "background"):
+            if not flags.get(lane, False):
+                continue
+            timestamp = cached_record.get(f"{lane}_last_checked") or cached_record.get(
+                f"{lane}_last_upgraded"
+            )
+            classify(
+                lane,
+                timestamp,
+                adaptive_artwork_days(cached_record, lane, artwork_days),
+                lane in reasons,
+            )
+        if media_type != "tv" or not flags.get("season", False):
+            continue
+        season_days = adaptive_artwork_days(
+            cached_record, "season", get_image_upgrade_days(config, "season")
+        )
+        season_records, inventory_unknown = _season_destination_records(
+            item, cached_record
+        )
+        if inventory_unknown:
+            summary["season_poster"]["inventory_unknown"] += 1
+        for season_record in season_records:
+            timestamp = None
+            if season_record is not None:
+                timestamp = (
+                    season_record.get("season_last_checked")
+                    or season_record.get("season_last_upgraded")
+                    or cached_record.get("season_last_checked")
+                    or cached_record.get("season_last_upgraded")
+                )
+            classify(
+                "season_poster",
+                timestamp,
+                season_days,
+                "season" in reasons,
+            )
+    return summary
+
+
+def metadata_schedule_summary(
+    items,
+    cache,
+    planned_items,
+    config,
+    *,
+    feature_flags=None,
+    rating_keys=None,
+    now=None,
+    server_id=None,
+    library_uuid=None,
+):
+    """Classify each enabled metadata destination into one schedule state."""
+    flags = feature_flags or {}
+    enabled = any(
+        flags.get(name, False)
+        for name in ("metadata_basic", "metadata_enhanced", "plex_metadata")
+    )
+    summary = dict.fromkeys(
+        ("destinations", "due", "required", "forced", "not_due"), 0
+    )
+    if not enabled:
+        return summary
+    target_keys = {
+        str(value) for value in (rating_keys or []) if str(value).strip()
+    }
+    candidates = [
+        item
+        for item in items
+        if not target_keys or str(getattr(item, "ratingKey", "")) in target_keys
+    ]
+    cache_by_rating_key = _scoped_cache_by_rating_key(
+        cache,
+        candidates,
+        server_id=server_id,
+        library_uuid=library_uuid,
+    )
+    planned_by_rating_key = {
+        str(getattr(planned.item, "ratingKey", "")): planned
+        for planned in planned_items
+    }
+    metadata_due_causes = {
+        "metadata_pending_recheck",
+        "plex_metadata_recheck",
+        "tmdb_change_detected",
+        "deferred_retry_due",
+    }
+    check_time = utc_now() if now is None else now
+    for item in candidates:
+        rating_key = str(getattr(item, "ratingKey", ""))
+        cached = cache_by_rating_key.get(rating_key)
+        cached_record = cached if isinstance(cached, dict) else {}
+        media_type = _media_type(
+            getattr(item, "type", None) or cached_record.get("media_type")
+        )
+        if media_type not in {"movie", "tv"}:
+            continue
+        summary["destinations"] += 1
+        if not cached_record:
+            summary["required"] += 1
+            continue
+        planned = planned_by_rating_key.get(rating_key)
+        reasons = planned.reasons if planned is not None else frozenset()
+        causes = set(planned.selection_causes if planned is not None else ())
+        causes.update(
+            due_selection_causes(
+                cached_record,
+                media_type,
+                config,
+                feature_flags=flags,
+                now=check_time,
+            )
+        )
+        if "metadata" in reasons and causes & metadata_due_causes:
+            summary["due"] += 1
+        elif "metadata" in reasons:
+            summary["forced"] += 1
+        else:
+            summary["not_due"] += 1
+    return summary
+
+
 def image_upgrade_due(cached, media_type, config, feature_flags=None, now=None):
     """Return whether enabled artwork makes an unchanged item eligible."""
     return bool(
@@ -475,22 +788,12 @@ def plan_items(
             for item in candidates
         ]
 
-    scoped_cache = (
-        cache.entries_for_scope(
-            server_id,
-            library_uuid,
-            rating_keys=[getattr(item, "ratingKey", "") for item in candidates],
-        ).values()
-        if server_id is not None
-        and library_uuid is not None
-        and hasattr(cache, "entries_for_scope")
-        else cache.values()
+    cache_by_rating_key = _scoped_cache_by_rating_key(
+        cache,
+        candidates,
+        server_id=server_id,
+        library_uuid=library_uuid,
     )
-    cache_by_rating_key = {
-        str(entry.get("rating_key")): entry
-        for entry in scoped_cache
-        if isinstance(entry, dict) and entry.get("rating_key") is not None
-    }
     planned = []
     for item in candidates:
         rating_key = str(getattr(item, "ratingKey", ""))

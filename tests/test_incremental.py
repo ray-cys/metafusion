@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from helper.incremental import (
+    artwork_schedule_summary,
     child_inventory_fingerprint,
     config_fingerprint,
     image_upgrade_due,
@@ -11,7 +12,10 @@ from helper.incremental import (
     library_full_scan_decisions,
     load_state,
     mark_full_scan_complete,
+    metadata_schedule_summary,
     plan_items,
+    same_source_verification_days,
+    same_source_verification_due,
     select_items,
     should_run_full_scan,
 )
@@ -166,6 +170,68 @@ def test_selection_causes_distinguish_triggers_from_selected_work():
     assert due.reasons == frozenset({"poster"})
     assert targeted.selection_causes == frozenset({"targeted_rating_key"})
     assert full.selection_causes == frozenset({"full_scan"})
+
+
+def test_same_source_verification_is_bounded_and_uses_per_asset_history():
+    now = datetime(2026, 8, 23, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["image_upgrades"].update(
+        {"movie_days": 30, "series_days": 15, "season_days": 200}
+    )
+
+    assert same_source_verification_days(config, "movie", "poster") == 90
+    assert same_source_verification_days(config, "tv", "background") == 90
+    assert same_source_verification_days(config, "tv", "season") == 365
+    assert not same_source_verification_due(
+        None, "movie", "poster", config, now=now
+    )
+
+    cached = {
+        "poster_last_upgraded": (now - timedelta(days=91)).isoformat(),
+        "background_source_verified_at": (now - timedelta(days=20)).isoformat(),
+        "background_source_verified_path": "/background.jpg",
+        "seasons": {
+            "1": {
+                "season_source_verified_at": (
+                    now - timedelta(days=366)
+                ).isoformat(),
+                "season_source_verified_path": "/season.jpg",
+            }
+        },
+    }
+    assert same_source_verification_due(
+        cached, "movie", "poster", config, now=now
+    )
+    assert not same_source_verification_due(
+        cached,
+        "tv",
+        "background",
+        config,
+        source_path="/background.jpg",
+        now=now,
+    )
+    assert same_source_verification_due(
+        cached,
+        "tv",
+        "background",
+        config,
+        source_path="/different-background.jpg",
+        now=now,
+    )
+    assert same_source_verification_due(
+        cached,
+        "tv",
+        "season",
+        config,
+        season_number=1,
+        source_path="/season.jpg",
+        now=now,
+    )
+
+    config["image_upgrades"]["movie_days"] = 0
+    assert not same_source_verification_due(
+        cached, "movie", "poster", config, now=now
+    )
 
 
 def test_configuration_changes_invalidate_incremental_entries():
@@ -475,3 +541,322 @@ def test_planner_preserves_independent_artwork_reasons():
         now=now,
     )
     assert planned[0].reasons == frozenset({"season"})
+
+
+def test_artwork_schedule_summary_counts_due_required_forced_and_not_due():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["assets"] = {
+        "run_poster": True,
+        "run_background": False,
+        "run_season": True,
+    }
+    config["image_upgrades"].update(
+        {"movie_days": 30, "series_days": 30, "season_days": 15}
+    )
+    fingerprint = config_fingerprint(config)
+    current = SimpleNamespace(
+        ratingKey="current", updatedAt=updated, type="movie"
+    )
+    due = SimpleNamespace(ratingKey="due", updatedAt=updated, type="movie")
+    new = SimpleNamespace(ratingKey="new", updatedAt=updated, type="movie")
+    show = SimpleNamespace(
+        ratingKey="show",
+        updatedAt=updated,
+        type="show",
+        childCount=3,
+        seasonCount=3,
+        leafCount=30,
+    )
+    items = [current, due, new, show]
+    cache = {
+        "current": {
+            "rating_key": "current",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "poster_last_checked": (now - timedelta(days=10)).isoformat(),
+        },
+        "due": {
+            "rating_key": "due",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "poster_last_checked": (now - timedelta(days=31)).isoformat(),
+        },
+        "show": {
+            "rating_key": "show",
+            "media_type": "tv",
+            "plex_updated_at": updated.isoformat(),
+            "plex_child_fingerprint": child_inventory_fingerprint(show),
+            "config_fingerprint": fingerprint,
+            "poster_last_checked": (now - timedelta(days=10)).isoformat(),
+            "season_last_checked": (now - timedelta(days=10)).isoformat(),
+            "seasons": {"1": {}, "2": {}},
+        },
+    }
+    flags = {
+        "metadata_basic": True,
+        "poster": True,
+        "background": False,
+        "season": True,
+    }
+    planned = plan_items(
+        items,
+        cache,
+        fingerprint,
+        config=config,
+        feature_flags=flags,
+        now=now,
+    )
+
+    schedule = artwork_schedule_summary(
+        items,
+        cache,
+        planned,
+        config,
+        feature_flags=flags,
+        now=now,
+    )
+
+    assert schedule["poster"] == {
+        "destinations": 4,
+        "due": 1,
+        "required": 1,
+        "forced": 0,
+        "not_due": 2,
+    }
+    assert schedule["background"] == {
+        "destinations": 0,
+        "due": 0,
+        "required": 0,
+        "forced": 0,
+        "not_due": 0,
+    }
+    assert schedule["season_poster"] == {
+        "destinations": 3,
+        "due": 0,
+        "required": 1,
+        "forced": 0,
+        "not_due": 2,
+        "inventory_unknown": 0,
+    }
+
+    full_plan = plan_items(
+        items,
+        cache,
+        fingerprint,
+        full_scan=True,
+        config=config,
+        feature_flags=flags,
+        now=now,
+    )
+    forced_schedule = artwork_schedule_summary(
+        items,
+        cache,
+        full_plan,
+        config,
+        feature_flags=flags,
+        now=now,
+    )
+    assert forced_schedule["poster"] == {
+        "destinations": 4,
+        "due": 1,
+        "required": 1,
+        "forced": 2,
+        "not_due": 0,
+    }
+    assert forced_schedule["season_poster"] == {
+        "destinations": 3,
+        "due": 0,
+        "required": 1,
+        "forced": 2,
+        "not_due": 0,
+        "inventory_unknown": 0,
+    }
+
+
+def test_artwork_schedule_summary_handles_legacy_seasons_and_plural_movies():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    checked = (now - timedelta(days=1)).isoformat()
+    config = incremental_config()
+    config["assets"] = {"run_poster": True, "run_season": True}
+    movie = SimpleNamespace(ratingKey="movie", type="movies")
+    show = SimpleNamespace(
+        ratingKey="show",
+        type="show",
+        seasonCount="invalid",
+        childCount=2,
+    )
+    cache = {
+        "movie": {
+            "rating_key": "movie",
+            "media_type": "movie",
+            "poster_last_checked": checked,
+        },
+        "show": {
+            "rating_key": "show",
+            "media_type": "tv",
+            "poster_last_checked": checked,
+            "season_last_checked": checked,
+            "seasons": ["legacy-invalid-shape"],
+        },
+    }
+
+    schedule = artwork_schedule_summary(
+        [movie, show],
+        cache,
+        [],
+        config,
+        feature_flags={"poster": True, "season": True},
+        now=now,
+    )
+
+    assert schedule["poster"]["destinations"] == 2
+    assert schedule["poster"]["not_due"] == 2
+    assert schedule["season_poster"] == {
+        "destinations": 2,
+        "due": 0,
+        "required": 0,
+        "forced": 0,
+        "not_due": 2,
+        "inventory_unknown": 0,
+    }
+
+
+def test_artwork_schedule_summary_reports_unavailable_season_inventory():
+    show = SimpleNamespace(ratingKey="show", type="show")
+
+    schedule = artwork_schedule_summary(
+        [show],
+        {},
+        [],
+        incremental_config(),
+        feature_flags={"season": True},
+    )
+
+    assert schedule["season_poster"] == {
+        "destinations": 0,
+        "due": 0,
+        "required": 0,
+        "forced": 0,
+        "not_due": 0,
+        "inventory_unknown": 1,
+    }
+
+
+def test_metadata_schedule_summary_reconciles_all_selection_states():
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    updated = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    config = incremental_config()
+    config["plex_metadata"] = {"recheck_days": 30}
+    config["incremental"]["metadata_pending_recheck_hours"] = 24
+    fingerprint = config_fingerprint(config)
+    items = [
+        SimpleNamespace(ratingKey=key, updatedAt=updated, type="movie")
+        for key in ("new", "pending", "plex-due", "forced", "current")
+    ]
+    current_check = (now - timedelta(days=1)).isoformat()
+    cache = {
+        "pending": {
+            "rating_key": "pending",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "metadata_pending_count": 1,
+            "metadata_pending_at": (now - timedelta(days=2)).isoformat(),
+            "plex_metadata_last_checked": current_check,
+        },
+        "plex-due": {
+            "rating_key": "plex-due",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "plex_metadata_last_checked": (now - timedelta(days=31)).isoformat(),
+        },
+        "forced": {
+            "rating_key": "forced",
+            "media_type": "movie",
+            "plex_updated_at": "older",
+            "config_fingerprint": fingerprint,
+            "plex_metadata_last_checked": current_check,
+        },
+        "current": {
+            "rating_key": "current",
+            "media_type": "movie",
+            "plex_updated_at": updated.isoformat(),
+            "config_fingerprint": fingerprint,
+            "plex_metadata_last_checked": current_check,
+        },
+    }
+    flags = {
+        "metadata_basic": True,
+        "metadata_enhanced": True,
+        "plex_metadata": True,
+        "poster": False,
+        "background": False,
+        "season": False,
+    }
+    planned = plan_items(
+        items,
+        cache,
+        fingerprint,
+        config=config,
+        feature_flags=flags,
+        now=now,
+    )
+
+    schedule = metadata_schedule_summary(
+        items,
+        cache,
+        planned,
+        config,
+        feature_flags=flags,
+        now=now,
+    )
+    assert schedule == {
+        "destinations": 5,
+        "due": 2,
+        "required": 1,
+        "forced": 1,
+        "not_due": 1,
+    }
+
+    full_plan = plan_items(
+        items,
+        cache,
+        fingerprint,
+        full_scan=True,
+        config=config,
+        feature_flags=flags,
+        now=now,
+    )
+    assert metadata_schedule_summary(
+        items,
+        cache,
+        full_plan,
+        config,
+        feature_flags=flags,
+        now=now,
+    ) == {
+        "destinations": 5,
+        "due": 2,
+        "required": 1,
+        "forced": 2,
+        "not_due": 0,
+    }
+    assert metadata_schedule_summary(
+        items,
+        cache,
+        [],
+        config,
+        feature_flags={},
+        now=now,
+    ) == {
+        "destinations": 0,
+        "due": 0,
+        "required": 0,
+        "forced": 0,
+        "not_due": 0,
+    }

@@ -138,7 +138,7 @@ def write_config_impact_report(
                 "- This report cannot prove current Plex absence. Run --plan with the proposed configuration before enabling cleanup.",
             )
         )
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines) + "\n",
         report_type="configuration_impact",

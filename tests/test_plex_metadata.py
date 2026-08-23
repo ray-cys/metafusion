@@ -467,9 +467,9 @@ def test_plex_report_logs_summary_and_safety_decisions(
         report = reporter.write(base_dir=tmp_path)
 
     assert report.exists()
-    assert "[Metadata] Plex summary | API batches: 0/10" in caplog.text
-    assert "existing values preserved: 1" in caplog.text
-    assert "locked fields: 1" in caplog.text
+    assert "[Metadata] Plex report" not in caplog.text
+    assert "Conflicts preserved: 0" in caplog.text
+    assert "Locked fields: 1" in caplog.text
 
 
 def test_plex_metadata_audit_records_locked_policy_and_unchanged_fields(tmp_path):

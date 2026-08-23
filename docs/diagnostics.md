@@ -26,6 +26,8 @@ for every public flag and supported value.
 | Explain identity, scheduling, policy, mapping, retry, and destinations together | `--explain-item --rating-key KEY` | Plex and TMDb | `item-explanation-*.txt` |
 | Capture sanitized item evidence for a reproducible support case | `--capture-replay --rating-key KEY` | Plex and TMDb | `provider-replay-capture-*.txt` |
 | Inspect durable state without opening raw SQLite | `--state-report` | None | `state-report-*.txt` and `.json` |
+| Review the latest automatically stored upgrade qualification | `--upgrade-canary-report` | None | `upgrade-canary-*.txt`, `.json`, or both according to `REPORT_FORMAT` |
+| Browse run, library, problem, cleanup, provider, and provenance state offline | `--dashboard-report` | None | `metafusion-dashboard-*.html` and `.json` |
 | Review pending and completed cleanup actions | `--cleanup-history-report` | None | `cleanup-history-*.txt` and `.json` |
 | Review unresolved identity work | `--identity-review-queue` | None | `identity-review-*.txt` and `.json` |
 | Verify whether Plex selected managed local artwork | `--plex-artwork-verify` | Plex only | `plex-artwork-verification-*.txt` and `.json` |
@@ -40,6 +42,39 @@ SQLite-only reports describe recorded evidence, not current Plex/provider or
 filesystem truth. Plex artwork verification is the live read-only check for
 adoption. Detailed command examples and report limitations are in
 [Lifecycle management](lifecycle-management.md).
+
+### Offline HTML dashboard
+
+```bash
+python metafusion.py --dashboard-report
+```
+
+The command always generates both a retained timestamped dashboard and
+`/config/reports/metafusion-dashboard-latest.html`. Automatic refresh after a
+successful non-dry run is disabled by default. Opt in with either:
+
+```yaml
+output:
+  dashboard_enabled: true
+```
+
+or `DASHBOARD_ENABLED=True`. Disabling automatic refresh does not delete an
+existing dashboard. Open either file directly in a browser; it contains its
+own styling, tables, filtering, section
+navigation, and print support and makes no network request. The dashboard is
+built only from bounded SQLite evidence and covers recent jobs, library scan
+state, unresolved work, retries, identity review, cleanup, provider health,
+database health, and value-free field-level metadata provenance. A same-name
+JSON companion is available for automation. It does not embed artwork,
+provider response bodies, metadata values, credentials, or configuration.
+
+The provenance view records which source supplied or retained each field, the
+target (`kometa_yaml` or `plex_api`), policy, decision, one-way value
+fingerprint, and the time that provenance state last changed. Repeated
+identical decisions do not rewrite the row. Use `--state-report
+--state-section provenance` for the equivalent text/JSON view or
+`--explain-item --rating-key KEY` to combine recorded provenance with live
+identity and policy diagnosis.
 
 ## Local checks and support
 
@@ -270,8 +305,8 @@ files; an earlier run naturally reports output as not yet applied.
 
 Without `--rating-key`, it verifies the selected libraries. With one or more
 rating keys it reports only those items plus explicit not-found entries. The
-text report is concise; field mismatches and normalized TMDb/IMDb/TVDb/Plex
-identity fields are retained in the JSON companion.
+text form is concise; the JSON form retains field mismatches and normalized
+TMDb/IMDb/TVDb/Plex identity fields. Choose either or both with `REPORT_FORMAT`.
 
 ### Retained report inventory
 
@@ -289,13 +324,23 @@ identity fields are retained in the JSON companion.
 | `/config/reports/release-qualification-*.txt` | `--release-check` |
 | `/config/reports/provider-replay-capture-*.txt` | `--capture-replay` |
 | `/config/reports/kometa-application-audit-*.txt` | `--kometa-application-audit` |
-| `/config/reports/upgrade-canary-*.txt` | Automatic once per published commit/server/mode/profile |
+| `/config/reports/upgrade-canary-*.txt` | `--upgrade-canary-report`; the automatic check stores details in SQLite without creating files |
+| `/config/reports/run-history-*.txt` | `--run-history` |
+| `/config/reports/schedule-advice-*.txt` | `--schedule-advice` |
+| `/config/reports/cleanup-quarantine-*.txt` | `--cleanup-quarantine-report`, restore, or purge |
 
-Every text report above has a same-name machine-readable `.json` companion.
-`REPORT_RETENTION` keeps the newest text/JSON pairs independently for each
-report type; the default is `10`. Routine processing can additionally produce
+`REPORT_FORMAT` controls conventional diagnostic output: `text`, `json`, or
+`both` (the default). `REPORT_RETENTION` keeps the newest logical reports
+independently for each report type; the default is `10`. The HTML dashboard
+always keeps its JSON data companion, and sanitized replay capture always keeps
+its required JSON payload. Routine processing additionally produces
 artwork-gap, destination-history, unresolved-work, post-application adoption,
-and Plex-metadata report pairs. See
+and Plex-metadata reports. The artwork-gap report is an always-present run
+snapshot, including an explicit zero-open result. It separates current
+observations, carried-forward open work, and recently resolved history; its
+structured JSON form also records destination state and recheck timing. This applies
+to movie posters and backgrounds as well as show posters, backgrounds, and
+individual season posters in both output modes. See
 [generated output and reports](operations.md#generated-output-and-reports).
 
 Every item-level JSON record uses the same nullable identity fields:

@@ -185,8 +185,8 @@ These inactive references are the only configuration files automatically
 placed in `/config`. MetaFusion does not automatically create active
 `config.yml`, `kometa.yml`, or `plex.yml` files.
 
-Stop the container and copy one reference to an active file. The short mode
-profiles can be used without renaming:
+Copy one reference to an active file. The short mode profiles can be used
+without renaming:
 
 ```bash
 # Choose one:
@@ -213,6 +213,12 @@ Non-empty Docker variables override YAML. Therefore, keep application/runtime
 variables out of the Unraid form when YAML should control them. Each job logs a
 redacted `[Configuration] Source` entry showing which file was selected and how
 many values came from each source.
+
+With `CONFIG_RELOAD=True`, a running scheduler validates and adopts active
+YAML edits between jobs. An invalid edit leaves the previous working settings
+and schedule active. Changes to Unraid template variables, mappings, timezone,
+`PUID`, or `PGID` still require applying the template and recreating the
+container.
 
 ### Environment-only setup
 

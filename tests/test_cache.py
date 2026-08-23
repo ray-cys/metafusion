@@ -186,6 +186,13 @@ def test_cache_records_independent_artwork_check_timestamps(tmp_path):
             poster_checked=True,
             background_checked=True,
             season_checked=True,
+            poster_source_verified=True,
+            poster_candidate_source_path="/poster.jpg",
+            background_source_verified=True,
+            background_candidate_source_path="/background.jpg",
+            season_number=1,
+            season_source_verified=True,
+            season_candidate_source_path="/season.jpg",
         )
     )
     entry = cache_module.load_cache()["tv:Example:2020"]
@@ -193,6 +200,15 @@ def test_cache_records_independent_artwork_check_timestamps(tmp_path):
     assert "poster_last_checked" in entry
     assert "background_last_checked" in entry
     assert "season_last_checked" in entry
+    assert "poster_source_verified_at" in entry
+    assert entry["poster_source_verified_path"] == "/poster.jpg"
+    assert "background_source_verified_at" in entry
+    assert entry["background_source_verified_path"] == "/background.jpg"
+    assert "season_source_verified_at" in entry["seasons"]["1"]
+    assert (
+        entry["seasons"]["1"]["season_source_verified_path"]
+        == "/season.jpg"
+    )
     assert "last_updated" not in entry
 
 

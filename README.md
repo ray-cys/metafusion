@@ -17,7 +17,9 @@ scanner or metadata agent, and it never modifies video or audio files.
 - Preserves manual artwork through ownership, checksum, quality, and collision
   safeguards.
 - Adapts processing and provider concurrency to container resources and
-  upstream health.
+  upstream health, retaining short provider cooldowns across scheduled jobs.
+- Reloads validated YAML changes between scheduled jobs and retains bounded
+  run-performance history with schedule-capacity guidance.
 - Provides read-only plans, audits, item explanations, and maintenance tools.
 - Runs once or as a Docker scheduler on AMD64 and ARM64.
 
@@ -76,6 +78,7 @@ modes](docs/modes.md) before choosing paths or enabling direct Plex metadata.
 | `KOMETA_TAG_POLICY` | `append` | Add supported generated tags while preserving existing tags. |
 | `RUN_CLEANUP` | `False` | Do not reconcile stale generated output until explicitly enabled and dry-run reviewed. |
 | Cleanup confirmation | 2 scans plus 48 hours | Keep a missing item pending before any eligible state/output removal. |
+| Cleanup quarantine | 14 days | Retain checksum-proven artwork removed by automatic cleanup so it can be restored before expiry. |
 
 Keep these defaults for the first full run and use `DRY_RUN=True` before
 enabling cleanup or aggressive metadata/artwork replacement. The
@@ -108,7 +111,12 @@ Run these inside the container before opening an issue:
 python metafusion.py --doctor
 python metafusion.py --preflight
 python metafusion.py --support-report
+python metafusion.py --dashboard-report
 ```
+
+Automatic dashboard refresh is disabled by default. Enable it with
+`output.dashboard_enabled: true` or `DASHBOARD_ENABLED=True`; the command above
+always remains available for an on-demand report.
 
 Use the [GitHub issue chooser](https://github.com/ray-cys/metafusion/issues/new/choose)
 to select the form matching the problem. Run only the checks relevant to that
@@ -116,7 +124,9 @@ form, and explain when requested diagnostics are unavailable.
 
 Attach only the relevant redacted log section and problem-specific report.
 Never publish `config.yml`, Docker inspection output, tokens, API keys, or
-unredacted private paths. The [diagnostics guide](docs/diagnostics.md) explains
+unredacted private paths. The offline dashboard is intended for local review;
+inspect it before sharing because library and media titles are included. The
+[diagnostics guide](docs/diagnostics.md) explains
 which report to use, and the [command-line reference](docs/operations.md#command-line-reference)
 lists every public flag.
 

@@ -27,6 +27,18 @@ already covers it.
 `RUN_ON_START=True` is different: it requests a job on every scheduler start,
 regardless of whether a scheduled slot was missed.
 
+With `CONFIG_RELOAD=True`, the long-running scheduler watches the selected
+YAML profile and mounted secret files. A changed file is reloaded only while
+no job is running, then the complete effective configuration and required
+paths are validated. Invalid changes are rejected and the last working
+configuration and schedule remain active. A valid `RUN_TIMES` change replaces
+the in-process schedule. If an already-running scheduler reloads
+`RUN_SCHEDULE=False`, it pauses jobs but continues watching so a later valid
+YAML change can resume them. Environment
+variables cannot change inside an existing container, and Docker-level mounts,
+`PUID`, `PGID`, or `TZ` still require recreating the container. Configuration
+is never changed during a running job.
+
 ## Run one job
 
 With Docker Compose:
@@ -82,10 +94,17 @@ or `config.yml` values.
 | Diagnostics | `--support-report` | None | Perform a local value-free configuration/build/state inventory, write it under `/config/reports`, and exit without contacting providers. |
 | Diagnostics | `--capture-replay` | None | Capture sanitized support data for items selected by `--rating-key`; writes a text manifest and JSON companion without changing metadata, artwork, or state. |
 | SQLite reports | `--state-report` | None | Generate human-readable and JSON reports entirely from recorded SQLite state; no provider, Plex, YAML, or artwork access occurs. |
-| SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
+| SQLite reports | `--dashboard-report` | None | Generate a self-contained offline HTML dashboard plus JSON companion from recorded SQLite state. |
+| SQLite reports | `--upgrade-canary-report` | None | Generate the configured report format from the latest detailed upgrade-canary result stored in SQLite. It does not rerun the canary or contact providers. |
+| SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `provenance`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
 | SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
 | SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
 | SQLite reports | `--history-source` | `automated` or `manual` | Filter `--cleanup-history-report`; repeat to select both. |
+| SQLite reports | `--run-history` | None | Write retained run duration, throughput, provider activity, library results, and capacity guidance without contacting Plex/providers. |
+| SQLite reports | `--schedule-advice` | None | Compare retained median/95th-percentile duration with the shortest configured schedule interval. |
+| Cleanup recovery | `--cleanup-quarantine-report` | None | Report active, restored, purged, missing, and protected cleanup quarantine records. |
+| Cleanup recovery | `--cleanup-restore` | History ID | Restore one active checksum-proven quarantined artwork file without overwriting an existing destination. |
+| Cleanup recovery | `--cleanup-purge` | None | Purge only expired, checksum-matching quarantine files; protected mismatches are retained. |
 | Output lifecycle | `--output-action` | `preview`, `remove`, `forget`, or `rebuild` | Inspect or manage only the checksum-proven output of exactly one recorded item. Requires a unique target. |
 | Output lifecycle | `--output-type` | `all`, `metadata`, `poster`, `background`, or `season` | Limit `--output-action`; defaults to `all`. |
 | Output lifecycle | `--season-number` | Integer | Limit season output management or a season exception to one Plex season, including `0` for Specials. |
@@ -239,8 +258,10 @@ two items per non-empty selected library through the existing identity,
 mapping, policy, and destination explanation pipeline. It runs before media
 output writes and never edits Plex, YAML, or artwork.
 
-The canary writes `upgrade-canary-*.txt` plus a JSON companion. A failure stops
-the job before output processing. A pass is remembered in `meta_db.sqlite3`
+The canary stores its detailed checks and samples in `meta_db.sqlite3` without
+creating files during startup or normal processing. A failure stops the job
+before output processing. Generate the latest stored result on demand with
+`python metafusion.py --upgrade-canary-report`. A pass is remembered in SQLite
 only after the surrounding job also completes successfully, so a later failure
 causes the canary to run again. Development builds, dry runs, and an unchanged
 published commit do not rerun it. Disable this advanced safety gate only with
@@ -309,16 +330,34 @@ The values are adaptive bases, not a filesystem age scan:
 - A repeatedly unchanged candidate doubles its base up to 180 days, while an
   explicitly longer base remains respected.
 - A different candidate or successful upgrade resets the unchanged backoff.
+- Under the default `managed` policy, an unchanged provider image identifier
+  receives a byte-level verification re-download after the longer of 90 days
+  or three times its configured base, capped at 365 days. Identical bytes are
+  discarded; changed bytes continue through normal validation and non-downgrade
+  checks. This is automatic and does not add a configuration variable.
 
-Candidate identity and observations are saved in SQLite. MetaFusion does not
-walk the media tree or read file mtimes to calculate artwork age.
+Candidate identity, observations, and successful same-source verification
+timestamps are saved in SQLite. MetaFusion does not walk the media tree or read
+file mtimes to calculate artwork age.
 
 ## Log retention
 
-The persistent log rotates at local midnight and whenever the active file
-reaches `LOG_MAX_MB` (10 MiB by default). `LOG_BACKUP_COUNT` keeps the newest
-14 rotated files by default. Set `LOG_MAX_MB=0` only when size-based rotation
-must be disabled; daily rotation remains active.
+Every scheduled, startup, catch-up, or forced processing job creates a separate
+timestamped file under `/config/logs`, for example
+`metafusion-2026-08-22_07-35-00_123456.log`. The file is opened after the
+single-job lock is acquired and is closed after reports, cache maintenance, the
+optional dashboard, and the final run status have completed. Scheduler startup,
+idle, reload, and shutdown messages remain in Docker's continuous console log
+and do not contaminate an individual job file.
+
+`LOG_BACKUP_COUNT` keeps the newest 14 run groups by default. `LOG_MAX_MB`
+remains an emergency size limit for one unusually verbose run; additional parts
+use the same filename followed by a timestamp suffix and are retained or removed
+with their parent run. Set `LOG_MAX_MB=0` when every run must remain in exactly
+one file regardless of size. Dry runs continue to write only to Docker output so
+that their no-persistent-write contract is preserved. A legacy
+`/config/logs/metafusion.log` from an older release is left untouched and is no
+longer appended.
 
 At the first scheduled job after an interval expires, MetaFusion evaluates a
 candidate. [Artwork policy](policies.md#artwork-update-policies) and quality
@@ -332,6 +371,27 @@ more TMDb/network I/O than later runs.
 
 Per-library timing overrides are documented in
 [Configuration](configuration.md#per-library-overrides).
+
+## Run history and schedule advice
+
+The newest 500 completed jobs retain value-safe metrics in SQLite: duration,
+throughput, library result counts, provider/cache/retry totals, cleanup outcome,
+full-scan scope, slow rating keys, and final adaptive-concurrency state. Media
+paths, metadata values, response bodies, tokens, and API keys are not retained.
+
+Generate the configured report format without contacting Plex or providers:
+
+```bash
+python metafusion.py --run-history
+python metafusion.py --schedule-advice
+```
+
+The first command includes individual retained jobs. The second is concise and
+compares median and 95th-percentile runtime with the shortest configured
+schedule interval. It warns about retained failures, schedule-capacity risk,
+or a latest successful throughput more than 30% below the retained median.
+This is local operational guidance, not an external metrics or notification
+service.
 
 ## Adaptive concurrency and provider protection
 
@@ -347,6 +407,13 @@ TMDb HTTP 429 responses immediately reduce the TMDb lane and still honor
 new work is preserved or skipped during the cooldown, then a single half-open
 probe decides whether the circuit closes. Identical concurrent TMDb requests
 share one in-flight request, response, and cache write.
+
+TMDb, Fanart.tv, and Plex circuit failure counts and unexpired cooldowns are
+retained across scheduled jobs. Connector identities are one-way hashes; URLs,
+tokens, API keys, response bodies, and metadata values are not stored. An
+expired cooldown starts cleanly, while a still-active cooldown prevents a
+container restart or later schedule slot from immediately repeating an outage
+storm.
 
 Successful Plex calls taking five seconds or longer reduce only the Plex lane,
 preventing a slow server from accumulating requests even when it returns no
@@ -374,12 +441,19 @@ Run one job and review the final report. Restore normal values afterward. A
 dry run does not update YAML, artwork, cache, or durable state. Direct Plex
 metadata dry runs retain one redacted audit report as the deliberate exception.
 
+Real cleanup moves eligible checksum-proven managed artwork to
+`/config/quarantine/cleanup` instead of deleting it immediately. The default
+14-day retention is controlled by `CLEANUP_QUARANTINE_DAYS`; expired matching
+files are purged during later cleanup runs or with `--cleanup-purge`. See
+[cleanup quarantine and restoration](lifecycle-management.md#cleanup-quarantine-and-restoration).
+
 Cleanup uses the same outcome-oriented logging style as metadata and artwork.
 At the normal INFO level, each affected title receives one consolidated
 `[Cleanup] Inventory | title | outcome | reason` record. The final report
 separates stale title/season/episode scope, cache and Kometa YAML entries,
-managed artwork removed, protected artwork preserved, unchanged valid artwork,
-and failures. Dry-run removals are listed individually as `Would remove`.
+managed artwork quarantined, protected artwork preserved, unchanged valid artwork,
+and failures. Dry-run state/YAML removals are listed as `Would remove`, while
+managed artwork is listed as `Would quarantine`.
 Enable DEBUG only when exact cache keys, YAML season/episode entries, asset
 paths, or preserved unmanaged files are needed. In Plex mode the report labels
 cleanup as state-only by default. The advanced
@@ -393,7 +467,7 @@ MetaFusion uses separate SQLite databases:
 
 | Path | Purpose | Recovery behavior |
 | --- | --- | --- |
-| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities/history, review queue and overrides, item exceptions, cleanup candidates/history, library rebinding history, discovered-library inventory, artwork ownership, per-library scans, schedules, and job history | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
+| `/config/cache/meta_db.sqlite3` | Durable media state, retry queue, learned identities/history, review queue and overrides, item exceptions, cleanup candidates/history/quarantine, provider cooldowns, library rebinding history, discovered-library inventory, artwork ownership, per-library scans, schedules, and bounded run metrics | Back up with appdata while the container is stopped. Before a schema upgrade, two bounded `pre-v*` backups are retained. Do not treat as disposable. |
 | `/config/cache/tmdb_cache.sqlite3` | Compressed successful TMDb responses | Disposable; it is storage-sized and pruned automatically. Corruption is quarantined with a timestamp and causes a clean rebuild. |
 | `/config/cache/fanart_cache.sqlite3` | Compressed Fanart.tv artwork responses | Disposable; it shares the bounded provider-cache policy and can be rebuilt automatically. |
 
@@ -475,11 +549,13 @@ Kometa mode writes:
 
 Plex mode never writes those YAML files. Enabled artwork is written beside the
 mapped media. Direct Plex metadata updates are sent through the API.
+Checksum-proven managed artwork removed by automated cleanup is retained under
+`/config/quarantine/cleanup` until restored or its retention expires.
 
 Shared reports and logs are:
 
 ```text
-/config/logs/metafusion.log
+/config/logs/metafusion-YYYY-MM-DD_HH-MM-SS_microseconds.log
 /config/reports/artwork-gaps-YYYYMMDD-HHMMSS.txt
 /config/reports/asset-audit-YYYYMMDD-HHMMSS.txt
 /config/reports/metadata-audit-YYYYMMDD-HHMMSS.txt
@@ -492,12 +568,18 @@ Shared reports and logs are:
 /config/reports/destination-history-YYYYMMDD-HHMMSS.txt
 /config/reports/unresolved-work-YYYYMMDD-HHMMSS.txt
 /config/reports/adoption-audit-YYYYMMDD-HHMMSS.txt
+/config/reports/upgrade-canary-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/provider-replay-capture-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/plex-metadata-YYYYMMDD-HHMMSS.txt
 /config/reports/support-report-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/release-qualification-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/state-report-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/metafusion-dashboard-YYYYMMDD-HHMMSSffffff.html
+/config/reports/metafusion-dashboard-latest.html
 /config/reports/cleanup-history-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/cleanup-quarantine-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/run-history-YYYYMMDD-HHMMSSffffff.txt
+/config/reports/schedule-advice-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/identity-review-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/output-management-YYYYMMDD-HHMMSSffffff.txt
 /config/reports/library-rebinding-YYYYMMDD-HHMMSSffffff.txt
@@ -506,15 +588,39 @@ Shared reports and logs are:
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
-They are also the final output when TMDb, Fanart.tv, Plex, and the
-best-available reserve cannot provide a usable candidate. Provider decisions
-and selected source are included in read-only artwork audits.
+A successful non-dry job always writes one, including when the open count is
+zero. It combines current-run observations with open SQLite-ledger records and
+pre-ledger missing evidence already recorded in media state. Current,
+carried-forward, not-due, and recently resolved counts are logged and retained;
+the report also records the last check, next recheck, and recorded destination
+state when known. This snapshot does not add provider calls or a physical
+artwork scan. It applies to movie/show posters and backgrounds plus individual
+season posters in Kometa and Plex modes. Provider decisions and selected source
+are included in read-only artwork audits.
 Asset-audit reports include the selected candidate's language, dimensions,
 vote score, ownership status, existing dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
-Every retained text report has a same-name `.json` companion with a stable
-report envelope and structured records. Identity-inspection,
+Conventional diagnostic reports use `REPORT_FORMAT=both` by default. Select
+`text` to retain only human-readable `.txt` files or `json` to retain only
+machine-readable `.json` files. Retention treats the selected representation
+as one logical report. The offline HTML dashboard and sanitized provider replay
+remain paired with JSON because their structured files are part of the command's
+core output rather than optional companions.
+Automatic HTML-dashboard refresh is disabled by default. Set
+`output.dashboard_enabled: true` or `DASHBOARD_ENABLED=True` to refresh it
+after successful non-dry runs; `--dashboard-report` always works on demand.
+
+Post-write artwork verification always runs. `ADOPTION_AUDIT=anomalies` writes
+an adoption report only for checksum mismatches, missing destinations, or
+verification failures; `all` also reports successful verified writes and
+adoptions; `off` suppresses only this report. An abnormal verification is also
+added to the persistent artwork-gap/unresolved-work ledger regardless of this
+setting. Adoption audits remain separate from artwork-gap reports because the
+former proves what happened after a write while the latter tracks unresolved
+provider, identity, destination, and verification work.
+
+Identity-inspection,
 destination-history, unresolved-work, adoption-audit, and item-explanation
 reports can contain media titles or computed/actual paths and must be reviewed
 before sharing. Destination reconciliation removes an old artwork file only
@@ -528,23 +634,86 @@ Item-level JSON records consistently include nullable `plex_rating_key`,
 results can be correlated without title-only matching.
 Modified, unproven, symlinked, and out-of-scope files are preserved. Plex
 metadata reports identify fields and outcomes. `REPORT_RETENTION` retains the
-newest text/JSON pairs for each report type; its default is `10`.
+newest logical reports for each report type; its default is `10`.
 
 At the default `LOG_LEVEL=INFO`, each changed item uses the same compact
 `[Component] Library | Title | Outcome | Source | Target` structure. Metadata
 uses `Source: TMDb` with `Target: Kometa YAML` or `Target: Plex`; artwork names
 TMDb, Fanart.tv, or Plex and targets Kometa assets or Plex local media.
 `Field coverage` describes populated expected fields; it does not decide the
-log level. A 100% record that changed remains `INFO`, while an unchanged 100%
-record remains `DEBUG`.
+update outcome. A 100% record that genuinely changed remains `INFO` and names
+the changed field categories. An unchanged 100% record remains `DEBUG`; every
+unchanged record below 100% is promoted to `INFO` with its missing percentage
+so incomplete movie and TV records are not hidden during a normal run.
 
 Routine accepted identities, successful mappings, unchanged/preserved checks,
 provider requests, cache details, and internal API batches remain at `DEBUG`.
 Missing or deferred outcomes are warnings and failed outcomes are errors.
 Season-poster warnings name the missing Plex season and summarize the provider
-attempts. One final report combines only the libraries processed by that run
-and includes written, adopted, unchanged, not-due, preserved, missing,
-deferred, failed, and provider totals. The older standalone per-library summary
+attempts. One final summary combines only the libraries processed by that run.
+Metadata and every enabled artwork lane have separate schedule and result
+lines. Schedule states are mutually exclusive and always reconcile with the
+reported destination count:
+
+| State | Metadata meaning | Artwork meaning |
+| --- | --- | --- |
+| `Required` | A new Plex title has no prior durable processing state. | The artwork destination has never completed an artwork check, including a newly discovered title or season. |
+| `Due` | A pending metadata retry, periodic Plex metadata recheck, TMDb change notification, or deferred retry selected the title. | The configured adaptive artwork-refresh cadence has expired. |
+| `Forced` | A current title was selected by a full scan, targeted request, configuration change, Plex item change, or TV child-inventory change. | A current destination was selected by one of those non-cadence triggers. |
+| `Not due` | The title did not require metadata work and stayed outside metadata processing. | The destination remained current and outside artwork processing. |
+
+Metadata destinations count titles. Poster and background destinations also
+count titles, while season-poster destinations count individual known Plex
+seasons. A season-poster schedule also reports `Season inventories unavailable`,
+which counts TV titles for which neither the current Plex object nor durable
+state provides a season count. Those titles are not falsely reported as having
+zero season destinations; their unknown season destinations are excluded from
+the numeric destination total until Plex supplies an inventory. `Not selected`
+on the incremental inventory line remains an item-level total across all work;
+it is not a substitute for the metadata or artwork lane-specific `Not due`
+figures.
+
+Metadata result lines identify the target (`Kometa YAML` or `Plex`) and report
+created/updated or changed, unchanged, API batches where applicable, and failed
+items. Metadata coverage is separate: it reports how many processed records met
+the configured field-completeness threshold. Consequently, a metadata record
+may be unchanged but below the threshold, or changed while already at 100%
+coverage. Item-level logs name changed field categories; complete unchanged
+items stay at `DEBUG`, while incomplete unchanged items remain visible at
+`INFO`.
+
+A Kometa library summary therefore reads as three separate questions rather
+than treating `100%` coverage as proof that a write occurred:
+
+```text
+[Summary] Movies | Metadata schedule | Destinations: 2,000 | Required: 12 | Due: 31 | Forced: 7 | Not due: 1,950
+[Summary] Movies | Metadata result | Target: Kometa YAML | Created: 8 | Updated: 6 | Unchanged: 34 | Failed: 2
+[Summary] Movies | Metadata coverage | Complete: 42 | Incomplete: 6 | Threshold: 100%
+```
+
+The schedule line accounts for the complete selected-library inventory. The
+result and coverage lines account only for titles evaluated during this run;
+their totals can therefore be much smaller than `Destinations`. In Plex mode,
+the same schedule is used, while the result line changes its target and reports
+field writes and API batches instead of YAML creation/update counts.
+
+At runtime, MetaFusion verifies that `Required + Due + Forced + Not due` equals
+`Destinations` for every enabled metadata and artwork lane in every processed
+library. A mismatch does not hide or rewrite the reported figures: it emits a
+`[Diagnostics] Schedule reconciliation` warning with the library, lane,
+destination total, accounted total, and difference. This is a regression guard
+for reporting logic rather than a media-processing failure. Unknown season
+inventories are reported separately because their destination count cannot be
+calculated safely.
+
+Artwork result lines report evaluated, downloaded, upgraded, adopted,
+unchanged, preserved, missing, deferred, failed, and applicable policy
+outcomes. Enabled TV libraries always receive season-poster schedule and result
+lines, including zero-evaluated lines. The
+persistent artwork-gap summary is separate so known not-due gaps remain visible.
+The run summary also reconciles artwork destinations evaluated during that run
+as present or absent and separates current installed sources from write sources
+for the run. The older standalone per-library summary
 blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
 totals are warnings; the corresponding `plex-metadata-*.txt` report retains
 field-level audit details.
@@ -568,7 +737,7 @@ its Plex database use cannot be measured from the container. The scope says
 `full inventory` or `processed items`; MetaFusion stats known generated output
 files and does not read artwork contents or recursively scan the media tree.
 Runtime storage separately reports the durable state database, TMDb cache,
-Fanart.tv cache, logs, and reports. Filesystem records show total volume used,
+Fanart.tv cache, logs, reports, and cleanup quarantine. Filesystem records show total volume used,
 free, capacity, and free percentage; they do not claim that all used bytes
 belong to MetaFusion. TMDb and Fanart.tv cache entry statistics use the same
 `[Cache] Provider: ...` format at `DEBUG`.
@@ -581,13 +750,22 @@ and large libraries every 100 items or 5%, whichever interval is larger. A
 shows, and start/final progress is always logged. TV progress counts top-level
 shows while their seasons and episodes remain part of each show operation.
 
+The field-level Plex metadata report emits one detailed `[Metadata] Plex report`
+record at `DEBUG`. It is intentionally not repeated at `INFO`; the target-aware
+metadata result in the final summary is the canonical operator summary. Plex
+locked-field, conflict, and write-limit protection remains at `WARNING`, with a
+path to the retained diagnostic report.
+
 Every completed job also logs one local performance summary: total, Plex
 inventory and library-processing time; items per minute; TMDb requests,
 cache hits/misses, retries and rate-limit waits; Fanart.tv activity when the
-fallback was used; and the five slowest items by
-library plus Plex rating key. It intentionally omits media paths and metadata
-values. Use it to compare full and incremental runs without adding a metrics
-service.
+fallback was used; and the five slowest items by library plus Plex rating key.
+Run timing and provider activity use shared `Label: value` fields. Slow-item
+observations remain available at `DEBUG` without flooding normal `INFO` logs.
+Recovery, provider-circuit, heartbeat, job-history, and disk-pressure warnings
+use the same fields while retaining their existing severity. The performance
+records intentionally omit media paths and metadata values. Use them to compare
+full and incremental runs without adding a metrics service.
 
 Before normal writes, MetaFusion validates `/config`, Kometa output, and any
 configured Plex mapping destinations. `MIN_FREE_SPACE_MB` and an automatic

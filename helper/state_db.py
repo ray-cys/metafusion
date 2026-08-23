@@ -15,16 +15,18 @@ from urllib.parse import quote
 
 from helper.asset_registry import normalize_destination
 from helper.config import CACHE_DIR
+from helper.logging import format_fields
 from helper.report_identity import report_identity
 
 STATE_DATABASE = CACHE_DIR / "meta_db.sqlite3"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 FILE_MODE = 0o664
 IDENTITY_HISTORY_LIMIT = 10_000
 UNRESOLVED_HISTORY_LIMIT = 10_000
 CLEANUP_HISTORY_LIMIT = 20_000
 IDENTITY_REVIEW_LIMIT = 10_000
 REBIND_HISTORY_LIMIT = 10_000
+JOB_HISTORY_LIMIT = 500
 _database_setup_lock = threading.Lock()
 _initialized_databases: set[tuple[str, int, int]] = set()
 _integrity_checked_databases: set[tuple[str, int, int]] = set()
@@ -229,8 +231,18 @@ def _initialize_schema(connection):
             finished_at TEXT NOT NULL,
             status TEXT NOT NULL,
             error TEXT,
-            summary TEXT
+            summary TEXT,
+            metrics TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS provider_health (
+            provider_key TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            open_until TEXT,
+            last_success_at TEXT,
+            updated_at TEXT NOT NULL
+        ) WITHOUT ROWID;
 
         CREATE TABLE IF NOT EXISTS asset_ownership (
             cache_key TEXT NOT NULL,
@@ -277,6 +289,39 @@ def _initialize_schema(connection):
 
         CREATE INDEX IF NOT EXISTS plex_metadata_ownership_library
             ON plex_metadata_ownership(server_id, library_uuid, media_type);
+
+        CREATE TABLE IF NOT EXISTS metadata_field_provenance (
+            cache_key TEXT NOT NULL,
+            server_id TEXT NOT NULL,
+            library_uuid TEXT NOT NULL,
+            library_name TEXT NOT NULL,
+            rating_key TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            tmdb_id TEXT,
+            target TEXT NOT NULL,
+            child_key TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            field_path TEXT NOT NULL,
+            source_provider TEXT NOT NULL,
+            source_id TEXT,
+            action TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            reason TEXT,
+            value_fingerprint TEXT,
+            first_recorded_at TEXT NOT NULL,
+            last_changed_at TEXT NOT NULL,
+            PRIMARY KEY (cache_key, target, field_path),
+            FOREIGN KEY (cache_key) REFERENCES media_state(cache_key)
+                ON DELETE CASCADE
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS metadata_provenance_item
+            ON metadata_field_provenance(
+                server_id, library_uuid, rating_key, target
+            );
+        CREATE INDEX IF NOT EXISTS metadata_provenance_source
+            ON metadata_field_provenance(source_provider, action);
 
         CREATE TABLE IF NOT EXISTS item_retry_queue (
             server_id TEXT NOT NULL,
@@ -458,6 +503,38 @@ def _initialize_schema(connection):
         CREATE INDEX IF NOT EXISTS cleanup_history_source
             ON cleanup_history(source, occurred_at DESC);
 
+        CREATE TABLE IF NOT EXISTS cleanup_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            history_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL,
+            server_id TEXT,
+            library_uuid TEXT,
+            library_name TEXT,
+            rating_key TEXT,
+            cache_key TEXT,
+            media_type TEXT,
+            title TEXT,
+            year INTEGER,
+            tmdb_id TEXT,
+            imdb_id TEXT,
+            tvdb_id TEXT,
+            edition TEXT,
+            output_type TEXT NOT NULL,
+            season_number INTEGER,
+            source_path TEXT NOT NULL,
+            quarantine_path TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            quarantined_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            restored_at TEXT,
+            purged_at TEXT,
+            reason TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS cleanup_quarantine_status
+            ON cleanup_quarantine(status, expires_at, id);
+
         CREATE TABLE IF NOT EXISTS item_exceptions (
             server_id TEXT NOT NULL,
             library_uuid TEXT NOT NULL,
@@ -553,6 +630,8 @@ def _initialize_schema(connection):
     }
     if "summary" not in job_columns:
         connection.execute("ALTER TABLE job_runs ADD COLUMN summary TEXT")
+    if "metrics" not in job_columns:
+        connection.execute("ALTER TABLE job_runs ADD COLUMN metrics TEXT")
     unresolved_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(unresolved_work)")
     }
@@ -697,15 +776,47 @@ def _unresolved_work_class(asset_type):
     return "metadata"
 
 
+def _unresolved_resolution_key(record):
+    identity = report_identity(record)
+    media_type = str(record.get("media_type") or "unknown").strip().casefold()
+    if media_type in {"show", "shows", "tv show"}:
+        media_type = "tv"
+    elif media_type in {"movies"}:
+        media_type = "movie"
+    item_key: tuple[str, ...]
+    if identity["plex_rating_key"]:
+        item_key = ("plex", identity["plex_rating_key"])
+    elif identity["tmdb_id"]:
+        item_key = (
+            "tmdb",
+            identity["tmdb_id"],
+            str(identity["edition"] or "").strip().casefold(),
+        )
+    else:
+        item_key = (
+            "title",
+            str(record.get("title") or "Unknown title").strip().casefold(),
+        )
+    return (
+        str(record.get("library") or record.get("library_name") or "Unknown library")
+        .strip()
+        .casefold(),
+        media_type,
+        str(record.get("asset_type") or "metadata").strip().casefold(),
+        item_key,
+    )
+
+
 def reconcile_unresolved_work(
     records,
     *,
     resolved_libraries=None,
     resolved_work=None,
+    evaluated_records=None,
     path=None,
     now=None,
 ):
-    """Upsert current problems and resolve absent ones only for full-scan libraries."""
+    """Upsert problems and resolve absent ones after full or exact evaluation."""
     connection = _connect(path, writable=True)
     current = _as_utc(now).isoformat()
     normalized = {}
@@ -743,6 +854,12 @@ def reconcile_unresolved_work(
         if str(library)
     }
     resolved_scope.update(work_scope)
+    evaluated_scope = {
+        _unresolved_resolution_key(record)
+        for record in evaluated_records or []
+        if isinstance(record, dict)
+        and str(record.get("destination_state") or "").casefold() == "present"
+    }
     try:
         with connection:
             for row in normalized.values():
@@ -778,24 +895,30 @@ def reconcile_unresolved_work(
                     """,
                     (*row, current, current),
                 )
-            if resolved_scope:
+            if resolved_scope or evaluated_scope:
                 open_rows = connection.execute(
-                    "SELECT fingerprint, library_name, asset_type "
+                    "SELECT fingerprint, library_name, media_type, title, "
+                    "asset_type, plex_rating_key, tmdb_id, edition "
                     "FROM unresolved_work "
                     "WHERE status = 'open'"
                 ).fetchall()
                 resolved = [
                     str(row["fingerprint"])
                     for row in open_rows
-                    if str(row["library_name"]).casefold() in resolved_scope
+                    if str(row["fingerprint"]) not in normalized
                     and (
-                        not work_scope
-                        or _unresolved_work_class(row["asset_type"])
-                        in work_scope.get(
-                            str(row["library_name"]).casefold(), set()
+                        (
+                            str(row["library_name"]).casefold() in resolved_scope
+                            and (
+                                not work_scope
+                                or _unresolved_work_class(row["asset_type"])
+                                in work_scope.get(
+                                    str(row["library_name"]).casefold(), set()
+                                )
+                            )
                         )
+                        or _unresolved_resolution_key(dict(row)) in evaluated_scope
                     )
-                    and str(row["fingerprint"]) not in normalized
                 ]
                 connection.executemany(
                     "UPDATE unresolved_work SET status = 'resolved', "
@@ -1437,6 +1560,170 @@ def mark_global_full_scan(value, path=None):
         connection.close()
 
 
+def save_metadata_provenance(records, *, prune=True, path=None):
+    """Persist current field provenance without retaining metadata values."""
+    normalized = [
+        dict(record)
+        for record in (records or [])
+        if isinstance(record, dict)
+        and record.get("cache_key")
+        and record.get("target")
+        and record.get("field_path")
+    ]
+    if not normalized:
+        return 0
+    current = utc_now()
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            changed = 0
+            for record in normalized:
+                media_exists = connection.execute(
+                    "SELECT 1 FROM media_state WHERE cache_key = ?",
+                    (str(record["cache_key"]),),
+                ).fetchone()
+                if media_exists is None:
+                    continue
+                cursor = connection.execute(
+                    """
+                    INSERT INTO metadata_field_provenance(
+                        cache_key, server_id, library_uuid, library_name,
+                        rating_key, media_type, title, tmdb_id, target,
+                        child_key, field_name, field_path, source_provider,
+                        source_id, action, policy, reason, value_fingerprint,
+                        first_recorded_at, last_changed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(cache_key, target, field_path) DO UPDATE SET
+                        server_id = excluded.server_id,
+                        library_uuid = excluded.library_uuid,
+                        library_name = excluded.library_name,
+                        rating_key = excluded.rating_key,
+                        media_type = excluded.media_type,
+                        title = excluded.title,
+                        tmdb_id = excluded.tmdb_id,
+                        child_key = excluded.child_key,
+                        field_name = excluded.field_name,
+                        source_provider = excluded.source_provider,
+                        source_id = excluded.source_id,
+                        action = excluded.action,
+                        policy = excluded.policy,
+                        reason = excluded.reason,
+                        value_fingerprint = excluded.value_fingerprint,
+                        last_changed_at = excluded.last_changed_at
+                    WHERE metadata_field_provenance.server_id IS NOT excluded.server_id
+                       OR metadata_field_provenance.library_uuid IS NOT excluded.library_uuid
+                       OR metadata_field_provenance.library_name IS NOT excluded.library_name
+                       OR metadata_field_provenance.rating_key IS NOT excluded.rating_key
+                       OR metadata_field_provenance.media_type IS NOT excluded.media_type
+                       OR metadata_field_provenance.title IS NOT excluded.title
+                       OR metadata_field_provenance.tmdb_id IS NOT excluded.tmdb_id
+                       OR metadata_field_provenance.child_key IS NOT excluded.child_key
+                       OR metadata_field_provenance.field_name IS NOT excluded.field_name
+                       OR metadata_field_provenance.source_provider IS NOT excluded.source_provider
+                       OR metadata_field_provenance.source_id IS NOT excluded.source_id
+                       OR metadata_field_provenance.action IS NOT excluded.action
+                       OR metadata_field_provenance.policy IS NOT excluded.policy
+                       OR metadata_field_provenance.reason IS NOT excluded.reason
+                       OR metadata_field_provenance.value_fingerprint IS NOT excluded.value_fingerprint
+                    """,
+                    (
+                        str(record["cache_key"]),
+                        str(record.get("server_id") or "unknown"),
+                        str(record.get("library_uuid") or "unknown"),
+                        str(record.get("library_name") or "Unknown library"),
+                        str(record.get("rating_key") or "unknown"),
+                        str(record.get("media_type") or "unknown"),
+                        str(record.get("title") or "Unknown title"),
+                        None if record.get("tmdb_id") in (None, "") else str(record["tmdb_id"]),
+                        str(record["target"]),
+                        str(record.get("child_key") or "item"),
+                        str(record.get("field_name") or "unknown"),
+                        str(record["field_path"]),
+                        str(record.get("source_provider") or "Unknown"),
+                        None if record.get("source_id") in (None, "") else str(record["source_id"]),
+                        str(record.get("action") or "unknown"),
+                        str(record.get("policy") or "unknown"),
+                        str(record.get("reason") or ""),
+                        (
+                            None
+                            if record.get("value_fingerprint") in (None, "")
+                            else str(record["value_fingerprint"])
+                        ),
+                        current,
+                        current,
+                    ),
+                )
+                changed += max(0, int(cursor.rowcount))
+            if prune:
+                grouped: dict[tuple[str, str], set[str]] = {}
+                for record in normalized:
+                    grouped.setdefault(
+                        (str(record["cache_key"]), str(record["target"])), set()
+                    ).add(str(record["field_path"]))
+                for (cache_key, target), valid_fields in grouped.items():
+                    rows = connection.execute(
+                        "SELECT field_path FROM metadata_field_provenance "
+                        "WHERE cache_key = ? AND target = ?",
+                        (cache_key, target),
+                    ).fetchall()
+                    stale = {str(row[0]) for row in rows} - valid_fields
+                    connection.executemany(
+                        "DELETE FROM metadata_field_provenance "
+                        "WHERE cache_key = ? AND target = ? AND field_path = ?",
+                        ((cache_key, target, field) for field in stale),
+                    )
+                    changed += len(stale)
+        return changed
+    finally:
+        connection.close()
+
+
+def load_metadata_provenance(
+    *,
+    cache_keys=None,
+    libraries=None,
+    rating_keys=None,
+    targets=None,
+    limit=10_000,
+    path=None,
+):
+    """Load bounded, value-free field provenance for reports and diagnosis."""
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='metadata_field_provenance'"
+        ).fetchone()
+        if table is None:
+            return []
+        clauses = []
+        parameters: list[Any] = []
+        for column, requested in (
+            ("cache_key", cache_keys),
+            ("library_name", libraries),
+            ("rating_key", rating_keys),
+            ("target", targets),
+        ):
+            values = [str(value) for value in (requested or []) if str(value).strip()]
+            if values:
+                clauses.append(
+                    f"{column} IN ({','.join('?' for _ in values)})"
+                )
+                parameters.extend(values)
+        query = "SELECT * FROM metadata_field_provenance"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY last_changed_at DESC, library_name, title, field_path LIMIT ?"
+        parameters.append(max(1, min(100_000, int(limit))))
+        return [
+            dict(row) for row in connection.execute(query, parameters).fetchall()
+        ]
+    finally:
+        connection.close()
+
+
 def load_plex_metadata_ownership(
     server_id, library_uuid, rating_key, path=None
 ):
@@ -1829,21 +2116,28 @@ def record_item_failure(
         logger = logging.getLogger(__name__)
         if status == "pending":
             logger.info(
-                "[Recovery] Deferred %s/%s for automatic retry %s "
-                "(attempt %d).",
-                library_name or library_uuid,
-                rating_key,
-                next_retry,
-                attempts,
+                "[Recovery] Item deferred | %s",
+                format_fields(
+                    ("Library", library_name or library_uuid),
+                    ("Plex rating key", rating_key),
+                    ("Status", "Pending"),
+                    ("Attempt", attempts),
+                    ("Retry at", next_retry),
+                ),
             )
         else:
             logger.warning(
-                "[Recovery] Parked %s/%s after %d attempt(s); deadline retries "
-                "stop until the item changes or a full, targeted, or "
-                "configuration-triggered evaluation succeeds.",
-                library_name or library_uuid,
-                rating_key,
-                attempts,
+                "[Recovery] Item parked | %s",
+                format_fields(
+                    ("Library", library_name or library_uuid),
+                    ("Plex rating key", rating_key),
+                    ("Status", "Parked"),
+                    ("Attempts", attempts),
+                    (
+                        "Resume condition",
+                        "Item change, full scan, targeted run, or configuration change",
+                    ),
+                ),
             )
         return result
     finally:
@@ -3102,7 +3396,7 @@ def record_cleanup_history(
     connection = _connect(path, writable=True)
     try:
         with connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO cleanup_history(
                     occurred_at, source, action, status, server_id, library_uuid,
@@ -3128,6 +3422,184 @@ def record_cleanup_history(
             connection.execute(
                 "DELETE FROM cleanup_history WHERE id NOT IN "
                 "(SELECT id FROM cleanup_history ORDER BY id DESC LIMIT ?)",
+                (CLEANUP_HISTORY_LIMIT,),
+            )
+        return int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+
+def record_cleanup_quarantine(
+    record,
+    *,
+    output_type,
+    source_path,
+    quarantine_path,
+    checksum,
+    size_bytes,
+    retention_days=14,
+    season_number=None,
+    reason="confirmed absent from Plex",
+    path=None,
+    now=None,
+):
+    """Atomically record an automated cleanup history event and restorable file."""
+    record = record or {}
+    current_dt = _as_utc(now)
+    current = current_dt.isoformat()
+    expires_at = (current_dt + timedelta(days=max(1, int(retention_days)))).isoformat()
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            history = connection.execute(
+                """
+                INSERT INTO cleanup_history(
+                    occurred_at, source, action, status, server_id, library_uuid,
+                    library_name, rating_key, cache_key, media_type, title, year,
+                    tmdb_id, imdb_id, tvdb_id, edition, output_type,
+                    season_number, destination, checksum, reason, details
+                ) VALUES (?, 'automated', 'quarantine', 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    current, record.get("server_id"), record.get("library_uuid"),
+                    record.get("library_name"), record.get("rating_key"),
+                    record.get("cache_key"), record.get("media_type"),
+                    record.get("title"), record.get("year"), record.get("tmdb_id"),
+                    record.get("imdb_id"), record.get("tvdb_id"),
+                    record.get("edition"), str(output_type), season_number,
+                    str(source_path), str(checksum), str(reason),
+                    _json_dump(
+                        {
+                            "quarantine_path": str(quarantine_path),
+                            "expires_at": expires_at,
+                            "size_bytes": int(size_bytes),
+                        }
+                    ),
+                ),
+            )
+            history_id = int(history.lastrowid)
+            connection.execute(
+                """
+                INSERT INTO cleanup_quarantine(
+                    history_id, status, server_id, library_uuid, library_name,
+                    rating_key, cache_key, media_type, title, year, tmdb_id,
+                    imdb_id, tvdb_id, edition, output_type, season_number,
+                    source_path, quarantine_path, checksum, size_bytes,
+                    quarantined_at, expires_at, reason
+                ) VALUES (?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    history_id, record.get("server_id"), record.get("library_uuid"),
+                    record.get("library_name"), record.get("rating_key"),
+                    record.get("cache_key"), record.get("media_type"),
+                    record.get("title"), record.get("year"), record.get("tmdb_id"),
+                    record.get("imdb_id"), record.get("tvdb_id"),
+                    record.get("edition"), str(output_type), season_number,
+                    str(source_path), str(quarantine_path), str(checksum),
+                    max(0, int(size_bytes)), current, expires_at, str(reason),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM cleanup_history WHERE id NOT IN "
+                "(SELECT id FROM cleanup_history ORDER BY id DESC LIMIT ?)",
+                (CLEANUP_HISTORY_LIMIT,),
+            )
+        return history_id
+    finally:
+        connection.close()
+
+
+def load_cleanup_quarantine(
+    *, statuses=None, history_id=None, expired_before=None, path=None
+):
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return []
+    clauses = []
+    values: list[object] = []
+    normalized = [str(value) for value in (statuses or []) if str(value).strip()]
+    if normalized:
+        clauses.append(f"status IN ({','.join('?' for _ in normalized)})")
+        values.extend(normalized)
+    if history_id is not None:
+        clauses.append("history_id=?")
+        values.append(int(history_id))
+    if expired_before is not None:
+        clauses.append("expires_at<=?")
+        values.append(_as_utc(expired_before).isoformat())
+    query = "SELECT * FROM cleanup_quarantine"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id DESC"
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='cleanup_quarantine'"
+        ).fetchone()
+        return [] if table is None else [dict(row) for row in connection.execute(query, values)]
+    finally:
+        connection.close()
+
+
+def complete_cleanup_quarantine(
+    history_id,
+    action,
+    *,
+    status=None,
+    source="manual",
+    reason=None,
+    path=None,
+    now=None,
+):
+    """Close one quarantine record and append a linked cleanup history event."""
+    action = str(action)
+    if action not in {"restore", "purge"}:
+        raise StateDatabaseError(f"unsupported quarantine action {action}")
+    completed_status = status or ("restored" if action == "restore" else "purged")
+    timestamp_column = "restored_at" if action == "restore" else "purged_at"
+    current = _as_utc(now).isoformat()
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            row = connection.execute(
+                "SELECT * FROM cleanup_quarantine WHERE history_id=?",
+                (int(history_id),),
+            ).fetchone()
+            if row is None:
+                return False
+            record = dict(row)
+            connection.execute(
+                f"UPDATE cleanup_quarantine SET status=?, {timestamp_column}=? "
+                "WHERE history_id=?",
+                (completed_status, current, int(history_id)),
+            )
+            connection.execute(
+                """
+                INSERT INTO cleanup_history(
+                    occurred_at, source, action, status, server_id, library_uuid,
+                    library_name, rating_key, cache_key, media_type, title, year,
+                    tmdb_id, imdb_id, tvdb_id, edition, output_type,
+                    season_number, destination, checksum, reason, details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    current, str(source), action, completed_status,
+                    record.get("server_id"),
+                    record.get("library_uuid"), record.get("library_name"),
+                    record.get("rating_key"), record.get("cache_key"),
+                    record.get("media_type"), record.get("title"), record.get("year"),
+                    record.get("tmdb_id"), record.get("imdb_id"),
+                    record.get("tvdb_id"), record.get("edition"),
+                    record.get("output_type"), record.get("season_number"),
+                    record.get("source_path"), record.get("checksum"),
+                    reason or f"cleanup quarantine {action}",
+                    _json_dump({"quarantine_history_id": int(history_id)}),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM cleanup_quarantine WHERE status != 'active' AND id NOT IN "
+                "(SELECT id FROM cleanup_quarantine WHERE status != 'active' "
+                "ORDER BY id DESC LIMIT ?)",
                 (CLEANUP_HISTORY_LIMIT,),
             )
         return True
@@ -3580,6 +4052,90 @@ def maintain_state_database(path=None, wal_threshold_mb=8):
         connection.close()
 
 
+def load_provider_health(provider_keys, *, path=None, now=None):
+    """Load bounded cross-run provider cooldown state without exposing credentials."""
+    keys = [str(value) for value in (provider_keys or []) if str(value).strip()]
+    if not keys:
+        return {}
+    connection = _connect(path, writable=False)
+    if connection is None:
+        return {}
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_health'"
+        ).fetchone()
+        if table is None:
+            return {}
+        rows = connection.execute(
+            "SELECT * FROM provider_health WHERE provider_key IN "
+            f"({','.join('?' for _ in keys)})",
+            keys,
+        ).fetchall()
+        current = _as_utc(now)
+        results = {}
+        for row in rows:
+            record = dict(row)
+            open_until = record.get("open_until")
+            try:
+                remaining = max(0.0, (_as_utc(open_until) - current).total_seconds())
+            except (TypeError, ValueError):
+                remaining = 0.0
+            record["cooldown_seconds"] = remaining
+            if remaining <= 0:
+                record["consecutive_failures"] = 0
+            results[record["provider_key"]] = record
+        return results
+    finally:
+        connection.close()
+
+
+def save_provider_health(
+    provider_key,
+    provider,
+    *,
+    consecutive_failures=0,
+    cooldown_seconds=0.0,
+    successful=False,
+    path=None,
+    now=None,
+):
+    current_dt = _as_utc(now)
+    current = current_dt.isoformat()
+    cooldown = max(0.0, float(cooldown_seconds or 0.0))
+    open_until = (
+        (current_dt + timedelta(seconds=cooldown)).isoformat() if cooldown else None
+    )
+    connection = _connect(path, writable=True)
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO provider_health(
+                    provider_key, provider, consecutive_failures, open_until,
+                    last_success_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_key) DO UPDATE SET
+                    provider=excluded.provider,
+                    consecutive_failures=excluded.consecutive_failures,
+                    open_until=excluded.open_until,
+                    last_success_at=CASE
+                        WHEN excluded.last_success_at IS NOT NULL
+                        THEN excluded.last_success_at
+                        ELSE provider_health.last_success_at
+                    END,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    str(provider_key), str(provider),
+                    max(0, int(consecutive_failures)), open_until,
+                    current if successful else None, current,
+                ),
+            )
+        return True
+    finally:
+        connection.close()
+
+
 def record_job_run(
     mode,
     started_at,
@@ -3587,7 +4143,8 @@ def record_job_run(
     status,
     error=None,
     summary=None,
-    history_limit=10,
+    metrics=None,
+    history_limit=JOB_HISTORY_LIMIT,
     path=None,
 ):
     connection = _connect(path, writable=True)
@@ -3595,8 +4152,8 @@ def record_job_run(
         with connection:
             connection.execute(
                 "INSERT INTO job_runs("
-                "mode, started_at, finished_at, status, error, summary"
-                ") VALUES (?, ?, ?, ?, ?, ?)",
+                "mode, started_at, finished_at, status, error, summary, metrics"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     mode,
                     started_at,
@@ -3604,6 +4161,7 @@ def record_job_run(
                     status,
                     error,
                     None if summary is None else _json_dump(summary),
+                    None if metrics is None else _json_dump(metrics),
                 ),
             )
             connection.execute(
@@ -3625,9 +4183,10 @@ def recent_job_runs(limit=10, path=None):
             row[1] for row in connection.execute("PRAGMA table_info(job_runs)")
         }
         summary_column = "summary" if "summary" in columns else "NULL AS summary"
+        metrics_column = "metrics" if "metrics" in columns else "NULL AS metrics"
         rows = connection.execute(
             "SELECT mode, started_at, finished_at, status, error, "
-            f"{summary_column} "
+            f"{summary_column}, {metrics_column} "
             "FROM job_runs ORDER BY id DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
@@ -3635,10 +4194,13 @@ def recent_job_runs(limit=10, path=None):
         for row in reversed(rows):
             result = dict(row)
             raw_summary = result.pop("summary", None)
+            raw_metrics = result.pop("metrics", None)
             if raw_summary:
                 result["library_results"] = _json_load(
                     raw_summary, "job run library summary"
                 )
+            if raw_metrics:
+                result["metrics"] = _json_load(raw_metrics, "job run metrics")
             results.append(result)
         return results
     finally:

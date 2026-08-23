@@ -181,9 +181,8 @@ For the recommended split configuration, retain connection/container values in
 cp config/examples/kometa.yml config/kometa.yml
 cp config/examples/plex.yml config/plex.yml
 
-# Validate the selected profile and restart.
+# Validate the selected profile. The scheduler reloads it between jobs.
 docker compose run --rm metafusion python metafusion.py --doctor
-docker compose restart metafusion
 ```
 
 The conventional alternative remains available:
@@ -200,6 +199,11 @@ present. One mode profile is auto-selected; both profiles require `RUN_MODE`.
 Non-empty environment variables override the selected YAML, while blank
 Compose bindings are ignored. See [Configuration](configuration.md) for the
 complete selection and conflict rules.
+
+With `CONFIG_RELOAD=True`, edits to an active YAML file are validated and
+adopted between scheduled jobs without restarting the container. Recreate the
+container for `.env`, secret-file path, bind-mount, `TZ`, `PUID`, or `PGID`
+changes because Docker supplies those outside the application process.
 
 ## Update or roll back
 

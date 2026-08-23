@@ -97,9 +97,11 @@ The [policy guide](policies.md#artwork-update-policies) explains
 Cleanup is mode-aware and disabled by default:
 
 - Kometa mode can reconcile stale generated YAML and checksum-verified owned
-  artwork after a complete successful inventory.
+  artwork after a complete successful inventory. Eligible artwork is retained
+  in a recoverable cleanup quarantine before expiry.
 - Plex mode removes stale MetaFusion state only. It never deletes local
-  artwork, Kometa output, or media files.
+  artwork, Kometa output, or media files by default. The advanced managed-
+  artwork cleanup opt-in uses the same quarantine and never targets media.
 
 Switching to Plex mode therefore does not remove existing Kometa files, but it
 stops creating or updating them. Switching back to Kometa mode resumes the

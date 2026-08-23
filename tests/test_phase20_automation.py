@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -60,7 +61,8 @@ def test_state_schema_upgrade_creates_bounded_sqlite_backup(tmp_path):
     assert len(list(tmp_path.glob("meta_db.sqlite3.pre-v3-*.bak"))) == 1
 
 
-def test_retry_queue_recovers_interrupted_items_and_bounds_failures(tmp_path):
+def test_retry_queue_recovers_interrupted_items_and_bounds_failures(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
     database = tmp_path / "meta_db.sqlite3"
     now = datetime(2026, 8, 18, 1, 0, tzinfo=UTC)
     result = record_item_failure(
@@ -105,6 +107,9 @@ def test_retry_queue_recovers_interrupted_items_and_bounds_failures(tmp_path):
         now=now,
     )
     assert parked["status"] == "parked"
+    assert "Item deferred | Library: Movies | Plex rating key: 10" in caplog.text
+    assert "Item parked | Library: library | Plex rating key: 11" in caplog.text
+    assert "Resume condition: Item change, full scan" in caplog.text
     assert load_due_item_retries(
         "server", "library", path=database, now=now + timedelta(days=30)
     ) == {}
@@ -405,7 +410,9 @@ def test_tmdb_cache_automatic_limits_and_maintenance(tmp_path):
     assert cache._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
-def test_disk_pressure_defers_artwork_without_changing_policy(monkeypatch, tmp_path):
+def test_disk_pressure_defers_artwork_without_changing_policy(
+    monkeypatch, tmp_path, caplog
+):
     error = DiskPressureError(tmp_path, 1, 2, "disk pressure")
     monkeypatch.setattr(builder, "asset_temp_path", lambda *_args: (_ for _ in ()).throw(error))
     config = {"assets": {"update_policy": "managed"}}
@@ -413,6 +420,8 @@ def test_disk_pressure_defers_artwork_without_changing_policy(monkeypatch, tmp_p
     assert builder._asset_temp_path_or_defer(config, {}) is None
     assert config["assets"]["update_policy"] == "managed"
     assert config["_deferred_artwork"] == 1
+    assert "Disk pressure | Status: Writes deferred" in caplog.text
+    assert "Free bytes: 1 | Required bytes: 2" in caplog.text
 
 
 def test_automatic_defaults_keep_destructive_choices_disabled():

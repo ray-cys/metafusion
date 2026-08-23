@@ -306,7 +306,7 @@ def write_mapping_diagnosis_report(records, *, base_dir=None, retention=10):
                 )
             )
         lines.append("")
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines).rstrip() + "\n",
         report_type="mapping_diagnosis",

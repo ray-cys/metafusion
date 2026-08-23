@@ -1,4 +1,6 @@
+import datetime
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -26,21 +28,58 @@ class CaptureLogger:
         self._add("error", message, *args)
 
 
-def test_rotating_handler_rollover_size_retention_and_error_path(tmp_path, monkeypatch):
-    path = tmp_path / "metafusion.log"
+def test_artwork_gap_snapshot_logging_warns_for_open_and_infos_for_zero(tmp_path):
+    logger = CaptureLogger()
+    report = tmp_path / "artwork-gaps.txt"
+    app_logging.log_artwork_gap_snapshot(
+        logger,
+        {
+            "summary": {
+                "artwork_current_run": 1,
+                "artwork_carried_forward": 2,
+                "artwork_open": 3,
+                "artwork_not_due": 2,
+                "artwork_resolved": 1,
+            },
+            "libraries": {
+                "Movies": {
+                    "open": 3,
+                    "current_run": 1,
+                    "carried_forward": 2,
+                    "not_due": 2,
+                }
+            },
+        },
+        report,
+    )
+    app_logging.log_artwork_gap_snapshot(logger, None, report)
+
+    assert logger.records[0][0] == "warning"
+    assert "Current run: 1 | Carried forward: 2 | Open: 3" in logger.records[0][1]
+    assert logger.records[1] == (
+        "warning",
+        "[Artwork] Movies | Persistent gaps | Open: 3 | Current run: 1 | "
+        "Carried forward: 2 | Not due: 2",
+    )
+    assert logger.records[2][0] == "info"
+    assert "Open: 0" in logger.records[2][1]
+
+
+def test_size_handler_rollover_retention_and_error_path(tmp_path, monkeypatch):
+    path = tmp_path / "metafusion-2026-08-22_01-02-03_000001.log"
     path.write_text("old", encoding="utf-8")
-    handler = app_logging.SizeAndTimeRotatingFileHandler(
+    handler = app_logging.SizeRotatingFileHandler(
         path, max_bytes=1, backup_count=1
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
     record = logging.LogRecord("test", logging.INFO, "", 0, "new", (), None)
     assert handler.shouldRollover(record)
     handler.doRollover()
-    assert len(list(tmp_path.glob("metafusion.log.*"))) == 1
+    assert len(list(tmp_path.glob(f"{path.name}.*"))) == 1
 
     path.write_text("second", encoding="utf-8")
     handler.doRollover()
-    assert len(list(tmp_path.glob("metafusion.log.*"))) == 1
+    assert len(list(tmp_path.glob(f"{path.name}.*"))) == 1
 
     monkeypatch.setattr(app_logging.os.path, "getsize", lambda _path: (_ for _ in ()).throw(OSError()))
     assert handler.shouldRollover(record)
@@ -51,16 +90,18 @@ def test_rotating_handler_rollover_size_retention_and_error_path(tmp_path, monke
 
 
 def test_logging_setup_dry_run_and_redaction(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_logging, "LOG_FILE", tmp_path / "logs" / "metafusion.log")
+    monkeypatch.setattr(app_logging, "LOGS_DIR", tmp_path / "logs")
     monkeypatch.setattr(app_logging, "fanart_project_api_key", lambda: "fanart-secret")
-    logger = app_logging.get_setup_logging(
-        {
-            "settings": {"dry_run": True, "log_level": "DEBUG"},
-            "plex": {"token": "plex-secret"},
-            "tmdb": {"api_key": "tmdb-secret"},
-        }
-    )
+    config = {
+        "settings": {"dry_run": True, "log_level": "DEBUG"},
+        "plex": {"token": "plex-secret"},
+        "tmdb": {"api_key": "tmdb-secret"},
+    }
+    logger = app_logging.get_setup_logging(config)
     assert len(logger.handlers) == 1
+    assert app_logging.begin_run_file_logging(config, logger) is None
+    assert app_logging.finish_run_file_logging(config, logger, None) is None
+    assert not (tmp_path / "logs").exists()
     record = logging.LogRecord(
         "test", logging.INFO, "", 0,
         "plex-secret tmdb-secret fanart-secret", (), None
@@ -71,6 +112,58 @@ def test_logging_setup_dry_run_and_redaction(tmp_path, monkeypatch):
         "Missing: None | Empty: None"
     )
     logger.handlers.clear()
+
+
+def test_per_run_logging_creates_distinct_files_and_retains_complete_runs(
+    tmp_path, monkeypatch
+):
+    logs_dir = tmp_path / "logs"
+    monkeypatch.setattr(app_logging, "LOGS_DIR", logs_dir)
+    monkeypatch.setattr(app_logging, "fanart_project_api_key", lambda: "fanart-secret")
+    config = {
+        "settings": {
+            "dry_run": False,
+            "log_level": "INFO",
+            "log_max_mb": 0,
+            "log_backup_count": 2,
+        },
+        "plex": {"token": "plex-secret"},
+        "tmdb": {"api_key": "tmdb-secret"},
+    }
+    logger = app_logging.get_setup_logging(config)
+    legacy = logs_dir / "metafusion.log"
+    logs_dir.mkdir(parents=True)
+    legacy.write_text("legacy", encoding="utf-8")
+    completed = []
+
+    for index in range(3):
+        handler = app_logging.begin_run_file_logging(
+            config,
+            logger,
+            now=datetime.datetime(
+                2026, 8, 22, 1, 2, index, tzinfo=datetime.timezone.utc
+            ),
+        )
+        logger.info("run %d plex-secret tmdb-secret fanart-secret", index)
+        if index == 0:
+            Path(handler.baseFilename + ".part-001").write_text(
+                "part", encoding="utf-8"
+            )
+        completed.append(app_logging.finish_run_file_logging(config, logger, handler))
+
+    retained = app_logging._run_log_files(logs_dir)
+    assert len(retained) == 2
+    assert completed[0] not in retained
+    assert not Path(str(completed[0]) + ".part-001").exists()
+    assert retained[0].name.endswith("02_000000.log")
+    assert legacy.read_text(encoding="utf-8") == "legacy"
+    assert config["_run_log_path"] == str(completed[-1])
+    text = completed[-1].read_text(encoding="utf-8")
+    assert "run 2 *** *** ***" in text
+    assert "Run log saved" in text
+    for handler in list(logger.handlers):
+        handler.close()
+        logger.removeHandler(handler)
 
 
 def test_system_requirements_cover_recommendations_and_network_failures(monkeypatch):
@@ -240,10 +333,31 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
             "percent_complete": 100,
             "library_summary": {
                 "meta_upgraded": 1,
+                "metadata_schedule_destinations": 10,
+                "metadata_schedule_due": 2,
+                "metadata_schedule_required": 1,
+                "metadata_schedule_forced": 3,
+                "metadata_schedule_not_due": 4,
                 "poster_downloaded": 1,
                 "background_downloaded": 1,
                 "season_poster_downloaded": 1,
                 "artwork_provider_writes": {"fanart": 2, "custom": 1},
+                "artwork_current_providers": {
+                    "tmdb": 1,
+                    "existing": 1,
+                    "unknown": 1,
+                },
+                "artwork_file_expected": 4,
+                "artwork_file_present": 3,
+                "artwork_file_absent": 1,
+                "poster_schedule_destinations": 10,
+                "poster_schedule_due": 2,
+                "poster_schedule_required": 1,
+                "poster_schedule_forced": 3,
+                "poster_schedule_not_due": 4,
+                "background_schedule_destinations": 1,
+                "poster_policy_preserved": 1,
+                "background_policy_missing": 1,
                 "artwork_bytes": 20,
             },
         },
@@ -306,8 +420,33 @@ def test_storage_helpers_and_full_summary_cover_plex_provider_paths(tmp_path, mo
     )
     text = "\n".join(message for _level, message in logger.records)
     assert "Fanart.tv: 2" in text
+    assert "Artwork write sources" in text
+    assert (
+        "Artwork files | Scope: processed items | Evaluated destinations: 4 | "
+        "Present: 3 | Absent: 1"
+    ) in text
+    assert "Artwork current sources | Existing/manual: 1, TMDb: 1, Unknown: 1" in text
+    assert "Policy preserved: 1" in text
+    assert "Policy missing: 1" in text
+    assert (
+        "Metadata schedule | Destinations: 10 | Due: 2 | Required: 1 | "
+        "Forced: 3 | Not due: 4"
+    ) in text
+    assert "Metadata result | Target: Plex | Changed: 1" in text
+    assert (
+        "Series poster schedule | Destinations: 10 | Due: 2 | Required: 1 | "
+        "Forced: 3 | Not due: 4"
+    ) in text
+    assert "Season poster schedule | Destinations: 0" in text
+    assert "Season poster result | Evaluated: 1 | Downloaded: 1" in text
+    assert "Missing this run:" in text
     assert "Plex metadata: Server-managed" in text
     assert "Low free space" in text
+    assert (
+        "[Diagnostics] Schedule reconciliation | Status: Mismatch | "
+        "Scope: Shows | Lane: Background | Destinations: 1 | Accounted: 0 | "
+        "Difference: 1"
+    ) in text
     assert app_logging.human_readable_size(1024) == "1.00 KB"
 
 

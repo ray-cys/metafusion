@@ -17,6 +17,58 @@ class _Section:
         return list(self._items)
 
 
+def test_artwork_evaluation_records_stable_movie_and_season_identity(tmp_path):
+    destination = tmp_path / "poster.jpg"
+    destination.write_bytes(b"artwork")
+    records = []
+    config = {"_artwork_evaluations": records}
+
+    processing._record_artwork_evaluation(
+        config,
+        {
+            "library_type": "movie",
+            "title": "Movie",
+            "year": 2024,
+            "ratingKey": 1,
+            "tmdb_id": 2,
+            "edition_title": "Extended",
+        },
+        "Movies",
+        "poster",
+        "adopted",
+        destination,
+    )
+    processing._record_artwork_evaluation(
+        config,
+        {
+            "library_type": "show",
+            "title": "Show",
+            "year": 2025,
+            "ratingKey": 3,
+            "tmdb_id": 4,
+        },
+        "TV Shows",
+        "season",
+        "downloaded",
+        destination,
+        season_number=10,
+    )
+    processing._record_artwork_evaluation(
+        {},
+        {"library_type": "movie"},
+        "Movies",
+        "poster",
+        "skipped",
+        destination,
+    )
+
+    assert records[0]["title"] == "Movie (2024) [Extended]"
+    assert records[0]["plex_rating_key"] == "1"
+    assert records[0]["destination_state"] == "present"
+    assert records[1]["asset_type"] == "season 10 poster"
+    assert records[1]["season_number"] == 10
+
+
 def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     actions = [
         "downloaded",
@@ -25,6 +77,8 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
         "skipped",
         "not_due",
         "preserved",
+        "policy_preserved",
+        "policy_missing",
         "missing",
         "failed",
         "deferred",
@@ -90,6 +144,8 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
                 if index % 2
                 else {str(index): "missing_only_download_failover"}
             ),
+            "artwork_file_counts": {"expected": 3, "present": 2, "absent": 1},
+            "artwork_current_providers": {"tmdb": 1, "existing": 1},
             "poster": {"size": 10},
             "background": {"size": 20},
             "seasons": {1: {"episodes": {1: {}}}},
@@ -139,20 +195,186 @@ def test_processing_summary_accounts_for_every_action(monkeypatch, tmp_path):
     assert len(result) == len(actions)
     assert counts == {"TV Shows": len(actions)}
     summary = summaries["TV Shows"]
-    assert summary["complete"] == 5
-    assert summary["incomplete"] == 4
+    assert summary["complete"] == 6
+    assert summary["incomplete"] == 5
     assert summary["season_count"] == len(actions)
     assert summary["episode_count"] == len(actions)
     library = summary["library_summary"]
-    for prefix in ("poster", "background", "season_poster"):
+    for prefix in ("poster", "background"):
         for action in actions:
             assert library[f"{prefix}_{action}"] == 1
+    for action in actions:
+        if action not in {"policy_preserved", "policy_missing"}:
+            assert library[f"season_poster_{action}"] == 1
+    for prefix in ("poster", "background", "season_poster"):
+        assert library[f"{prefix}_schedule_destinations"] == len(actions)
+        assert library[f"{prefix}_schedule_required"] == len(actions)
+        assert library[f"{prefix}_schedule_not_due"] == 0
+    assert library["metadata_schedule_destinations"] == len(actions)
+    assert library["metadata_schedule_required"] == len(actions)
+    assert library["metadata_schedule_not_due"] == 0
+    assert library["season_poster_schedule_inventory_unknown"] == 0
     assert library["artwork_deferred"] == 3
     assert library["artwork_automatic_relaxed"] >= 1
     assert library["artwork_download_failover"] >= 1
-    assert library["poster_bytes"] == 90
-    assert library["background_bytes"] == 180
-    assert library["season_poster_bytes"] == 310
+    assert library["artwork_file_expected"] == len(actions) * 3
+    assert library["artwork_file_present"] == len(actions) * 2
+    assert library["artwork_file_absent"] == len(actions)
+    assert library["artwork_current_providers"] == {
+        "existing": len(actions),
+        "tmdb": len(actions),
+    }
+    assert library["poster_bytes"] == 110
+    assert library["background_bytes"] == 220
+    assert library["season_poster_bytes"] == 370
+
+
+def test_artwork_provider_reconciliation_helpers_cover_all_source_paths(tmp_path):
+    poster = tmp_path / "poster.jpg"
+    poster.write_bytes(b"poster")
+    other = tmp_path / "other.jpg"
+    cached = {
+        "poster_path": str(poster),
+        "poster_checksum": "checksum",
+        "poster_provider": "TMDb",
+        "seasons": {
+            "1": {
+                "season_path": str(poster),
+                "season_checksum": "checksum",
+                "season_provider": "Plex",
+            }
+        },
+    }
+
+    assert processing._normalized_artwork_provider(" FanArt ") == "fanart"
+    assert processing._normalized_artwork_provider("manual") == "unknown"
+    assert processing._recorded_artwork_provider(None, "poster", poster) == "existing"
+    assert (
+        processing._recorded_artwork_provider(
+            {"seasons": []}, "season", poster, season_number=1
+        )
+        == "existing"
+    )
+    assert (
+        processing._recorded_artwork_provider(
+            cached, "season", poster, season_number=1
+        )
+        == "plex"
+    )
+    assert (
+        processing._recorded_artwork_provider(
+            {"poster_path": str(poster)}, "poster", poster
+        )
+        == "existing"
+    )
+    assert (
+        processing._recorded_artwork_provider(
+            {"poster_path": object(), "poster_checksum": "checksum"},
+            "poster",
+            poster,
+        )
+        == "existing"
+    )
+    assert processing._recorded_artwork_provider(cached, "poster", other) == "existing"
+    unknown = dict(cached, poster_provider="manual")
+    assert processing._recorded_artwork_provider(unknown, "poster", poster) == "unknown"
+
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_providers": {"poster": "FanArt"}},
+            cached,
+            "poster",
+            "downloaded",
+            poster,
+        )
+        == "fanart"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_providers": {1: "Plex"}},
+            cached,
+            "season",
+            "upgraded",
+            poster,
+            season_number=1,
+        )
+        == "plex"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_providers": {"1": "TMDb"}},
+            cached,
+            "season",
+            "adopted",
+            poster,
+            season_number=1,
+        )
+        == "tmdb"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {}, cached, "poster", "preserved", poster
+        )
+        == "existing"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {}, cached, "poster", "policy_preserved", poster
+        )
+        == "existing"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_ownership": {"poster": "manual"}},
+            cached,
+            "poster",
+            "skipped",
+            poster,
+        )
+        == "existing"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_ownership": {"poster": "overwrite"}},
+            cached,
+            "poster",
+            "skipped",
+            poster,
+        )
+        == "unknown"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"artwork_ownership": {"poster": "managed"}},
+            cached,
+            "poster",
+            "skipped",
+            poster,
+        )
+        == "tmdb"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_ownership": {1: "managed"}},
+            cached,
+            "season",
+            "skipped",
+            poster,
+            season_number=1,
+        )
+        == "plex"
+    )
+    assert (
+        processing._current_artwork_provider(
+            {"season_artwork_ownership": {"1": "shared"}},
+            cached,
+            "season",
+            "skipped",
+            poster,
+            season_number=1,
+        )
+        == "plex"
+    )
 
 
 def test_processing_uses_storage_inventory_and_clears_retries(monkeypatch, tmp_path):
@@ -237,6 +459,94 @@ def test_processing_uses_storage_inventory_and_clears_retries(monkeypatch, tmp_p
     assert sizes == {"Movies": 123}
     assert cleared and cleared[0][-1] == {"1"}
     assert summaries["Movies"]["library_summary"]["storage_scope"] == "full inventory"
+
+
+def test_item_artwork_reconciliation_is_independent_of_action_counters(
+    monkeypatch, tmp_path
+):
+    item = SimpleNamespace(
+        ratingKey="1",
+        title="Movie",
+        year=2020,
+        type="movie",
+        updatedAt="now",
+    )
+    meta = {
+        "title": "Movie",
+        "year": 2020,
+        "library_name": "Movies",
+        "library_type": "movie",
+        "ratingKey": "1",
+        "tmdb_id": "100",
+        "movie_path": "Movie (2020)",
+    }
+    poster = tmp_path / "poster.jpg"
+    poster.write_bytes(b"poster")
+    background = tmp_path / "background.jpg"
+
+    async def metadata(*_args, **_kwargs):
+        return dict(meta)
+
+    async def build(*_args, **_kwargs):
+        return {
+            "metadata_action": "not_due",
+            "poster_action": "skipped",
+            "background_action": "skipped",
+            "season_poster_actions": {},
+            # A newly considered candidate must not become the installed source.
+            "artwork_providers": {"poster": "fanart"},
+        }
+
+    def asset_path(_config, _meta, *, asset_type, **_kwargs):
+        return poster if asset_type == "poster" else background
+
+    events = []
+    monkeypatch.setattr(processing, "get_plex_metadata", metadata)
+    monkeypatch.setattr(processing, "build_movie", build)
+    monkeypatch.setattr(processing, "get_asset_path", asset_path)
+    monkeypatch.setattr(
+        processing,
+        "load_cache",
+        lambda: {
+            processing.cache_key_for_meta(meta): {
+                "poster_path": str(poster.resolve()),
+                "poster_checksum": "known-checksum",
+                "poster_provider": "tmdb",
+            }
+        },
+    )
+    monkeypatch.setattr(processing, "log_item_outcomes", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        processing,
+        "log_processing_event",
+        lambda event, **kwargs: events.append((event, kwargs)),
+    )
+
+    stats = asyncio.run(
+        processing.process_item(
+            item,
+            {},
+            {"plex": {}, "settings": {"mode": "kometa", "dry_run": False}},
+            feature_flags={
+                "metadata_basic": False,
+                "metadata_enhanced": False,
+                "plex_metadata": False,
+                "poster": True,
+                "background": True,
+                "season": False,
+                "dry_run": False,
+            },
+        )
+    )
+
+    assert stats["artwork_file_counts"] == {
+        "expected": 2,
+        "present": 1,
+        "absent": 1,
+    }
+    assert stats["artwork_current_providers"] == {"tmdb": 1}
+    assert events[-1][0] == "processing_artwork_reconciliation"
+    assert events[-1][1]["absent"] == 1
 
 
 def test_processing_identity_failure_and_inventory_helpers(monkeypatch, tmp_path):

@@ -47,7 +47,7 @@ def test_cleanup_summary_reports_each_removed_scope():
     assert "Cleanup stale inventory | Titles: 0 | Seasons: 1 | Episodes: 3" in report
     assert "Cleanup records | Action: Removed | Cache: 2 | Kometa YAML: 4" in report
     assert (
-        "Cleanup artwork | Action: Removed | Assets: 1 | Preserved: 5 | Unchanged: 6"
+        "Cleanup artwork | Action: Quarantined | Assets: 1 | Preserved: 5 | Unchanged: 6"
         in report
     )
     assert "Cleanup failures | Total: 0" in report
@@ -83,7 +83,7 @@ def test_cleanup_summary_labels_dry_run_counts_as_proposed():
 
     assert "Cleanup | Status: Preview | Mode: Kometa" in report
     assert "Cleanup records | Action: Would remove | Cache: 5 | Kometa YAML: 6" in report
-    assert "Cleanup artwork | Action: Would remove | Assets: 4" in report
+    assert "Cleanup artwork | Action: Would quarantine | Assets: 4" in report
 
 
 def test_cleanup_summary_labels_plex_state_only_scope():
@@ -113,7 +113,7 @@ def test_cleanup_summary_retains_confirmed_results_after_failure():
     assert "Cleanup | Status: Failed | Mode: Kometa" in report
     assert "Cleanup confirmed before failure | Titles: 1" in report
     assert "Cleanup records | Cache: 1 | Kometa YAML: 1" in report
-    assert "Cleanup artwork | Removed: 2 | Preserved: 3" in report
+    assert "Cleanup artwork | Quarantined: 2 | Preserved: 3" in report
     assert "Cleanup failures | Total: 1" in report
 
 
@@ -135,7 +135,7 @@ def test_cleanup_item_outcome_matches_component_action_format(caplog):
 
     assert (
         "[Cleanup] Inventory | Example (2024) | Removed cache entry, "
-        "Kometa YAML entry, managed poster | "
+        "Kometa YAML entry; Quarantined managed poster | "
         "Reason: Not present in complete Plex inventory"
     ) in caplog.text
 
@@ -166,8 +166,10 @@ def test_final_summary_reports_season_failures_without_other_season_actions():
     )
 
     report = "\n".join(logger.lines)
+    assert "Season poster schedule | Destinations: 0" in report
     assert (
-        "Artwork season posters | Downloaded: 0 | Upgraded: 0 | Adopted: 0"
+        "Season poster result | Evaluated: 1 | Downloaded: 0 | Upgraded: 0 | "
+        "Adopted: 0"
         in report
     )
     assert "Failed: 1" in report

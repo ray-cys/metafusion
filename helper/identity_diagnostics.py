@@ -429,7 +429,7 @@ def write_identity_inspection_report(records, *, base_dir=None, retention=10):
                 f"reason={_display(event.get('reason'))}"
             )
         lines.append("")
-    write_diagnostic_report(
+    path = write_diagnostic_report(
         path,
         "\n".join(lines).rstrip() + "\n",
         report_type="identity_inspection",
