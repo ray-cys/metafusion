@@ -318,6 +318,9 @@ def test_cached_source_skip_requires_verified_managed_status(
         "managed", "movie", "/poster.jpg", destination, "poster"
     )
     assert not builder.managed_source_matches(
+        "managed", "movie", "/different.jpg", destination, "poster"
+    )
+    assert not builder.managed_source_matches(
         "overwrite", "movie", "/poster.jpg", destination, "poster"
     )
     assert not builder.managed_source_matches(
