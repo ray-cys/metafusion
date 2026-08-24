@@ -736,6 +736,14 @@ for reporting logic rather than a media-processing failure. Unknown season
 inventories are reported separately because their destination count cannot be
 calculated safely.
 
+Season-poster item outcomes use one compact line per show. Meaningful actions
+name up to eight affected seasons—for example `Downloaded: 1 [S03]` or
+`Missing: 2 [S10, S11]`—while `Unchanged` and `Not due` remain counts. If every
+season for a show is not due, no item-level line is emitted; the schedule
+summary still counts all of those destinations. This distinction means `Not
+due` is a scheduling decision, not proof that providers were queried or that a
+new candidate does not exist.
+
 Artwork result lines report evaluated, downloaded, upgraded, adopted,
 unchanged, preserved, missing, deferred, failed, and applicable policy
 outcomes. Enabled TV libraries always receive season-poster schedule and result

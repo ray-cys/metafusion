@@ -750,7 +750,7 @@ def test_season_artwork_warning_names_missing_season_and_provider_attempts(caplo
             {"mode": "plex"},
         )
 
-    assert "Missing: 1 | Unchanged: 1" in caplog.text
+    assert "Unchanged: 1 | Missing: 1 [S00]" in caplog.text
     assert "Sources: None: 1 | TMDb: 1" in caplog.text
     assert "Target: Plex local media" in caplog.text
     assert (

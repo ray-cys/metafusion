@@ -240,6 +240,111 @@ def test_split_series_policy_outcomes_distinguish_present_from_missing(caplog):
     assert "Unchanged (2024) | Unchanged poster" in caplog.text
 
 
+def test_season_outcomes_name_meaningful_seasons_and_count_quiet_states(caplog):
+    actions = {
+        1: "downloaded",
+        2: "upgraded",
+        3: "adopted",
+        4: "skipped",
+        5: "not_due",
+        6: "preserved",
+        7: "policy_preserved",
+        8: "policy_missing",
+        9: "missing",
+        10: "deferred",
+        11: "failed",
+    }
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "TV Shows",
+            "Traceable Seasons (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": actions,
+                "season_artwork_providers": {
+                    number: "tmdb" for number in actions if number != 5
+                },
+            },
+            {"mode": "kometa"},
+        )
+
+    text = caplog.text
+    assert "Downloaded: 1 [S01]" in text
+    assert "Upgraded: 1 [S02]" in text
+    assert "Adopted: 1 [S03]" in text
+    assert "Unchanged: 1" in text
+    assert "Unchanged: 1 [" not in text
+    assert "Not due: 1" in text
+    assert "Not due: 1 [" not in text
+    assert "Preserved: 1 [S06]" in text
+    assert "Policy preserved: 1" in text
+    assert "Policy preserved: 1 [" not in text
+    assert "Policy-preserved missing: 1 [S08]" in text
+    assert "Missing: 1 [S09]" in text
+    assert "Deferred: 1 [S10]" in text
+    assert "Failed: 1 [S11]" in text
+
+
+def test_all_not_due_seasons_remain_summary_only(caplog):
+    with caplog.at_level(logging.DEBUG):
+        log_item_outcomes(
+            "TV Shows",
+            "Quiet Seasons (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": {1: "not_due", 2: "not_due"},
+            },
+            {"mode": "kometa"},
+        )
+
+    assert "Quiet Seasons (2024)" not in caplog.text
+
+
+def test_season_references_are_bounded(caplog):
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "TV Shows",
+            "Long Runner (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": dict.fromkeys(
+                    range(1, 11), "downloaded"
+                ),
+                "season_artwork_providers": dict.fromkeys(range(1, 11), "tmdb"),
+            },
+            {"mode": "plex"},
+        )
+
+    assert (
+        "Downloaded: 10 [S01, S02, S03, S04, S05, S06, S07, S08, +2 more]"
+        in caplog.text
+    )
+
+
+def test_season_references_preserve_non_numeric_provider_labels(caplog):
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "TV Shows",
+            "Provider Label (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": {"bonus": "downloaded"},
+                "season_artwork_providers": {"bonus": "tmdb"},
+            },
+            {"mode": "kometa"},
+        )
+
+    assert "Downloaded: 1 [bonus]" in caplog.text
+
+
 def test_successful_kometa_yaml_write_is_info(caplog):
     with caplog.at_level(logging.INFO):
         log_processing_event(

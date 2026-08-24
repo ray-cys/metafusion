@@ -1063,23 +1063,29 @@ def log_item_outcomes(
     season_actions = stats.get("season_poster_actions") or {}
     if season_actions:
         action_counts: dict[str, int] = {}
+        action_seasons: dict[str, list[object]] = {}
         provider_counts: dict[str, int] = {}
         season_providers = stats.get("season_artwork_providers") or {}
         for season_number, action in season_actions.items():
+            action_counts[action] = action_counts.get(action, 0) + 1
+            action_seasons.setdefault(action, []).append(season_number)
             if action == "not_due":
                 continue
-            action_counts[action] = action_counts.get(action, 0) + 1
             provider_value = season_providers.get(season_number)
             if provider_value is None:
                 provider_value = season_providers.get(str(season_number))
             label = provider_label(provider_value, action)
             provider_counts[label] = provider_counts.get(label, 0) + 1
-        if action_counts:
+        # An all-not-due show remains summary-only. When another season has an
+        # outcome worth logging, include the not-due count in that same compact
+        # show-level line so every season destination still reconciles.
+        if action_counts and set(action_counts) != {"not_due"}:
             action_labels = {
                 "downloaded": "Downloaded",
                 "upgraded": "Upgraded",
                 "adopted": "Adopted",
                 "skipped": "Unchanged",
+                "not_due": "Not due",
                 "preserved": "Preserved",
                 "policy_preserved": "Policy preserved",
                 "policy_missing": "Policy-preserved missing",
@@ -1087,10 +1093,65 @@ def log_item_outcomes(
                 "failed": "Failed",
                 "deferred": "Deferred",
             }
+
+            def format_season_label(value):
+                if value is None:
+                    return "unknown"
+                try:
+                    return f"S{int(value):02d}"
+                except (TypeError, ValueError):
+                    return str(value)
+
+            def season_sort_key(value):
+                if value is None:
+                    return (-1, "")
+                try:
+                    return (0, int(value))
+                except (TypeError, ValueError):
+                    return (1, str(value))
+
+            def season_references(action, *, limit=8):
+                values = sorted(action_seasons.get(action, []), key=season_sort_key)
+                labels = [format_season_label(value) for value in values[:limit]]
+                if len(values) > limit:
+                    labels.append(f"+{len(values) - limit} more")
+                return ", ".join(labels)
+
+            traced_actions = {
+                "downloaded",
+                "upgraded",
+                "adopted",
+                "preserved",
+                "policy_missing",
+                "missing",
+                "deferred",
+                "failed",
+            }
+            action_order = (
+                "downloaded",
+                "upgraded",
+                "adopted",
+                "skipped",
+                "not_due",
+                "preserved",
+                "policy_preserved",
+                "policy_missing",
+                "missing",
+                "deferred",
+                "failed",
+            )
             action_detail = format_fields(
                 *(
-                    (action_labels.get(name, name.title()), count)
-                    for name, count in sorted(action_counts.items())
+                    (
+                        action_labels.get(name, name.title()),
+                        (
+                            f"{action_counts[name]} [{season_references(name)}]"
+                            if name in traced_actions
+                            else action_counts[name]
+                        ),
+                    )
+                    for name in action_order
+                    if name in action_counts
                 )
             )
             provider_detail = format_fields(*sorted(provider_counts.items()))
@@ -1106,7 +1167,7 @@ def log_item_outcomes(
             season_attempts = stats.get("season_artwork_attempts") or {}
             for season_number, action in sorted(
                 season_actions.items(),
-                key=lambda value: (-1 if value[0] is None else int(value[0])),
+                key=lambda value: season_sort_key(value[0]),
             ):
                 if action != "missing":
                     continue
@@ -1118,16 +1179,12 @@ def log_item_outcomes(
                     f"{attempt_status_labels.get(attempt.get('status'), attempt.get('status', 'unknown'))}"
                     for attempt in attempts
                 )
-                season_label = (
-                    "unknown"
-                    if season_number is None
-                    else f"S{int(season_number):02d}"
-                )
                 missing_details.append(
-                    f"{season_label} ({attempt_text or 'provider attempts unavailable'})"
+                    f"{format_season_label(season_number)} "
+                    f"({attempt_text or 'provider attempts unavailable'})"
                 )
             quiet_actions = set(action_counts).issubset(
-                {"skipped", "preserved", "policy_preserved"}
+                {"skipped", "not_due", "preserved", "policy_preserved"}
             )
             season_stages = stats.get("season_artwork_selection_stages") or {}
             relaxed_count = sum(
