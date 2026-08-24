@@ -87,6 +87,8 @@ def test_cache_identity_change_resets_all_artwork_observations(monkeypatch):
     document = {
         "movie": {
             "tmdb_id": "1",
+            "metadata_coverage_percent": 75,
+            "metadata_incomplete_percent": 25,
             **{
                 f"{asset}_{suffix}": "stale"
                 for asset in ("poster", "background", "season")
@@ -116,6 +118,8 @@ def test_cache_identity_change_resets_all_artwork_observations(monkeypatch):
     assert not any("candidate_fingerprint" in key for key in document["movie"])
     assert not any("unchanged_checks" in key for key in document["movie"])
     assert not any("canonical_pending" in key for key in document["movie"])
+    assert "metadata_coverage_percent" not in document["movie"]
+    assert "metadata_incomplete_percent" not in document["movie"]
     assert not any(
         "canonical_pending" in key for key in document["movie"]["seasons"]["1"]
     )

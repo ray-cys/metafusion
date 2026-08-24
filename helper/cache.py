@@ -240,6 +240,8 @@ async def meta_cache_async(
                     "canonical_pending_at",
                 ):
                     entry.pop(f"{asset_type}_{suffix}", None)
+            entry.pop("metadata_coverage_percent", None)
+            entry.pop("metadata_incomplete_percent", None)
             season_entries = entry.get("seasons") or {}
             for season_entry in (
                 season_entries.values() if isinstance(season_entries, dict) else ()

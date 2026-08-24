@@ -985,15 +985,32 @@ def log_item_outcomes(
             )
         if feature_flags.get("plex_metadata", False):
             details.append(f"API batches: {int(stats.get('plex_metadata_writes', 0))}")
-        metadata_level = (
-            "info"
-            if metadata_action == "skipped"
+        coverage_transition = stats.get("metadata_coverage_transition")
+        previous_coverage = stats.get("metadata_previous_percent")
+        if (
+            coverage_transition in {"improved", "regressed"}
+            and previous_coverage is not None
             and coverage_value is not None
-            and coverage_value < 100
-            else None
-        )
-        if metadata_level:
-            details.append("Status: Incomplete but unchanged")
+        ):
+            try:
+                details.append(
+                    "Coverage change: "
+                    f"{float(previous_coverage):g}% → {float(coverage_value):g}%"
+                )
+            except (TypeError, ValueError):
+                pass
+        elif coverage_transition == "first_incomplete":
+            details.append("Status: First incomplete observation")
+        metadata_level = None
+        if metadata_action != "failed":
+            if coverage_transition == "regressed":
+                metadata_level = "warning"
+                details.append("Status: Field coverage regressed")
+            elif metadata_action == "skipped" and coverage_transition in {
+                "improved",
+                "first_incomplete",
+            }:
+                metadata_level = "info"
         emit(
             "Metadata",
             None,
@@ -1314,6 +1331,27 @@ def metadata_schedule_line(library_summary):
         f"Required: {library_summary.get('metadata_schedule_required', 0)} | "
         f"Forced: {library_summary.get('metadata_schedule_forced', 0)} | "
         f"Not due: {library_summary.get('metadata_schedule_not_due', 0)}"
+    )
+
+
+def metadata_coverage_line(library_summary):
+    """Return field-coverage outcomes without treating incompleteness as a write."""
+    library_summary = library_summary or {}
+    complete = int(library_summary.get("metadata_complete", 0) or 0)
+    incomplete = int(library_summary.get("metadata_incomplete", 0) or 0)
+    evaluated = complete + incomplete
+    complete_percent = round(complete * 100 / evaluated, 1) if evaluated else 100.0
+    incomplete_percent = round(incomplete * 100 / evaluated, 1) if evaluated else 0.0
+    return (
+        "Metadata coverage | Evaluated: "
+        f"{evaluated} | Meets threshold: {complete} ({complete_percent:g}%) | "
+        f"Below threshold: {incomplete} ({incomplete_percent:g}%) | "
+        "Improved: "
+        f"{int(library_summary.get('metadata_coverage_improved', 0) or 0)} | "
+        "Regressed: "
+        f"{int(library_summary.get('metadata_coverage_regressed', 0) or 0)} | "
+        "First incomplete: "
+        f"{int(library_summary.get('metadata_coverage_first_incomplete', 0) or 0)}"
     )
 
 
@@ -1698,6 +1736,7 @@ def log_final_summary(
         overall_metadata_summary = metadata_action_summary(overall, feature_flags)
         if overall_metadata_summary:
             lines.extend(box_line(overall_metadata_summary, box_width))
+        lines.extend(box_line(metadata_coverage_line(overall), box_width))
     lines.extend(box_line(
         f"Artwork schedule | Destinations: {artwork_schedule['destinations']} | "
         f"Due: {artwork_schedule['due']} | "
@@ -1811,14 +1850,10 @@ def log_final_summary(
         if metadata_summary:
             lines.extend(box_line(f"Library: {lib} | {metadata_summary}", box_width))
         if summary.get("percent_complete") is not None:
-            percent_incomplete = summary.get("percent_incomplete")
-            if percent_incomplete is None:
-                percent_incomplete = 100 - summary["percent_complete"]
             lines.extend(box_line(
-                f"Library: {lib} | Metadata coverage | Meets threshold: "
-                f"{summary['complete']}/{summary['total_items']} "
-                f"({summary['percent_complete']}%) | Below threshold: "
-                f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
+                f"Library: {lib} | {metadata_coverage_line(libsum)}",
+                box_width,
+            ))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
             warning = schedule_reconciliation_warning(

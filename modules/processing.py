@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import math
 import time
 from collections import Counter
 from pathlib import Path
@@ -71,6 +72,62 @@ class AmbiguousEditionError(LibraryProcessingError):
 
 
 MAX_ITEM_FAILURE_DETAILS = 10
+
+
+def _metadata_coverage_value(value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(100.0, parsed)) if math.isfinite(parsed) else None
+
+
+def annotate_metadata_coverage(
+    stats,
+    cached_entry,
+    *,
+    tmdb_id=None,
+    config_fingerprint=None,
+):
+    """Attach the durable field-coverage transition used by item logging."""
+    if not isinstance(stats, dict) or stats.get("metadata_action") in {
+        "failed",
+        "not_due",
+    }:
+        return None
+    current = _metadata_coverage_value(stats.get("percent"))
+    if current is None:
+        return None
+    cached_entry = cached_entry if isinstance(cached_entry, dict) else {}
+    cached_tmdb_id = cached_entry.get("tmdb_id")
+    cached_fingerprint = cached_entry.get("config_fingerprint")
+    if (
+        (
+            cached_tmdb_id is not None
+            and tmdb_id is not None
+            and str(cached_tmdb_id) != str(tmdb_id)
+        )
+        or (
+            cached_fingerprint is not None
+            and config_fingerprint is not None
+            and str(cached_fingerprint) != str(config_fingerprint)
+        )
+    ):
+        cached_entry = {}
+    previous = _metadata_coverage_value(
+        cached_entry.get("metadata_coverage_percent")
+    )
+    if previous is None:
+        transition = "first_incomplete" if current < 100.0 else "baseline"
+    elif current > previous:
+        transition = "improved"
+    elif current < previous:
+        transition = "regressed"
+    else:
+        transition = "unchanged"
+    stats["metadata_previous_percent"] = previous
+    stats["metadata_coverage_transition"] = transition
+    return current
 
 
 def _output_snapshot(path):
@@ -566,6 +623,31 @@ async def process_item(
             stats["_retry_error"] = stats.get("_retry_error") or (
                 "Builder or Plex metadata action reported a recoverable failure"
             )
+    item_cache_key = cache_key_for_meta(meta)
+    cached_entry = load_cache().get(item_cache_key, {})
+    coverage_value = annotate_metadata_coverage(
+        stats,
+        cached_entry,
+        tmdb_id=meta.get("tmdb_id"),
+        config_fingerprint=incremental_fingerprint,
+    )
+    if (
+        coverage_value is not None
+        and stats.get("metadata_action") not in {"failed", "not_due"}
+        and not effective_flags.get("dry_run", False)
+    ):
+        normalized_type = "tv" if library_type == "show" else library_type
+        await meta_cache_async(
+            item_cache_key,
+            meta.get("tmdb_id"),
+            title,
+            year,
+            normalized_type,
+            update_timestamp=False,
+            metadata_coverage_percent=coverage_value,
+            metadata_incomplete_percent=max(0.0, 100.0 - coverage_value),
+        )
+        cached_entry = load_cache().get(item_cache_key, cached_entry)
     storage_files = []
     artwork_file_counts = Counter()
     artwork_current_providers = Counter()
@@ -606,7 +688,6 @@ async def process_item(
                         ),
                     )
                 )
-        cached_entry = load_cache().get(cache_key_for_meta(meta), {})
         for asset_type, season_number, action, path in storage_targets:
             artwork_file_counts["expected"] += 1
             if path is None:
@@ -691,6 +772,8 @@ async def process_library(
 
     poster_size = background_size = season_poster_size = total_asset_size = 0
     completed = incomplete = 0
+    metadata_coverage_improved = metadata_coverage_regressed = 0
+    metadata_coverage_first_incomplete = 0
     season_count = episode_count = 0
     meta_downloaded = meta_upgraded = meta_skipped = meta_failed = 0
     plex_metadata_writes = 0
@@ -1074,6 +1157,8 @@ async def process_library(
             nonlocal poster_size, background_size, season_poster_size, total_asset_size
             nonlocal completed, incomplete, season_count, episode_count
             nonlocal meta_downloaded, meta_upgraded, meta_skipped, meta_failed
+            nonlocal metadata_coverage_improved, metadata_coverage_regressed
+            nonlocal metadata_coverage_first_incomplete
             nonlocal plex_metadata_writes
             nonlocal poster_downloaded, poster_upgraded, poster_adopted, poster_skipped, poster_not_due, poster_missing, poster_deferred, poster_failed
             nonlocal background_downloaded, background_upgraded, background_adopted, background_skipped, background_not_due, background_missing, background_deferred, background_failed
@@ -1214,6 +1299,13 @@ async def process_library(
                 elif action == "failed":
                     meta_failed += 1
                 plex_metadata_writes += stats.get("plex_metadata_writes", 0)
+                coverage_transition = stats.get("metadata_coverage_transition")
+                if coverage_transition == "improved":
+                    metadata_coverage_improved += 1
+                elif coverage_transition == "regressed":
+                    metadata_coverage_regressed += 1
+                elif coverage_transition == "first_incomplete":
+                    metadata_coverage_first_incomplete += 1
 
                 action = stats.get("poster_action")
                 if action == "downloaded":
@@ -1346,7 +1438,17 @@ async def process_library(
                     for season in seasons_data.values():
                         episode_count += len(season.get("episodes", {}))
 
-                if feature_flags["metadata_basic"]:
+                if (
+                    any(
+                        feature_flags.get(name, False)
+                        for name in (
+                            "metadata_basic",
+                            "metadata_enhanced",
+                            "plex_metadata",
+                        )
+                    )
+                    and stats.get("metadata_action") != "not_due"
+                ):
                     is_complete = stats.get("is_complete", False)
                     if is_complete:
                         completed += 1
@@ -1576,6 +1678,11 @@ async def process_library(
         library_summary = {
             "meta_downloaded": meta_downloaded, "meta_upgraded": meta_upgraded,
             "meta_skipped": meta_skipped, "meta_failed": meta_failed + len(item_errors),
+            "metadata_complete": completed,
+            "metadata_incomplete": incomplete,
+            "metadata_coverage_improved": metadata_coverage_improved,
+            "metadata_coverage_regressed": metadata_coverage_regressed,
+            "metadata_coverage_first_incomplete": metadata_coverage_first_incomplete,
             "plex_metadata_writes": plex_metadata_writes,
             "poster_downloaded": poster_downloaded, "poster_upgraded": poster_upgraded, "poster_adopted": poster_adopted, "poster_skipped": poster_skipped, "poster_not_due": poster_not_due,
             "poster_preserved": poster_preserved, "poster_failed": poster_failed, "poster_missing": poster_missing, "poster_deferred": poster_deferred,
