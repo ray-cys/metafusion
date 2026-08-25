@@ -39,7 +39,17 @@ show_artwork:
   background_height: 1080
   minimum_source_width: 1600
   minimum_source_height: 900
+  retention_pairs_per_season: 30
+  source_cache_retention_days: 120
   asset_reference_root: config/assets/formula1/shows
+
+# A prior run is checked after Kometa has had time to apply its YAML. This is
+# read-only: MetaFusion compares Plex metadata and selected artwork, then reports.
+verification:
+  enabled: true
+  delay_hours: 1
+  retention: 20
+  perceptual_distance: 8
 
 providers:
   jolpica_url: https://api.jolpi.ca/ergast/f1

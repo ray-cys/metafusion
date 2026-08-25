@@ -1,15 +1,26 @@
 """Race-triggered, paired Formula 1 show poster/background rotation."""
 
+from __future__ import annotations
+
 import hashlib
+import json
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
-from extensions.formula1.artwork import _fit, _font, svg_path_points
+from extensions.formula1.artwork import (
+    _fit,
+    _font,
+    branding_fingerprint,
+    branding_paths,
+    fitted_font,
+    svg_path_points,
+)
 from extensions.formula1.commons import (
     CommonsCandidate,
     acquire_candidate_image,
@@ -19,7 +30,7 @@ from extensions.formula1.commons import (
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 1
+SHOW_RENDERER_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -30,6 +41,8 @@ class ShowArtworkResult:
     background_reference: str | None = None
     constructor: str | None = None
     issue: str | None = None
+    pairs_pruned: int = 0
+    cache_pruned: int = 0
 
 
 def _checksum(path):
@@ -50,13 +63,24 @@ def _asset_reference(config, relative):
 
 
 def _branding_paths(config):
-    branding = config["paths"]["branding"]
-    artwork = config["artwork"]
-    return (
-        branding / str(artwork.get("logo", "logo.png")).split("/")[-1],
-        branding / str(artwork.get("font_regular", "font-regular.ttf")).split("/")[-1],
-        branding / str(artwork.get("font_bold", "font-bold.ttf")).split("/")[-1],
-    )
+    paths = branding_paths(config)
+    return paths["logo"], paths["font_regular"], paths["font_bold"]
+
+
+def _show_render_fingerprint(config):
+    payload = {
+        "renderer": SHOW_RENDERER_VERSION,
+        "branding": branding_fingerprint(config),
+        "poster": [
+            config["show_artwork"]["poster_width"],
+            config["show_artwork"]["poster_height"],
+        ],
+        "background": [
+            config["show_artwork"]["background_width"],
+            config["show_artwork"]["background_height"],
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _place_logo(image, logo_path, box, fallback_font):
@@ -149,8 +173,11 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         fill=(150, 0, 20, 185),
     )
     logo_path, regular_path, bold_path = _branding_paths(config)
-    regular = _font(regular_path, max(26, width // 28))
-    bold = _font(bold_path, max(42, width // 15))
+    detail = f"{race.circuit}  •  {race.locality}, {race.country}"
+    regular = fitted_font(regular_path, detail, max(26, width // 28), 18, width * 0.88)
+    bold = fitted_font(
+        bold_path, f"{show.year} SEASON", max(42, width // 15), 28, width * 0.88
+    )
     small_bold = _font(bold_path, max(24, width // 30))
     _place_logo(
         image,
@@ -193,7 +220,7 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     )
     draw.text(
         (width * 0.06, height * 0.87),
-        f"{race.circuit}  •  {race.locality}, {race.country}",
+        detail,
         font=regular,
         fill=(235, 235, 238, 225),
     )
@@ -239,7 +266,10 @@ def render_show_background(show, race, photo_path, config, destination):
     _technical_frame(image)
     logo_path, _regular_path, bold_path = _branding_paths(config)
     season_font = _font(bold_path, max(34, width // 32))
-    detail_font = _font(bold_path, max(22, width // 55))
+    background_title = f"ROUND {race.round_number:02d}  •  {race.name.upper()}"
+    detail_font = fitted_font(
+        bold_path, background_title, max(22, width // 55), 18, width * 0.58
+    )
     _place_logo(
         image,
         logo_path,
@@ -255,7 +285,7 @@ def render_show_background(show, race, photo_path, config, destination):
     )
     draw.text(
         (width * 0.045, height * 0.86),
-        f"ROUND {race.round_number:02d}  •  {race.name.upper()}",
+        background_title,
         font=detail_font,
         fill=(240, 240, 242, 220),
     )
@@ -278,6 +308,61 @@ def _pair_integrity(current):
     ):
         return "manual"
     return "managed"
+
+
+def _prune_retained_pairs(state, config, logical_key, current):
+    limit = config["show_artwork"]["retention_pairs_per_season"]
+    history = [
+        item for item in state.show_rotation_history() if item["logical_key"] == logical_key
+    ]
+    removable = history[:-limit] if len(history) > limit else []
+    current_paths = {
+        str(current["poster_destination"]),
+        str(current["background_destination"]),
+    }
+    removed = 0
+    for item in removable:
+        source = item.get("source") or {}
+        checksums = source.get("generated_checksums") or {}
+        paths = [Path(item["poster_destination"]), Path(item["background_destination"])]
+        if any(str(path) in current_paths for path in paths):
+            continue
+        expected = [checksums.get("poster"), checksums.get("background")]
+        if not all(expected):
+            continue
+        safe = all(
+            (not path.exists())
+            or (path.is_file() and _checksum(path) == expected[index])
+            for index, path in enumerate(paths)
+        )
+        if not safe:
+            continue
+        for path in paths:
+            path.unlink(missing_ok=True)
+        try:
+            paths[0].parent.rmdir()
+        except OSError:
+            pass
+        state.remove_show_rotation_history(item["id"])
+        removed += 1
+    return removed
+
+
+def _prune_source_cache(config, active_photo):
+    cutoff = time.time() - config["show_artwork"]["source_cache_retention_days"] * 86400
+    active = Path(active_photo).resolve()
+    removed = 0
+    root = config["paths"]["show_image_cache"]
+    for path in root.glob("*") if root.exists() else ():
+        if (
+            path.is_file()
+            and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
+            and path.resolve() != active
+            and path.stat().st_mtime < cutoff
+        ):
+            path.unlink()
+            removed += 1
+    return removed
 
 
 def _candidate_order(roster, current, trigger_round):
@@ -373,6 +458,8 @@ async def run_show_artwork_rotation(
     trigger_round = int(race.round_number)
     logical_key = f"show:{show.year}"
     current = state.show_rotation(logical_key)
+    render_fingerprint = _show_render_fingerprint(config)
+    rerendering = False
     if current is not None:
         integrity = _pair_integrity(current)
         poster_reference, background_reference = _current_references(current)
@@ -385,7 +472,7 @@ async def run_show_artwork_rotation(
                 current["constructor_id"],
                 "Managed show artwork was modified; automatic rotation is paused",
             )
-        if trigger_round <= int(current["trigger_round"]) and integrity == "managed":
+        if trigger_round < int(current["trigger_round"]) and integrity == "managed":
             return ShowArtworkResult(
                 "unchanged",
                 trigger_round,
@@ -393,10 +480,35 @@ async def run_show_artwork_rotation(
                 background_reference,
                 current["constructor_id"],
             )
+        if trigger_round < int(current["trigger_round"]) and integrity == "missing":
+            return ShowArtworkResult(
+                "preserved",
+                trigger_round,
+                poster_reference,
+                background_reference,
+                current["constructor_id"],
+                "The active artwork belongs to a newer round; repair waits for that round",
+            )
+        if trigger_round == int(current["trigger_round"]) and integrity == "managed":
+            rerendering = (
+                current.get("source", {}).get("render_fingerprint") != render_fingerprint
+            )
+            if not rerendering:
+                return ShowArtworkResult(
+                    "unchanged",
+                    trigger_round,
+                    poster_reference,
+                    background_reference,
+                    current["constructor_id"],
+                )
 
-    restoring = current is not None and trigger_round <= int(current["trigger_round"])
+    restoring = (
+        current is not None
+        and trigger_round == int(current["trigger_round"])
+        and _pair_integrity(current) == "missing"
+    )
     try:
-        if restoring:
+        if restoring or rerendering:
             candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
             photo_path, image_source = await acquire_candidate_image(session, config, candidate)
             provider_sources = {"roster": "state", "search": "state", "image": image_source}
@@ -431,7 +543,13 @@ async def run_show_artwork_rotation(
     background_reference = _asset_reference(config, relative / "background.png")
     if config["dry_run"]:
         return ShowArtworkResult(
-            "restore-planned" if restoring else "rotate-planned",
+            (
+                "rerender-planned"
+                if rerendering
+                else "restore-planned"
+                if restoring
+                else "rotate-planned"
+            ),
             trigger_round,
             poster_reference,
             background_reference,
@@ -450,6 +568,11 @@ async def run_show_artwork_rotation(
         "poster_reference": poster_reference,
         "background_reference": background_reference,
         "renderer_version": SHOW_RENDERER_VERSION,
+        "render_fingerprint": render_fingerprint,
+        "generated_checksums": {
+            "poster": poster_checksum,
+            "background": background_checksum,
+        },
         "trigger": "plex_new_race",
     }
     state.save_show_rotation(
@@ -463,11 +586,16 @@ async def run_show_artwork_rotation(
         background_destination,
         background_checksum,
     )
+    current = state.show_rotation(logical_key)
+    pairs_pruned = _prune_retained_pairs(state, config, logical_key, current)
+    cache_pruned = _prune_source_cache(config, photo_path)
     _attribution_reports(config, state.show_rotation_history())
     return ShowArtworkResult(
-        "restored" if restoring else "rotated",
+        "rerendered" if rerendering else "restored" if restoring else "rotated",
         trigger_round,
         poster_reference,
         background_reference,
         candidate.constructor_name,
+        pairs_pruned=pairs_pruned,
+        cache_pruned=cache_pruned,
     )

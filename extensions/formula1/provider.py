@@ -1,5 +1,7 @@
 """Schedule, circuit facts, and open circuit-shape provider adapter."""
 
+from __future__ import annotations
+
 import asyncio
 import re
 import unicodedata

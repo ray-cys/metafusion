@@ -123,6 +123,19 @@ class Formula1State:
                     created_at TEXT NOT NULL,
                     UNIQUE(logical_key, trigger_round, source)
                 );
+                CREATE TABLE IF NOT EXISTS show_bindings (
+                    season_year INTEGER PRIMARY KEY,
+                    plex_rating_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS application_verification_queue (
+                    season_year INTEGER PRIMARY KEY,
+                    plex_rating_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    due_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             row = self.connection.execute("SELECT version FROM schema_info LIMIT 1").fetchone()
@@ -304,6 +317,75 @@ class Formula1State:
             value["source"] = json.loads(value["source"])
             values.append(value)
         return values
+
+    def remove_show_rotation_history(self, history_id):
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM show_rotation_history WHERE id=?", (int(history_id),)
+            )
+
+    def show_binding(self, season_year):
+        row = self.connection.execute(
+            "SELECT * FROM show_bindings WHERE season_year=?", (int(season_year),)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def bind_show(self, season_year, rating_key, title, *, now=None):
+        current = (now or utc_now()).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO show_bindings(season_year, plex_rating_key, title, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(season_year) DO UPDATE SET
+                     plex_rating_key=excluded.plex_rating_key,
+                     title=excluded.title,
+                     updated_at=excluded.updated_at""",
+                (int(season_year), str(rating_key), str(title), current),
+            )
+
+    def queue_application_verification(
+        self, season_year, rating_key, payload, delay_hours, *, now=None
+    ):
+        current = now or utc_now()
+        due_at = current + timedelta(hours=float(delay_hours))
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO application_verification_queue(
+                       season_year, plex_rating_key, payload, due_at, created_at
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(season_year) DO UPDATE SET
+                     plex_rating_key=excluded.plex_rating_key,
+                     payload=excluded.payload,
+                     due_at=excluded.due_at,
+                     created_at=excluded.created_at""",
+                (
+                    int(season_year),
+                    str(rating_key),
+                    json.dumps(payload, sort_keys=True),
+                    due_at.isoformat(),
+                    current.isoformat(),
+                ),
+            )
+
+    def due_application_verifications(self, *, now=None):
+        current = (now or utc_now()).isoformat()
+        rows = self.connection.execute(
+            "SELECT * FROM application_verification_queue WHERE due_at<=? ORDER BY season_year",
+            (current,),
+        ).fetchall()
+        values = []
+        for row in rows:
+            value = dict(row)
+            value["payload"] = json.loads(value["payload"])
+            values.append(value)
+        return values
+
+    def complete_application_verification(self, season_year):
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM application_verification_queue WHERE season_year=?",
+                (int(season_year),),
+            )
 
     def start_run(self, run_id, *, now=None):
         started = (now or utc_now()).isoformat()

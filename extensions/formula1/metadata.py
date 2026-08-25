@@ -112,21 +112,39 @@ def build_show_entry(show, races, poster_references, config, show_artwork=None):
     return generated, set(seasons), dict(authoritative_episodes)
 
 
-def write_show_metadata(show, races, poster_references, config, show_artwork=None):
+def write_show_metadata(
+    show,
+    races,
+    poster_references,
+    config,
+    show_artwork=None,
+    *,
+    authoritative_seasons=None,
+    authoritative_episodes=None,
+    previous_title=None,
+):
     destination = config["paths"]["metadata"] / f"formula1_{show.year}.yml"
     document = _read_document(destination)
     generated, seasons, episodes = build_show_entry(
         show, races, poster_references, config, show_artwork
     )
     existing = document["metadata"].get(show.title, {})
+    if previous_title and previous_title != show.title:
+        previous = document["metadata"].get(previous_title)
+        if isinstance(previous, dict) and not existing:
+            existing = previous
     merged, diagnostics = merge_generated_metadata(
         existing,
         generated,
         "show",
-        authoritative_seasons=seasons,
-        authoritative_episodes=episodes,
+        authoritative_seasons=(seasons if authoritative_seasons is None else authoritative_seasons),
+        authoritative_episodes=(
+            episodes if authoritative_episodes is None else authoritative_episodes
+        ),
     )
     updated = {"metadata": dict(document["metadata"])}
+    if previous_title and previous_title != show.title:
+        updated["metadata"].pop(previous_title, None)
     updated["metadata"][show.title] = merged
     changed = updated != document
     if changed and not config["dry_run"]:

@@ -85,6 +85,20 @@ unsupported, or duplicate logical identities are reported and excluded rather
 than guessed. Season 0 is ignored by default; set `testing.include: true` to
 include testing programmes.
 
+The parsed event name is checked against the authoritative event assigned to
+that round in the current-year schedule. A file labelled for a different Grand
+Prix is quarantined before metadata, artwork, or cleanup reconciliation; it is
+never silently attached to the scheduled race. An unfamiliar programme label
+remains usable as a title, but is explicitly reported for review because
+MetaFusion cannot select a programme-specific session date for it.
+
+Exactly one Plex show may represent a championship year. If two shows resolve
+to the same year, the run stops during preflight before any YAML, artwork,
+binding, or cleanup change. This prevents two Plex identities from competing
+for `formula1_<year>.yml`. A rename of the same Plex show migrates its
+extension-owned top-level YAML entry to the new title while preserving user
+fields.
+
 ## Outputs and ownership
 
 - Metadata: `/kometa/metadata/formula1_<year>.yml`
@@ -136,6 +150,10 @@ Existing artwork without an extension ownership record is adopted without
 replacement. A managed file modified after adoption is treated as manual artwork
 and preserved. Renderer revisions regenerate only unchanged extension-managed
 posters; adopted and manually edited posters remain protected.
+The artwork fingerprint includes the bytes of the supplied logo and both fonts,
+not merely their filenames. Replacing a branding file therefore refreshes
+managed artwork even when its path does not change. Long race, circuit, and
+locality labels are fitted to their safe text area instead of overflowing.
 
 ### Race-triggered show poster and background rotation
 
@@ -186,6 +204,15 @@ its recorded checksum, both automatic repair and future rotation pause so a
 manual edit cannot be silently displaced. If a managed file is merely missing,
 MetaFusion recreates the matched pair from its recorded licensed source.
 
+A renderer revision or branding-file change may rerender the active pair for
+the same race round. This uses the already selected team and Commons source; it
+does not advance constructor rotation. Versioned pairs are retained per season
+according to `show_artwork.retention_pairs_per_season` (default 30). Only
+byte-identical, extension-owned pairs with recorded checksums are pruned.
+Downloaded Commons sources older than
+`show_artwork.source_cache_retention_days` (default 120) are removed when they
+are not active and can be downloaded again from their recorded identity.
+
 ## Branding
 
 Place user-supplied files in `/config/formula1/branding`:
@@ -200,6 +227,11 @@ commercial fonts. You are responsible for permission to use supplied branding.
 The same three branding files are used for both race-round posters and rotating
 show-level poster/background designs; no second logo or font configuration is
 required.
+
+Branding is checked at startup. Missing files produce clear fallback warnings.
+A supplied but unreadable logo, invalid font, extremely small logo, or unsafe
+oversized logo stops the run before output generation instead of failing
+part-way through rendering.
 
 ## Data and network behavior
 
@@ -272,6 +304,24 @@ Cleanup is disabled by default. When enabled, a missing Plex episode must remain
 absent for both `confirmation_scans` and `grace_hours`. Only extension-owned
 state and byte-identical managed artwork are eligible. Formula 1 assets are never
 passed to core MetaFusion cleanup.
+
+The same confirmation and grace decision controls YAML reconciliation. A
+temporarily missing episode or race stays authoritative in generated YAML until
+its cleanup candidate becomes eligible; its state and owned round poster are
+retained for the same period. After eligibility, YAML, binding state, and an
+otherwise-unused byte-identical managed poster are reconciled together. If
+cleanup is disabled, inventory absence alone never prunes generated records.
+
+With `verification.enabled: true`, output-changing runs place an expectation in
+the private SQLite database. After `verification.delay_hours` (default one
+hour), a later run reads Plex without changing it and compares generated show,
+season, and episode fields plus selected show and season artwork. Perceptually
+equivalent Plex transcodes are accepted within
+`verification.perceptual_distance`. Results are written to
+`/config/formula1/reports/formula1-application-verification-<run-id>.json` and
+retained according to `verification.retention`. A partial result means Kometa
+has not applied every expected value or Plex currently selects different
+artwork; it does not trigger a Plex edit or refresh.
 
 `logging.console` accepts `off`, `summary`, or `full`. The default prints one
 Formula 1 summary through the main logger while retaining item details in the

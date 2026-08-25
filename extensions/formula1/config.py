@@ -171,6 +171,33 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         450,
         3000,
     )
+    show_artwork["retention_pairs_per_season"] = _bounded_int(
+        show_artwork.get("retention_pairs_per_season", 30),
+        "show_artwork.retention_pairs_per_season",
+        1,
+        200,
+    )
+    show_artwork["source_cache_retention_days"] = _bounded_int(
+        show_artwork.get("source_cache_retention_days", 120),
+        "show_artwork.source_cache_retention_days",
+        1,
+        3650,
+    )
+
+    verification = config.setdefault("verification", {})
+    verification["enabled"] = bool(verification.get("enabled", True))
+    verification["delay_hours"] = _bounded_float(
+        verification.get("delay_hours", 1), "verification.delay_hours", 0, 720
+    )
+    verification["retention"] = _bounded_int(
+        verification.get("retention", 20), "verification.retention", 1, 365
+    )
+    verification["perceptual_distance"] = _bounded_int(
+        verification.get("perceptual_distance", 8),
+        "verification.perceptual_distance",
+        0,
+        32,
+    )
 
     providers = config.setdefault("providers", {})
     providers["cache_hours"] = _bounded_float(

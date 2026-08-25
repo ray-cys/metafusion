@@ -1,5 +1,7 @@
 """Plex inventory discovery and dual Formula 1 filename parsing."""
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +74,7 @@ class Formula1Episode:
     media_path: Path
     plex_rating_key: str
     naming_profile: str
+    plex_item: object | None = field(default=None, compare=False, repr=False)
 
     @property
     def logical_key(self):
@@ -84,6 +87,7 @@ class Formula1Show:
     title: str
     plex_rating_key: str
     episodes: list[Formula1Episode] = field(default_factory=list)
+    plex_item: object | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -115,6 +119,15 @@ def canonical_program(value):
         return PROGRAM_ALIASES[key]
     title = " ".join(part.capitalize() for part in words.split())
     return title, "other"
+
+
+def event_matches_schedule(event_name, race):
+    """Require the filename event to agree with the authoritative scheduled round."""
+    expected = {
+        canonical_event(race.name).casefold(),
+        canonical_event(race.country).casefold(),
+    }
+    return canonical_event(event_name).casefold() in expected
 
 
 def parse_episode_filename(path, expected_season=None, expected_episode=None, profile="auto"):
@@ -193,6 +206,7 @@ async def discover_formula1_inventory(section, config, detail_logger):
             year=year,
             title=str(show.title),
             plex_rating_key=str(getattr(show, "ratingKey", "")),
+            plex_item=show,
         )
         seasons = await plex_operation(
             lambda item=show: list(item.seasons()),
@@ -240,7 +254,14 @@ async def discover_formula1_inventory(section, config, detail_logger):
                     media_path=path,
                     plex_rating_key=str(getattr(episode, "ratingKey", "")),
                     naming_profile=parsed["profile"],
+                    plex_item=episode,
                 )
+                if record.program_kind == "other":
+                    result.issues.append(
+                        f"Unrecognized programme label retained for review: "
+                        f"{show.title} S{round_number:02d}E{episode_number:02d} "
+                        f"({record.program_title})"
+                    )
                 if record.logical_key in seen:
                     duplicates.add(record.logical_key)
                     result.issues.append(f"Duplicate episode identity: {record.logical_key}")

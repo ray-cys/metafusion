@@ -1,19 +1,29 @@
 """Formula 1 extension orchestration and strict core-isolation boundary."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 from pathlib import Path
 from typing import TypedDict
 
-from extensions.formula1.artwork import artwork_fingerprint, render_round_poster
+from extensions.formula1.artwork import (
+    artwork_fingerprint,
+    render_round_poster,
+    validate_branding,
+)
 from extensions.formula1.config import formula1_requested, load_formula1_config
 from extensions.formula1.facts import enrich_race_facts
-from extensions.formula1.inventory import discover_formula1_inventory
+from extensions.formula1.inventory import discover_formula1_inventory, event_matches_schedule
 from extensions.formula1.logging import create_formula1_logger, run_identifier
-from extensions.formula1.metadata import write_show_metadata
+from extensions.formula1.metadata import build_show_entry, write_show_metadata
 from extensions.formula1.provider import load_circuit_path, load_schedule
 from extensions.formula1.show_artwork import run_show_artwork_rotation
 from extensions.formula1.state import Formula1State
+from extensions.formula1.verification import (
+    queue_application_verification,
+    verify_due_applications,
+)
 from helper.io import atomic_write_text
 
 
@@ -33,6 +43,9 @@ class Formula1Summary(TypedDict):
     show_artwork_unchanged: int
     show_artwork_preserved: int
     show_artwork_missing: int
+    show_artwork_rerendered: int
+    show_artwork_pruned: int
+    source_cache_pruned: int
     facts_resolved: int
     facts_missing: int
     facts_stale: int
@@ -41,6 +54,11 @@ class Formula1Summary(TypedDict):
     profiles_missing: int
     issues: int
     cleanup_removed: int
+    event_mismatches: int
+    branding_warnings: int
+    verification_applied: int
+    verification_partial: int
+    verification_report: str | None
     issue_report: str | None
     log: str | None
 
@@ -100,6 +118,99 @@ def _managed_artwork_action(state, logical_key, destination, fingerprint):
     return "update"
 
 
+def _authoritative_children(keys, year):
+    seasons = set()
+    episodes: dict[int, set[int]] = {}
+    prefix = f"{int(year)}:r"
+    for key in keys:
+        if not key.startswith(prefix) or ":e" not in key:
+            continue
+        round_value, episode_value = key[len(prefix) :].split(":e", 1)
+        if not round_value.isdigit() or not episode_value.isdigit():
+            continue
+        round_number, episode_number = int(round_value), int(episode_value)
+        seasons.add(round_number)
+        episodes.setdefault(round_number, set()).add(episode_number)
+    return seasons, episodes
+
+
+async def _prepare_plans(sections, core_config, session, state, config, logger, summary, issues):
+    inventory_config = {"runtime": core_config.get("runtime", {}), "formula1": config}
+    shows = []
+    for section in sections:
+        section_type = str(
+            getattr(section, "type", None) or getattr(section, "TYPE", "")
+        ).casefold()
+        if section_type not in {"show", "tv"}:
+            raise RuntimeError(f"Formula 1 library must be a Plex TV library: {section.title}")
+        inventory = await discover_formula1_inventory(section, inventory_config, logger)
+        issues.extend(inventory.issues)
+        shows.extend(inventory.shows)
+        summary["libraries"] += 1
+    grouped: dict[int, list] = {}
+    for show in shows:
+        grouped.setdefault(show.year, []).append(show)
+    duplicates = {year: values for year, values in grouped.items() if len(values) > 1}
+    if duplicates:
+        detail = "; ".join(
+            f"{year}: "
+            + ", ".join(
+                f"{show.title} (Plex {show.plex_rating_key or 'unknown'})" for show in values
+            )
+            for year, values in sorted(duplicates.items())
+        )
+        raise RuntimeError(
+            f"One Plex show per Formula 1 championship year is required: {detail}"
+        )
+    plans = []
+    for show in shows:
+        races, source = await load_schedule(session, state, config, show.year, logger)
+        logger.info(
+            "[Provider] Schedule | Year: %d | Races: %d | Source: %s",
+            show.year,
+            len(races),
+            source,
+        )
+        races, statistics = await enrich_race_facts(
+            session,
+            state,
+            config,
+            races,
+            {item.round_number for item in show.episodes},
+            logger,
+        )
+        for source_key, summary_key in (
+            ("resolved", "facts_resolved"),
+            ("missing", "facts_missing"),
+            ("stale", "facts_stale"),
+            ("canonicalized", "venues_canonicalized"),
+            ("profiles_resolved", "profiles_resolved"),
+            ("profiles_missing", "profiles_missing"),
+        ):
+            summary[summary_key] += statistics[source_key]
+        issues.extend(statistics["issues"])
+        race_by_round = {race.round_number: race for race in races}
+        accepted = []
+        for episode in show.episodes:
+            race = race_by_round.get(episode.round_number)
+            if race is None:
+                issues.append(f"No schedule match: {show.title} round {episode.round_number}")
+            elif not event_matches_schedule(episode.event_name, race):
+                summary["event_mismatches"] += 1
+                issues.append(
+                    f"Filename event rejected: {show.title} S{episode.round_number:02d}"
+                    f"E{episode.episode_number:02d} says {episode.event_name}; "
+                    f"scheduled round is {race.name}"
+                )
+            else:
+                accepted.append(episode)
+        show.episodes = accepted
+        if accepted:
+            plans.append((show, races, race_by_round))
+    summary["shows"] = len(plans)
+    return plans
+
+
 async def run_formula1_extension(
     sections,
     core_config,
@@ -132,6 +243,9 @@ async def run_formula1_extension(
         "show_artwork_unchanged": 0,
         "show_artwork_preserved": 0,
         "show_artwork_missing": 0,
+        "show_artwork_rerendered": 0,
+        "show_artwork_pruned": 0,
+        "source_cache_pruned": 0,
         "facts_resolved": 0,
         "facts_missing": 0,
         "facts_stale": 0,
@@ -140,62 +254,58 @@ async def run_formula1_extension(
         "profiles_missing": 0,
         "issues": 0,
         "cleanup_removed": 0,
+        "event_mismatches": 0,
+        "branding_warnings": 0,
+        "verification_applied": 0,
+        "verification_partial": 0,
+        "verification_report": None,
         "issue_report": None,
         "log": None,
     }
-    issues = []
+    issues: list[str] = []
     current_keys = set()
     state.start_run(run_id)
     try:
         detail_logger.info("[Startup] Formula 1 extension | Run: %s", run_id)
-        for section in sections:
-            section_type = str(
-                getattr(section, "type", None) or getattr(section, "TYPE", "")
-            ).casefold()
-            if section_type not in {"show", "tv"}:
-                raise RuntimeError(f"Formula 1 library must be a Plex TV library: {section.title}")
-            inventory_config = {
-                "runtime": core_config.get("runtime", {}),
-                "formula1": config,
-            }
-            inventory = await discover_formula1_inventory(section, inventory_config, detail_logger)
-            issues.extend(inventory.issues)
-            summary["libraries"] += 1
-            summary["shows"] += len(inventory.shows)
-            for show in inventory.shows:
-                races, source = await load_schedule(
-                    session, state, config, show.year, detail_logger
-                )
-                detail_logger.info(
-                    "[Provider] Schedule | Year: %d | Races: %d | Source: %s",
-                    show.year,
-                    len(races),
-                    source,
-                )
-                inventory_rounds = {item.round_number for item in show.episodes}
-                races, fact_statistics = await enrich_race_facts(
-                    session,
-                    state,
-                    config,
-                    races,
-                    inventory_rounds,
-                    detail_logger,
-                )
-                summary["facts_resolved"] += fact_statistics["resolved"]
-                summary["facts_missing"] += fact_statistics["missing"]
-                summary["facts_stale"] += fact_statistics["stale"]
-                summary["venues_canonicalized"] += fact_statistics["canonicalized"]
-                summary["profiles_resolved"] += fact_statistics["profiles_resolved"]
-                summary["profiles_missing"] += fact_statistics["profiles_missing"]
-                issues.extend(fact_statistics["issues"])
-                race_by_round = {race.round_number: race for race in races}
+        branding_warnings = validate_branding(config)
+        summary["branding_warnings"] = len(branding_warnings)
+        for warning in branding_warnings:
+            detail_logger.warning("[Branding] %s", warning)
+        plans = await _prepare_plans(
+            sections, core_config, session, state, config, detail_logger, summary, issues
+        )
+        shows = [plan[0] for plan in plans]
+        current_keys = {
+            episode.logical_key for show in shows for episode in show.episodes
+        }
+        verification_records, verification_report = await verify_due_applications(
+            state, shows, config, core_config, session, run_id, detail_logger
+        )
+        summary["verification_applied"] = sum(
+            record.get("status") == "applied" for record in verification_records
+        )
+        summary["verification_partial"] = (
+            len(verification_records) - summary["verification_applied"]
+        )
+        summary["verification_report"] = (
+            str(verification_report) if verification_report else None
+        )
+        existing_keys = set(state.bindings())
+        stale = state.reconcile_bindings(
+            current_keys,
+            cleanup=bool(config["cleanup"].get("enabled", False)),
+            confirmation_scans=config["cleanup"]["confirmation_scans"],
+            grace_hours=config["cleanup"]["grace_hours"],
+        )
+        stale_keys = {binding["logical_key"] for binding in stale}
+        retained_keys = current_keys | (existing_keys - stale_keys)
+        for show, races, race_by_round in plans:
+            if show is not None:
                 poster_references = {}
                 circuit_paths = {}
+                artwork_changed = False
                 for round_number in sorted({item.round_number for item in show.episodes}):
-                    race = race_by_round.get(round_number)
-                    if race is None:
-                        issues.append(f"No schedule match: {show.title} round {round_number}")
-                        continue
+                    race = race_by_round[round_number]
                     destination = (
                         config["paths"]["assets"]
                         / str(show.year)
@@ -217,6 +327,7 @@ async def run_formula1_extension(
                             summary["artwork_created"] += 1
                         else:
                             summary["artwork_updated"] += 1
+                        artwork_changed = True
                     elif action == "adopt":
                         if not dry_run:
                             state.save_artwork(
@@ -247,13 +358,7 @@ async def run_formula1_extension(
                 ):
                     trigger_round = detected_rounds[-1]
                     trigger_race = race_by_round.get(trigger_round)
-                    if trigger_race is None:
-                        issues.append(
-                            f"Show artwork not rotated: {show.title} round {trigger_round} "
-                            "has no schedule match"
-                        )
-                        summary["show_artwork_missing"] += 1
-                    else:
+                    if trigger_race is not None:
                         rotation = await run_show_artwork_rotation(
                             session,
                             state,
@@ -271,14 +376,26 @@ async def run_formula1_extension(
                             summary["show_artwork_rotated"] += 1
                         elif rotation.action in {"restored", "restore-planned"}:
                             summary["show_artwork_restored"] += 1
+                        elif rotation.action in {"rerendered", "rerender-planned"}:
+                            summary["show_artwork_rerendered"] += 1
                         elif rotation.action == "unchanged":
                             summary["show_artwork_unchanged"] += 1
                         elif rotation.action in {"preserved", "preserve-manual"}:
                             summary["show_artwork_preserved"] += 1
                         else:
                             summary["show_artwork_missing"] += 1
+                        summary["show_artwork_pruned"] += rotation.pairs_pruned
+                        summary["source_cache_pruned"] += rotation.cache_pruned
                         if rotation.issue:
                             issues.append(f"Show artwork: {show.title}: {rotation.issue}")
+                        artwork_changed |= rotation.action in {
+                            "rotated",
+                            "restored",
+                            "rerendered",
+                            "rotate-planned",
+                            "restore-planned",
+                            "rerender-planned",
+                        }
                         detail_logger.info(
                             "[Show Artwork] %s | Trigger round: %02d | Action: %s | "
                             "Team: %s | Source: Wikimedia Commons",
@@ -288,8 +405,26 @@ async def run_formula1_extension(
                             rotation.constructor or "none",
                         )
                 if config["metadata"].get("enabled", True):
+                    authoritative_seasons, authoritative_episodes = _authoritative_children(
+                        retained_keys, show.year
+                    )
+                    previous_show = state.show_binding(show.year)
+                    previous_title = (
+                        previous_show["title"]
+                        if previous_show
+                        and str(previous_show["plex_rating_key"])
+                        == str(show.plex_rating_key)
+                        else None
+                    )
                     destination, changed, diagnostics = write_show_metadata(
-                        show, races, poster_references, config, show_artwork
+                        show,
+                        races,
+                        poster_references,
+                        config,
+                        show_artwork,
+                        authoritative_seasons=authoritative_seasons,
+                        authoritative_episodes=authoritative_episodes,
+                        previous_title=previous_title,
                     )
                     summary["metadata_updated" if changed else "metadata_unchanged"] += 1
                     detail_logger.info(
@@ -299,24 +434,58 @@ async def run_formula1_extension(
                         destination,
                         diagnostics["available"],
                     )
+                    if changed or artwork_changed:
+                        expected_entry = build_show_entry(
+                            show, races, poster_references, config, show_artwork
+                        )[0]
+                        expected_artwork = [
+                            {
+                                "child_key": f"season:{round_number}",
+                                "asset_type": "poster",
+                                "destination": str(
+                                    config["paths"]["assets"]
+                                    / str(show.year)
+                                    / f"round-{round_number:02d}"
+                                    / "poster.png"
+                                ),
+                            }
+                            for round_number in poster_references
+                        ]
+                        current_rotation = state.show_rotation(f"show:{show.year}")
+                        if current_rotation:
+                            expected_artwork.extend(
+                                [
+                                    {
+                                        "child_key": "",
+                                        "asset_type": "poster",
+                                        "destination": current_rotation["poster_destination"],
+                                    },
+                                    {
+                                        "child_key": "",
+                                        "asset_type": "background",
+                                        "destination": current_rotation[
+                                            "background_destination"
+                                        ],
+                                    },
+                                ]
+                            )
+                        queue_application_verification(
+                            state, show, expected_entry, expected_artwork, config
+                        )
+                    if not dry_run:
+                        state.bind_show(show.year, show.plex_rating_key, show.title)
                 for episode in show.episodes:
-                    current_keys.add(episode.logical_key)
-                    state.bind(
-                        episode.logical_key,
-                        episode.plex_rating_key,
-                        episode.media_path,
-                        f"{episode.event_name} - {episode.program_title}",
-                        episode.naming_profile,
-                    )
+                    if not dry_run:
+                        state.bind(
+                            episode.logical_key,
+                            episode.plex_rating_key,
+                            episode.media_path,
+                            f"{episode.event_name} - {episode.program_title}",
+                            episode.naming_profile,
+                        )
                 summary["episodes"] += len(show.episodes)
 
-        stale = state.reconcile_bindings(
-            current_keys,
-            cleanup=bool(config["cleanup"].get("enabled", False)),
-            confirmation_scans=config["cleanup"]["confirmation_scans"],
-            grace_hours=config["cleanup"]["grace_hours"],
-        )
-        active_rounds = {key.rsplit(":e", 1)[0] for key in current_keys}
+        active_rounds = {key.rsplit(":e", 1)[0] for key in retained_keys}
         removed_rounds = set()
         for binding in stale:
             round_key = binding["logical_key"].rsplit(":e", 1)[0]
@@ -341,9 +510,10 @@ async def run_formula1_extension(
             core_logger.info(
                 "[Formula 1] Summary | Libraries: %d | Shows: %d | Episodes: %d | "
                 "Metadata updated: %d | Artwork created/updated: %d/%d | "
-                "Show artwork rotated/preserved/missing: %d/%d/%d | "
+                "Show artwork rotated/rerendered/preserved/missing: %d/%d/%d/%d | "
                 "Circuit facts resolved/missing: %d/%d | Circuit profiles resolved/missing: "
-                "%d/%d | Venues canonicalized: %d | Issues: %d",
+                "%d/%d | Event mismatches: %d | Verification applied/partial: %d/%d | "
+                "Issues: %d",
                 summary["libraries"],
                 summary["shows"],
                 summary["episodes"],
@@ -351,13 +521,16 @@ async def run_formula1_extension(
                 summary["artwork_created"],
                 summary["artwork_updated"],
                 summary["show_artwork_rotated"],
+                summary["show_artwork_rerendered"],
                 summary["show_artwork_preserved"],
                 summary["show_artwork_missing"],
                 summary["facts_resolved"],
                 summary["facts_missing"],
                 summary["profiles_resolved"],
                 summary["profiles_missing"],
-                summary["venues_canonicalized"],
+                summary["event_mismatches"],
+                summary["verification_applied"],
+                summary["verification_partial"],
                 summary["issues"],
             )
         summary["log"] = str(log_path) if log_path else None

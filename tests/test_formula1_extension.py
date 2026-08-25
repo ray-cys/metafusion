@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -10,6 +11,7 @@ from PIL import Image
 
 from extensions.formula1 import config as formula1_config_module
 from extensions.formula1 import state as formula1_state_module
+from extensions.formula1 import verification as formula1_verification_module
 from extensions.formula1.artwork import (
     COUNTRY_FLAG_CODES,
     FLAG_ALPHA,
@@ -21,9 +23,12 @@ from extensions.formula1.artwork import (
     _font,
     _render_background,
     artwork_fingerprint,
+    branding_fingerprint,
     country_flag_asset,
+    fitted_font,
     render_round_poster,
     svg_path_points,
+    validate_branding,
 )
 from extensions.formula1.config import (
     Formula1ConfigError,
@@ -50,6 +55,7 @@ from extensions.formula1.inventory import (
     canonical_event,
     canonical_program,
     discover_formula1_inventory,
+    event_matches_schedule,
     parse_episode_filename,
 )
 from extensions.formula1.logging import create_formula1_logger, run_identifier
@@ -66,6 +72,7 @@ from extensions.formula1.provider import (
     parse_schedule,
 )
 from extensions.formula1.runner import (
+    _authoritative_children,
     _managed_artwork_action,
     _write_issues,
     partition_formula1_sections,
@@ -73,6 +80,12 @@ from extensions.formula1.runner import (
 )
 from extensions.formula1.show_artwork import ShowArtworkResult
 from extensions.formula1.state import Formula1State, Formula1StateError
+from extensions.formula1.verification import (
+    _selected_path,
+    _verify_artwork,
+    queue_application_verification,
+    verify_due_applications,
+)
 from modules.kometa import validate_generated_metadata, validate_metadata_document
 
 
@@ -303,6 +316,50 @@ def test_config_path_and_template_failure_cleanup(tmp_path, core, monkeypatch):
     with pytest.raises(OSError, match="replace"):
         sync_formula1_template(root)
     assert not list(root.glob("*.tmp"))
+
+
+def test_branding_validation_fingerprints_and_text_fit(tmp_path, core):
+    config = load_formula1_config(core, tmp_path / "config")
+    warnings = validate_branding(config)
+    assert len(warnings) == 3
+    branding = config["paths"]["branding"]
+    branding.mkdir(parents=True)
+    logo = branding / "logo.png"
+    Image.new("RGBA", (240, 80), (200, 20, 40, 255)).save(logo)
+    before = branding_fingerprint(config)
+    Image.new("RGBA", (260, 90), (220, 20, 40, 255)).save(logo)
+    assert branding_fingerprint(config)["logo"]["sha256"] != before["logo"]["sha256"]
+    assert len(validate_branding(config)) == 2
+    (branding / "font-bold.ttf").write_bytes(b"not a font")
+    with pytest.raises(ValueError, match="font is unreadable"):
+        validate_branding(config)
+    fitted = fitted_font(None, "A very long circuit name that must fit", 60, 12, 150)
+    assert fitted.getbbox("test")[2] > 0
+    logo.unlink()
+    Image.new("RGBA", (20, 10), (255, 0, 0, 255)).save(logo)
+    (branding / "font-bold.ttf").unlink()
+    with pytest.raises(ValueError, match="logo is unreadable or unsuitable"):
+        validate_branding(config)
+
+
+def test_event_schedule_match_and_unknown_program_warning(
+    tmp_path, core, schedule_payload
+):
+    race = parse_schedule(schedule_payload, 2026)[0]
+    assert event_matches_schedule("Australia Grand Prix", race)
+    assert not event_matches_schedule("Bahrain Grand Prix", race)
+    media = tmp_path / "S01E01 - Australia Grand Prix - Studio.Special.mkv"
+    section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
+    config = load_formula1_config(core, tmp_path / "config")
+    result = asyncio.run(
+        discover_formula1_inventory(
+            section,
+            {"runtime": core["runtime"], "formula1": config},
+            logging.getLogger("unknown-program"),
+        )
+    )
+    assert result.shows[0].episodes[0].program_kind == "other"
+    assert any("Unrecognized programme label" in issue for issue in result.issues)
 
 
 @pytest.mark.parametrize(
@@ -975,7 +1032,7 @@ def test_artwork_path_commands_fonts_logo_and_fallback(
 
 
 def test_country_flag_background_resolution_and_visual_structure(tmp_path, monkeypatch):
-    assert RENDERER_VERSION == 4
+    assert RENDERER_VERSION == 5
     for code in set(COUNTRY_FLAG_CODES.values()):
         with Image.open(FLAG_ASSET_ROOT / f"{code}.png") as flag:
             flag.verify()
@@ -1179,7 +1236,7 @@ def test_runner_end_to_end_isolated_outputs(tmp_path, core, schedule_payload):
             base_config_dir=tmp_path / "config",
         )
     )
-    assert missing["issues"] == 2
+    assert missing["issues"] == 1
     assert Path(missing["issue_report"]).exists()
 
 
@@ -1277,11 +1334,318 @@ def test_runner_cleanup_removes_only_owned_unchanged_round(tmp_path, core, sched
     assert not poster.exists()
 
 
+def test_runner_rejects_duplicate_year_before_outputs(tmp_path, core, schedule_payload):
+    first = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
+    second = tmp_path / "S01E02 - Australia Grand Prix - Highlights.mkv"
+    section = Section(
+        "Formula 1",
+        [
+            Show("F1 2026", [Season(1, [Episode(1, first)])], key="show-a"),
+            Show("Formula 2026", [Season(1, [Episode(2, second)])], key="show-b"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="One Plex show per Formula 1 championship year"):
+        asyncio.run(
+            run_formula1_extension(
+                [section],
+                core,
+                Session(schedule_payload, ""),
+                logging.getLogger("duplicate-year"),
+                base_config_dir=tmp_path / "config",
+            )
+        )
+    assert not (tmp_path / "kometa/metadata/formula1_2026.yml").exists()
+
+
+def test_runner_quarantines_filename_event_mismatch(tmp_path, core, schedule_payload):
+    media = tmp_path / "S01E01 - Bahrain Grand Prix - Race.mkv"
+    section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
+    summary = asyncio.run(
+        run_formula1_extension(
+            [section],
+            core,
+            Session(schedule_payload, ""),
+            logging.getLogger("event-mismatch"),
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    assert summary["event_mismatches"] == 1
+    assert summary["episodes"] == 0
+    assert not (tmp_path / "kometa/metadata/formula1_2026.yml").exists()
+
+
+def test_cleanup_grace_also_controls_yaml_reconciliation(
+    tmp_path, core, schedule_payload
+):
+    first = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
+    second = tmp_path / "S01E02 - Australia Grand Prix - Highlights.mkv"
+    populated = Section(
+        "Formula 1", [Show("F1 2026", [Season(1, [Episode(1, first), Episode(2, second)])])]
+    )
+    reduced = Section(
+        "Formula 1", [Show("F1 2026", [Season(1, [Episode(1, first)])])]
+    )
+    base = tmp_path / "config"
+    private = base / "formula1"
+    private.mkdir(parents=True)
+    (private / "formula1.yml").write_text(
+        "cleanup:\n  enabled: true\n  confirmation_scans: 2\n  grace_hours: 0\n"
+        "show_artwork:\n  enabled: false\n",
+        encoding="utf-8",
+    )
+    session = Session(schedule_payload, '<svg><path d="M0 0 L1 1"/></svg>')
+    for section in (populated, reduced):
+        asyncio.run(
+            run_formula1_extension(
+                [section], core, session, logging.getLogger("yaml-grace"), base_config_dir=base
+            )
+        )
+    path = tmp_path / "kometa/metadata/formula1_2026.yml"
+    document = yaml.safe_load(path.read_text())
+    assert 2 in document["metadata"]["F1 2026"]["seasons"][1]["episodes"]
+    asyncio.run(
+        run_formula1_extension(
+            [reduced], core, session, logging.getLogger("yaml-prune"), base_config_dir=base
+        )
+    )
+    document = yaml.safe_load(path.read_text())
+    assert 2 not in document["metadata"]["F1 2026"]["seasons"][1]["episodes"]
+
+
+def test_show_rename_migrates_owned_yaml_entry(tmp_path, core, schedule_payload):
+    config = load_formula1_config(core, tmp_path / "config")
+    inventory = __import__(
+        "extensions.formula1.inventory", fromlist=["Formula1Episode", "Formula1Show"]
+    )
+    episode = inventory.Formula1Episode(
+        2026, 1, 1, "Australian Grand Prix", "Race Session", "race",
+        tmp_path / "race.mkv", "episode", "current"
+    )
+    old = inventory.Formula1Show(2026, "F1 2026", "same-show", [episode])
+    race = parse_schedule(schedule_payload, 2026)[0]
+    path = write_show_metadata(old, [race], {1: "/config/poster.png"}, config)[0]
+    document = yaml.safe_load(path.read_text())
+    document["metadata"]["F1 2026"]["user_note"] = "keep"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    renamed = inventory.Formula1Show(2026, "Formula One 2026", "same-show", [episode])
+    write_show_metadata(
+        renamed,
+        [race],
+        {1: "/config/poster.png"},
+        config,
+        previous_title="F1 2026",
+    )
+    migrated = yaml.safe_load(path.read_text())["metadata"]
+    assert "F1 2026" not in migrated
+    assert migrated["Formula One 2026"]["user_note"] == "keep"
+
+
+def test_delayed_application_verification_queue_and_report(tmp_path, core, monkeypatch):
+    inventory = __import__(
+        "extensions.formula1.inventory", fromlist=["Formula1Show"]
+    )
+    config = load_formula1_config(core, tmp_path / "config")
+    config["verification"]["delay_hours"] = 0
+    plex_show = Show("F1 2026", [])
+    plex_show.summary = "Expected championship summary"
+    show = inventory.Formula1Show(
+        2026, "F1 2026", plex_show.ratingKey, [], plex_item=plex_show
+    )
+    state = Formula1State(config["paths"]["database"])
+    queue_application_verification(
+        state,
+        show,
+        {"summary": "Expected championship summary"},
+        [],
+        config,
+    )
+    records, report = asyncio.run(
+        verify_due_applications(
+            state,
+            [show],
+            config,
+            core,
+            None,
+            "verification-run",
+            logging.getLogger("verification"),
+        )
+    )
+    assert records[0]["status"] == "applied"
+    assert report.exists()
+    assert state.due_application_verifications() == []
+    for suffix in ("old-a", "old-b"):
+        (config["paths"]["reports"] / f"formula1-application-verification-{suffix}.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+    config["verification"]["retention"] = 1
+    monkeypatch.setattr(
+        formula1_verification_module,
+        "compare_kometa_entry",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("readback")),
+    )
+    state.queue_application_verification(
+        2026,
+        plex_show.ratingKey,
+        {
+            "metadata": {},
+            "artwork": [
+                {
+                    "child_key": "season:99",
+                    "asset_type": "poster",
+                    "destination": str(tmp_path / "missing-poster.png"),
+                }
+            ],
+        },
+        0,
+    )
+    partial, partial_report = asyncio.run(
+        verify_due_applications(
+            state,
+            [show],
+            config,
+            core,
+            None,
+            "zzzz-verification-partial",
+            logging.getLogger("verification"),
+        )
+    )
+    assert partial[0]["status"] == "partial"
+    assert partial[0]["artwork"][0]["status"] == "local_missing"
+    assert partial_report.exists()
+    assert len(list(config["paths"]["reports"].glob("formula1-application-verification-*.json"))) == 1
+    state.queue_application_verification(2027, "missing", {"metadata": {}, "artwork": []}, 0)
+    missing, _report = asyncio.run(
+        verify_due_applications(
+            state,
+            [show],
+            config,
+            core,
+            None,
+            "verification-missing",
+            logging.getLogger("verification"),
+        )
+    )
+    assert missing[0]["status"] == "unverifiable"
+    config["verification"]["enabled"] = False
+    assert asyncio.run(
+        verify_due_applications(
+            state, [show], config, core, None, "disabled", logging.getLogger("verification")
+        )
+    ) == ([], None)
+    queue_application_verification(state, show, {}, [], config)
+    config["verification"]["enabled"] = True
+    config["dry_run"] = True
+    queue_application_verification(state, show, {}, [], config)
+    state.close()
+
+
+def test_application_artwork_verification_outcomes(tmp_path, core, monkeypatch):
+    config = load_formula1_config(core, tmp_path / "config")
+    child = SimpleNamespace(index=1, thumb="/season-thumb")
+    show = SimpleNamespace(
+        thumb="/poster-thumb",
+        art="/background-thumb",
+        seasons=lambda: [child],
+    )
+    assert _selected_path(show, "", "poster") == "/poster-thumb"
+    assert _selected_path(show, "", "background") == "/background-thumb"
+    assert _selected_path(show, "season:1", "poster") == "/season-thumb"
+    assert _selected_path(show, "season:99", "poster") is None
+    missing = asyncio.run(
+        _verify_artwork(
+            show,
+            {"destination": str(tmp_path / "absent.png"), "asset_type": "poster"},
+            core,
+            config,
+            None,
+        )
+    )
+    assert missing["status"] == "local_missing"
+    local = tmp_path / "poster.png"
+    local.write_bytes(b"local")
+
+    async def unavailable(*_args):
+        return None, "not selected"
+
+    monkeypatch.setattr(formula1_verification_module, "_download_plex_image", unavailable)
+    unavailable_result = asyncio.run(
+        _verify_artwork(
+            show,
+            {"destination": str(local), "asset_type": "poster"},
+            core,
+            config,
+            None,
+        )
+    )
+    assert unavailable_result["status"] == "plex_unavailable"
+
+    async def downloaded(*_args):
+        return b"plex", None
+
+    monkeypatch.setattr(formula1_verification_module, "_download_plex_image", downloaded)
+    monkeypatch.setattr(
+        formula1_verification_module,
+        "analyze_image_content",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad image")),
+    )
+    invalid = asyncio.run(
+        _verify_artwork(
+            show,
+            {"destination": str(local), "asset_type": "poster"},
+            core,
+            config,
+            None,
+        )
+    )
+    assert invalid["status"] == "unverifiable"
+
+    def analysis(content, **_kwargs):
+        return {
+            "content_sha256": content.decode(),
+            "perceptual_hash": "0000" if content == b"local" else "ffff",
+        }
+
+    monkeypatch.setattr(formula1_verification_module, "analyze_image_content", analysis)
+    different = asyncio.run(
+        _verify_artwork(
+            show,
+            {"destination": str(local), "asset_type": "poster"},
+            core,
+            config,
+            None,
+        )
+    )
+    assert different["status"] == "not_selected"
+    monkeypatch.setattr(
+        formula1_verification_module,
+        "analyze_image_content",
+        lambda *_args, **_kwargs: {"content_sha256": "same", "perceptual_hash": "00"},
+    )
+    selected = asyncio.run(
+        _verify_artwork(
+            show,
+            {"destination": str(local), "asset_type": "poster"},
+            core,
+            config,
+            None,
+        )
+    )
+    assert selected["status"] == "selected" and selected["exact_match"]
+
+
+def test_authoritative_child_parser_ignores_unrelated_and_malformed_keys():
+    seasons, episodes = _authoritative_children(
+        {"2026:r01:e02", "2025:r01:e01", "2026:bad", "2026:rxx:e01"}, 2026
+    )
+    assert seasons == {1} and episodes == {1: {2}}
+
+
 @pytest.mark.parametrize(
     ("action", "counter", "references"),
     [
         ("rotated", "show_artwork_rotated", True),
         ("restored", "show_artwork_restored", True),
+        ("rerendered", "show_artwork_rerendered", True),
         ("unchanged", "show_artwork_unchanged", True),
         ("preserved", "show_artwork_preserved", True),
         ("missing", "show_artwork_missing", False),
@@ -1304,6 +1668,15 @@ def test_runner_maps_each_show_artwork_outcome(
         )
 
     monkeypatch.setattr("extensions.formula1.runner.run_show_artwork_rotation", result)
+    if action == "rerendered":
+        monkeypatch.setattr(
+            Formula1State,
+            "show_rotation",
+            lambda _state, _key: {
+                "poster_destination": str(tmp_path / "show-poster.png"),
+                "background_destination": str(tmp_path / "show-background.png"),
+            },
+        )
     summary = asyncio.run(
         run_formula1_extension(
             [section],

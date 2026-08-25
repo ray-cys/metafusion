@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from helper.io import atomic_replace_file
 
 FILE_MODE = 0o664
-RENDERER_VERSION = 4
+RENDERER_VERSION = 5
 TOKENS = re.compile(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
 FLAG_ASSET_ROOT = Path(__file__).with_name("assets") / "flags"
 FLAG_ALPHA = round(255 * 0.78)
@@ -129,6 +129,75 @@ def _font(path, size):
         return ImageFont.truetype("DejaVuSans.ttf", size)
     except OSError:
         return ImageFont.load_default()
+
+
+def branding_paths(config):
+    """Resolve branding filenames inside the extension-owned branding directory."""
+    branding = config["paths"]["branding"]
+    artwork = config["artwork"]
+    return {
+        "logo": branding / Path(str(artwork.get("logo", "logo.png"))).name,
+        "font_regular": branding / Path(
+            str(artwork.get("font_regular", "font-regular.ttf"))
+        ).name,
+        "font_bold": branding / Path(
+            str(artwork.get("font_bold", "font-bold.ttf"))
+        ).name,
+    }
+
+
+def branding_fingerprint(config):
+    values = {}
+    for name, path in branding_paths(config).items():
+        values[name] = {
+            "name": path.name,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file()
+            else "missing",
+        }
+    return values
+
+
+def validate_branding(config):
+    """Validate supplied files early; missing files intentionally use safe fallbacks."""
+    paths = branding_paths(config)
+    warnings = []
+    logo = paths["logo"]
+    if not logo.is_file():
+        warnings.append(f"Logo not supplied; using text fallback ({logo})")
+    else:
+        try:
+            with Image.open(logo) as image:
+                image.verify()
+            with Image.open(logo) as image:
+                width, height = image.size
+                if width < 120 or height < 40 or width * height > 20_000_000:
+                    raise ValueError("dimensions are unsuitable")
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Formula 1 logo is unreadable or unsuitable: {logo}") from error
+    for name in ("font_regular", "font_bold"):
+        path = paths[name]
+        if not path.is_file():
+            warnings.append(f"{name.replace('_', ' ').title()} not supplied; using fallback ({path})")
+            continue
+        try:
+            ImageFont.truetype(str(path), 32)
+        except OSError as error:
+            raise ValueError(f"Formula 1 font is unreadable: {path}") from error
+    return warnings
+
+
+def fitted_font(path, text, maximum, minimum, maximum_width):
+    """Return the largest configured font that keeps every supplied line in bounds."""
+    for size in range(int(maximum), int(minimum) - 1, -2):
+        font = _font(path, size)
+        widths = []
+        for line in str(text).splitlines() or [""]:
+            left, _top, right, _bottom = font.getbbox(line or " ")
+            widths.append(right - left)
+        if max(widths, default=0) <= maximum_width:
+            return font
+    return _font(path, minimum)
 
 
 def _curve(p0, p1, p2, p3, count=12):
@@ -258,8 +327,7 @@ def artwork_fingerprint(race, path_data, config):
         },
         "path": path_data,
         "size": [config["artwork"]["width"], config["artwork"]["height"]],
-        "logo": str(config["artwork"].get("logo", "")),
-        "font": str(config["artwork"].get("font_bold", "")),
+        "branding": branding_fingerprint(config),
         "country_flag": COUNTRY_FLAG_CODES.get(_country_key(race.country)),
         "renderer": RENDERER_VERSION,
     }
@@ -289,13 +357,20 @@ def render_round_poster(race, path_data, config, destination):
         width=max(2, width // 450),
     )
 
-    branding = config["paths"]["branding"]
-    regular = branding / config["artwork"].get("font_regular", "font-regular.ttf").split("/")[-1]
-    bold = branding / config["artwork"].get("font_bold", "font-bold.ttf").split("/")[-1]
-    title_font = _font(bold, max(56, width // 11))
-    detail_font = _font(regular, max(30, width // 25))
+    paths = branding_paths(config)
+    regular = paths["font_regular"]
+    bold = paths["font_bold"]
+    title = race.name.upper().replace(" GRAND PRIX", "\nGRAND PRIX")
+    title_font = fitted_font(bold, title, max(56, width // 11), 34, width - 140)
+    detail_font = fitted_font(
+        regular,
+        f"{race.circuit}\n{race.locality}, {race.country}",
+        max(30, width // 25),
+        22,
+        width - 140,
+    )
     round_font = _font(bold, max(26, width // 30))
-    logo_path = branding / config["artwork"].get("logo", "logo.png").split("/")[-1]
+    logo_path = paths["logo"]
     if logo_path.is_file():
         with Image.open(logo_path) as logo:
             logo.thumbnail((width // 3, height // 10))
@@ -309,7 +384,6 @@ def render_round_poster(race, path_data, config, destination):
         font=round_font,
         fill=(255, 255, 255, 210),
     )
-    title = race.name.upper().replace(" GRAND PRIX", "\nGRAND PRIX")
     draw.multiline_text((70, height * 0.59), title, font=title_font, fill="white", spacing=8)
     detail_y = int(height * 0.79)
     draw.text((70, detail_y), race.circuit, font=detail_font, fill=(255, 255, 255, 225))

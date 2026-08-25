@@ -1,5 +1,7 @@
 """Official Formula 1 event-fact discovery and validation."""
 
+from __future__ import annotations
+
 import html
 import json
 import re

@@ -1,6 +1,8 @@
 import asyncio
 import io
+import json
 import logging
+import os
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -35,7 +37,10 @@ from extensions.formula1.show_artwork import (
     SHOW_RENDERER_VERSION,
     _asset_reference,
     _candidate_order,
+    _checksum,
     _pair_integrity,
+    _prune_retained_pairs,
+    _prune_source_cache,
     render_show_background,
     render_show_poster,
     run_show_artwork_rotation,
@@ -475,7 +480,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.size == (600, 900)
     with Image.open(background) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 1
+    assert SHOW_RENDERER_VERSION == 2
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
 
 
@@ -604,6 +609,171 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         )
     )
     assert preserved.action == "preserve-manual" and preserved.issue
+    state.close()
+
+
+def test_same_round_renderer_change_rerenders_without_team_rotation(
+    config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    first = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("first")
+        )
+    )
+    current = state.show_rotation("show:2026")
+    source = current["source"]
+    source.pop("render_fingerprint")
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+    rerendered = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
+        )
+    )
+    assert first.constructor == rerendered.constructor
+    assert rerendered.action == "rerendered"
+    assert len(state.show_rotation_history()) == 1
+    state.close()
+
+
+def test_rotation_and_source_cache_retention_are_safe(config, show, race):
+    config["show_artwork"]["retention_pairs_per_season"] = 1
+    config["show_artwork"]["source_cache_retention_days"] = 1
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("retain-1")
+        )
+    )
+    first = state.show_rotation("show:2026")
+    Path(first["poster_destination"]).parent.joinpath("keep.txt").write_text("manual")
+    old_cache = config["paths"]["show_image_cache"] / "old.jpg"
+    old_cache.write_bytes(_photo_bytes())
+    os.utime(old_cache, (1, 1))
+    current_cache = config["paths"]["show_image_cache"] / "current.jpg"
+    current_cache.write_bytes(_photo_bytes())
+    os.utime(current_cache, (1, 1))
+    assert _prune_source_cache(config, current_cache) >= 1
+    assert current_cache.exists() and not old_cache.exists()
+    second_race = RaceData(**{**race.__dict__, "round_number": 2, "name": "Chinese Grand Prix"})
+    result = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            second_race,
+            "M0 0 L20 20",
+            logging.getLogger("retain-2"),
+        )
+    )
+    assert result.pairs_pruned == 1
+    assert len(state.show_rotation_history()) == 1
+    assert not Path(first["poster_destination"]).exists()
+    state.close()
+
+
+def test_pair_retention_preserves_unknown_current_and_modified_records(
+    tmp_path, config
+):
+    config["show_artwork"]["retention_pairs_per_season"] = 1
+
+    class State:
+        def __init__(self, history):
+            self.history = history
+            self.removed = []
+
+        def show_rotation_history(self):
+            return self.history
+
+        def remove_show_rotation_history(self, value):
+            self.removed.append(value)
+
+    current_poster = tmp_path / "current/poster.png"
+    current_background = tmp_path / "current/background.png"
+    current_poster.parent.mkdir()
+    current_poster.write_bytes(b"poster")
+    current_background.write_bytes(b"background")
+    unknown = {
+        "id": 1,
+        "logical_key": "show:2026",
+        "source": {},
+        "poster_destination": str(tmp_path / "unknown/poster.png"),
+        "background_destination": str(tmp_path / "unknown/background.png"),
+    }
+    current_history = {
+        "id": 2,
+        "logical_key": "show:2026",
+        "source": {
+            "generated_checksums": {
+                "poster": _checksum(current_poster),
+                "background": _checksum(current_background),
+            }
+        },
+        "poster_destination": str(current_poster),
+        "background_destination": str(current_background),
+    }
+    state = State([unknown, current_history])
+    current = {
+        "poster_destination": str(current_poster),
+        "background_destination": str(current_background),
+    }
+    assert _prune_retained_pairs(state, config, "show:2026", current) == 0
+    state.history = [current_history, unknown]
+    assert _prune_retained_pairs(state, config, "show:2026", current) == 0
+    modified_poster = tmp_path / "modified/poster.png"
+    modified_background = tmp_path / "modified/background.png"
+    modified_poster.parent.mkdir()
+    modified_poster.write_bytes(b"manual")
+    modified_background.write_bytes(b"background")
+    modified = {
+        "id": 3,
+        "logical_key": "show:2026",
+        "source": {
+            "generated_checksums": {
+                "poster": "not-the-current-checksum",
+                "background": _checksum(modified_background),
+            }
+        },
+        "poster_destination": str(modified_poster),
+        "background_destination": str(modified_background),
+    }
+    state.history = [modified, current_history]
+    assert _prune_retained_pairs(state, config, "show:2026", current) == 0
+    assert state.removed == []
+
+
+def test_older_round_does_not_replace_or_repair_newer_show_artwork(
+    config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    newer = RaceData(**{**race.__dict__, "round_number": 2, "name": "Chinese Grand Prix"})
+    asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, newer, None, logging.getLogger("newer")
+        )
+    )
+    managed = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, None, logging.getLogger("older")
+        )
+    )
+    assert managed.action == "unchanged"
+    current = state.show_rotation("show:2026")
+    Path(current["background_destination"]).unlink()
+    missing = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, None, logging.getLogger("older-missing")
+        )
+    )
+    assert missing.action == "preserved" and "newer round" in missing.issue
     state.close()
 
 
