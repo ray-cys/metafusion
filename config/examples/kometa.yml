@@ -9,8 +9,8 @@ settings:
   schedule_catch_up: true
   schedule_catch_up_max_hours: 24.0
   run_times:
-  - "06:00"
-  - "18:30"
+    - "06:00"
+    - "18:30"
   dry_run: false
   log_level: INFO
   log_max_mb: 10.0
