@@ -23,17 +23,67 @@ shows in this library.
 ## Supported layouts
 
 `library.naming_profile: auto` recognizes both layouts and records which parser
-was used:
+was used. The default `auto` profile lets both conventions coexist while a
+library is being renamed.
+
+### Current MetaFusion layout
+
+Use one show folder per championship year, one Plex season per race round, and
+one episode per programme:
 
 ```text
-F1 2026/Season 01/S01E01 - Australia Grand Prix - Weekend.Warm-Up.mkv
-Formula/Season 2018/01 - Australian GP/01x01 - Australian GP - Free Practice 1.mkv
+F1 2026/
+├── Season 01/
+│   ├── S01E01 - Australia Grand Prix - Weekend.Warm-Up.mkv
+│   ├── S01E02 - Australia Grand Prix - FP1.mkv
+│   ├── S01E09 - Australia Grand Prix - Pre-Qualifying.Show.mkv
+│   ├── S01E10 - Australia Grand Prix - Qualifying.mkv
+│   ├── S01E12 - Australia Grand Prix - Pre-Race.Show.mkv
+│   ├── S01E13 - Australia Grand Prix - Race.mkv
+│   └── S01E14 - Australia Grand Prix - Post-Race.Show.mkv
+└── Season 02/
+    └── S02E01 - China Grand Prix - Weekend.Warm-Up.mkv
 ```
 
-Filename season numbers are the race round and episode numbers are the program
-slot. The parser validates both against Plex. Ambiguous or duplicate logical
-identities are reported and excluded. Season 0 is ignored by default; set
-`testing.include: true` to include testing programs.
+### Kometa Formula 1 layout
+
+The Kometa-style convention places each race in a round folder. The filename
+still supplies the round and programme slot used by Plex and MetaFusion:
+
+```text
+Formula/
+└── Season 2018/
+    ├── 01 - Australian GP/
+    │   ├── 01x01 - Australian GP - Free Practice 1.mkv
+    │   ├── 01x04 - Australian GP - Pre-Qualifying Buildup.mkv
+    │   ├── 01x05 - Australian GP - Qualifying Session.mkv
+    │   ├── 01x07 - Australian GP - Pre-Race Buildup.mkv
+    │   ├── 01x08 - Australian GP - Race Session.mkv
+    │   ├── 01x09 - Australian GP - Post-Race Analysis.mkv
+    │   └── 01x10 - Australian GP - Highlights.mkv
+    └── 02 - Bahrain GP/
+        └── 02x01 - Bahrain GP - Free Practice 1.mkv
+```
+
+In both layouts, the first number is the race round and the second is the
+programme slot. They must match the season and episode numbers reported by Plex.
+Episode slots do not need to be consecutive, but each round/slot combination
+must be unique.
+
+Recognized programme labels include `Weekend Warm-Up`, `FP1` through `FP3`,
+`Free Practice 1` through `Free Practice 3`, `Sprint Qualifying`,
+`Pre-Sprint Show`, `Sprint`, `Post-Sprint Show`, `Pre-Qualifying Show`,
+`Qualifying`, `Post-Qualifying Show`, `Pre-Race Show`, `Race`, `Post-Race Show`,
+and `Highlights`. The equivalent `Buildup`, `Session`, and `Analysis` names from
+the Kometa layout are also accepted. Dots, underscores, and backslashes in the
+programme portion are treated as spaces.
+
+The event portion may use `Grand Prix` or `GP`; common aliases such as
+`Australia`/`Australian`, `Britain`/`British`, and
+`Netherlands`/`Dutch` are normalized before schedule matching. Ambiguous,
+unsupported, or duplicate logical identities are reported and excluded rather
+than guessed. Season 0 is ignored by default; set `testing.include: true` to
+include testing programmes.
 
 ## Outputs and ownership
 
