@@ -69,7 +69,7 @@ def _episode_summary(episode, race):
     )
 
 
-def build_show_entry(show, races, poster_references, config):
+def build_show_entry(show, races, poster_references, config, show_artwork=None):
     by_round = {race.round_number: race for race in races}
     seasons: dict[int, dict] = {}
     authoritative_episodes: defaultdict[int, set[int]] = defaultdict(set)
@@ -106,13 +106,18 @@ def build_show_entry(show, races, poster_references, config):
         "summary": f"The {show.year} FIA Formula One World Championship.",
         "seasons": seasons,
     }
+    if show_artwork:
+        generated["file_poster"] = show_artwork.get("poster")
+        generated["file_background"] = show_artwork.get("background")
     return generated, set(seasons), dict(authoritative_episodes)
 
 
-def write_show_metadata(show, races, poster_references, config):
+def write_show_metadata(show, races, poster_references, config, show_artwork=None):
     destination = config["paths"]["metadata"] / f"formula1_{show.year}.yml"
     document = _read_document(destination)
-    generated, seasons, episodes = build_show_entry(show, races, poster_references, config)
+    generated, seasons, episodes = build_show_entry(
+        show, races, poster_references, config, show_artwork
+    )
     existing = document["metadata"].get(show.title, {})
     merged, diagnostics = merge_generated_metadata(
         existing,

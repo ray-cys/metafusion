@@ -99,6 +99,30 @@ class Formula1State:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS show_rotation_state (
+                    logical_key TEXT PRIMARY KEY,
+                    season_year INTEGER NOT NULL,
+                    trigger_round INTEGER NOT NULL,
+                    constructor_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    poster_destination TEXT NOT NULL,
+                    poster_checksum TEXT NOT NULL,
+                    background_destination TEXT NOT NULL,
+                    background_checksum TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS show_rotation_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    logical_key TEXT NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    trigger_round INTEGER NOT NULL,
+                    constructor_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    poster_destination TEXT NOT NULL,
+                    background_destination TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(logical_key, trigger_round, source)
+                );
                 """
             )
             row = self.connection.execute("SELECT version FROM schema_info LIMIT 1").fetchone()
@@ -190,6 +214,96 @@ class Formula1State:
     def remove_artwork(self, logical_key):
         with self.connection:
             self.connection.execute("DELETE FROM artwork_state WHERE logical_key=?", (logical_key,))
+
+    def show_rotation(self, logical_key):
+        row = self.connection.execute(
+            "SELECT * FROM show_rotation_state WHERE logical_key=?", (logical_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        value["source"] = json.loads(value["source"])
+        return value
+
+    def save_show_rotation(
+        self,
+        logical_key,
+        season_year,
+        trigger_round,
+        constructor_id,
+        source,
+        poster_destination,
+        poster_checksum,
+        background_destination,
+        background_checksum,
+        *,
+        now=None,
+    ):
+        current = (now or utc_now()).isoformat()
+        source_json = json.dumps(source, sort_keys=True)
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO show_rotation_state(
+                       logical_key, season_year, trigger_round, constructor_id, source,
+                       poster_destination, poster_checksum, background_destination,
+                       background_checksum, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(logical_key) DO UPDATE SET
+                     season_year=excluded.season_year,
+                     trigger_round=excluded.trigger_round,
+                     constructor_id=excluded.constructor_id,
+                     source=excluded.source,
+                     poster_destination=excluded.poster_destination,
+                     poster_checksum=excluded.poster_checksum,
+                     background_destination=excluded.background_destination,
+                     background_checksum=excluded.background_checksum,
+                     updated_at=excluded.updated_at""",
+                (
+                    logical_key,
+                    int(season_year),
+                    int(trigger_round),
+                    constructor_id,
+                    source_json,
+                    str(poster_destination),
+                    poster_checksum,
+                    str(background_destination),
+                    background_checksum,
+                    current,
+                ),
+            )
+            history_exists = self.connection.execute(
+                """SELECT 1 FROM show_rotation_history
+                   WHERE logical_key=? AND trigger_round=? AND constructor_id=? LIMIT 1""",
+                (logical_key, int(trigger_round), constructor_id),
+            ).fetchone()
+            if history_exists is None:
+                self.connection.execute(
+                    """INSERT INTO show_rotation_history(
+                           logical_key, season_year, trigger_round, constructor_id, source,
+                           poster_destination, background_destination, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        logical_key,
+                        int(season_year),
+                        int(trigger_round),
+                        constructor_id,
+                        source_json,
+                        str(poster_destination),
+                        str(background_destination),
+                        current,
+                    ),
+                )
+
+    def show_rotation_history(self):
+        rows = self.connection.execute(
+            "SELECT * FROM show_rotation_history ORDER BY season_year, trigger_round, id"
+        ).fetchall()
+        values = []
+        for row in rows:
+            value = dict(row)
+            value["source"] = json.loads(value["source"])
+            values.append(value)
+        return values
 
     def start_run(self, run_id, *, now=None):
         started = (now or utc_now()).isoformat()

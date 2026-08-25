@@ -26,11 +26,28 @@ artwork:
   font_regular: branding/font-regular.ttf
   font_bold: branding/font-bold.ttf
 
+# The supplied logo and fonts above are also used for the show artwork frame.
+# Poster/background rotation is triggered by a newly discovered Plex race round,
+# never by container uptime or by a calendar entry that is not yet in Plex.
+show_artwork:
+  enabled: true
+  trigger: plex_new_race
+  policy: managed
+  poster_width: 1000
+  poster_height: 1500
+  background_width: 1920
+  background_height: 1080
+  minimum_source_width: 1600
+  minimum_source_height: 900
+  asset_reference_root: config/assets/formula1/shows
+
 providers:
   jolpica_url: https://api.jolpi.ca/ergast/f1
   formula1_url: https://www.formula1.com/en/racing
   circuit_svg_url: https://raw.githubusercontent.com/julesr0y/f1-circuits-svg/main/circuits/detailed/black-outline
   circuit_manifest_url: https://api.github.com/repos/julesr0y/f1-circuits-svg/contents/circuits/detailed/black-outline
+  commons_url: https://commons.wikimedia.org/w/api.php
+  commons_cache_hours: 24
   cache_hours: 24
   retries: 3
 

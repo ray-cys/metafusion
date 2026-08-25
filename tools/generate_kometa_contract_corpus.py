@@ -147,6 +147,12 @@ def _formula1_document():
             "f1_season": 2026,
             "round_prefix": True,
             "shorten_gp": False,
+            "file_poster": (
+                "/config/assets/formula1/shows/2026/round-01-alpine-source/poster.png"
+            ),
+            "file_background": (
+                "/config/assets/formula1/shows/2026/round-01-alpine-source/background.png"
+            ),
             "content_rating": "PG-13",
             "studio": "F1TV",
             "summary": "The 2026 FIA Formula One World Championship.",

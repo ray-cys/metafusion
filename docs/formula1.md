@@ -89,9 +89,14 @@ include testing programmes.
 
 - Metadata: `/kometa/metadata/formula1_<year>.yml`
 - Artwork: `/kometa/assets/formula1/rounds/<year>/round-<nn>/poster.png`
+- Rotating show artwork:
+  `/kometa/assets/formula1/shows/<year>/round-<nn>-<team>-<source>/poster.png`
+  and `background.png`
 - State: `/config/formula1/cache/formula1.sqlite3`
 - Run logs: `/config/formula1/logs/formula1-<run-id>.log`
 - Issue reports: `/config/formula1/reports/formula1-issues-<run-id>.json`
+- Show-artwork attribution:
+  `/config/formula1/reports/formula1-show-artwork-attribution.txt` and `.json`
 
 Generated YAML uses Kometa Formula 1 controls (`f1_season`, `round_prefix`, and
 `shorten_gp`) plus show, round, and episode edits. Existing non-MetaFusion YAML
@@ -128,6 +133,55 @@ replacement. A managed file modified after adoption is treated as manual artwork
 and preserved. Renderer revisions regenerate only unchanged extension-managed
 posters; adopted and manually edited posters remain protected.
 
+### Race-triggered show poster and background rotation
+
+`show_artwork.enabled: true` creates a paired show poster and 16:9 background
+using the same licensed current-season car photograph. This is separate from the
+round/season posters described above. The portrait uses a stable black, charcoal,
+white, and red technical frame, with the complete landscape photograph fitted in
+a horizontal band so the car is not stretched or cut off. The 16:9 background
+uses the same photograph with the car kept toward the right and a dark Plex-safe
+title area on the left. Both designs use the supplied logo and fonts.
+
+Rotation is not time-based. `show_artwork.trigger: plex_new_race` means a new
+pair is selected only when MetaFusion successfully parses at least one episode
+from a race-round season that is newer than the last applied round. Merely adding
+an event to the public calendar does not rotate anything. Container restarts and
+repeated scans of the same Plex inventory also do not rotate anything. For
+example, adding the first valid episode under Plex Season 05 changes the current
+show pair to Round 05; subsequent episodes added to Season 05 leave that pair
+unchanged. The next rotation happens when a valid Season 06 episode appears.
+
+The pair is written to a versioned round/team/source directory before the Kometa
+YAML is updated. This prevents a half-written poster/background pair from becoming
+active. The generated show entry uses `file_poster` and `file_background`; Kometa
+applies both to Plex on its next normal run. MetaFusion does not call Plex directly
+from this Kometa-only extension.
+Because those two YAML fields are the application mechanism, disabling
+`metadata.enabled` also prevents new show-artwork rotations. Disabling only
+`show_artwork.enabled` stops future rotation while leaving the last valid YAML
+references and artwork intact.
+
+The team roster is discovered for the detected championship year rather than
+being hard-coded. The next constructor is chosen deterministically after the
+previous one, so new, renamed, or departing constructors can be handled without
+an annual code edit. The current race round is retained in the design while the
+car layer advances through the available constructors. Rotation state is stored
+in the isolated Formula 1 SQLite database and is based on Plex inventory, never
+Docker uptime.
+
+If a current-season photograph is not safely available, MetaFusion keeps the
+previous valid pair and retries after the provider cache expires. It will not use
+an older car, a different team, an ambiguous result, or a photograph with an
+incompatible licence merely to force a rotation. This means the workflow requires
+no annual input, but a newly revealed car may temporarily retain the previous
+pair until a reusable photograph becomes available.
+
+The source output is managed. If either file in the active pair no longer matches
+its recorded checksum, both automatic repair and future rotation pause so a
+manual edit cannot be silently displaced. If a managed file is merely missing,
+MetaFusion recreates the matched pair from its recorded licensed source.
+
 ## Branding
 
 Place user-supplied files in `/config/formula1/branding`:
@@ -139,6 +193,9 @@ Place user-supplied files in `/config/formula1/branding`:
 If files are absent, MetaFusion uses a generic text mark and an installed fallback
 font. MetaFusion does not download, bundle, or claim rights to Formula 1 logos or
 commercial fonts. You are responsible for permission to use supplied branding.
+The same three branding files are used for both race-round posters and rotating
+show-level poster/background designs; no second logo or font configuration is
+required.
 
 ## Data and network behavior
 
@@ -171,6 +228,27 @@ fallback and the condition is logged rather than guessed.
 Provider responses are validated, cached in the extension database, retried, and
 may use an explicitly logged stale cache during a temporary outage. Missing
 schedule identity prevents that round from being written rather than guessing.
+
+Current-season car photographs come from the Wikimedia Commons API without an
+API key. MetaFusion discovers the live constructor roster from Jolpica, searches
+each constructor dynamically, and requires the season year plus an unambiguous
+team identity in the Commons file title. It rejects historic cars, models,
+sculptures, safety cars, portraits, undersized or portrait images, ambiguous
+teams, non-image responses, corrupt or blank files, and incompatible licences.
+Accepted licences are Public Domain, CC0, and attribution-only CC BY variants;
+ShareAlike, NonCommercial, and NoDerivatives media are not used by the automatic
+renderer. Downloaded pixels are decoded and checked for dimensions, aspect ratio,
+visual content, and sharpness before being cached under `/config/formula1/cache`.
+
+For every retained generated pair, the persistent TXT and JSON attribution reports
+record the Commons page, source title, author, licence, licence URL, team, season,
+trigger round, and generated destinations. Old versioned pairs remain covered by
+the report. MetaFusion uses the original photograph as a deterministic compositing
+layer; it does not regenerate, repaint, or distort the car with AI.
+
+Wikimedia's reuse and API guidance is available at
+<https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia>
+and <https://commons.wikimedia.org/wiki/Commons:API>.
 
 The circuit outline attribution is maintained here as required by its licence:
 “F1 circuits SVG”, ROY Jules, CC BY 4.0,

@@ -129,6 +129,49 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     if str(artwork.get("policy", "managed")).casefold() != "managed":
         raise Formula1ConfigError("artwork.policy currently supports only managed")
 
+    show_artwork = config.setdefault("show_artwork", {})
+    show_artwork["enabled"] = bool(show_artwork.get("enabled", True))
+    show_artwork["poster_width"] = _bounded_int(
+        show_artwork.get("poster_width", 1000), "show_artwork.poster_width", 600, 3000
+    )
+    show_artwork["poster_height"] = _bounded_int(
+        show_artwork.get("poster_height", 1500), "show_artwork.poster_height", 900, 4500
+    )
+    if show_artwork["poster_height"] * 2 != show_artwork["poster_width"] * 3:
+        raise Formula1ConfigError("show artwork poster dimensions must use a 2:3 aspect ratio")
+    show_artwork["background_width"] = _bounded_int(
+        show_artwork.get("background_width", 1920),
+        "show_artwork.background_width",
+        1280,
+        3840,
+    )
+    show_artwork["background_height"] = _bounded_int(
+        show_artwork.get("background_height", 1080),
+        "show_artwork.background_height",
+        720,
+        2160,
+    )
+    if show_artwork["background_width"] * 9 != show_artwork["background_height"] * 16:
+        raise Formula1ConfigError("show artwork background dimensions must use a 16:9 aspect ratio")
+    if str(show_artwork.get("trigger", "plex_new_race")).casefold() != "plex_new_race":
+        raise Formula1ConfigError("show_artwork.trigger currently supports only plex_new_race")
+    show_artwork["trigger"] = "plex_new_race"
+    if str(show_artwork.get("policy", "managed")).casefold() != "managed":
+        raise Formula1ConfigError("show_artwork.policy currently supports only managed")
+    show_artwork["policy"] = "managed"
+    show_artwork["minimum_source_width"] = _bounded_int(
+        show_artwork.get("minimum_source_width", 1600),
+        "show_artwork.minimum_source_width",
+        800,
+        5000,
+    )
+    show_artwork["minimum_source_height"] = _bounded_int(
+        show_artwork.get("minimum_source_height", 900),
+        "show_artwork.minimum_source_height",
+        450,
+        3000,
+    )
+
     providers = config.setdefault("providers", {})
     providers["cache_hours"] = _bounded_float(
         providers.get("cache_hours", 24), "providers.cache_hours", 1, 720
@@ -150,6 +193,16 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     if not manifest_url.startswith("https://"):
         raise Formula1ConfigError("providers.circuit_manifest_url must use HTTPS")
     providers["circuit_manifest_url"] = manifest_url
+    commons_url = str(providers.get("commons_url", "")).strip().rstrip("/")
+    if not commons_url.startswith("https://commons.wikimedia.org/"):
+        raise Formula1ConfigError("providers.commons_url must use Wikimedia Commons HTTPS")
+    providers["commons_url"] = commons_url
+    providers["commons_cache_hours"] = _bounded_float(
+        providers.get("commons_cache_hours", 24),
+        "providers.commons_cache_hours",
+        1,
+        168,
+    )
 
     cleanup = config.setdefault("cleanup", {})
     cleanup["confirmation_scans"] = _bounded_int(
@@ -181,6 +234,10 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         "reports": root / "reports",
         "metadata": _resolve_under(kometa_root, "metadata", "metadata output"),
         "assets": _resolve_under(kometa_root, "assets/formula1/rounds", "artwork output"),
+        "show_assets": _resolve_under(
+            kometa_root, "assets/formula1/shows", "show artwork output"
+        ),
+        "show_image_cache": root / "cache" / "show-artwork",
         "branding": root / "branding",
     }
     config["dry_run"] = bool(dry_run)

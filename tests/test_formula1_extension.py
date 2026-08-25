@@ -70,6 +70,7 @@ from extensions.formula1.runner import (
     partition_formula1_sections,
     run_formula1_extension,
 )
+from extensions.formula1.show_artwork import ShowArtworkResult
 from extensions.formula1.state import Formula1State, Formula1StateError
 from modules.kometa import validate_generated_metadata, validate_metadata_document
 
@@ -1168,7 +1169,7 @@ def test_runner_end_to_end_isolated_outputs(tmp_path, core, schedule_payload):
             base_config_dir=tmp_path / "config",
         )
     )
-    assert missing["issues"] == 1
+    assert missing["issues"] == 2
     assert Path(missing["issue_report"]).exists()
 
 
@@ -1264,6 +1265,51 @@ def test_runner_cleanup_removes_only_owned_unchanged_round(tmp_path, core, sched
     )
     assert cleaned["cleanup_removed"] == 1
     assert not poster.exists()
+
+
+@pytest.mark.parametrize(
+    ("action", "counter", "references"),
+    [
+        ("rotated", "show_artwork_rotated", True),
+        ("restored", "show_artwork_restored", True),
+        ("unchanged", "show_artwork_unchanged", True),
+        ("preserved", "show_artwork_preserved", True),
+        ("missing", "show_artwork_missing", False),
+    ],
+)
+def test_runner_maps_each_show_artwork_outcome(
+    tmp_path, core, schedule_payload, monkeypatch, action, counter, references
+):
+    media = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
+    section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
+
+    async def result(*_args, **_kwargs):
+        return ShowArtworkResult(
+            action,
+            1,
+            "/config/assets/formula1/shows/2026/poster.png" if references else None,
+            "/config/assets/formula1/shows/2026/background.png" if references else None,
+            "Test Team" if references else None,
+            "no source" if action == "missing" else None,
+        )
+
+    monkeypatch.setattr("extensions.formula1.runner.run_show_artwork_rotation", result)
+    summary = asyncio.run(
+        run_formula1_extension(
+            [section],
+            core,
+            Session(schedule_payload, '<svg><path d="M0 0 L1 1"/></svg>'),
+            logging.getLogger(f"show-artwork-{action}"),
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    assert summary[counter] == 1
+    metadata = yaml.safe_load((tmp_path / "kometa/metadata/formula1_2026.yml").read_text())
+    if references:
+        assert metadata["metadata"]["F1 2026"]["file_poster"].endswith("poster.png")
+        assert metadata["metadata"]["F1 2026"]["file_background"].endswith("background.png")
+    else:
+        assert "file_poster" not in metadata["metadata"]["F1 2026"]
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])

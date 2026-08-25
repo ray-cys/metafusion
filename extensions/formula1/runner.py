@@ -12,6 +12,7 @@ from extensions.formula1.inventory import discover_formula1_inventory
 from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import write_show_metadata
 from extensions.formula1.provider import load_circuit_path, load_schedule
+from extensions.formula1.show_artwork import run_show_artwork_rotation
 from extensions.formula1.state import Formula1State
 from helper.io import atomic_write_text
 
@@ -27,6 +28,11 @@ class Formula1Summary(TypedDict):
     artwork_adopted: int
     artwork_preserved: int
     artwork_unchanged: int
+    show_artwork_rotated: int
+    show_artwork_restored: int
+    show_artwork_unchanged: int
+    show_artwork_preserved: int
+    show_artwork_missing: int
     facts_resolved: int
     facts_missing: int
     facts_stale: int
@@ -121,6 +127,11 @@ async def run_formula1_extension(
         "artwork_adopted": 0,
         "artwork_preserved": 0,
         "artwork_unchanged": 0,
+        "show_artwork_rotated": 0,
+        "show_artwork_restored": 0,
+        "show_artwork_unchanged": 0,
+        "show_artwork_preserved": 0,
+        "show_artwork_missing": 0,
         "facts_resolved": 0,
         "facts_missing": 0,
         "facts_stale": 0,
@@ -179,6 +190,7 @@ async def run_formula1_extension(
                 issues.extend(fact_statistics["issues"])
                 race_by_round = {race.round_number: race for race in races}
                 poster_references = {}
+                circuit_paths = {}
                 for round_number in sorted({item.round_number for item in show.episodes}):
                     race = race_by_round.get(round_number)
                     if race is None:
@@ -193,6 +205,7 @@ async def run_formula1_extension(
                     path_data, shape_source = await load_circuit_path(
                         session, state, config, race, detail_logger
                     )
+                    circuit_paths[round_number] = path_data
                     fingerprint = artwork_fingerprint(race, path_data, config)
                     logical_key = f"{show.year}:r{round_number:02d}"
                     action = _managed_artwork_action(state, logical_key, destination, fingerprint)
@@ -225,9 +238,58 @@ async def run_formula1_extension(
                         action,
                         shape_source,
                     )
+                show_artwork = {}
+                detected_rounds = sorted({item.round_number for item in show.episodes})
+                if (
+                    config["show_artwork"].get("enabled", True)
+                    and config["metadata"].get("enabled", True)
+                    and detected_rounds
+                ):
+                    trigger_round = detected_rounds[-1]
+                    trigger_race = race_by_round.get(trigger_round)
+                    if trigger_race is None:
+                        issues.append(
+                            f"Show artwork not rotated: {show.title} round {trigger_round} "
+                            "has no schedule match"
+                        )
+                        summary["show_artwork_missing"] += 1
+                    else:
+                        rotation = await run_show_artwork_rotation(
+                            session,
+                            state,
+                            config,
+                            show,
+                            trigger_race,
+                            circuit_paths.get(trigger_round),
+                            detail_logger,
+                        )
+                        if rotation.poster_reference:
+                            show_artwork["poster"] = rotation.poster_reference
+                        if rotation.background_reference:
+                            show_artwork["background"] = rotation.background_reference
+                        if rotation.action in {"rotated", "rotate-planned"}:
+                            summary["show_artwork_rotated"] += 1
+                        elif rotation.action in {"restored", "restore-planned"}:
+                            summary["show_artwork_restored"] += 1
+                        elif rotation.action == "unchanged":
+                            summary["show_artwork_unchanged"] += 1
+                        elif rotation.action in {"preserved", "preserve-manual"}:
+                            summary["show_artwork_preserved"] += 1
+                        else:
+                            summary["show_artwork_missing"] += 1
+                        if rotation.issue:
+                            issues.append(f"Show artwork: {show.title}: {rotation.issue}")
+                        detail_logger.info(
+                            "[Show Artwork] %s | Trigger round: %02d | Action: %s | "
+                            "Team: %s | Source: Wikimedia Commons",
+                            show.title,
+                            rotation.trigger_round,
+                            rotation.action,
+                            rotation.constructor or "none",
+                        )
                 if config["metadata"].get("enabled", True):
                     destination, changed, diagnostics = write_show_metadata(
-                        show, races, poster_references, config
+                        show, races, poster_references, config, show_artwork
                     )
                     summary["metadata_updated" if changed else "metadata_unchanged"] += 1
                     detail_logger.info(
@@ -279,6 +341,7 @@ async def run_formula1_extension(
             core_logger.info(
                 "[Formula 1] Summary | Libraries: %d | Shows: %d | Episodes: %d | "
                 "Metadata updated: %d | Artwork created/updated: %d/%d | "
+                "Show artwork rotated/preserved/missing: %d/%d/%d | "
                 "Circuit facts resolved/missing: %d/%d | Circuit profiles resolved/missing: "
                 "%d/%d | Venues canonicalized: %d | Issues: %d",
                 summary["libraries"],
@@ -287,6 +350,9 @@ async def run_formula1_extension(
                 summary["metadata_updated"],
                 summary["artwork_created"],
                 summary["artwork_updated"],
+                summary["show_artwork_rotated"],
+                summary["show_artwork_preserved"],
+                summary["show_artwork_missing"],
                 summary["facts_resolved"],
                 summary["facts_missing"],
                 summary["profiles_resolved"],
