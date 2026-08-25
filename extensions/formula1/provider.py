@@ -52,6 +52,9 @@ class RaceData:
     circuit_length_km: float | None = None
     lap_count: int | None = None
     race_distance_km: float | None = None
+    first_grand_prix_year: int | None = None
+    circuit_profile: str | None = None
+    circuit_history: str | None = None
     session_dates: dict[str, str] = field(default_factory=dict)
 
     @property

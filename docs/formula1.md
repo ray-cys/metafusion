@@ -101,12 +101,19 @@ when available and fall back to the race date. Circuit length, scheduled race
 distance, and scheduled lap count are taken from the matching official event
 page and cross-validated before use. MetaFusion omits unavailable facts instead
 of writing a misleading `to be confirmed` value; the missing fact is recorded in
-the Formula 1 issue report. After the official page passes venue-identity checks,
-its canonical circuit name and precise meeting locality are used in round and
-episode summaries. Jolpica remains authoritative for race name, round order,
-country, session dates, and race dates. A country-level official location never
-replaces a more precise Jolpica locality. The extension ignores unrelated Kometa
-metadata files.
+the Formula 1 issue report. The same validated page supplies the venue's first
+Grand Prix year and its `What's the circuit like?` section. MetaFusion maps the
+official description to a controlled set of factual characteristics—such as
+street, fast, technical, flowing, heavy-braking, chicanes, or hairpin—and writes
+a concise attributed profile instead of copying Formula1.com's editorial text.
+Unavailable history or characteristics are omitted and reported rather than
+invented. After the official page passes venue-identity checks, its canonical
+circuit name and precise meeting locality are used in round and episode
+summaries. Jolpica remains authoritative for race name, round order, country,
+session dates, and race dates. A country-level official location never replaces
+a more precise Jolpica locality. Metadata-only profile changes do not regenerate
+otherwise unchanged artwork. The extension ignores unrelated Kometa metadata
+files.
 
 Artwork is deterministic. It combines schedule/circuit facts, a translucent
 host-country flag and colour gradient, circuit outline, race title, circuit,
@@ -138,11 +145,15 @@ commercial fonts. You are responsible for permission to use supplied branding.
 Calendar, round, venue, and session dates come from the Jolpica F1 API. Circuit
 length, scheduled lap count, and scheduled race distance come from the matching
 Formula1.com event page because those fields are not present in Jolpica's season
-schedule response. MetaFusion discovers the official event links for each season,
-validates plausible ranges and the length/lap/distance relationship, and caches
-only the parsed facts in the isolated Formula 1 database. This is a website adapter,
-not an official public API, so a markup change may temporarily produce a reported
-fact gap; cached valid facts remain available as an explicitly logged stale fallback.
+schedule response. Its circuit-history sections also supply the first Grand Prix
+year and the source characteristics used by the concise circuit profile.
+MetaFusion discovers the official event links for each season, validates page
+identity, plausible ranges, and the length/lap/distance relationship, and caches
+only the parsed facts and generated profile in the isolated Formula 1 database.
+It does not persist or reproduce the full editorial paragraphs. This is a website
+adapter, not an official public API, so a markup change may temporarily produce a
+reported fact or profile gap; cached valid data remains available as an explicitly
+logged stale fallback.
 
 The yearly Jolpica schedule is authoritative for additions, removals, and round
 order. A newly added event is matched from its current-year Formula1.com calendar
@@ -182,5 +193,6 @@ passed to core MetaFusion cleanup.
 
 `logging.console` accepts `off`, `summary`, or `full`. The default prints one
 Formula 1 summary through the main logger while retaining item details in the
-separate Formula 1 run log. Dry-run mode creates no template, database, artwork,
-metadata, log, or report files.
+separate Formula 1 run log. The summary distinguishes resolved and missing
+circuit facts from resolved and missing circuit profiles. Dry-run mode creates
+no template, database, artwork, metadata, log, or report files.

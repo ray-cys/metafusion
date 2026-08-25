@@ -265,7 +265,17 @@ def _fit(points, box):
 
 def artwork_fingerprint(race, path_data, config):
     payload = {
-        "race": race.__dict__,
+        "race": {
+            "year": race.year,
+            "round_number": race.round_number,
+            "name": race.name,
+            "circuit": race.circuit,
+            "locality": race.locality,
+            "country": race.country,
+            "race_date": race.race_date,
+            "sprint_date": race.sprint_date,
+            "session_dates": race.session_dates,
+        },
         "path": path_data,
         "size": [config["artwork"]["width"], config["artwork"]["height"]],
         "logo": str(config["artwork"].get("logo", "")),

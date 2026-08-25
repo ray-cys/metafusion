@@ -1,6 +1,7 @@
 """Official Formula 1 event-fact discovery and validation."""
 
 import html
+import json
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, replace
@@ -52,6 +53,9 @@ class CircuitFacts:
     race_distance_km: float
     circuit: str | None = None
     locality: str | None = None
+    first_grand_prix_year: int | None = None
+    circuit_profile: str | None = None
+    circuit_history: str | None = None
 
 
 class FactStatistics(TypedDict):
@@ -59,7 +63,38 @@ class FactStatistics(TypedDict):
     missing: int
     stale: int
     canonicalized: int
+    profiles_resolved: int
+    profiles_missing: int
     issues: list[str]
+
+
+PROFILE_RULES = (
+    ("a street circuit", (r"\bstreet circuit\b", r"\bpublic roads?\b")),
+    ("a semi-permanent layout", (r"\bsemi[- ]permanent\b",)),
+    ("a temporary layout", (r"\btemporary (?:facility|circuit|layout)\b",)),
+    ("a permanent circuit", (r"\bpermanent circuit\b", r"\bpurpose[- ]built\b")),
+    ("fast", (r"\bfast(?:er|est)?\b", r"\bhigh[- ]speed\b")),
+    ("technical", (r"\btechnical\b",)),
+    ("stop-start", (r"\bstop[- ]start\b",)),
+    ("flowing", (r"\bflowing\b",)),
+    ("narrow", (r"\bnarrow\b",)),
+    ("bumpy", (r"\bbump(?:y|s)\b",)),
+    ("undulating", (r"\bundulat(?:ing|ion)\b", r"\belevation change(?:s)?\b")),
+    ("low-downforce", (r"\blow[- ]downforce\b",)),
+    ("high-downforce", (r"\bhigh[- ]downforce\b",)),
+    ("heavy-braking zones", (r"\bheavy[- ]braking\b", r"\bbig braking\b")),
+    ("a wide layout", (r"\bwide layout\b", r"\bwide track\b")),
+    ("long straights", (r"\blong straights?\b",)),
+    ("high-speed corners", (r"\bhigh[- ]speed corners?\b",)),
+    ("slow corners", (r"\bslow corners?\b", r"\blow[- ]speed corners?\b")),
+    ("sweeping corners", (r"\bsweep(?:ing|ers?)\b",)),
+    ("chicanes", (r"\bchicanes?\b",)),
+    ("a hairpin", (r"\bhairpin\b",)),
+    ("S-curves", (r"\bs['’]?[- ]?curves?\b",)),
+    ("a crossover", (r"\bcrossover\b", r"\bfigure[- ]eight\b")),
+    ("multiple racing lines", (r"\bmultiple racing lines?\b",)),
+    ("a slippery surface", (r"\bslippery\b",)),
+)
 
 
 def _number(value):
@@ -97,6 +132,113 @@ def _visible_number(document, label):
     return number.group(0) if number else None
 
 
+def _decode_json_text(value):
+    try:
+        decoded = json.loads(f'"{value}"')
+    except (json.JSONDecodeError, TypeError):
+        decoded = value
+    decoded = html.unescape(str(decoded))
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", decoded)).strip()
+
+
+def parse_editorial_sections(document):
+    """Return Formula1.com FAQ content keyed by normalized heading."""
+    normalized_document = document.replace(r'\"', '"')
+    pattern = re.compile(
+        r'"heading"\s*:\s*"(?P<heading>(?:\\.|[^"\\])*)"\s*,\s*'
+        r'"content"\s*:\s*"(?P<content>(?:\\.|[^"\\])*)"',
+        flags=re.IGNORECASE,
+    )
+    sections: dict[str, str] = {}
+    for match in pattern.finditer(normalized_document):
+        heading = _decode_json_text(match.group("heading"))
+        content = _decode_json_text(match.group("content"))
+        key = _slug(heading)
+        if key and content:
+            sections.setdefault(key, content)
+    return sections
+
+
+def _first_grand_prix_year(sections):
+    text = sections.get("when-was-its-first-grand-prix") or sections.get(
+        "when-was-the-first-grand-prix"
+    )
+    if not text:
+        return None
+    targeted = (
+        r"\bfirst (?:hosted|held|staged)[^.]{0,160}\b((?:19|20)\d{2})\b",
+        r"\bfirst (?:race|grand prix)[^.]{0,160}\b((?:19|20)\d{2})\b",
+        r"\b((?:19|20)\d{2})\b[^.]{0,160}\bfirst (?:hosted|held|staged|grand prix)\b",
+    )
+    for pattern in targeted:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    years = [int(value) for value in re.findall(r"\b(?:19|20)\d{2}\b", text)]
+    return years[-1] if years else None
+
+
+def _circuit_profile(sections):
+    text = sections.get("what-s-the-circuit-like") or sections.get("whats-the-circuit-like")
+    if not text:
+        return None
+    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.casefold()
+    labels = [
+        label
+        for label, patterns in PROFILE_RULES
+        if any(re.search(pattern, normalized) for pattern in patterns)
+    ]
+    if not labels:
+        return None
+    return ", ".join(labels[:8])
+
+
+def _circuit_history(sections):
+    text = next(
+        (
+            value
+            for key, value in sections.items()
+            if key.startswith("when-was-") and key.endswith("-built")
+        ),
+        None,
+    )
+    if not text:
+        return None
+    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    milestone = None
+    patterns = (
+        (r"\b(?:officially )?opened in ((?:19|20)\d{2})\b", "opened in {}"),
+        (r"\b(?:was )?built in ((?:19|20)\d{2})\b", "was built in {}"),
+        (r"\bconstruction began in ((?:19|20)\d{2})\b", "saw construction begin in {}"),
+        (r"^\s*in ((?:19|20)\d{2})\b", "dates to {}"),
+    )
+    for pattern, template in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            milestone = template.format(match.group(1))
+            break
+    folded = normalized.casefold()
+    origin = None
+    if "test track" in folded:
+        origin = "originated as a manufacturer test track"
+    elif "man-made" in folded and "island" in folded and "roads" in folded:
+        origin = "was created from roads on a man-made island"
+    elif re.search(r"\b(?:existing|public) roads?\b", folded):
+        origin = "was created from existing roads"
+    elif "airfield" in folded:
+        origin = "was developed from an airfield"
+    elif "purpose-built" in folded:
+        origin = "was developed as a purpose-built venue"
+    if milestone and origin:
+        return f"The circuit {milestone} and {origin}."
+    if milestone:
+        return f"The circuit {milestone}."
+    if origin:
+        return f"The circuit {origin}."
+    return None
+
+
 def parse_official_facts(document):
     """Extract and cross-check scheduled race facts from an event page."""
     length = _number(_structured_value(document, "trackLength"))
@@ -114,6 +256,7 @@ def parse_official_facts(document):
         raise RuntimeError("official event page returned implausible circuit facts")
     if not 150 <= distance <= 400 or abs(length * lap_count - distance) > 15:
         raise RuntimeError("official event page returned inconsistent circuit facts")
+    sections = parse_editorial_sections(document)
     return CircuitFacts(
         circuit_length_km=length,
         lap_count=lap_count,
@@ -123,6 +266,9 @@ def parse_official_facts(document):
             _structured_value(document, "meetingLocation")
             or _structured_value(document, "circuitLocation")
         ),
+        first_grand_prix_year=_first_grand_prix_year(sections),
+        circuit_profile=_circuit_profile(sections),
+        circuit_history=_circuit_history(sections),
     )
 
 
@@ -252,6 +398,8 @@ async def enrich_race_facts(session, state, config, races, round_numbers, logger
         "missing": 0,
         "stale": 0,
         "canonicalized": 0,
+        "profiles_resolved": 0,
+        "profiles_missing": 0,
         "issues": [],
     }
     if not races:
@@ -290,6 +438,16 @@ async def enrich_race_facts(session, state, config, races, round_numbers, logger
             continue
         statistics["resolved"] += 1
         statistics["stale"] += int(source == "stale-cache")
+        profile_available = bool(
+            facts.first_grand_prix_year or facts.circuit_profile or facts.circuit_history
+        )
+        statistics["profiles_resolved"] += int(profile_available)
+        statistics["profiles_missing"] += int(not profile_available)
+        if not profile_available:
+            statistics["issues"].append(
+                f"Official circuit profile unavailable: {race.year} round "
+                f"{race.round_number} {race.name}"
+            )
         circuit, locality = _canonical_venue(race, facts)
         identity_changed = circuit != race.circuit or locality != race.locality
         statistics["canonicalized"] += int(identity_changed)
@@ -301,13 +459,18 @@ async def enrich_race_facts(session, state, config, races, round_numbers, logger
                 circuit_length_km=facts.circuit_length_km,
                 lap_count=facts.lap_count,
                 race_distance_km=facts.race_distance_km,
+                first_grand_prix_year=facts.first_grand_prix_year,
+                circuit_profile=facts.circuit_profile,
+                circuit_history=facts.circuit_history,
             )
         )
         logger.info(
-            "[Provider] Circuit facts | Year: %s | Round: %02d | Source: %s | Venue identity: %s",
+            "[Provider] Circuit facts | Year: %s | Round: %02d | Source: %s | "
+            "Venue identity: %s | Circuit profile: %s",
             race.year,
             race.round_number,
             source,
             "canonicalized" if identity_changed else "unchanged",
+            "resolved" if profile_available else "unavailable",
         )
     return enriched, statistics

@@ -33,10 +33,15 @@ from extensions.formula1.config import (
 from extensions.formula1.facts import (
     CircuitFacts,
     _canonical_venue,
+    _circuit_history,
+    _circuit_profile,
+    _decode_json_text,
+    _first_grand_prix_year,
     _identity_matches,
     _load_official_facts,
     _select_event_slug,
     enrich_race_facts,
+    parse_editorial_sections,
     parse_event_slugs,
     parse_official_facts,
 )
@@ -135,7 +140,13 @@ OFFICIAL_FACTS = (
     r"\"scheduledLapCount\":\"58\","
     r"\"scheduledDistance\":\"306.124\","
     r"\"circuitOfficialName\":\"Albert Park Grand Prix Circuit\","
-    r"\"circuitLocation\":\"Melbourne\""
+    r"\"circuitLocation\":\"Melbourne\","
+    r"\"heading\":\"When was the Albert Park Circuit built?\","
+    r"\"content\":\"The circuit was created using existing roads around Albert Park.\","
+    r"\"heading\":\"When was its first Grand Prix?\","
+    r"\"content\":\"Albert Park first hosted the race in 1996.\","
+    r"\"heading\":\"What’s the circuit like?\","
+    r"\"content\":\"A fast, flowing, high-speed circuit with heavy-braking zones.\""
 )
 
 
@@ -505,7 +516,24 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
     assert parse_event_slugs("nothing", 2026) == []
     assert _select_event_slug(race, ["australia"]) == "australia"
     facts = parse_official_facts(OFFICIAL_FACTS)
-    assert facts == CircuitFacts(5.278, 58, 306.124, "Albert Park Grand Prix Circuit", "Melbourne")
+    assert facts == CircuitFacts(
+        5.278,
+        58,
+        306.124,
+        "Albert Park Grand Prix Circuit",
+        "Melbourne",
+        1996,
+        "fast, flowing, heavy-braking zones",
+        "The circuit was created from existing roads.",
+    )
+    sections = parse_editorial_sections(OFFICIAL_FACTS)
+    assert sections["when-was-its-first-grand-prix"].endswith("1996.")
+    contextual = OFFICIAL_FACTS.replace(
+        "Albert Park first hosted the race in 1996.",
+        "After discussions in the 1960s and 1970s, Albert Park first hosted the race in 1996.",
+    )
+    assert parse_official_facts(contextual).first_grand_prix_year == 1996
+    assert parse_editorial_sections("unrelated page") == {}
     assert _identity_matches(race, facts)
     assert _identity_matches(
         race, CircuitFacts(5.278, 58, 306.124, "Albert Park Circuit", "Wrong City")
@@ -550,6 +578,8 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
         "missing": 0,
         "stale": 0,
         "canonicalized": 0,
+        "profiles_resolved": 1,
+        "profiles_missing": 0,
         "issues": [],
     }
     assert enriched[0].circuit_length_km == 5.278
@@ -590,6 +620,39 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
             )
         )
     state.close()
+
+
+def test_official_editorial_profile_fallbacks_are_conservative():
+    assert _decode_json_text("broken\\") == "broken\\"
+    assert _first_grand_prix_year({"when-was-the-first-grand-prix": "First race in 1980."}) == 1980
+    assert (
+        _first_grand_prix_year(
+            {"when-was-its-first-grand-prix": "The 1981 event was the first Grand Prix."}
+        )
+        == 1981
+    )
+    assert _first_grand_prix_year({"when-was-its-first-grand-prix": "It happened in 1982."}) == 1982
+    assert _first_grand_prix_year({"when-was-its-first-grand-prix": "No date supplied."}) is None
+    assert _circuit_profile({"whats-the-circuit-like": "A unique driving challenge."}) is None
+    assert _circuit_profile({}) is None
+
+    assert _circuit_history({"when-was-example-built": "In 1962, it was a test track."}) == (
+        "The circuit dates to 1962 and originated as a manufacturer test track."
+    )
+    assert _circuit_history(
+        {"when-was-example-built": "Roads on a man-made island formed the circuit."}
+    ) == "The circuit was created from roads on a man-made island."
+    assert _circuit_history(
+        {"when-was-example-built": "The circuit was developed from an airfield."}
+    ) == "The circuit was developed from an airfield."
+    assert _circuit_history(
+        {"when-was-example-built": "It became a purpose-built motorsport venue."}
+    ) == "The circuit was developed as a purpose-built venue."
+    assert _circuit_history(
+        {"when-was-example-built": "Construction began in 1997 before completion."}
+    ) == "The circuit saw construction begin in 1997."
+    assert _circuit_history({"when-was-example-built": "A story without usable facts."}) is None
+    assert _circuit_history({}) is None
 
 
 def test_official_facts_fail_safe_identity_and_stale_paths(tmp_path, core, schedule_payload):
@@ -845,12 +908,30 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
     assert generated["seasons"][1]["episodes"][1]["originally_available"] == "2026-03-08"
     assert seasons == {1} and episodes == {1: {1}}
     assert validate_generated_metadata(generated, "show")
+    profiled_race = type(race)(
+        **{
+            **race.__dict__,
+            "first_grand_prix_year": 1996,
+            "circuit_profile": "fast, flowing, heavy-braking zones",
+            "circuit_history": "The circuit was created from existing roads.",
+        }
+    )
+    profiled, _seasons, _episodes = build_show_entry(
+        show, [profiled_race], {1: "/config/poster.png"}, config
+    )
+    summary = profiled["seasons"][1]["summary"]
+    assert "The circuit was created from existing roads" in summary
+    assert "first hosted a Formula 1 Grand Prix in 1996" in summary
+    assert "Formula1.com circuit profile: fast, flowing" in summary
     path, changed, _diagnostics = write_show_metadata(
         show, [race], {1: "/config/poster.png"}, config
     )
     assert changed and validate_metadata_document(yaml.safe_load(path.read_text()), "tv")
     assert write_show_metadata(show, [race], {1: "/config/poster.png"}, config)[1] is False
     assert artwork_fingerprint(race, "M0 0", config) == artwork_fingerprint(race, "M0 0", config)
+    assert artwork_fingerprint(race, "M0 0", config) == artwork_fingerprint(
+        profiled_race, "M0 0", config
+    )
 
 
 def test_artwork_path_commands_fonts_logo_and_fallback(

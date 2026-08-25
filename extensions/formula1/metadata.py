@@ -46,9 +46,19 @@ def _race_summary(race):
     if race.lap_count is not None:
         facts.append(f"Lap count: {race.lap_count}")
     fact_text = f" {'; '.join(facts)}." if facts else ""
+    history = []
+    if race.circuit_history:
+        history.append(race.circuit_history)
+    if race.first_grand_prix_year is not None:
+        history.append(
+            f"The venue first hosted a Formula 1 Grand Prix in {race.first_grand_prix_year}."
+        )
+    if race.circuit_profile:
+        history.append(f"Formula1.com circuit profile: {race.circuit_profile}.")
+    history_text = f" {' '.join(history)}" if history else ""
     return (
         f"Round {race.round_number} of the {race.year} Formula 1 season at "
-        f"{race.circuit} in {race.locality}, {race.country}.{fact_text}{sprint}"
+        f"{race.circuit} in {race.locality}, {race.country}.{fact_text}{history_text}{sprint}"
     )
 
 
