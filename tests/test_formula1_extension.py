@@ -400,6 +400,26 @@ def test_state_wraps_sqlite_initialization_failure(tmp_path, monkeypatch):
     with pytest.raises(Formula1StateError, match="Unable to initialize"):
         Formula1State(tmp_path / "broken.sqlite3")
 
+    class BrokenConnection:
+        row_factory = None
+        closed = False
+
+        def execute(self, *_args):
+            raise sqlite3.Error("pragma failed")
+
+        def close(self):
+            self.closed = True
+
+    connection = BrokenConnection()
+    monkeypatch.setattr(
+        formula1_state_module.sqlite3,
+        "connect",
+        lambda *_args, **_kwargs: connection,
+    )
+    with pytest.raises(Formula1StateError, match="Unable to initialize"):
+        Formula1State(tmp_path / "pragma.sqlite3")
+    assert connection.closed is True
+
 
 def test_provider_validates_caches_and_falls_back(tmp_path, core, schedule_payload):
     config = load_formula1_config(core, tmp_path / "config")

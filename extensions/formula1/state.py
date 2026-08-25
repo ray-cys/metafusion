@@ -29,11 +29,20 @@ class Formula1State:
         existed = False if memory else self.path.exists()
         try:
             self.connection = sqlite3.connect(str(path), timeout=10)
+        except (OSError, sqlite3.Error) as error:
+            raise Formula1StateError(
+                f"Unable to initialize Formula 1 state: {self.path}"
+            ) from error
+        try:
             self.connection.row_factory = sqlite3.Row
             self.connection.execute("PRAGMA busy_timeout = 10000")
             self.connection.execute("PRAGMA journal_mode = WAL")
             self._initialize()
+        except Formula1StateError:
+            self.connection.close()
+            raise
         except (OSError, sqlite3.Error) as error:
+            self.connection.close()
             raise Formula1StateError(
                 f"Unable to initialize Formula 1 state: {self.path}"
             ) from error
