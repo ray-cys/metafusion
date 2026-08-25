@@ -50,11 +50,15 @@ required by Kometa's Formula 1 guide. Session dates use provider schedule fields
 when available and fall back to the race date. The extension ignores unrelated
 Kometa metadata files.
 
-Artwork is deterministic. It combines schedule/circuit facts, a country-inspired
-background, circuit outline, race title, circuit, locality, weekend date, and a
-Sprint marker. Existing artwork without an extension ownership record is adopted
-without replacement. A managed file modified after adoption is treated as manual
-artwork and preserved.
+Artwork is deterministic. It combines schedule/circuit facts, a translucent
+host-country flag and colour gradient, circuit outline, race title, circuit,
+locality, weekend date, and a Sprint marker. Public-domain flag assets are bundled
+for current and historical Formula 1 host countries, so rendering does not add a
+runtime network dependency. An unknown country falls back to the neutral gradient.
+Existing artwork without an extension ownership record is adopted without
+replacement. A managed file modified after adoption is treated as manual artwork
+and preserved. Renderer revisions regenerate only unchanged extension-managed
+posters; adopted and manually edited posters remain protected.
 
 ## Branding
 
@@ -79,6 +83,10 @@ that round from being written rather than guessing.
 The circuit outline attribution is maintained here as required by its licence:
 “F1 circuits SVG”, ROY Jules, CC BY 4.0,
 <https://github.com/julesr0y/f1-circuits-svg>.
+
+Bundled national flag renders come from `hampusborgos/country-flags`, which
+documents the flags as public domain:
+<https://github.com/hampusborgos/country-flags>.
 
 For local development only, the renderer was verified with Saira Condensed from
 Omnibus-Type under the SIL Open Font License. No test font or Formula 1 logo is

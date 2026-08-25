@@ -11,9 +11,15 @@ from PIL import Image
 from extensions.formula1 import config as formula1_config_module
 from extensions.formula1 import state as formula1_state_module
 from extensions.formula1.artwork import (
+    COUNTRY_FLAG_CODES,
+    FLAG_ASSET_ROOT,
+    RENDERER_VERSION,
+    _country_key,
     _fit,
     _font,
+    _render_background,
     artwork_fingerprint,
+    country_flag_asset,
     render_round_poster,
     svg_path_points,
 )
@@ -576,6 +582,26 @@ def test_artwork_path_commands_fonts_logo_and_fallback(
     destination = tmp_path / "fallback.png"
     render_round_poster(race, None, config, destination)
     assert destination.exists()
+
+
+def test_country_flag_background_resolution_and_visual_structure(tmp_path, monkeypatch):
+    assert RENDERER_VERSION == 2
+    for code in set(COUNTRY_FLAG_CODES.values()):
+        with Image.open(FLAG_ASSET_ROOT / f"{code}.png") as flag:
+            flag.verify()
+    assert _country_key("Türkiye") == "turkiye"
+    assert country_flag_asset("Canada").name == "ca.png"
+    assert country_flag_asset("USA").name == "us.png"
+    assert country_flag_asset("United Arab Emirates").name == "ae.png"
+    assert country_flag_asset("Unknown") is None
+
+    canadian = _render_background("Canada", 600, 900)
+    fallback = _render_background("Unknown", 600, 900)
+    canadian.save(tmp_path / "canadian-background.png")
+    assert canadian.getpixel((200, 100)) != canadian.getpixel((50, 100))
+    assert len({fallback.getpixel((0, y)) for y in range(0, 900, 100)}) > 1
+    monkeypatch.setattr("extensions.formula1.artwork.FLAG_ASSET_ROOT", tmp_path)
+    assert country_flag_asset("Canada") is None
 
 
 def test_artwork_temporary_is_removed_after_failed_install(
