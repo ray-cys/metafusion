@@ -30,6 +30,7 @@ class Formula1Summary(TypedDict):
     facts_resolved: int
     facts_missing: int
     facts_stale: int
+    venues_canonicalized: int
     issues: int
     cleanup_removed: int
     issue_report: str | None
@@ -121,6 +122,7 @@ async def run_formula1_extension(
         "facts_resolved": 0,
         "facts_missing": 0,
         "facts_stale": 0,
+        "venues_canonicalized": 0,
         "issues": 0,
         "cleanup_removed": 0,
         "issue_report": None,
@@ -167,6 +169,7 @@ async def run_formula1_extension(
                 summary["facts_resolved"] += fact_statistics["resolved"]
                 summary["facts_missing"] += fact_statistics["missing"]
                 summary["facts_stale"] += fact_statistics["stale"]
+                summary["venues_canonicalized"] += fact_statistics["canonicalized"]
                 issues.extend(fact_statistics["issues"])
                 race_by_round = {race.round_number: race for race in races}
                 poster_references = {}
@@ -270,7 +273,7 @@ async def run_formula1_extension(
             core_logger.info(
                 "[Formula 1] Summary | Libraries: %d | Shows: %d | Episodes: %d | "
                 "Metadata updated: %d | Artwork created/updated: %d/%d | "
-                "Circuit facts resolved/missing: %d/%d | Issues: %d",
+                "Circuit facts resolved/missing: %d/%d | Venues canonicalized: %d | Issues: %d",
                 summary["libraries"],
                 summary["shows"],
                 summary["episodes"],
@@ -279,6 +282,7 @@ async def run_formula1_extension(
                 summary["artwork_updated"],
                 summary["facts_resolved"],
                 summary["facts_missing"],
+                summary["venues_canonicalized"],
                 summary["issues"],
             )
         summary["log"] = str(log_path) if log_path else None

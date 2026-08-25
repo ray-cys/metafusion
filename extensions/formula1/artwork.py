@@ -9,12 +9,12 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from helper.io import atomic_replace_file
 
 FILE_MODE = 0o664
-RENDERER_VERSION = 2
+RENDERER_VERSION = 3
 TOKENS = re.compile(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
 FLAG_ASSET_ROOT = Path(__file__).with_name("assets") / "flags"
 COUNTRY_FLAG_CODES = {
@@ -101,6 +101,29 @@ def country_flag_asset(country):
     return candidate if candidate.is_file() else None
 
 
+def _flag_overlay(flag, width, height):
+    """Fit a complete flag without distortion and feather it into a portrait canvas."""
+    fitted = ImageOps.contain(
+        flag.convert("RGB"),
+        (width, height),
+        method=Image.Resampling.LANCZOS,
+    )
+    left = (width - fitted.width) // 2
+    top = (height - fitted.height) // 2
+    layer = Image.new("RGB", (width, height))
+    layer.paste(fitted, (left, top))
+    band = Image.new("L", (1, fitted.height))
+    pixels = band.load()
+    feather = max(1, min(fitted.height // 5, height // 10))
+    maximum_alpha = round(255 * 0.48)
+    for y in range(fitted.height):
+        distance = min(y + 1, fitted.height - y)
+        pixels[0, y] = round(maximum_alpha * min(1.0, distance / feather))
+    mask = Image.new("L", (width, height))
+    mask.paste(band.resize((fitted.width, fitted.height)), (left, top))
+    return layer, mask
+
+
 def _render_background(country, width, height):
     code = COUNTRY_FLAG_CODES.get(_country_key(country))
     base = COUNTRY_COLORS.get(code or "", (25, 30, 42))
@@ -114,8 +137,8 @@ def _render_background(country, width, height):
     flag_path = country_flag_asset(country)
     if flag_path:
         with Image.open(flag_path) as flag:
-            flag_layer = flag.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
-            image = Image.blend(image, flag_layer, 0.48)
+            flag_layer, flag_mask = _flag_overlay(flag, width, height)
+            image = Image.composite(flag_layer, image, flag_mask)
     return image
 
 

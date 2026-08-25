@@ -51,13 +51,21 @@ when available and fall back to the race date. Circuit length, scheduled race
 distance, and scheduled lap count are taken from the matching official event
 page and cross-validated before use. MetaFusion omits unavailable facts instead
 of writing a misleading `to be confirmed` value; the missing fact is recorded in
-the Formula 1 issue report. The extension ignores unrelated Kometa metadata files.
+the Formula 1 issue report. After the official page passes venue-identity checks,
+its canonical circuit name and precise meeting locality are used in round and
+episode summaries. Jolpica remains authoritative for race name, round order,
+country, session dates, and race dates. A country-level official location never
+replaces a more precise Jolpica locality. The extension ignores unrelated Kometa
+metadata files.
 
 Artwork is deterministic. It combines schedule/circuit facts, a translucent
 host-country flag and colour gradient, circuit outline, race title, circuit,
 locality, weekend date, and a Sprint marker. Public-domain flag assets are bundled
 for current and historical Formula 1 host countries, so rendering does not add a
-runtime network dependency. An unknown country falls back to the neutral gradient.
+runtime network dependency. The complete flag is proportionally fitted across the
+portrait canvas and feather-blended into the country gradient. This preserves
+circles, emblems, and source scale without stretching or oversized centre-crops.
+An unknown country falls back to the neutral gradient.
 Existing artwork without an extension ownership record is adopted without
 replacement. A managed file modified after adoption is treated as manual artwork
 and preserved. Renderer revisions regenerate only unchanged extension-managed

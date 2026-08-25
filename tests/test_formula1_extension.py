@@ -16,6 +16,7 @@ from extensions.formula1.artwork import (
     RENDERER_VERSION,
     _country_key,
     _fit,
+    _flag_overlay,
     _font,
     _render_background,
     artwork_fingerprint,
@@ -31,6 +32,7 @@ from extensions.formula1.config import (
 )
 from extensions.formula1.facts import (
     CircuitFacts,
+    _canonical_venue,
     _identity_matches,
     _load_official_facts,
     _select_event_slug,
@@ -512,6 +514,15 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
     assert not _identity_matches(
         race, CircuitFacts(5.278, 58, 306.124, "Wrong Raceway", "Wrong City")
     )
+    circuit, locality = _canonical_venue(
+        race,
+        CircuitFacts(5.278, 58, 306.124, "Albert Park Circuit", "Australia"),
+    )
+    assert circuit == "Albert Park Circuit" and locality == "Melbourne"
+    assert _canonical_venue(race, CircuitFacts(5.278, 58, 306.124, "TBC", "to be confirmed")) == (
+        race.circuit,
+        race.locality,
+    )
     visible = (
         "Circuit Length</dt><dd><span>5.278km</span></dd>"
         "Number of Laps</dt><dd>58</dd>"
@@ -534,12 +545,37 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
     enriched, statistics = asyncio.run(
         enrich_race_facts(session, state, config, [race], {1}, logging.getLogger("facts"))
     )
-    assert statistics == {"resolved": 1, "missing": 0, "stale": 0, "issues": []}
+    assert statistics == {
+        "resolved": 1,
+        "missing": 0,
+        "stale": 0,
+        "canonicalized": 0,
+        "issues": [],
+    }
     assert enriched[0].circuit_length_km == 5.278
     cached, cached_statistics = asyncio.run(
         enrich_race_facts(session, state, config, [race], {1}, logging.getLogger("facts-cache"))
     )
     assert cached[0].lap_count == 58 and cached_statistics["resolved"] == 1
+    state.connection.execute(
+        "DELETE FROM provider_cache WHERE provider='formula1.com' AND cache_key LIKE 'facts:%'"
+    )
+    state.connection.commit()
+    canonical_document = OFFICIAL_FACTS.replace(
+        "Albert Park Grand Prix Circuit", "Albert Park Circuit"
+    )
+    canonical, canonical_statistics = asyncio.run(
+        enrich_race_facts(
+            Session(schedule_payload, "", facts=canonical_document),
+            state,
+            config,
+            [race],
+            {1},
+            logging.getLogger("facts-canonical"),
+        )
+    )
+    assert canonical[0].circuit == "Albert Park Circuit"
+    assert canonical_statistics["canonicalized"] == 1
     wrong_facts = OFFICIAL_FACTS.replace("Melbourne", "Wrong City").replace(
         "Albert Park Grand Prix Circuit", "Wrong Raceway"
     )
@@ -855,7 +891,7 @@ def test_artwork_path_commands_fonts_logo_and_fallback(
 
 
 def test_country_flag_background_resolution_and_visual_structure(tmp_path, monkeypatch):
-    assert RENDERER_VERSION == 2
+    assert RENDERER_VERSION == 3
     for code in set(COUNTRY_FLAG_CODES.values()):
         with Image.open(FLAG_ASSET_ROOT / f"{code}.png") as flag:
             flag.verify()
@@ -868,8 +904,25 @@ def test_country_flag_background_resolution_and_visual_structure(tmp_path, monke
     canadian = _render_background("Canada", 600, 900)
     fallback = _render_background("Unknown", 600, 900)
     canadian.save(tmp_path / "canadian-background.png")
-    assert canadian.getpixel((200, 100)) != canadian.getpixel((50, 100))
+    assert canadian.getpixel((300, 450)) != fallback.getpixel((300, 450))
     assert len({fallback.getpixel((0, y)) for y in range(0, 900, 100)}) > 1
+    with Image.open(FLAG_ASSET_ROOT / "jp.png") as japan:
+        flag_layer, flag_mask = _flag_overlay(japan, 600, 900)
+    red_pixels = Image.new("L", flag_layer.size)
+    red_pixels.putdata(
+        [
+            255 if red > 150 and green < 100 and blue < 100 else 0
+            for red, green, blue in flag_layer.get_flattened_data()
+        ]
+    )
+    red_bounds = red_pixels.getbbox()
+    assert red_bounds is not None
+    red_width = red_bounds[2] - red_bounds[0]
+    red_height = red_bounds[3] - red_bounds[1]
+    assert abs(red_width - red_height) <= 2
+    assert red_width < 600 * 0.5
+    assert flag_mask.getpixel((300, 450)) == round(255 * 0.48)
+    assert flag_mask.getpixel((300, 0)) == 0
     monkeypatch.setattr("extensions.formula1.artwork.FLAG_ASSET_ROOT", tmp_path)
     assert country_flag_asset("Canada") is None
 

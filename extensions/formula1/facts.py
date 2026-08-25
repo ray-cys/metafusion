@@ -58,6 +58,7 @@ class FactStatistics(TypedDict):
     resolved: int
     missing: int
     stale: int
+    canonicalized: int
     issues: list[str]
 
 
@@ -83,7 +84,7 @@ def parse_event_slugs(document, year):
 def _structured_value(document, key):
     pattern = rf'(?:\\?["\']){re.escape(key)}(?:\\?["\'])\s*:\s*(?:\\?["\'])([^\\"\']+)'
     match = re.search(pattern, document, flags=re.IGNORECASE)
-    return match.group(1) if match else None
+    return html.unescape(match.group(1)).strip() if match else None
 
 
 def _visible_number(document, label):
@@ -119,8 +120,8 @@ def parse_official_facts(document):
         race_distance_km=distance,
         circuit=_structured_value(document, "circuitOfficialName"),
         locality=(
-            _structured_value(document, "circuitLocation")
-            or _structured_value(document, "meetingLocation")
+            _structured_value(document, "meetingLocation")
+            or _structured_value(document, "circuitLocation")
         ),
     )
 
@@ -199,6 +200,21 @@ def _identity_matches(race, facts):
     return not facts.locality and not facts.circuit
 
 
+def _usable_official_text(value):
+    text = str(value or "").strip()
+    return text if _slug(text) not in {"", "tbc", "unknown", "to-be-confirmed"} else None
+
+
+def _canonical_venue(race, facts):
+    """Promote a validated official venue name without reducing location precision."""
+    circuit = _usable_official_text(facts.circuit) or race.circuit
+    official_locality = _usable_official_text(facts.locality)
+    locality = race.locality
+    if official_locality and _slug(official_locality) != _slug(race.country):
+        locality = official_locality
+    return circuit, locality
+
+
 async def _load_official_facts(session, state, config, race, event_slug):
     key = f"facts:{race.year}:{event_slug}"
     cached = state.cache_get(PROVIDER, key)
@@ -231,7 +247,13 @@ async def _load_official_facts(session, state, config, race, event_slug):
 
 async def enrich_race_facts(session, state, config, races, round_numbers, logger):
     """Enrich only rounds present in Plex, preserving partial output on outages."""
-    statistics: FactStatistics = {"resolved": 0, "missing": 0, "stale": 0, "issues": []}
+    statistics: FactStatistics = {
+        "resolved": 0,
+        "missing": 0,
+        "stale": 0,
+        "canonicalized": 0,
+        "issues": [],
+    }
     if not races:
         return [], statistics
     event_slugs, _calendar_source = await _load_event_slugs(
@@ -268,18 +290,24 @@ async def enrich_race_facts(session, state, config, races, round_numbers, logger
             continue
         statistics["resolved"] += 1
         statistics["stale"] += int(source == "stale-cache")
+        circuit, locality = _canonical_venue(race, facts)
+        identity_changed = circuit != race.circuit or locality != race.locality
+        statistics["canonicalized"] += int(identity_changed)
         enriched.append(
             replace(
                 race,
+                circuit=circuit,
+                locality=locality,
                 circuit_length_km=facts.circuit_length_km,
                 lap_count=facts.lap_count,
                 race_distance_km=facts.race_distance_km,
             )
         )
         logger.info(
-            "[Provider] Circuit facts | Year: %s | Round: %02d | Source: %s",
+            "[Provider] Circuit facts | Year: %s | Round: %02d | Source: %s | Venue identity: %s",
             race.year,
             race.round_number,
             source,
+            "canonicalized" if identity_changed else "unchanged",
         )
     return enriched, statistics
