@@ -39,7 +39,7 @@ def test_performance_baseline_and_small_workload_are_machine_readable(tmp_path):
     assert metrics["state_seasons"] == 3
     assert metrics["state_episodes"] == 8
     assert metrics["targeted_rows"] == 2
-    assert metrics["corpus_documents"] == 2
+    assert metrics["corpus_documents"] == 3
     assert performance_regression.evaluate(metrics, {"total_seconds": 999}) == []
     assert performance_regression.evaluate(metrics, {"total_seconds": 0})
 

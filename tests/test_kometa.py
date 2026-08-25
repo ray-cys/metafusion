@@ -14,11 +14,11 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 
 def test_generated_contract_corpus_is_current_and_structurally_valid(tmp_path):
     documents = generated_documents()
-    assert set(documents) == {"movies.yml", "shows.yml"}
+    assert set(documents) == {"formula1.yml", "movies.yml", "shows.yml"}
     assert all(validate_metadata_document(document) for document in documents.values())
     assert generate(GOLDEN_DIR / "kometa_contract_corpus", check=True) == []
 
-    assert len(generate(tmp_path)) == 2
+    assert len(generate(tmp_path)) == 3
     assert generate(tmp_path, check=True) == []
     assert (tmp_path / "movies.yml").read_text(encoding="utf-8").startswith(
         "metadata:"

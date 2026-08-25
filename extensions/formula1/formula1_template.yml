@@ -1,0 +1,43 @@
+# Formula 1 extension configuration.
+# This file is copied to /config/formula1/formula1_template.yml only after
+# RUN_MODE=kometa and FORMULA1_ENABLED=True. Copy it to formula1.yml to edit.
+
+library:
+  name: Formula 1
+  naming_profile: auto
+
+testing:
+  include: false
+
+metadata:
+  enabled: true
+  content_rating: PG-13
+  studio: F1TV
+  round_prefix: true
+  shorten_gp: false
+
+artwork:
+  enabled: true
+  width: 1000
+  height: 1500
+  policy: managed
+  asset_reference_root: config/assets/formula1/rounds
+  logo: branding/logo.png
+  font_regular: branding/font-regular.ttf
+  font_bold: branding/font-bold.ttf
+
+providers:
+  jolpica_url: https://api.jolpi.ca/ergast/f1
+  circuit_svg_url: https://raw.githubusercontent.com/julesr0y/f1-circuits-svg/main/circuits/detailed/black-outline
+  cache_hours: 24
+  retries: 3
+
+cleanup:
+  enabled: false
+  confirmation_scans: 2
+  grace_hours: 48
+
+logging:
+  level: INFO
+  console: summary
+  retention: 20

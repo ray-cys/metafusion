@@ -140,9 +140,45 @@ def _show_document():
     return document
 
 
+def _formula1_document():
+    show, _diagnostics = merge_generated_metadata(
+        {},
+        {
+            "f1_season": 2026,
+            "round_prefix": True,
+            "shorten_gp": False,
+            "content_rating": "PG-13",
+            "studio": "F1TV",
+            "summary": "The 2026 FIA Formula One World Championship.",
+            "seasons": {
+                1: {
+                    "title": "Australian Grand Prix",
+                    "summary": "Round 1 at Albert Park Grand Prix Circuit.",
+                    "file_poster": ("/config/assets/formula1/rounds/2026/round-01/poster.png"),
+                    "episodes": {
+                        1: {
+                            "title": "Race Session",
+                            "originally_available": "2026-03-08",
+                            "summary": "Race Session from the Australian Grand Prix.",
+                        }
+                    },
+                }
+            },
+        },
+        "show",
+        authoritative_seasons={1},
+        authoritative_episodes={1: {1}},
+    )
+    document = {"metadata": {"F1 2026": show}}
+    normalize_metadata_order(document)
+    validate_metadata_document(document, library_type="show")
+    return document
+
+
 def generated_documents():
     """Return the deterministic corpus keyed by its committed filename."""
     return {
+        "formula1.yml": _formula1_document(),
         "movies.yml": _movie_document(),
         "shows.yml": _show_document(),
     }
