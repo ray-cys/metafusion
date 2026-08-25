@@ -121,13 +121,17 @@ otherwise unchanged artwork. The extension ignores unrelated Kometa metadata
 files.
 
 Artwork is deterministic. It combines schedule/circuit facts, a translucent
-host-country flag and colour gradient, circuit outline, race title, circuit,
-locality, weekend date, and a Sprint marker. Public-domain flag assets are bundled
-for current and historical Formula 1 host countries, so rendering does not add a
-runtime network dependency. The complete flag is proportionally fitted across the
-portrait canvas and feather-blended into the country gradient. This preserves
-circles, emblems, and source scale without stretching or oversized centre-crops.
-An unknown country falls back to the neutral gradient.
+host-country flag, circuit outline, race title, circuit, locality, weekend date,
+and a Sprint marker. Public-domain flag assets are bundled for current and
+historical Formula 1 host countries, so rendering does not add a runtime network
+dependency. Every poster uses a neutral charcoal technical canvas rather than
+recolouring the canvas from the host flag. The complete flag is proportionally
+fitted into the upper field and softly feathered without changing its geometry or
+mixing its white areas with a country-coloured background. Circles remain round,
+white remains neutral, and all flag colours retain their intended relationships.
+A separate dark translucent lower panel protects the white event wording from
+every possible flag palette. Diagonal racing lines are neutral, sparse, and very
+low opacity. An unknown country simply uses the same neutral canvas without a flag.
 Existing artwork without an extension ownership record is adopted without
 replacement. A managed file modified after adoption is treated as manual artwork
 and preserved. Renderer revisions regenerate only unchanged extension-managed

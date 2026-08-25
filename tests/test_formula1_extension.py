@@ -12,6 +12,7 @@ from extensions.formula1 import config as formula1_config_module
 from extensions.formula1 import state as formula1_state_module
 from extensions.formula1.artwork import (
     COUNTRY_FLAG_CODES,
+    FLAG_ALPHA,
     FLAG_ASSET_ROOT,
     RENDERER_VERSION,
     _country_key,
@@ -894,6 +895,7 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
     assert len(checksum) == 64
     with Image.open(destination) as image:
         assert image.size == (600, 900)
+        assert sum(image.getpixel((580, 850))) < sum(image.getpixel((580, 100)))
     episode_path = tmp_path / "S01E01 - Australia GP - Race.mkv"
     inventory = __import__(
         "extensions.formula1.inventory", fromlist=["Formula1Episode", "Formula1Show"]
@@ -973,7 +975,7 @@ def test_artwork_path_commands_fonts_logo_and_fallback(
 
 
 def test_country_flag_background_resolution_and_visual_structure(tmp_path, monkeypatch):
-    assert RENDERER_VERSION == 3
+    assert RENDERER_VERSION == 4
     for code in set(COUNTRY_FLAG_CODES.values()):
         with Image.open(FLAG_ASSET_ROOT / f"{code}.png") as flag:
             flag.verify()
@@ -986,7 +988,7 @@ def test_country_flag_background_resolution_and_visual_structure(tmp_path, monke
     canadian = _render_background("Canada", 600, 900)
     fallback = _render_background("Unknown", 600, 900)
     canadian.save(tmp_path / "canadian-background.png")
-    assert canadian.getpixel((300, 450)) != fallback.getpixel((300, 450))
+    assert canadian.getpixel((300, 342)) != fallback.getpixel((300, 342))
     assert len({fallback.getpixel((0, y)) for y in range(0, 900, 100)}) > 1
     with Image.open(FLAG_ASSET_ROOT / "jp.png") as japan:
         flag_layer, flag_mask = _flag_overlay(japan, 600, 900)
@@ -1003,8 +1005,16 @@ def test_country_flag_background_resolution_and_visual_structure(tmp_path, monke
     red_height = red_bounds[3] - red_bounds[1]
     assert abs(red_width - red_height) <= 2
     assert red_width < 600 * 0.5
-    assert flag_mask.getpixel((300, 450)) == round(255 * 0.48)
+    assert flag_mask.getpixel((300, 342)) == FLAG_ALPHA
     assert flag_mask.getpixel((300, 0)) == 0
+    japanese = _render_background("Japan", 600, 900)
+    white_field = japanese.getpixel((115, 342))
+    red_disc = japanese.getpixel((300, 342))
+    neutral_top = japanese.getpixel((300, 40))
+    assert min(white_field) > 150
+    assert max(white_field) - min(white_field) < 18
+    assert red_disc[0] > 110 and red_disc[0] > red_disc[1] * 4
+    assert max(neutral_top) - min(neutral_top) < 15
     monkeypatch.setattr("extensions.formula1.artwork.FLAG_ASSET_ROOT", tmp_path)
     assert country_flag_asset("Canada") is None
 

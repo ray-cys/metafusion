@@ -2,21 +2,21 @@
 
 import hashlib
 import json
-import math
 import os
 import re
 import tempfile
 import unicodedata
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from helper.io import atomic_replace_file
 
 FILE_MODE = 0o664
-RENDERER_VERSION = 3
+RENDERER_VERSION = 4
 TOKENS = re.compile(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
 FLAG_ASSET_ROOT = Path(__file__).with_name("assets") / "flags"
+FLAG_ALPHA = round(255 * 0.78)
 COUNTRY_FLAG_CODES = {
     "argentina": "ar",
     "australia": "au",
@@ -61,31 +61,6 @@ COUNTRY_FLAG_CODES = {
     "us": "us",
     "usa": "us",
 }
-COUNTRY_COLORS = {
-    "ae": (0, 90, 60),
-    "at": (215, 20, 35),
-    "au": (0, 36, 80),
-    "az": (0, 159, 219),
-    "be": (250, 205, 20),
-    "bh": (206, 17, 38),
-    "br": (0, 145, 70),
-    "ca": (215, 20, 35),
-    "cn": (210, 25, 35),
-    "es": (215, 20, 35),
-    "gb": (20, 45, 100),
-    "hu": (0, 125, 90),
-    "it": (0, 145, 70),
-    "jp": (215, 20, 35),
-    "mc": (210, 25, 35),
-    "mx": (0, 105, 80),
-    "nl": (235, 95, 20),
-    "qa": (120, 25, 65),
-    "sa": (0, 120, 70),
-    "sg": (215, 20, 35),
-    "us": (25, 55, 115),
-}
-
-
 def _country_key(country):
     normalized = unicodedata.normalize("NFKD", str(country or ""))
     ascii_country = normalized.encode("ascii", "ignore").decode("ascii")
@@ -102,37 +77,42 @@ def country_flag_asset(country):
 
 
 def _flag_overlay(flag, width, height):
-    """Fit a complete flag without distortion and feather it into a portrait canvas."""
+    """Fit an authentic, undistorted flag into the upper poster field."""
     fitted = ImageOps.contain(
         flag.convert("RGB"),
-        (width, height),
+        (max(1, round(width * 0.88)), max(1, round(height * 0.47))),
         method=Image.Resampling.LANCZOS,
     )
     left = (width - fitted.width) // 2
-    top = (height - fitted.height) // 2
+    centre_y = round(height * 0.38)
+    top = max(0, min(height - fitted.height, centre_y - fitted.height // 2))
     layer = Image.new("RGB", (width, height))
     layer.paste(fitted, (left, top))
-    band = Image.new("L", (1, fitted.height))
-    pixels = band.load()
-    feather = max(1, min(fitted.height // 5, height // 10))
-    maximum_alpha = round(255 * 0.48)
-    for y in range(fitted.height):
-        distance = min(y + 1, fitted.height - y)
-        pixels[0, y] = round(maximum_alpha * min(1.0, distance / feather))
+    feather = max(2, min(fitted.width, fitted.height) // 10)
+    flag_mask = Image.new("L", fitted.size)
+    mask_draw = ImageDraw.Draw(flag_mask)
+    mask_draw.rectangle(
+        (feather, feather, fitted.width - feather - 1, fitted.height - feather - 1),
+        fill=FLAG_ALPHA,
+    )
+    flag_mask = flag_mask.filter(ImageFilter.GaussianBlur(feather))
     mask = Image.new("L", (width, height))
-    mask.paste(band.resize((fitted.width, fitted.height)), (left, top))
+    mask.paste(flag_mask, (left, top))
     return layer, mask
 
 
 def _render_background(country, width, height):
-    code = COUNTRY_FLAG_CODES.get(_country_key(country))
-    base = COUNTRY_COLORS.get(code or "", (25, 30, 42))
-    gradient = Image.new("RGB", (1, height), base)
+    """Render a neutral canvas that never recolours a host-country flag."""
+    gradient = Image.new("RGB", (1, height))
     pixels = gradient.load()
     for y in range(height):
-        factor = 0.55 + 0.45 * (1 - y / max(height - 1, 1))
-        glow = 1 + 0.04 * math.sin(y / 170)
-        pixels[0, y] = tuple(min(255, int(channel * factor * glow)) for channel in base)
+        progress = y / max(height - 1, 1)
+        upper_glow = max(0.0, 1.0 - abs(progress - 0.30) / 0.42)
+        pixels[0, y] = (
+            round(12 + 16 * (1 - progress) + 5 * upper_glow),
+            round(13 + 17 * (1 - progress) + 4 * upper_glow),
+            round(17 + 20 * (1 - progress) + 4 * upper_glow),
+        )
     image = gradient.resize((width, height))
     flag_path = country_flag_asset(country)
     if flag_path:
@@ -291,11 +271,23 @@ def render_round_poster(race, path_data, config, destination):
     width, height = config["artwork"]["width"], config["artwork"]["height"]
     image = _render_background(race.country, width, height)
     draw = ImageDraw.Draw(image, "RGBA")
+    for x in range(-height, width, max(120, width // 6)):
+        draw.line(
+            (x, 0, x + height, height),
+            fill=(205, 210, 220, 14),
+            width=max(1, width // 1000),
+        )
+    panel_top_left = round(height * 0.52)
+    panel_top_right = round(height * 0.46)
     draw.polygon(
-        [(0, 0), (width, 0), (width, height * 0.56), (0, height * 0.72)], fill=(0, 0, 0, 58)
+        [(0, panel_top_left), (width, panel_top_right), (width, height), (0, height)],
+        fill=(4, 5, 8, 218),
     )
-    for x in range(-height, width, 90):
-        draw.line((x, 0, x + height, height), fill=(255, 255, 255, 12), width=2)
+    draw.line(
+        (0, panel_top_left, width, panel_top_right),
+        fill=(235, 20, 40, 125),
+        width=max(2, width // 450),
+    )
 
     branding = config["paths"]["branding"]
     regular = branding / config["artwork"].get("font_regular", "font-regular.ttf").split("/")[-1]
