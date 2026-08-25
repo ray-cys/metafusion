@@ -7,6 +7,7 @@ from typing import TypedDict
 
 from extensions.formula1.artwork import artwork_fingerprint, render_round_poster
 from extensions.formula1.config import formula1_requested, load_formula1_config
+from extensions.formula1.facts import enrich_race_facts
 from extensions.formula1.inventory import discover_formula1_inventory
 from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import write_show_metadata
@@ -26,6 +27,9 @@ class Formula1Summary(TypedDict):
     artwork_adopted: int
     artwork_preserved: int
     artwork_unchanged: int
+    facts_resolved: int
+    facts_missing: int
+    facts_stale: int
     issues: int
     cleanup_removed: int
     issue_report: str | None
@@ -114,6 +118,9 @@ async def run_formula1_extension(
         "artwork_adopted": 0,
         "artwork_preserved": 0,
         "artwork_unchanged": 0,
+        "facts_resolved": 0,
+        "facts_missing": 0,
+        "facts_stale": 0,
         "issues": 0,
         "cleanup_removed": 0,
         "issue_report": None,
@@ -148,6 +155,19 @@ async def run_formula1_extension(
                     len(races),
                     source,
                 )
+                inventory_rounds = {item.round_number for item in show.episodes}
+                races, fact_statistics = await enrich_race_facts(
+                    session,
+                    state,
+                    config,
+                    races,
+                    inventory_rounds,
+                    detail_logger,
+                )
+                summary["facts_resolved"] += fact_statistics["resolved"]
+                summary["facts_missing"] += fact_statistics["missing"]
+                summary["facts_stale"] += fact_statistics["stale"]
+                issues.extend(fact_statistics["issues"])
                 race_by_round = {race.round_number: race for race in races}
                 poster_references = {}
                 for round_number in sorted({item.round_number for item in show.episodes}):
@@ -162,7 +182,7 @@ async def run_formula1_extension(
                         / "poster.png"
                     )
                     path_data, shape_source = await load_circuit_path(
-                        session, state, config, race.circuit_id, detail_logger
+                        session, state, config, race, detail_logger
                     )
                     fingerprint = artwork_fingerprint(race, path_data, config)
                     logical_key = f"{show.year}:r{round_number:02d}"
@@ -249,13 +269,16 @@ async def run_formula1_extension(
         if config["logging"]["console"] != "off":
             core_logger.info(
                 "[Formula 1] Summary | Libraries: %d | Shows: %d | Episodes: %d | "
-                "Metadata updated: %d | Artwork created/updated: %d/%d | Issues: %d",
+                "Metadata updated: %d | Artwork created/updated: %d/%d | "
+                "Circuit facts resolved/missing: %d/%d | Issues: %d",
                 summary["libraries"],
                 summary["shows"],
                 summary["episodes"],
                 summary["metadata_updated"],
                 summary["artwork_created"],
                 summary["artwork_updated"],
+                summary["facts_resolved"],
+                summary["facts_missing"],
                 summary["issues"],
             )
         summary["log"] = str(log_path) if log_path else None

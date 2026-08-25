@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -75,14 +76,6 @@ def parse_schedule(payload, year):
             round_number = int(race["round"])
         except (KeyError, TypeError, ValueError):
             continue
-        results = race.get("Results") or []
-        result = results[0] if results else {}
-        laps = result.get("laps")
-        try:
-            lap_count = int(laps) if laps is not None else None
-        except (TypeError, ValueError):
-            lap_count = None
-        distance = (result.get("Time") or {}).get("distance")
         session_dates = {
             name: value["date"]
             for name in (
@@ -108,9 +101,6 @@ def parse_schedule(payload, year):
                 sprint_date=(race.get("Sprint") or {}).get("date"),
                 latitude=_number(location.get("lat")),
                 longitude=_number(location.get("long")),
-                circuit_length_km=_number(circuit.get("length")),
-                lap_count=lap_count,
-                race_distance_km=_number(distance),
                 session_dates=session_dates,
             )
         )
@@ -183,8 +173,87 @@ def _extract_path(svg):
     return match.group(1) if match else None
 
 
-async def load_circuit_path(session, state, config, circuit_id, logger):
-    slug = CIRCUIT_SLUGS.get(str(circuit_id))
+def _shape_key(value):
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii").casefold()
+    return re.sub(r"[^a-z0-9]+", "-", ascii_value).strip("-")
+
+
+def _manifest_names(payload):
+    if not isinstance(payload, list):
+        return []
+    return [
+        str(item.get("name")) for item in payload if isinstance(item, dict) and item.get("name")
+    ]
+
+
+async def _load_shape_manifest(session, state, config):
+    cached = state.cache_get(SHAPE_PROVIDER, "manifest")
+    if cached is not None:
+        return list(cached.get("names", []))
+    retries = config["providers"]["retries"]
+    last_error = None
+    for attempt in range(retries):
+        try:
+            async with session.get(
+                config["providers"]["circuit_manifest_url"],
+                headers={"User-Agent": "MetaFusion-Formula1/1.1"},
+            ) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"provider returned HTTP {response.status}")
+                names = _manifest_names(await response.json(content_type=None))
+                if not names:
+                    raise RuntimeError("circuit manifest contained no SVG files")
+                state.cache_put(
+                    SHAPE_PROVIDER,
+                    "manifest",
+                    {"names": names},
+                    config["providers"]["cache_hours"],
+                )
+                return names
+        except (OSError, asyncio.TimeoutError, RuntimeError) as error:
+            last_error = error
+            if attempt + 1 < retries:
+                await asyncio.sleep(0)
+    stale = state.cache_get(SHAPE_PROVIDER, "manifest", allow_expired=True)
+    if stale is not None:
+        return list(stale.get("names", []))
+    raise RuntimeError(f"circuit manifest request failed: {last_error}") from last_error
+
+
+def _select_shape_slug(race, names):
+    circuit_id = _shape_key(race.circuit_id)
+    candidates = []
+    identity = set(_shape_key(f"{race.circuit} {race.locality}").split("-"))
+    for name in names:
+        stem = re.sub(r"\.svg$", "", name, flags=re.IGNORECASE)
+        base = re.sub(r"-\d+$", "", stem)
+        if base == circuit_id:
+            return stem
+        tokens = set(base.split("-"))
+        score = len(tokens & identity) / max(len(tokens), 1)
+        if score >= 0.75:
+            candidates.append((score, stem))
+    candidates.sort(reverse=True)
+    if candidates and (len(candidates) == 1 or candidates[0][0] > candidates[1][0]):
+        return candidates[0][1]
+    return None
+
+
+async def load_circuit_path(session, state, config, race, logger):
+    circuit_id = race.circuit_id if isinstance(race, RaceData) else str(race)
+    slug = CIRCUIT_SLUGS.get(circuit_id)
+    if not slug and isinstance(race, RaceData):
+        binding_key = f"shape-binding:{circuit_id}"
+        binding = state.cache_get(SHAPE_PROVIDER, binding_key, allow_expired=True)
+        slug = binding.get("slug") if binding else None
+        if not slug:
+            try:
+                slug = _select_shape_slug(race, await _load_shape_manifest(session, state, config))
+            except RuntimeError as error:
+                logger.warning("[Provider] Circuit manifest unavailable | Error: %s", error)
+            if slug:
+                state.cache_put(SHAPE_PROVIDER, binding_key, {"slug": slug}, 720)
     if not slug:
         return None, "unmapped"
     key = f"circuit:{slug}"

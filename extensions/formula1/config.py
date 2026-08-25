@@ -142,6 +142,14 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     if not circuit_url.startswith("https://"):
         raise Formula1ConfigError("providers.circuit_svg_url must use HTTPS")
     providers["circuit_svg_url"] = circuit_url
+    formula1_url = str(providers.get("formula1_url", "")).strip().rstrip("/")
+    if not formula1_url.startswith("https://"):
+        raise Formula1ConfigError("providers.formula1_url must use HTTPS")
+    providers["formula1_url"] = formula1_url
+    manifest_url = str(providers.get("circuit_manifest_url", "")).strip()
+    if not manifest_url.startswith("https://"):
+        raise Formula1ConfigError("providers.circuit_manifest_url must use HTTPS")
+    providers["circuit_manifest_url"] = manifest_url
 
     cleanup = config.setdefault("cleanup", {})
     cleanup["confirmation_scans"] = _bounded_int(

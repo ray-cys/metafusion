@@ -47,8 +47,11 @@ Generated YAML uses Kometa Formula 1 controls (`f1_season`, `round_prefix`, and
 `shorten_gp`) plus show, round, and episode edits. Existing non-MetaFusion YAML
 fields are preserved. The top-level YAML name exactly matches the Plex show, as
 required by Kometa's Formula 1 guide. Session dates use provider schedule fields
-when available and fall back to the race date. The extension ignores unrelated
-Kometa metadata files.
+when available and fall back to the race date. Circuit length, scheduled race
+distance, and scheduled lap count are taken from the matching official event
+page and cross-validated before use. MetaFusion omits unavailable facts instead
+of writing a misleading `to be confirmed` value; the missing fact is recorded in
+the Formula 1 issue report. The extension ignores unrelated Kometa metadata files.
 
 Artwork is deterministic. It combines schedule/circuit facts, a translucent
 host-country flag and colour gradient, circuit outline, race title, circuit,
@@ -74,11 +77,31 @@ commercial fonts. You are responsible for permission to use supplied branding.
 
 ## Data and network behavior
 
-Schedule and venue facts come from the Jolpica F1 API. Circuit outlines come from
-the open `julesr0y/f1-circuits-svg` project (CC BY 4.0). Provider responses are
-validated, cached in the extension database, retried, and may use an explicitly
-logged stale cache during a temporary outage. Missing schedule identity prevents
-that round from being written rather than guessing.
+Calendar, round, venue, and session dates come from the Jolpica F1 API. Circuit
+length, scheduled lap count, and scheduled race distance come from the matching
+Formula1.com event page because those fields are not present in Jolpica's season
+schedule response. MetaFusion discovers the official event links for each season,
+validates plausible ranges and the length/lap/distance relationship, and caches
+only the parsed facts in the isolated Formula 1 database. This is a website adapter,
+not an official public API, so a markup change may temporarily produce a reported
+fact gap; cached valid facts remain available as an explicitly logged stale fallback.
+
+The yearly Jolpica schedule is authoritative for additions, removals, and round
+order. A newly added event is matched from its current-year Formula1.com calendar
+identity instead of a fixed 2026 fact table. A removed event is simply absent from
+the new season; it does not erase historical seasons. Only rounds actually present
+in the Plex inventory request official fact pages, which keeps normal runs small.
+
+Circuit outlines come from the open `julesr0y/f1-circuits-svg` project (CC BY 4.0).
+Known circuit identities use stable mappings. For a new circuit, MetaFusion reads
+and caches the provider's current manifest, accepts only a unique high-confidence
+identity match, and remembers that binding. If the outline project has not yet
+published the new circuit, the poster still renders using the neutral outline
+fallback and the condition is logged rather than guessed.
+
+Provider responses are validated, cached in the extension database, retried, and
+may use an explicitly logged stale cache during a temporary outage. Missing
+schedule identity prevents that round from being written rather than guessing.
 
 The circuit outline attribution is maintained here as required by its licence:
 “F1 circuits SVG”, ROY Jules, CC BY 4.0,

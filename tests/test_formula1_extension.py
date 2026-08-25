@@ -29,6 +29,15 @@ from extensions.formula1.config import (
     load_formula1_config,
     sync_formula1_template,
 )
+from extensions.formula1.facts import (
+    CircuitFacts,
+    _identity_matches,
+    _load_official_facts,
+    _select_event_slug,
+    enrich_race_facts,
+    parse_event_slugs,
+    parse_official_facts,
+)
 from extensions.formula1.inventory import (
     canonical_event,
     canonical_program,
@@ -39,8 +48,11 @@ from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import build_show_entry, write_show_metadata
 from extensions.formula1.provider import (
     _get,
+    _load_shape_manifest,
+    _manifest_names,
     _number,
     _response_json,
+    _select_shape_slug,
     load_circuit_path,
     load_schedule,
     parse_schedule,
@@ -112,17 +124,47 @@ class Response:
         return self.body
 
 
+OFFICIAL_CALENDAR = (
+    '<a href="/en/racing/2026/pre-season-testing-1">Testing</a>'
+    '<a href="/en/racing/2026/australia">Australia</a>'
+)
+OFFICIAL_FACTS = (
+    r"\"trackLength\":\"5.278\","
+    r"\"scheduledLapCount\":\"58\","
+    r"\"scheduledDistance\":\"306.124\","
+    r"\"circuitOfficialName\":\"Albert Park Grand Prix Circuit\","
+    r"\"circuitLocation\":\"Melbourne\""
+)
+
+
 class Session:
-    def __init__(self, schedule, svg, *, fail=False):
+    def __init__(
+        self,
+        schedule,
+        svg,
+        *,
+        fail=False,
+        calendar=OFFICIAL_CALENDAR,
+        facts=OFFICIAL_FACTS,
+        manifest=None,
+    ):
         self.schedule = schedule
         self.svg = svg
         self.fail = fail
+        self.calendar = calendar
+        self.facts = facts
+        self.manifest = manifest or [{"name": "madring-1.svg"}]
         self.urls = []
 
     def get(self, url, **_kwargs):
         self.urls.append(url)
         if self.fail:
             return Response(503)
+        if "api.github.com" in url:
+            return Response(payload=self.manifest)
+        if "formula1.com" in url:
+            is_calendar = url.rstrip("/").endswith("/2026")
+            return Response(text=self.calendar if is_calendar else self.facts)
         if url.endswith(".svg"):
             return Response(text=self.svg)
         return Response(payload=self.schedule)
@@ -200,7 +242,9 @@ def test_config_is_private_validated_and_dry_run_safe(tmp_path, core):
         ("library:\n  naming_profile: bad\n", "naming_profile"),
         ("artwork:\n  policy: overwrite\n", "policy"),
         ("providers:\n  jolpica_url: http://unsafe\n", "jolpica"),
+        ("providers:\n  formula1_url: http://unsafe\n", "formula1_url"),
         ("providers:\n  circuit_svg_url: http://unsafe\n", "circuit_svg_url"),
+        ("providers:\n  circuit_manifest_url: http://unsafe\n", "circuit_manifest_url"),
         ("logging:\n  level: TRACE\n", "logging.level"),
         ("logging:\n  console: noisy\n", "logging.console"),
     ],
@@ -451,6 +495,230 @@ def test_provider_validates_caches_and_falls_back(tmp_path, core, schedule_paylo
     state.close()
 
 
+def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_payload):
+    config = load_formula1_config(core, tmp_path / "config")
+    state = Formula1State(config["paths"]["database"])
+    race = parse_schedule(schedule_payload, 2026)[0]
+    assert parse_event_slugs(OFFICIAL_CALENDAR, 2026) == ["australia"]
+    assert parse_event_slugs("nothing", 2026) == []
+    assert _select_event_slug(race, ["australia"]) == "australia"
+    facts = parse_official_facts(OFFICIAL_FACTS)
+    assert facts == CircuitFacts(5.278, 58, 306.124, "Albert Park Grand Prix Circuit", "Melbourne")
+    assert _identity_matches(race, facts)
+    assert _identity_matches(
+        race, CircuitFacts(5.278, 58, 306.124, "Albert Park Circuit", "Wrong City")
+    )
+    assert _identity_matches(race, CircuitFacts(5.278, 58, 306.124))
+    assert not _identity_matches(
+        race, CircuitFacts(5.278, 58, 306.124, "Wrong Raceway", "Wrong City")
+    )
+    visible = (
+        "Circuit Length</dt><dd><span>5.278km</span></dd>"
+        "Number of Laps</dt><dd>58</dd>"
+        "Race Distance</dt><dd>306.124km</dd>"
+    )
+    assert parse_official_facts(visible).lap_count == 58
+    with pytest.raises(RuntimeError, match="omitted"):
+        parse_official_facts("Circuit Length")
+    with pytest.raises(RuntimeError, match="implausible"):
+        parse_official_facts(
+            OFFICIAL_FACTS.replace(r"\"scheduledLapCount\":\"58", r"\"scheduledLapCount\":\"1")
+        )
+    with pytest.raises(RuntimeError, match="inconsistent"):
+        parse_official_facts(
+            OFFICIAL_FACTS.replace(
+                r"\"scheduledDistance\":\"306.124", r"\"scheduledDistance\":\"200"
+            )
+        )
+    session = Session(schedule_payload, "<svg/>")
+    enriched, statistics = asyncio.run(
+        enrich_race_facts(session, state, config, [race], {1}, logging.getLogger("facts"))
+    )
+    assert statistics == {"resolved": 1, "missing": 0, "stale": 0, "issues": []}
+    assert enriched[0].circuit_length_km == 5.278
+    cached, cached_statistics = asyncio.run(
+        enrich_race_facts(session, state, config, [race], {1}, logging.getLogger("facts-cache"))
+    )
+    assert cached[0].lap_count == 58 and cached_statistics["resolved"] == 1
+    wrong_facts = OFFICIAL_FACTS.replace("Melbourne", "Wrong City").replace(
+        "Albert Park Grand Prix Circuit", "Wrong Raceway"
+    )
+    with pytest.raises(RuntimeError, match="identity"):
+        asyncio.run(
+            _load_official_facts(
+                Session(schedule_payload, "", facts=wrong_facts),
+                state,
+                config,
+                race,
+                "wrong-event",
+            )
+        )
+    state.close()
+
+
+def test_official_facts_fail_safe_identity_and_stale_paths(tmp_path, core, schedule_payload):
+    config = load_formula1_config(core, tmp_path / "config")
+    state = Formula1State(config["paths"]["database"])
+    race = parse_schedule(schedule_payload, 2026)[0]
+    unknown = type(race)(**{**race.__dict__, "circuit_id": "new_place", "country": "Nowhere"})
+    assert _select_event_slug(unknown, ["one", "two"]) is None
+    assert _select_event_slug(unknown, ["nowhere"]) == "nowhere"
+    token_match = type(race)(
+        **{
+            **race.__dict__,
+            "circuit_id": "new_place",
+            "circuit": "Alpha New Raceway",
+            "locality": "Elsewhere",
+            "country": "Nowhere",
+        }
+    )
+    assert _select_event_slug(token_match, ["alpha-new", "unrelated-place"]) == "alpha-new"
+    unchanged, statistics = asyncio.run(
+        enrich_race_facts(
+            Session(schedule_payload, "", calendar='<a href="/en/racing/2026/one">One</a>'),
+            state,
+            config,
+            [unknown],
+            {1},
+            logging.getLogger("facts-identity"),
+        )
+    )
+    assert unchanged == [unknown] and statistics["missing"] == 1
+    state.connection.execute("DELETE FROM provider_cache")
+    state.connection.commit()
+    state.cache_put(
+        "formula1.com",
+        "events:2026",
+        {"slugs": ["australia"]},
+        1,
+        now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    state.cache_put(
+        "formula1.com",
+        "facts:2026:australia",
+        {
+            "circuit_length_km": 5.278,
+            "lap_count": 58,
+            "race_distance_km": 306.124,
+            "circuit": None,
+            "locality": None,
+        },
+        1,
+        now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    stale, statistics = asyncio.run(
+        enrich_race_facts(
+            Session(schedule_payload, "", fail=True),
+            state,
+            config,
+            [race],
+            {1},
+            logging.getLogger("facts-stale"),
+        )
+    )
+    assert stale[0].lap_count == 58 and statistics["stale"] == 1
+    state.connection.execute("DELETE FROM provider_cache")
+    state.connection.commit()
+    failed, statistics = asyncio.run(
+        enrich_race_facts(
+            Session(schedule_payload, "", fail=True),
+            state,
+            config,
+            [race],
+            {1},
+            logging.getLogger("facts-failed"),
+        )
+    )
+    assert failed == [race] and statistics["missing"] == 1
+    recovered, statistics = asyncio.run(
+        enrich_race_facts(
+            Session(schedule_payload, "", calendar=""),
+            state,
+            config,
+            [race],
+            {1},
+            logging.getLogger("facts-no-calendar"),
+        )
+    )
+    assert recovered[0].lap_count == 58 and statistics["resolved"] == 1
+    assert (
+        asyncio.run(
+            enrich_race_facts(Session({}, ""), state, config, [], set(), logging.getLogger("none"))
+        )[0]
+        == []
+    )
+    state.close()
+
+
+def test_future_circuit_shape_manifest_is_learned(tmp_path, core, schedule_payload):
+    config = load_formula1_config(core, tmp_path / "config")
+    state = Formula1State(config["paths"]["database"])
+    race = parse_schedule(schedule_payload, 2026)[0]
+    future = type(race)(
+        **{
+            **race.__dict__,
+            "circuit_id": "madring",
+            "circuit": "Madring",
+            "locality": "Madrid",
+            "country": "Spain",
+        }
+    )
+    assert _manifest_names([{"name": "madring-1.svg"}, {}, "bad"]) == ["madring-1.svg"]
+    assert _manifest_names({}) == []
+    assert _select_shape_slug(future, ["madring-1.svg"]) == "madring-1"
+    session = Session(
+        schedule_payload,
+        '<svg><path d="M0 0 L10 10"/></svg>',
+        manifest=[{"name": "madring-1.svg"}],
+    )
+    path, source = asyncio.run(
+        load_circuit_path(session, state, config, future, logging.getLogger("future-shape"))
+    )
+    assert path == "M0 0 L10 10" and source == "f1-circuits-svg"
+    assert state.cache_get("f1-circuits-svg", "shape-binding:madring")["slug"] == "madring-1"
+    assert asyncio.run(_load_shape_manifest(session, state, config)) == ["madring-1.svg"]
+    fuzzy = type(future)(
+        **{**future.__dict__, "circuit_id": "unknown", "circuit": "New Harbor Circuit"}
+    )
+    assert _select_shape_slug(fuzzy, ["new-harbor-1.svg", "other-1.svg"]) == "new-harbor-1"
+    assert _select_shape_slug(fuzzy, ["unrelated-1.svg"]) is None
+    state.close()
+
+
+def test_future_shape_manifest_failure_and_stale_fallback(tmp_path, core, schedule_payload):
+    config = load_formula1_config(core, tmp_path / "config")
+    config["providers"]["retries"] = 2
+    state = Formula1State(config["paths"]["database"])
+    race = parse_schedule(schedule_payload, 2026)[0]
+    future = type(race)(**{**race.__dict__, "circuit_id": "future", "circuit": "Future Circuit"})
+    empty = Session(schedule_payload, "", manifest=[])
+    empty.manifest = []
+    with pytest.raises(RuntimeError, match="manifest request failed"):
+        asyncio.run(_load_shape_manifest(empty, state, config))
+    state.cache_put(
+        "f1-circuits-svg",
+        "manifest",
+        {"names": ["future-1.svg"]},
+        1,
+        now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    assert asyncio.run(_load_shape_manifest(Session({}, "", fail=True), state, config)) == [
+        "future-1.svg"
+    ]
+    state.connection.execute("DELETE FROM provider_cache")
+    state.connection.commit()
+    assert asyncio.run(
+        load_circuit_path(
+            Session({}, "", fail=True),
+            state,
+            config,
+            future,
+            logging.getLogger("manifest-failed"),
+        )
+    ) == (None, "unmapped")
+    state.close()
+
+
 def test_provider_failure_boundaries_and_stale_fallback(tmp_path, core, schedule_payload):
     config = load_formula1_config(core, tmp_path / "config")
     config["providers"]["retries"] = 2
@@ -536,6 +804,8 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
     show = inventory.Formula1Show(2026, "F1 2026", "show", [episode])
     generated, seasons, episodes = build_show_entry(show, [race], {1: "/config/poster.png"}, config)
     assert "match" not in generated
+    assert "to be confirmed" not in generated["seasons"][1]["summary"]
+    assert "Circuit length" not in generated["seasons"][1]["summary"]
     assert generated["seasons"][1]["episodes"][1]["originally_available"] == "2026-03-08"
     assert seasons == {1} and episodes == {1: {1}}
     assert validate_generated_metadata(generated, "show")
