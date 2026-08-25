@@ -680,6 +680,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale": "[Artwork] {media_type} | {full_title} | Stale {asset_type} selected for upgrade | Size: {filesize} | Last upgrade: {last_upgraded} | Age days: {stale_days}",
         "builder_already_up_to_date": "[Artwork] {media_type} | {full_title} | Unchanged {asset_type} | Size: {filesize}",
         "builder_no_upgrade_needed": "[Artwork] {media_type} | {full_title} | Unchanged {asset_type} | Size: {filesize}",
+        "builder_quality_guard_rejected": "[Artwork] {media_type} | {full_title} | Preserved {asset_type} | Candidate score: {new_quality_score} | Existing score: {existing_quality_score} | Quality delta: {quality_delta}",
+        "builder_tmdb_canonical_pending": "[Artwork] {media_type} | {full_title} | Preserved {asset_type} | TMDb canonical change awaiting confirmation | Observations: {canonical_observations}/2",
         "builder_stale_candidate_downgrade": "[Artwork] {media_type} | {full_title} | Preserved higher-quality {asset_type} | Reason: Replacement candidate scored lower",
         "builder_no_image_for_compare": "[Artwork] {media_type} | {full_title} | Image comparison unavailable | Detail: {extra}",
         "builder_error_image_compare": "[Artwork] {media_type} | {full_title} | Image comparison failed | Detail: {extra} | Error: {error}",
@@ -693,6 +695,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale_season": "[Artwork] {media_type} | {full_title} | Season {season_number} poster selected for stale upgrade | Size: {filesize} | Last upgrade: {last_upgraded} | Age days: {stale_days}",
         "builder_already_up_to_date_season": "[Artwork] {media_type} | {full_title} | Unchanged Season {season_number} {asset_type} | Size: {filesize}",
         "builder_no_upgrade_needed_season": "[Artwork] {media_type} | {full_title} | Unchanged Season {season_number} {asset_type} | Size: {filesize}",
+        "builder_quality_guard_rejected_season": "[Artwork] {media_type} | {full_title} | Preserved Season {season_number} {asset_type} | Candidate score: {new_quality_score} | Existing score: {existing_quality_score} | Quality delta: {quality_delta}",
+        "builder_tmdb_canonical_pending_season": "[Artwork] {media_type} | {full_title} | Preserved Season {season_number} {asset_type} | TMDb canonical change awaiting confirmation | Observations: {canonical_observations}/2",
         "builder_stale_candidate_downgrade_season": "[Artwork] {media_type} | {full_title} | Preserved higher-quality Season {season_number} {asset_type} | Reason: Replacement candidate scored lower",
         "builder_no_image_for_compare_season": "[Artwork] {media_type} | {full_title} | Season {season_number} image comparison unavailable",
         "builder_error_image_compare_season": "[Artwork] {media_type} | {full_title} | Season {season_number} image comparison failed | Error: {error}",
@@ -736,6 +740,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale": "debug",
         "builder_already_up_to_date": "debug",
         "builder_no_upgrade_needed": "debug",
+        "builder_quality_guard_rejected": "debug",
+        "builder_tmdb_canonical_pending": "debug",
         "builder_stale_candidate_downgrade": "warning",
         "builder_no_image_for_compare": "warning",
         "builder_error_image_compare": "error",
@@ -749,6 +755,8 @@ def log_builder_event(event, logger=None, **kwargs):
         "builder_force_upgrade_stale_season": "debug",
         "builder_already_up_to_date_season": "debug",
         "builder_no_upgrade_needed_season": "debug",
+        "builder_quality_guard_rejected_season": "debug",
+        "builder_tmdb_canonical_pending_season": "debug",
         "builder_stale_candidate_downgrade_season": "warning",
         "builder_no_image_for_compare_season": "warning",
         "builder_error_image_compare_season": "error",
@@ -769,6 +777,10 @@ def log_builder_event(event, logger=None, **kwargs):
             reason = f"Provider score: {context.get('new_votes')} (Relaxed: {context.get('vote_relaxed')})"
         elif status_code == "UPGRADE_DIMENSIONS":
             reason = f"Candidate dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
+        elif status_code == "UPGRADE_QUALITY":
+            reason = f"Quality score: {context.get('new_quality_score')} (Existing: {context.get('existing_quality_score')}, Delta: {context.get('quality_delta')})"
+        elif status_code == "UPGRADE_TMDB_CANONICAL":
+            reason = "TMDb canonical change confirmed"
         else:
             reason = ""
         kwargs["reason"] = reason
@@ -787,6 +799,10 @@ def log_builder_event(event, logger=None, **kwargs):
             reason = f"Provider score: {context.get('new_votes')} (Relaxed: {context.get('vote_relaxed')})"
         elif status_code == "UPGRADE_DIMENSIONS_SEASON":
             reason = f"Candidate dimensions: {context.get('new_width')}x{context.get('new_height')}, Existing: {context.get('existing_width', '?')}x{context.get('existing_height', '?')}"
+        elif status_code == "UPGRADE_QUALITY_SEASON":
+            reason = f"Quality score: {context.get('new_quality_score')} (Existing: {context.get('existing_quality_score')}, Delta: {context.get('quality_delta')})"
+        elif status_code == "UPGRADE_TMDB_CANONICAL_SEASON":
+            reason = "TMDb canonical change confirmed"
         else:
             reason = ""
         kwargs["reason"] = reason
@@ -805,18 +821,22 @@ def log_builder_event(event, logger=None, **kwargs):
 
 def log_asset_status(
     status_code, *, media_type, asset_type, full_title, filesize=None, 
-    error=None, extra=None, season_number=None
+    error=None, extra=None, season_number=None, context=None
 ):
     event_map = {
         "FORCE_UPGRADE_STALE": "builder_force_upgrade_stale",
         "ALREADY_UP_TO_DATE": "builder_already_up_to_date",
         "NO_UPGRADE_NEEDED": "builder_no_upgrade_needed",
+        "QUALITY_GUARD_REJECTED": "builder_quality_guard_rejected",
+        "TMDB_CANONICAL_CHANGE_PENDING": "builder_tmdb_canonical_pending",
         "STALE_CANDIDATE_DOWNGRADE": "builder_stale_candidate_downgrade",
         "NO_IMAGE_FOR_COMPARE": "builder_no_image_for_compare",
         "ERROR_IMAGE_COMPARE": "builder_error_image_compare",
         "FORCE_UPGRADE_STALE_SEASON": "builder_force_upgrade_stale_season",
         "ALREADY_UP_TO_DATE_SEASON": "builder_already_up_to_date_season",
         "NO_UPGRADE_NEEDED_SEASON": "builder_no_upgrade_needed_season",
+        "QUALITY_GUARD_REJECTED_SEASON": "builder_quality_guard_rejected_season",
+        "TMDB_CANONICAL_CHANGE_PENDING_SEASON": "builder_tmdb_canonical_pending_season",
         "STALE_CANDIDATE_DOWNGRADE_SEASON": "builder_stale_candidate_downgrade_season",
         "NO_IMAGE_FOR_COMPARE_SEASON": "builder_no_image_for_compare_season",
         "ERROR_IMAGE_COMPARE_SEASON": "builder_error_image_compare_season",
@@ -835,6 +855,17 @@ def log_asset_status(
         kwargs["error"] = error
     if extra is not None:
         kwargs["extra"] = extra
+    if status_code.startswith("QUALITY_GUARD_REJECTED"):
+        comparison = context or {}
+        kwargs.update(
+            new_quality_score=comparison.get("new_quality_score", "?"),
+            existing_quality_score=comparison.get("existing_quality_score", "?"),
+            quality_delta=comparison.get("quality_delta", "?"),
+        )
+    if status_code.startswith("TMDB_CANONICAL_CHANGE_PENDING"):
+        kwargs["canonical_observations"] = (context or {}).get(
+            "canonical_observations", 0
+        )
     if season_number is not None:
         kwargs["season_number"] = season_number
     log_builder_event(event, **kwargs)
@@ -954,15 +985,32 @@ def log_item_outcomes(
             )
         if feature_flags.get("plex_metadata", False):
             details.append(f"API batches: {int(stats.get('plex_metadata_writes', 0))}")
-        metadata_level = (
-            "info"
-            if metadata_action == "skipped"
+        coverage_transition = stats.get("metadata_coverage_transition")
+        previous_coverage = stats.get("metadata_previous_percent")
+        if (
+            coverage_transition in {"improved", "regressed"}
+            and previous_coverage is not None
             and coverage_value is not None
-            and coverage_value < 100
-            else None
-        )
-        if metadata_level:
-            details.append("Status: Incomplete but unchanged")
+        ):
+            try:
+                details.append(
+                    "Coverage change: "
+                    f"{float(previous_coverage):g}% → {float(coverage_value):g}%"
+                )
+            except (TypeError, ValueError):
+                pass
+        elif coverage_transition == "first_incomplete":
+            details.append("Status: First incomplete observation")
+        metadata_level = None
+        if metadata_action != "failed":
+            if coverage_transition == "regressed":
+                metadata_level = "warning"
+                details.append("Status: Field coverage regressed")
+            elif metadata_action == "skipped" and coverage_transition in {
+                "improved",
+                "first_incomplete",
+            }:
+                metadata_level = "info"
         emit(
             "Metadata",
             None,
@@ -1015,23 +1063,29 @@ def log_item_outcomes(
     season_actions = stats.get("season_poster_actions") or {}
     if season_actions:
         action_counts: dict[str, int] = {}
+        action_seasons: dict[str, list[object]] = {}
         provider_counts: dict[str, int] = {}
         season_providers = stats.get("season_artwork_providers") or {}
         for season_number, action in season_actions.items():
+            action_counts[action] = action_counts.get(action, 0) + 1
+            action_seasons.setdefault(action, []).append(season_number)
             if action == "not_due":
                 continue
-            action_counts[action] = action_counts.get(action, 0) + 1
             provider_value = season_providers.get(season_number)
             if provider_value is None:
                 provider_value = season_providers.get(str(season_number))
             label = provider_label(provider_value, action)
             provider_counts[label] = provider_counts.get(label, 0) + 1
-        if action_counts:
+        # An all-not-due show remains summary-only. When another season has an
+        # outcome worth logging, include the not-due count in that same compact
+        # show-level line so every season destination still reconciles.
+        if action_counts and set(action_counts) != {"not_due"}:
             action_labels = {
                 "downloaded": "Downloaded",
                 "upgraded": "Upgraded",
                 "adopted": "Adopted",
                 "skipped": "Unchanged",
+                "not_due": "Not due",
                 "preserved": "Preserved",
                 "policy_preserved": "Policy preserved",
                 "policy_missing": "Policy-preserved missing",
@@ -1039,10 +1093,65 @@ def log_item_outcomes(
                 "failed": "Failed",
                 "deferred": "Deferred",
             }
+
+            def format_season_label(value):
+                if value is None:
+                    return "unknown"
+                try:
+                    return f"S{int(value):02d}"
+                except (TypeError, ValueError):
+                    return str(value)
+
+            def season_sort_key(value):
+                if value is None:
+                    return (-1, "")
+                try:
+                    return (0, int(value))
+                except (TypeError, ValueError):
+                    return (1, str(value))
+
+            def season_references(action, *, limit=8):
+                values = sorted(action_seasons.get(action, []), key=season_sort_key)
+                labels = [format_season_label(value) for value in values[:limit]]
+                if len(values) > limit:
+                    labels.append(f"+{len(values) - limit} more")
+                return ", ".join(labels)
+
+            traced_actions = {
+                "downloaded",
+                "upgraded",
+                "adopted",
+                "preserved",
+                "policy_missing",
+                "missing",
+                "deferred",
+                "failed",
+            }
+            action_order = (
+                "downloaded",
+                "upgraded",
+                "adopted",
+                "skipped",
+                "not_due",
+                "preserved",
+                "policy_preserved",
+                "policy_missing",
+                "missing",
+                "deferred",
+                "failed",
+            )
             action_detail = format_fields(
                 *(
-                    (action_labels.get(name, name.title()), count)
-                    for name, count in sorted(action_counts.items())
+                    (
+                        action_labels.get(name, name.title()),
+                        (
+                            f"{action_counts[name]} [{season_references(name)}]"
+                            if name in traced_actions
+                            else action_counts[name]
+                        ),
+                    )
+                    for name in action_order
+                    if name in action_counts
                 )
             )
             provider_detail = format_fields(*sorted(provider_counts.items()))
@@ -1058,7 +1167,7 @@ def log_item_outcomes(
             season_attempts = stats.get("season_artwork_attempts") or {}
             for season_number, action in sorted(
                 season_actions.items(),
-                key=lambda value: (-1 if value[0] is None else int(value[0])),
+                key=lambda value: season_sort_key(value[0]),
             ):
                 if action != "missing":
                     continue
@@ -1070,16 +1179,12 @@ def log_item_outcomes(
                     f"{attempt_status_labels.get(attempt.get('status'), attempt.get('status', 'unknown'))}"
                     for attempt in attempts
                 )
-                season_label = (
-                    "unknown"
-                    if season_number is None
-                    else f"S{int(season_number):02d}"
-                )
                 missing_details.append(
-                    f"{season_label} ({attempt_text or 'provider attempts unavailable'})"
+                    f"{format_season_label(season_number)} "
+                    f"({attempt_text or 'provider attempts unavailable'})"
                 )
             quiet_actions = set(action_counts).issubset(
-                {"skipped", "preserved", "policy_preserved"}
+                {"skipped", "not_due", "preserved", "policy_preserved"}
             )
             season_stages = stats.get("season_artwork_selection_stages") or {}
             relaxed_count = sum(
@@ -1283,6 +1388,27 @@ def metadata_schedule_line(library_summary):
         f"Required: {library_summary.get('metadata_schedule_required', 0)} | "
         f"Forced: {library_summary.get('metadata_schedule_forced', 0)} | "
         f"Not due: {library_summary.get('metadata_schedule_not_due', 0)}"
+    )
+
+
+def metadata_coverage_line(library_summary):
+    """Return field-coverage outcomes without treating incompleteness as a write."""
+    library_summary = library_summary or {}
+    complete = int(library_summary.get("metadata_complete", 0) or 0)
+    incomplete = int(library_summary.get("metadata_incomplete", 0) or 0)
+    evaluated = complete + incomplete
+    complete_percent = round(complete * 100 / evaluated, 1) if evaluated else 100.0
+    incomplete_percent = round(incomplete * 100 / evaluated, 1) if evaluated else 0.0
+    return (
+        "Metadata coverage | Evaluated: "
+        f"{evaluated} | Meets threshold: {complete} ({complete_percent:g}%) | "
+        f"Below threshold: {incomplete} ({incomplete_percent:g}%) | "
+        "Improved: "
+        f"{int(library_summary.get('metadata_coverage_improved', 0) or 0)} | "
+        "Regressed: "
+        f"{int(library_summary.get('metadata_coverage_regressed', 0) or 0)} | "
+        "First incomplete: "
+        f"{int(library_summary.get('metadata_coverage_first_incomplete', 0) or 0)}"
     )
 
 
@@ -1667,6 +1793,7 @@ def log_final_summary(
         overall_metadata_summary = metadata_action_summary(overall, feature_flags)
         if overall_metadata_summary:
             lines.extend(box_line(overall_metadata_summary, box_width))
+        lines.extend(box_line(metadata_coverage_line(overall), box_width))
     lines.extend(box_line(
         f"Artwork schedule | Destinations: {artwork_schedule['destinations']} | "
         f"Due: {artwork_schedule['due']} | "
@@ -1780,14 +1907,10 @@ def log_final_summary(
         if metadata_summary:
             lines.extend(box_line(f"Library: {lib} | {metadata_summary}", box_width))
         if summary.get("percent_complete") is not None:
-            percent_incomplete = summary.get("percent_incomplete")
-            if percent_incomplete is None:
-                percent_incomplete = 100 - summary["percent_complete"]
             lines.extend(box_line(
-                f"Library: {lib} | Metadata coverage | Meets threshold: "
-                f"{summary['complete']}/{summary['total_items']} "
-                f"({summary['percent_complete']}%) | Below threshold: "
-                f"{summary['incomplete']} ({percent_incomplete}%)", box_width))
+                f"Library: {lib} | {metadata_coverage_line(libsum)}",
+                box_width,
+            ))
 
         if feature_flags and feature_flags.get("poster", False) and library_type in ("movie", "tv", "show"):
             warning = schedule_reconciliation_warning(

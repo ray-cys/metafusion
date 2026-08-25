@@ -43,6 +43,7 @@ def test_artwork_selection_details_render_all_explanations():
         {
             "provider": "tmdb",
             "provider_image_id": "1",
+            "tmdb_canonical": True,
             "selection_reason": "highest score",
             "provider_attempts": [
                 {"provider": "tmdb", "status": "selected", "candidates": 2}
@@ -69,6 +70,7 @@ def test_artwork_selection_details_render_all_explanations():
     assert "providers attempted" in rendered
     assert "selected components" in rendered
     assert "highest-scoring rejected" in rendered
+    assert "TMDb canonical: yes" in rendered
 
 
 def test_managed_asset_roots_and_current_destinations(tmp_path):

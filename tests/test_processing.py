@@ -48,6 +48,87 @@ def metadata_for(item):
     }
 
 
+def test_metadata_coverage_transitions_are_durable_and_bounded(monkeypatch, tmp_path):
+    item = SimpleNamespace(
+        ratingKey="1", title="Movie 1", year=2020, type="movie", updatedAt="old"
+    )
+    meta = {**metadata_for(1), "tmdb_id": "100"}
+    state = {}
+    persisted = []
+
+    async def fake_metadata(*_args, **_kwargs):
+        return dict(meta)
+
+    async def fake_builder(*_args, **_kwargs):
+        return {
+            "metadata_action": "skipped",
+            "percent": 75,
+            "incomplete_percent": 25,
+            "is_complete": False,
+            "poster_action": "not_due",
+            "background_action": "not_due",
+            "season_poster_actions": {},
+            "plex_candidate": None,
+        }
+
+    async def fake_apply(*_args, **_kwargs):
+        return {"writes": 0, "failures": 0}
+
+    async def fake_cache(key, *_args, **kwargs):
+        state.setdefault(key, {}).update(kwargs)
+        persisted.append(kwargs)
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "build_movie", fake_builder)
+    monkeypatch.setattr(processing, "apply_plex_metadata", fake_apply)
+    monkeypatch.setattr(processing, "load_cache", lambda: state)
+    monkeypatch.setattr(processing, "meta_cache_async", fake_cache)
+    monkeypatch.setattr(processing, "log_item_outcomes", lambda *_a, **_k: None)
+
+    result = asyncio.run(
+        processing.process_item(
+            item,
+            {},
+            {"plex": {}, "settings": {"mode": "kometa", "dry_run": False}},
+            feature_flags={"metadata_basic": True, "dry_run": False},
+        )
+    )
+    assert result["metadata_coverage_transition"] == "first_incomplete"
+    assert persisted[-1]["metadata_coverage_percent"] == 75
+    assert persisted[-1]["metadata_incomplete_percent"] == 25
+
+    stable = {"metadata_action": "skipped", "percent": 75}
+    assert processing.annotate_metadata_coverage(stable, next(iter(state.values()))) == 75
+    assert stable["metadata_coverage_transition"] == "unchanged"
+    improved = {"metadata_action": "skipped", "percent": 150}
+    assert processing.annotate_metadata_coverage(improved, next(iter(state.values()))) == 100
+    assert improved["metadata_coverage_transition"] == "improved"
+    regressed = {"metadata_action": "upgraded", "percent": -10}
+    assert processing.annotate_metadata_coverage(regressed, next(iter(state.values()))) == 0
+    assert regressed["metadata_coverage_transition"] == "regressed"
+    assert processing.annotate_metadata_coverage({}, {}) is None
+    assert processing.annotate_metadata_coverage(
+        {"metadata_action": "failed", "percent": 0}, {}
+    ) is None
+    assert processing.annotate_metadata_coverage(
+        {"metadata_action": "skipped", "percent": float("nan")}, {}
+    ) is None
+    rebound = {"metadata_action": "skipped", "percent": 75}
+    processing.annotate_metadata_coverage(
+        rebound,
+        {"tmdb_id": "old", "metadata_coverage_percent": 100},
+        tmdb_id="new",
+    )
+    assert rebound["metadata_coverage_transition"] == "first_incomplete"
+    reconfigured = {"metadata_action": "skipped", "percent": 75}
+    processing.annotate_metadata_coverage(
+        reconfigured,
+        {"config_fingerprint": "old", "metadata_coverage_percent": 100},
+        config_fingerprint="new",
+    )
+    assert reconfigured["metadata_coverage_transition"] == "first_incomplete"
+
+
 def test_process_library_bounds_item_concurrency(monkeypatch, tmp_path):
     active = 0
     maximum = 0
@@ -115,6 +196,45 @@ def test_plex_metadata_progress_logs_start_and_completion(
     assert "[Metadata] Plex progress | Movies | Checked: 0/3 (0.0%)" in caplog.text
     assert "[Metadata] Plex progress | Movies | Checked: 3/3 (100.0%)" in caplog.text
     assert "Changed: 0 | API batches: 0 | Unchanged: 3 | Failed: 0" in caplog.text
+
+
+def test_process_library_counts_metadata_coverage_transitions(monkeypatch, tmp_path):
+    async def fake_metadata(item, **_kwargs):
+        return metadata_for(item)
+
+    transitions = iter(
+        (("improved", True), ("regressed", False), ("first_incomplete", False))
+    )
+
+    async def fake_process_item(**_kwargs):
+        transition, is_complete = next(transitions)
+        return {
+            "metadata_action": "skipped",
+            "metadata_coverage_transition": transition,
+            "is_complete": is_complete,
+        }
+
+    monkeypatch.setattr(processing, "get_plex_metadata", fake_metadata)
+    monkeypatch.setattr(processing, "process_item", fake_process_item)
+    summaries = {}
+    flags = feature_flags()
+    flags["metadata_basic"] = True
+
+    asyncio.run(
+        processing.process_library(
+            FakeSection([1, 2, 3]),
+            config(tmp_path),
+            feature_flags=flags,
+            metadata_summaries=summaries,
+        )
+    )
+
+    library_summary = summaries["Movies"]["library_summary"]
+    assert library_summary["metadata_complete"] == 1
+    assert library_summary["metadata_incomplete"] == 2
+    assert library_summary["metadata_coverage_improved"] == 1
+    assert library_summary["metadata_coverage_regressed"] == 1
+    assert library_summary["metadata_coverage_first_incomplete"] == 1
 
 
 def test_kometa_provenance_is_queued_until_cache_flush(monkeypatch, tmp_path):

@@ -191,10 +191,10 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `FULL_SCAN_INTERVAL_HOURS` | `168` | Maximum interval between complete reconciliation scans. |
 | `METADATA_PENDING_RECHECK_HOURS` | `24` | Recheck interval for Plex episodes whose TMDb metadata is not published yet. |
 | `TMDB_CHANGE_RECHECKS` | `True` | Select locally known titles returned by TMDb's bounded change feed and refresh their cached detail responses. Safe baselines and checkpoints are automatic. |
-| `IMAGE_UPGRADE_DAYS` | `30` | Default adaptive base interval; `0` disables timed rechecks. |
-| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background adaptive base interval. |
-| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background adaptive base interval. |
-| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster adaptive base interval. |
+| `IMAGE_UPGRADE_DAYS` | `30` | Default adaptive provider-recheck interval; `0` disables timed rechecks. |
+| `MOVIE_IMAGE_UPGRADE_DAYS` | inherited | Movie poster/background provider-recheck base interval. |
+| `SERIES_IMAGE_UPGRADE_DAYS` | inherited | Show poster/background provider-recheck base interval. |
+| `SEASON_IMAGE_UPGRADE_DAYS` | inherited | Season-poster provider-recheck base interval. |
 | `TMDB_CACHE_ENABLED` | `True` | Persist successful TMDb and Fanart.tv responses in separate SQLite caches. |
 | `TMDB_CACHE_TTL_HOURS` | `24` | TMDb and Fanart.tv response lifetime. |
 | `TMDB_CACHE_NEGATIVE_TTL_HOURS` | `12` | Short lifetime for either provider's HTTP 404 results; 429 and 5xx responses are never cached. |

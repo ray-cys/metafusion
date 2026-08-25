@@ -125,6 +125,15 @@ resolved gaps. Per-library warnings show persistent open and not-due counts,
 so incremental scheduling cannot make a known gap silently disappear from an
 `INFO` log merely because that title was not selected on the current run.
 
+Season-poster outcomes are consolidated into one line per show. Downloads,
+upgrades, adoptions, preserved gaps, missing destinations, deferrals, and
+failures include up to eight affected season identifiers, followed by a bounded
+`+N more` suffix when necessary. Routine `Unchanged` and `Not due` outcomes
+remain counts. An all-not-due show does not emit an item-level line; those
+destinations remain accounted for by the per-library and final artwork schedule
+summaries. This keeps `INFO` traceable without producing one line for every
+unchanged season in a large library.
+
 For installations that recorded missing artwork before the durable gap ledger
 was introduced, MetaFusion also infers still-missing poster, background, and
 individual-season records from its existing media-state observations. This

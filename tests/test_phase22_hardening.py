@@ -400,6 +400,9 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
         "new_height": 3000,
         "existing_width": 1000,
         "existing_height": 1500,
+        "new_quality_score": 91,
+        "existing_quality_score": 88,
+        "quality_delta": 3,
     }
     with caplog.at_level(logging_module.logging.DEBUG):
         for status in (
@@ -408,6 +411,8 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "UPGRADE_THRESHOLD",
             "UPGRADE_RELAXED",
             "UPGRADE_DIMENSIONS",
+            "UPGRADE_QUALITY",
+            "UPGRADE_TMDB_CANONICAL",
             "OTHER",
         ):
             logging_module.log_builder_event(
@@ -426,6 +431,8 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "UPGRADE_THRESHOLD_SEASON",
             "UPGRADE_RELAXED_SEASON",
             "UPGRADE_DIMENSIONS_SEASON",
+            "UPGRADE_QUALITY_SEASON",
+            "UPGRADE_TMDB_CANONICAL_SEASON",
             "OTHER",
         ):
             logging_module.log_builder_event(
@@ -442,12 +449,16 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
             "FORCE_UPGRADE_STALE",
             "ALREADY_UP_TO_DATE",
             "NO_UPGRADE_NEEDED",
+            "QUALITY_GUARD_REJECTED",
+            "TMDB_CANONICAL_CHANGE_PENDING",
             "STALE_CANDIDATE_DOWNGRADE",
             "NO_IMAGE_FOR_COMPARE",
             "ERROR_IMAGE_COMPARE",
             "FORCE_UPGRADE_STALE_SEASON",
             "ALREADY_UP_TO_DATE_SEASON",
             "NO_UPGRADE_NEEDED_SEASON",
+            "QUALITY_GUARD_REJECTED_SEASON",
+            "TMDB_CANONICAL_CHANGE_PENDING_SEASON",
             "STALE_CANDIDATE_DOWNGRADE_SEASON",
             "NO_IMAGE_FOR_COMPARE_SEASON",
             "ERROR_IMAGE_COMPARE_SEASON",
@@ -462,7 +473,15 @@ def test_logging_upgrade_reason_and_asset_status_maps(caplog):
                 error="test",
                 extra="",
                 season_number=1,
+                context=context,
             )
+
+        logging_module.log_asset_status(
+            "QUALITY_GUARD_REJECTED",
+            media_type="Movie",
+            asset_type="poster",
+            full_title="Legacy state",
+        )
 
     assert "Example" in caplog.text
 

@@ -160,6 +160,23 @@ def test_packaged_configuration_references_are_versioned_and_in_image_context():
     )
 
 
+def test_generated_yaml_quotes_schedule_times_unambiguously():
+    references = (
+        REPO_ROOT / "config" / "config_template.yml",
+        REPO_ROOT / "config" / "examples" / "kometa.yml",
+        REPO_ROOT / "config" / "examples" / "plex.yml",
+    )
+
+    for reference in references:
+        document = reference.read_text(encoding="utf-8")
+        assert '  - "06:00"' in document
+        assert '  - "18:30"' in document
+        assert yaml.safe_load(document)["settings"]["run_times"] == [
+            "06:00",
+            "18:30",
+        ]
+
+
 def test_generated_dependency_manifests_are_self_contained_and_in_sync():
     runtime_input = (REPO_ROOT / "requirements.in").read_text(encoding="utf-8")
     runtime_manifest = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")

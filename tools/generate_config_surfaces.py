@@ -4,6 +4,7 @@
 import argparse
 import copy
 import io
+import re
 import sys
 from pathlib import Path
 from xml.etree import ElementTree
@@ -12,6 +13,18 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 SCHEMA_PATH = ROOT / "config_schema.yml"
+
+
+class _ConfigurationDumper(yaml.SafeDumper):
+    """Emit public configuration YAML with unambiguous schedule strings."""
+
+
+def _represent_configuration_string(dumper, value):
+    style = '"' if re.fullmatch(r"\d{2}:\d{2}", value) else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_ConfigurationDumper.add_representer(str, _represent_configuration_string)
 
 
 def load_schema():
@@ -63,8 +76,9 @@ def _render_yaml_configuration(schema, *, mode=None):
         defaults["settings"]["mode"] = mode
     defaults["plex"]["token"] = "YOUR_PLEX_TOKEN"
     defaults["tmdb"]["api_key"] = "YOUR_TMDB_API_KEY"
-    return yaml.safe_dump(
+    return yaml.dump(
         defaults,
+        Dumper=_ConfigurationDumper,
         sort_keys=False,
         allow_unicode=True,
         default_flow_style=False,
