@@ -27,6 +27,7 @@ from helper.diagnostics import (
 from helper.state_db import load_item_retries, record_item_failure
 from modules.cleanup import CleanupResult
 from modules.utils import (
+    artwork_provider_rating,
     artwork_quality_score,
     get_best_background,
     get_best_poster,
@@ -229,6 +230,9 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
         "perceptual_hash": None,
         "validated_width": None,
         "validated_height": None,
+        "provider_average": 8.0,
+        "provider_count": 0,
+        "provider_confidence": 0.0,
     }
     fallback = artwork_quality_score(
         config,
@@ -243,6 +247,7 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
     )
     assert fallback["score"] <= 100
     assert fallback["vote"] == 35
+    assert fallback["provider_average"] == 10
     assert fallback["language"] == 7
 
     malformed = artwork_quality_score(
@@ -252,6 +257,67 @@ def test_artwork_quality_score_is_bounded_and_explains_components():
         preferred_language="en",
     )
     assert malformed["score"] == 4
+
+
+def test_provider_vote_average_remains_primary_over_vote_count():
+    config = complete_config()
+    sparse = artwork_quality_score(
+        config,
+        {
+            "width": 1000,
+            "height": 1500,
+            "vote_average": 10,
+            "vote_count": 1,
+            "iso_639_1": "en",
+        },
+        preferred_language="en",
+    )
+    established = artwork_quality_score(
+        config,
+        {
+            "width": 1000,
+            "height": 1500,
+            "vote_average": 8,
+            "vote_count": 100,
+            "iso_639_1": "en",
+        },
+        preferred_language="en",
+    )
+    assert sparse["vote"] > established["vote"]
+    assert established["provider_confidence"] > sparse["provider_confidence"]
+    config["poster_set"].update(
+        {
+            "prefer_vote": 5,
+            "max_width": 1000,
+            "max_height": 1500,
+            "min_width": 500,
+            "min_height": 750,
+        }
+    )
+    sparse_candidate = {
+        "file_path": "/sparse.jpg",
+        "width": 1000,
+        "height": 1500,
+        "vote_average": 10,
+        "vote_count": 1,
+        "iso_639_1": "en",
+    }
+    established_candidate = {
+        "file_path": "/established.jpg",
+        "width": 1000,
+        "height": 1500,
+        "vote_average": 8,
+        "vote_count": 100,
+        "iso_639_1": "en",
+    }
+    assert get_best_poster(
+        config,
+        [established_candidate, sparse_candidate],
+        preferred_language="en",
+    ) == sparse_candidate
+    assert artwork_provider_rating(
+        {"vote_average": 7, "vote_count": object()}
+    )["count"] == 0
 
 
 def test_quality_score_breaks_candidate_ties_deterministically():

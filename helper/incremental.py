@@ -18,6 +18,8 @@ from helper.state_db import (
     mark_scan_started as persist_scan_started,
 )
 
+CANONICAL_CONFIRMATION_RECHECK_HOURS = 24.0
+
 
 @dataclass(frozen=True)
 class PlannedItem:
@@ -372,6 +374,26 @@ def image_upgrade_reasons(cached, media_type, config, feature_flags=None, now=No
     return reasons
 
 
+def _canonical_confirmation_due(cached, asset_type, check_time):
+    if asset_type == "season":
+        seasons = cached.get("seasons") or {}
+        records = seasons.values() if isinstance(seasons, dict) else ()
+    else:
+        records = (cached,)
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if not record.get(f"{asset_type}_canonical_pending_path"):
+            continue
+        if _timestamp_is_due(
+            record.get(f"{asset_type}_canonical_pending_at"),
+            timedelta(hours=CANONICAL_CONFIRMATION_RECHECK_HOURS),
+            check_time,
+        ):
+            return True
+    return False
+
+
 def due_selection_causes(cached, media_type, config, feature_flags=None, now=None):
     """Return exact time-based causes for selecting an unchanged item."""
     if not isinstance(cached, dict) or not config:
@@ -396,6 +418,9 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
         return set()
 
     causes = set()
+    check_time = utc_now() if now is None else now
+    if check_time.tzinfo is None:
+        check_time = check_time.replace(tzinfo=timezone.utc)
     try:
         pending_count = int(cached.get("metadata_pending_count") or 0)
     except (TypeError, ValueError):
@@ -413,9 +438,6 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
                 )
             ),
         )
-        check_time = utc_now() if now is None else now
-        if check_time.tzinfo is None:
-            check_time = check_time.replace(tzinfo=timezone.utc)
         if _timestamp_is_due(
             cached.get("metadata_pending_at"),
             timedelta(hours=recheck_hours),
@@ -428,28 +450,43 @@ def due_selection_causes(cached, media_type, config, feature_flags=None, now=Non
         now=now,
     ):
         causes.add("plex_metadata_recheck")
-    if flags.get("poster", False) and timestamp_due(
-        cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
-        adaptive_artwork_days(cached, "poster", days),
-        now=now,
+    if flags.get("poster", False) and (
+        (days > 0 and _canonical_confirmation_due(cached, "poster", check_time))
+        or timestamp_due(
+            cached.get("poster_last_checked") or cached.get("poster_last_upgraded"),
+            adaptive_artwork_days(cached, "poster", days),
+            now=now,
+        )
     ):
         causes.add("poster_refresh_due")
-    if flags.get("background", False) and timestamp_due(
-        cached.get("background_last_checked")
-        or cached.get("background_last_upgraded"),
-        adaptive_artwork_days(cached, "background", days),
-        now=now,
+    if flags.get("background", False) and (
+        (
+            days > 0
+            and _canonical_confirmation_due(cached, "background", check_time)
+        )
+        or timestamp_due(
+            cached.get("background_last_checked")
+            or cached.get("background_last_upgraded"),
+            adaptive_artwork_days(cached, "background", days),
+            now=now,
+        )
     ):
         causes.add("background_refresh_due")
     if (
         normalized_type == "tv"
         and flags.get("season", False)
-        and timestamp_due(
-            cached.get("season_last_checked"),
-            adaptive_artwork_days(
-                cached, "season", get_image_upgrade_days(config, "season")
-            ),
-            now=now,
+        and (
+            (
+                get_image_upgrade_days(config, "season") > 0
+                and _canonical_confirmation_due(cached, "season", check_time)
+            )
+            or timestamp_due(
+                cached.get("season_last_checked"),
+                adaptive_artwork_days(
+                    cached, "season", get_image_upgrade_days(config, "season")
+                ),
+                now=now,
+            )
         )
     ):
         causes.add("season_refresh_due")

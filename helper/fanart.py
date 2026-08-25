@@ -377,6 +377,7 @@ def _normalize_candidate(record, *, asset_type):
         "width": _safe_int(record.get("width")),
         "height": _safe_int(record.get("height")),
         "vote_average": min(10.0, likes),
+        "vote_count": max(0, int(likes)),
         "provider_likes": likes,
         "asset_type": asset_type,
         "added": record.get("added"),

@@ -186,6 +186,7 @@ def test_fanart_adapter_uses_project_header_and_normalizes_movie_candidate():
     assert session.calls[0][1]["headers"]["api-key"] == "project-secret"
     assert session.calls[0][1]["allow_redirects"] is False
     assert normalized[0]["provider"] == "fanart"
+    assert normalized[0]["vote_count"] == 8
     assert normalized[0]["provider_image_id"] == "44"
     assert normalized[0]["width"] == 1000
 
@@ -462,6 +463,48 @@ def test_selector_falls_through_fanart_plex_and_best_available(monkeypatch):
     assert "best available" in selected["selection_reason"]
 
 
+def test_selector_prefers_valid_tmdb_canonical_and_rejects_invalid_canonical():
+    config = artwork_config()
+    canonical = candidate("/canonical.jpg", 1000, 1500)
+    canonical["vote_average"] = 2
+    ranked = candidate("/ranked.jpg", 2000, 3000)
+    ranked["vote_average"] = 10
+    assert builder._tmdb_canonical_candidate([ranked], "/missing.jpg") is None
+
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            {},
+            [ranked, canonical],
+            asset_type="poster",
+            media_type="movie",
+            tmdb_id=1,
+            canonical_path="/canonical.jpg",
+        )
+    )
+
+    assert selected["file_path"] == "/canonical.jpg"
+    assert selected["tmdb_canonical"] is True
+    assert selected["selection_stage"] == "tmdb_canonical"
+    assert selected["provider_attempts"][0]["status"] == "selected_canonical"
+
+    invalid = candidate("/invalid.jpg", 500, 750)
+    selected = asyncio.run(
+        builder._select_artwork_with_fallback(
+            config,
+            {},
+            [ranked, invalid],
+            asset_type="poster",
+            media_type="movie",
+            tmdb_id=1,
+            canonical_path="/invalid.jpg",
+        )
+    )
+
+    assert selected["file_path"] == "/ranked.jpg"
+    assert not selected.get("tmdb_canonical")
+
+
 def test_season_selector_uses_source_number_for_providers_and_plex_target(
     monkeypatch,
 ):
@@ -707,7 +750,7 @@ def test_season_artwork_warning_names_missing_season_and_provider_attempts(caplo
             {"mode": "plex"},
         )
 
-    assert "Missing: 1 | Unchanged: 1" in caplog.text
+    assert "Unchanged: 1 | Missing: 1 [S00]" in caplog.text
     assert "Sources: None: 1 | TMDb: 1" in caplog.text
     assert "Target: Plex local media" in caplog.text
     assert (

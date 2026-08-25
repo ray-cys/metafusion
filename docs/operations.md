@@ -330,11 +330,18 @@ The values are adaptive bases, not a filesystem age scan:
 - A repeatedly unchanged candidate doubles its base up to 180 days, while an
   explicitly longer base remains respected.
 - A different candidate or successful upgrade resets the unchanged backoff.
+- TMDb's localized canonical `poster_path`/`backdrop_path` is preferred when it
+  passes absolute validation. A changed canonical path for existing managed
+  artwork is confirmed on two provider observations; a built-in 24-hour
+  follow-up prevents a long library interval from delaying that confirmation.
+  Missing artwork installs a valid canonical image immediately. Setting the
+  applicable interval to `0` also disables the timed confirmation follow-up.
 - Under the default `managed` policy, an unchanged provider image identifier
   receives a byte-level verification re-download after the longer of 90 days
   or three times its configured base, capped at 365 days. Identical bytes are
-  discarded; changed bytes continue through normal validation and non-downgrade
-  checks. This is automatic and does not add a configuration variable.
+  discarded; changed bytes continue through normal validation. Noncanonical
+  fallback replacements retain the relative quality guard. This is automatic
+  and does not add a configuration variable.
 
 Candidate identity, observations, and successful same-source verification
 timestamps are saved in SQLite. MetaFusion does not walk the media tree or read
@@ -598,7 +605,9 @@ artwork scan. It applies to movie/show posters and backgrounds plus individual
 season posters in Kometa and Plex modes. Provider decisions and selected source
 are included in read-only artwork audits.
 Asset-audit reports include the selected candidate's language, dimensions,
-vote score, ownership status, existing dimensions, score components, the top
+raw vote/likes score, supporting count and confidence, provider-score contribution,
+TMDb canonical status and selection stage, ownership status, existing
+dimensions, score components, the top
 rejected candidates, and the action a real run would consider. They omit
 filesystem paths and do not prove that a later download will succeed.
 Conventional diagnostic reports use `REPORT_FORMAT=both` by default. Select
@@ -678,9 +687,30 @@ created/updated or changed, unchanged, API batches where applicable, and failed
 items. Metadata coverage is separate: it reports how many processed records met
 the configured field-completeness threshold. Consequently, a metadata record
 may be unchanged but below the threshold, or changed while already at 100%
-coverage. Item-level logs name changed field categories; complete unchanged
-items stay at `DEBUG`, while incomplete unchanged items remain visible at
-`INFO`.
+coverage. Item-level logging is action-driven rather than completeness-driven:
+
+- Created and updated metadata remains visible at `INFO`; a simultaneous
+  coverage regression raises that outcome to `WARNING`.
+- A first observation below 100% and a later coverage improvement are logged at
+  `INFO`, even if the metadata output itself is unchanged.
+- A decrease from the last successful coverage observation is logged once as a
+  `WARNING` with the previous and current percentages.
+- Stable unchanged metadata stays at `DEBUG` regardless of whether its coverage
+  is 100%, 75%, or another value. TMDb may permanently omit optional fields, so
+  incompleteness by itself is not treated as a recurring operational problem.
+- Provider failures, rejected identities, and output failures retain their
+  existing warning or error levels.
+
+The last successful field-coverage observation is stored in `meta_db.sqlite3`.
+Dry runs and failed metadata actions do not replace it. A corrected TMDb
+identity starts a new baseline rather than being compared with the old title's
+coverage. A configuration fingerprint change also starts a new baseline because
+the enabled metadata field surface may have changed. The first run after
+installing this behavior has no historical coverage baseline, so each evaluated
+incomplete item can appear at `INFO` once; subsequent unchanged observations
+move to `DEBUG`. Final library and overall summaries retain evaluated, threshold,
+improvement, regression, and first-incomplete counts, so `INFO` remains concise
+without hiding coverage state.
 
 A Kometa library summary therefore reads as three separate questions rather
 than treating `100%` coverage as proof that a write occurred:
@@ -688,7 +718,7 @@ than treating `100%` coverage as proof that a write occurred:
 ```text
 [Summary] Movies | Metadata schedule | Destinations: 2,000 | Required: 12 | Due: 31 | Forced: 7 | Not due: 1,950
 [Summary] Movies | Metadata result | Target: Kometa YAML | Created: 8 | Updated: 6 | Unchanged: 34 | Failed: 2
-[Summary] Movies | Metadata coverage | Complete: 42 | Incomplete: 6 | Threshold: 100%
+[Summary] Movies | Metadata coverage | Evaluated: 48 | Meets threshold: 42 (87.5%) | Below threshold: 6 (12.5%) | Improved: 2 | Regressed: 0 | First incomplete: 1
 ```
 
 The schedule line accounts for the complete selected-library inventory. The
@@ -705,6 +735,14 @@ destination total, accounted total, and difference. This is a regression guard
 for reporting logic rather than a media-processing failure. Unknown season
 inventories are reported separately because their destination count cannot be
 calculated safely.
+
+Season-poster item outcomes use one compact line per show. Meaningful actions
+name up to eight affected seasons—for example `Downloaded: 1 [S03]` or
+`Missing: 2 [S10, S11]`—while `Unchanged` and `Not due` remain counts. If every
+season for a show is not due, no item-level line is emitted; the schedule
+summary still counts all of those destinations. This distinction means `Not
+due` is a scheduling decision, not proof that providers were queried or that a
+new candidate does not exist.
 
 Artwork result lines report evaluated, downloaded, upgraded, adopted,
 unchanged, preserved, missing, deferred, failed, and applicable policy

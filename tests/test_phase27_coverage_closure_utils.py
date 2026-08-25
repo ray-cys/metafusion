@@ -167,6 +167,206 @@ def test_movie_upgrade_remaining_decisions(monkeypatch, tmp_path):
     assert decision(2, 5) == (False, "ERROR_IMAGE_COMPARE")
 
 
+def test_upgrade_quality_guard_uses_confidence_dimensions_and_content(
+    monkeypatch, tmp_path
+):
+    config = _config()
+    asset = tmp_path / "poster.jpg"
+    candidate = tmp_path / "candidate.jpg"
+    asset.write_bytes(_encoded("red", (100, 150)))
+    candidate.write_bytes(_encoded("blue", (100, 150)))
+    monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)
+
+    lower_average = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 100,
+            "height": 150,
+            "vote_average": 8,
+            "vote_count": 100,
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 10, "poster_vote_count": 1},
+    )
+    assert lower_average[0:2] == (False, "QUALITY_GUARD_REJECTED")
+
+    count_tiebreak = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 100,
+            "height": 150,
+            "vote_average": 8,
+            "vote_count": 100,
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 8, "poster_vote_count": 1},
+    )
+    assert count_tiebreak[0:2] == (True, "UPGRADE_VOTES")
+
+    candidate.write_bytes(_encoded("green", (120, 120)))
+    one_dimension_only = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 120,
+            "height": 120,
+            "vote_average": 8,
+            "vote_count": 100,
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 8, "poster_vote_count": 100},
+    )
+    assert one_dimension_only[0:2] == (False, "QUALITY_GUARD_REJECTED")
+
+    candidate.write_bytes(_encoded("blue", (100, 150)))
+    content_upgrade = utils.smart_asset_upgrade(
+        config,
+        asset,
+        {
+            "width": 100,
+            "height": 150,
+            "vote_average": 8,
+            "vote_count": 100,
+            "content_analysis": {
+                "width": 100,
+                "height": 150,
+                "blank": False,
+                "sharpness": 100,
+            },
+        },
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={"poster_average": 8, "poster_vote_count": 100},
+    )
+    assert content_upgrade[0:2] == (True, "UPGRADE_QUALITY")
+
+
+def test_tmdb_canonical_change_uses_two_observations_not_relative_rating(
+    monkeypatch, tmp_path
+):
+    config = _config()
+    asset = tmp_path / "poster.jpg"
+    candidate = tmp_path / "candidate.jpg"
+    asset.write_bytes(_encoded("red", (100, 150)))
+    candidate.write_bytes(_encoded("blue", (100, 150)))
+    monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: False)
+    image = {
+        "provider": "tmdb",
+        "file_path": "/new-canonical.jpg",
+        "tmdb_canonical": True,
+        "width": 100,
+        "height": 150,
+        "vote_average": 2,
+        "vote_count": 1,
+    }
+    assert utils._canonical_upgrade_decision(
+        {},
+        {**image, "file_path": ""},
+        asset_type="poster",
+        source_key="poster_source_path",
+    ) is None
+    same_source = utils._canonical_upgrade_decision(
+        {"poster_source_path": "/new-canonical.jpg"},
+        image,
+        asset_type="poster",
+        source_key="poster_source_path",
+    )
+    assert same_source[0:2] == (True, "UPGRADE_TMDB_CANONICAL")
+    malformed_pending = utils._canonical_upgrade_decision(
+        {"poster_canonical_pending_observations": "invalid"},
+        image,
+        asset_type="poster",
+        source_key="poster_source_path",
+    )
+    assert malformed_pending[0:2] == (False, "TMDB_CANONICAL_CHANGE_PENDING")
+    cached = {
+        "poster_source_path": "/old-canonical.jpg",
+        "poster_average": 10,
+        "poster_vote_count": 100,
+    }
+
+    pending = utils.smart_asset_upgrade(
+        config,
+        asset,
+        image,
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry=cached,
+    )
+    assert pending[0:2] == (False, "TMDB_CANONICAL_CHANGE_PENDING")
+    assert pending[2]["canonical_observations"] == 0
+
+    cached.update(
+        {
+            "poster_canonical_pending_path": "/new-canonical.jpg",
+            "poster_canonical_pending_observations": 1,
+        }
+    )
+    confirmed = utils.smart_asset_upgrade(
+        config,
+        asset,
+        image,
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry=cached,
+    )
+    assert confirmed[0:2] == (True, "UPGRADE_TMDB_CANONICAL")
+
+    asset.unlink()
+    missing = utils.smart_asset_upgrade(
+        config,
+        asset,
+        image,
+        new_image_path=candidate,
+        cache_key="movie",
+        cached_entry={},
+    )
+    assert missing[0:2] == (True, "NO_EXISTING_ASSET")
+
+
+def test_tmdb_season_canonical_change_uses_two_observations(tmp_path):
+    config = _config()
+    asset = tmp_path / "season.jpg"
+    candidate = tmp_path / "candidate.jpg"
+    asset.write_bytes(_encoded("red", (100, 150)))
+    candidate.write_bytes(_encoded("blue", (100, 150)))
+    image = {
+        "provider": "tmdb",
+        "file_path": "/new-season.jpg",
+        "tmdb_canonical": True,
+        "width": 100,
+        "height": 150,
+        "vote_average": 1,
+    }
+    cached = {
+        "seasons": {
+            "2": {
+                "season_source_path": "/old-season.jpg",
+                "season_average": 9,
+                "season_canonical_pending_path": "/new-season.jpg",
+                "season_canonical_pending_observations": 1,
+            }
+        }
+    }
+
+    result = utils.smart_season_asset_upgrade(
+        config,
+        asset,
+        image,
+        new_image_path=candidate,
+        cache_key="show",
+        season_number=2,
+        cached_entry=cached,
+    )
+
+    assert result[0:2] == (True, "UPGRADE_TMDB_CANONICAL_SEASON")
+
+
 def test_season_upgrade_remaining_decisions(monkeypatch, tmp_path):
     config = _config()
     asset = tmp_path / "Season01.jpg"
@@ -194,10 +394,13 @@ def test_season_upgrade_remaining_decisions(monkeypatch, tmp_path):
             cached_entry={"seasons": {"1": {"season_average": cached_votes}}},
         )[0:2]
 
-    assert decision(0, 0, width=32, height=48) == (True, "UPGRADE_VOTES_SEASON")
+    assert decision(0, 0, width=32, height=48) == (
+        True,
+        "UPGRADE_ZERO_VOTE_SEASON",
+    )
     assert decision(2, 4) == (True, "UPGRADE_RELAXED_SEASON")
     assert decision(5, 5, width=32, height=48) == (True, "UPGRADE_DIMENSIONS_SEASON")
-    assert decision(5, 1) == (False, "NO_UPGRADE_NEEDED_SEASON")
+    assert decision(5, 1) == (False, "QUALITY_GUARD_REJECTED_SEASON")
     assert decision(5, 1, image_path=None) == (False, "NO_IMAGE_FOR_COMPARE_SEASON")
 
     monkeypatch.setattr(utils, "stale_image", lambda *_args, **_kwargs: True)

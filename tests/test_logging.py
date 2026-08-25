@@ -13,6 +13,7 @@ from helper.logging import (
     log_processing_event,
     log_tmdb_event,
     metadata_action_summary,
+    metadata_coverage_line,
     plex_progress_item_interval,
     schedule_reconciliation_warning,
 )
@@ -53,12 +54,26 @@ def test_item_outcome_visibility_separates_changes_from_field_coverage(caplog):
         )
         log_item_outcomes(
             "TV Shows",
+            "First incomplete observation (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 79,
+                "incomplete_percent": 21,
+                "is_complete": True,
+                "metadata_coverage_transition": "first_incomplete",
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "TV Shows",
             "Incomplete but stable (2024)",
             {
                 "metadata_action": "skipped",
                 "percent": 79,
                 "incomplete_percent": 21,
                 "is_complete": True,
+                "metadata_coverage_transition": "unchanged",
+                "metadata_previous_percent": 79,
             },
             flags,
         )
@@ -77,9 +92,75 @@ def test_item_outcome_visibility_separates_changes_from_field_coverage(caplog):
     assert "Changed and complete (2024) | Updated" in caplog.text
     assert "Changed fields: summary, producer | Field changes: 2" in caplog.text
     assert "Field coverage: 100% | Missing fields: 0%" in caplog.text
-    assert "Incomplete but stable (2024) | Unchanged" in caplog.text
-    assert "Status: Incomplete but unchanged" in caplog.text
+    assert "First incomplete observation (2024) | Unchanged" in caplog.text
+    assert "Status: First incomplete observation" in caplog.text
+    assert "Incomplete but stable (2024)" not in caplog.text
     assert "Complete and stable (2024)" not in caplog.text
+
+
+def test_metadata_coverage_transitions_choose_action_driven_levels(caplog):
+    flags = {"mode": "kometa", "plex_metadata": False}
+    with caplog.at_level(logging.DEBUG):
+        log_item_outcomes(
+            "Movies",
+            "Stable incomplete (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 75,
+                "incomplete_percent": 25,
+                "metadata_previous_percent": 75,
+                "metadata_coverage_transition": "unchanged",
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "Movies",
+            "Improved (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 90,
+                "incomplete_percent": 10,
+                "metadata_previous_percent": 75,
+                "metadata_coverage_transition": "improved",
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "Movies",
+            "Regressed (2024)",
+            {
+                "metadata_action": "upgraded",
+                "percent": 70,
+                "incomplete_percent": 30,
+                "metadata_previous_percent": 90,
+                "metadata_coverage_transition": "regressed",
+            },
+            flags,
+        )
+        log_item_outcomes(
+            "Movies",
+            "Malformed history (2024)",
+            {
+                "metadata_action": "skipped",
+                "percent": 80,
+                "incomplete_percent": 20,
+                "metadata_previous_percent": "invalid",
+                "metadata_coverage_transition": "improved",
+            },
+            flags,
+        )
+
+    assert "Stable incomplete (2024) | Unchanged" in caplog.text
+    assert "Improved (2024) | Unchanged" in caplog.text
+    assert "Coverage change: 75% → 90%" in caplog.text
+    assert "Regressed (2024) | Updated" in caplog.text
+    assert "Coverage change: 90% → 70%" in caplog.text
+    assert "Status: Field coverage regressed" in caplog.text
+    assert "Malformed history (2024) | Unchanged" in caplog.text
+    regression = next(
+        record for record in caplog.records if "Regressed (2024)" in record.message
+    )
+    assert regression.levelno == logging.WARNING
 
 
 def test_metadata_change_details_are_bounded_and_collapse_nested_fields():
@@ -157,6 +238,111 @@ def test_split_series_policy_outcomes_distinguish_present_from_missing(caplog):
         )
     assert "Downloaded poster" in caplog.text
     assert "Unchanged (2024) | Unchanged poster" in caplog.text
+
+
+def test_season_outcomes_name_meaningful_seasons_and_count_quiet_states(caplog):
+    actions = {
+        1: "downloaded",
+        2: "upgraded",
+        3: "adopted",
+        4: "skipped",
+        5: "not_due",
+        6: "preserved",
+        7: "policy_preserved",
+        8: "policy_missing",
+        9: "missing",
+        10: "deferred",
+        11: "failed",
+    }
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "TV Shows",
+            "Traceable Seasons (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": actions,
+                "season_artwork_providers": {
+                    number: "tmdb" for number in actions if number != 5
+                },
+            },
+            {"mode": "kometa"},
+        )
+
+    text = caplog.text
+    assert "Downloaded: 1 [S01]" in text
+    assert "Upgraded: 1 [S02]" in text
+    assert "Adopted: 1 [S03]" in text
+    assert "Unchanged: 1" in text
+    assert "Unchanged: 1 [" not in text
+    assert "Not due: 1" in text
+    assert "Not due: 1 [" not in text
+    assert "Preserved: 1 [S06]" in text
+    assert "Policy preserved: 1" in text
+    assert "Policy preserved: 1 [" not in text
+    assert "Policy-preserved missing: 1 [S08]" in text
+    assert "Missing: 1 [S09]" in text
+    assert "Deferred: 1 [S10]" in text
+    assert "Failed: 1 [S11]" in text
+
+
+def test_all_not_due_seasons_remain_summary_only(caplog):
+    with caplog.at_level(logging.DEBUG):
+        log_item_outcomes(
+            "TV Shows",
+            "Quiet Seasons (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": {1: "not_due", 2: "not_due"},
+            },
+            {"mode": "kometa"},
+        )
+
+    assert "Quiet Seasons (2024)" not in caplog.text
+
+
+def test_season_references_are_bounded(caplog):
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "TV Shows",
+            "Long Runner (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": dict.fromkeys(
+                    range(1, 11), "downloaded"
+                ),
+                "season_artwork_providers": dict.fromkeys(range(1, 11), "tmdb"),
+            },
+            {"mode": "plex"},
+        )
+
+    assert (
+        "Downloaded: 10 [S01, S02, S03, S04, S05, S06, S07, S08, +2 more]"
+        in caplog.text
+    )
+
+
+def test_season_references_preserve_non_numeric_provider_labels(caplog):
+    with caplog.at_level(logging.INFO):
+        log_item_outcomes(
+            "TV Shows",
+            "Provider Label (2024)",
+            {
+                "metadata_action": "not_due",
+                "poster_action": "not_due",
+                "background_action": "not_due",
+                "season_poster_actions": {"bonus": "downloaded"},
+                "season_artwork_providers": {"bonus": "tmdb"},
+            },
+            {"mode": "kometa"},
+        )
+
+    assert "Downloaded: 1 [bonus]" in caplog.text
 
 
 def test_successful_kometa_yaml_write_is_info(caplog):
@@ -249,6 +435,20 @@ def test_metadata_summaries_are_mode_specific():
         "Metadata result | Target: Kometa YAML | Created: 2 | Updated: 3 | "
         "Unchanged: 4 | Failed: 1"
     )
+    assert metadata_coverage_line(
+        {
+            "metadata_complete": 8,
+            "metadata_incomplete": 2,
+            "metadata_coverage_improved": 3,
+            "metadata_coverage_regressed": 1,
+            "metadata_coverage_first_incomplete": 2,
+        }
+    ) == (
+        "Metadata coverage | Evaluated: 10 | Meets threshold: 8 (80%) | "
+        "Below threshold: 2 (20%) | Improved: 3 | Regressed: 1 | "
+        "First incomplete: 2"
+    )
+    assert "Evaluated: 0 | Meets threshold: 0 (100%)" in metadata_coverage_line({})
     assert metadata_action_summary(
         counts, {"metadata_basic": True, "plex_metadata": True}
     ) == (

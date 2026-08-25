@@ -159,6 +159,44 @@ def _record_artwork_observation(entry, asset_type, candidate, missing_count=0):
     entry[unchanged_key] = min(20, unchanged)
 
 
+def _record_canonical_observation(
+    entry,
+    asset_type,
+    candidate_source,
+    candidate_canonical,
+    now_iso,
+):
+    """Track a canonical source until a second observation confirms replacement."""
+    pending_path_key = f"{asset_type}_canonical_pending_path"
+    pending_count_key = f"{asset_type}_canonical_pending_observations"
+    pending_at_key = f"{asset_type}_canonical_pending_at"
+    candidate_source = str(candidate_source or "")
+    applied_source = str(entry.get(f"{asset_type}_source_path") or "")
+    if not candidate_canonical or not candidate_source or applied_source == candidate_source:
+        entry.pop(pending_path_key, None)
+        entry.pop(pending_count_key, None)
+        entry.pop(pending_at_key, None)
+        return
+    if str(entry.get(pending_path_key) or "") == candidate_source:
+        observations = int(entry.get(pending_count_key) or 0) + 1
+    else:
+        observations = 1
+        entry[pending_at_key] = now_iso
+    entry[pending_path_key] = candidate_source
+    entry[pending_count_key] = min(2, observations)
+
+
+def _clear_applied_canonical_observation(entry, asset_type):
+    pending_path_key = f"{asset_type}_canonical_pending_path"
+    if str(entry.get(pending_path_key) or "") != str(
+        entry.get(f"{asset_type}_source_path") or ""
+    ):
+        return
+    entry.pop(pending_path_key, None)
+    entry.pop(f"{asset_type}_canonical_pending_observations", None)
+    entry.pop(f"{asset_type}_canonical_pending_at", None)
+
+
 async def meta_cache_async(
     cache_key,
     tmdb_id,
@@ -197,8 +235,22 @@ async def meta_cache_async(
                     "last_checked",
                     "source_verified_at",
                     "source_verified_path",
+                    "canonical_pending_path",
+                    "canonical_pending_observations",
+                    "canonical_pending_at",
                 ):
                     entry.pop(f"{asset_type}_{suffix}", None)
+            entry.pop("metadata_coverage_percent", None)
+            entry.pop("metadata_incomplete_percent", None)
+            season_entries = entry.get("seasons") or {}
+            for season_entry in (
+                season_entries.values() if isinstance(season_entries, dict) else ()
+            ):
+                if not isinstance(season_entry, dict):
+                    continue
+                season_entry.pop("season_canonical_pending_path", None)
+                season_entry.pop("season_canonical_pending_observations", None)
+                season_entry.pop("season_canonical_pending_at", None)
         identity_fields = {
             "tmdb_id": tmdb_id,
             "title": title,
@@ -233,6 +285,16 @@ async def meta_cache_async(
             )
         if poster_checked:
             entry["poster_last_checked"] = now_iso
+            _record_canonical_observation(
+                entry,
+                "poster",
+                kwargs.get(
+                    "poster_candidate_source_path",
+                    kwargs.get("poster_source_path"),
+                ),
+                bool(kwargs.get("poster_candidate_canonical")),
+                now_iso,
+            )
             _record_artwork_observation(
                 entry,
                 "poster",
@@ -249,6 +311,16 @@ async def meta_cache_async(
             )
         if background_checked:
             entry["background_last_checked"] = now_iso
+            _record_canonical_observation(
+                entry,
+                "background",
+                kwargs.get(
+                    "background_candidate_source_path",
+                    kwargs.get("background_source_path"),
+                ),
+                bool(kwargs.get("background_candidate_canonical")),
+                now_iso,
+            )
             _record_artwork_observation(
                 entry,
                 "background",
@@ -281,6 +353,14 @@ async def meta_cache_async(
         if season_number is not None:
             seasons = entry.setdefault("seasons", {})
             season_entry = seasons.setdefault(str(season_number), {})
+            if "season_candidate_source_path" in kwargs:
+                _record_canonical_observation(
+                    season_entry,
+                    "season",
+                    kwargs.get("season_candidate_source_path"),
+                    bool(kwargs.get("season_candidate_canonical")),
+                    now_iso,
+                )
             if season_source_verified:
                 season_entry["season_source_verified_at"] = now_iso
                 season_entry["season_source_verified_path"] = kwargs.get(
@@ -299,6 +379,7 @@ async def meta_cache_async(
                 )
             for key, value in kwargs.items():
                 season_entry[key] = value
+            _clear_applied_canonical_observation(season_entry, "season")
             if type(season_upgraded) is int and season_upgraded == int(season_number):
                 season_entry["season_last_upgraded"] = now_iso
                 entry["season_unchanged_checks"] = 0
@@ -318,6 +399,8 @@ async def meta_cache_async(
                     )
             for key, value in kwargs.items():
                 entry[key] = value
+            _clear_applied_canonical_observation(entry, "poster")
+            _clear_applied_canonical_observation(entry, "background")
         cache[cache_key] = entry
         log_cache_event(
             "cache_updated",

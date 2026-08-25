@@ -223,6 +223,8 @@ def _append_artwork_selection_details(lines, candidate, indent="  "):
         lines.append(
             f"{indent}selection reason: {candidate.get('selection_reason')}"
         )
+    if candidate.get("tmdb_canonical"):
+        lines.append(f"{indent}TMDb canonical: yes")
     attempts = candidate.get("provider_attempts") or []
     if attempts:
         lines.append(f"{indent}providers attempted:")

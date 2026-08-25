@@ -325,6 +325,8 @@ def test_candidate_observation_does_not_replace_installed_provider(monkeypatch, 
         "provider": "fanart",
         "file_path": "https://assets.fanart.tv/poster.jpg",
         "vote_average": 7,
+        "provider_likes": 12,
+        "iso_639_1": "en",
     }
     asyncio.run(
         builder._record_asset_observation(
@@ -348,6 +350,9 @@ def test_candidate_observation_does_not_replace_installed_provider(monkeypatch, 
     )
 
     assert calls[0]["poster_candidate_provider"] == "fanart"
+    assert calls[0]["poster_candidate_vote_count"] == 12
+    assert calls[1]["poster_vote_count"] == 12
+    assert calls[1]["poster_language"] == "en"
     assert calls[0]["poster_candidate_average"] == 7
     assert "poster_provider" not in calls[0]
     assert "poster_average" not in calls[0]

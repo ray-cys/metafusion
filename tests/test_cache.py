@@ -212,6 +212,64 @@ def test_cache_records_independent_artwork_check_timestamps(tmp_path):
     assert "last_updated" not in entry
 
 
+def test_cache_tracks_and_clears_canonical_artwork_confirmation(tmp_path):
+    configure_cache(tmp_path)
+
+    async def observe():
+        for _ in range(2):
+            await cache_module.meta_cache_async(
+                "tv:Example:2020",
+                123,
+                "Example",
+                2020,
+                "tv",
+                update_timestamp=False,
+                poster_checked=True,
+                poster_candidate_source_path="/new-poster.jpg",
+                poster_candidate_canonical=True,
+                season_number=1,
+                season_candidate_source_path="/new-season.jpg",
+                season_candidate_canonical=True,
+            )
+
+    asyncio.run(observe())
+    pending = cache_module.load_cache()["tv:Example:2020"]
+    assert pending["poster_canonical_pending_observations"] == 2
+    assert (
+        pending["seasons"]["1"]["season_canonical_pending_observations"] == 2
+    )
+
+    async def apply():
+        await cache_module.meta_cache_async(
+            "tv:Example:2020",
+            123,
+            "Example",
+            2020,
+            "tv",
+            update_timestamp=False,
+            poster_source_path="/new-poster.jpg",
+        )
+        await cache_module.meta_cache_async(
+            "tv:Example:2020",
+            123,
+            "Example",
+            2020,
+            "tv",
+            update_timestamp=False,
+            season_number=1,
+            season_source_path="/new-season.jpg",
+        )
+
+    asyncio.run(apply())
+    entry = cache_module.load_cache()["tv:Example:2020"]
+
+    assert "poster_canonical_pending_path" not in entry
+    assert "poster_canonical_pending_observations" not in entry
+    assert "season_canonical_pending_path" not in entry["seasons"]["1"]
+    assert entry["poster_source_path"] == "/new-poster.jpg"
+    assert entry["seasons"]["1"]["season_source_path"] == "/new-season.jpg"
+
+
 def test_cache_tracks_pending_metadata_and_artwork_destination_changes(tmp_path):
     configure_cache(tmp_path)
 
