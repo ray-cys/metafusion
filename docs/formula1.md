@@ -5,8 +5,51 @@ TV library. It is intentionally isolated from normal movie and TV processing:
 it has its own configuration, SQLite database, reports, logs, metadata files,
 and managed artwork tree.
 
-This feature is deliberately not linked from the main README. Enable it only if
-your Formula 1 library follows one of the supported layouts.
+It exists for users who store each championship as one Plex show, each race as
+one season, and each broadcast programme as one episode. It is not a general
+sports downloader, recording scheduler, Formula 1 news client, or replacement
+for Plex, Kometa, SABnzbd, an NZB indexer, or a Usenet service.
+
+## What it does
+
+When explicitly enabled, the extension:
+
+- discovers the dedicated Formula 1 Plex library and championship year;
+- validates every episode filename against the provider schedule;
+- creates one Kometa metadata file per championship year;
+- writes show, race-season, and episode metadata with provider-validated dates,
+  circuit facts, race distance, lap count, and concise circuit context;
+- creates deterministic race-season posters and per-episode 16:9 cards;
+- rotates the show poster through licensed current-season team-car photographs;
+- rotates only the show background's restrained photographic panel through
+  licensed current-season safety-car photographs;
+- records identity, source, ownership, attribution, cleanup, and application
+  verification state in its private SQLite database and reports; and
+- automatically accommodates later championship years, schedule changes,
+  constructor changes, new session date fields, and newly published circuits
+  when its providers expose safe identities.
+
+The extension never edits Plex directly. It writes Kometa YAML and referenced
+artwork; a later normal Kometa run applies those files to Plex. It does not create
+media, download NZBs, fetch episodes, create a Plex library, or create calendar-only
+races that are not present in Plex.
+
+## Operating flow
+
+1. A completed race programme is named in one of the supported forms and placed
+   in the dedicated media tree.
+2. Plex scans the file and exposes it under the championship show, race-round
+   season, and programme episode.
+3. MetaFusion reads that Plex inventory, validates year/round/event/session
+   identity, and obtains only the provider data required by detected media.
+4. MetaFusion atomically creates or reconciles its Kometa YAML, artwork, state,
+   logs, attribution, issues, and verification expectation.
+5. Kometa reads `formula1_<year>.yml` and applies the selected metadata and local
+   artwork to Plex on Kometa's next run.
+6. A later MetaFusion run performs the configured read-only application check.
+
+Downloads and Plex/Kometa scheduling remain external so failures in those systems
+cannot silently broaden this extension's filesystem or deletion authority.
 
 ## Enable and first run
 
@@ -19,6 +62,70 @@ or while Plex mode is selected.
 The default dedicated Plex library name is `Formula 1`. Change `library.name`
 in the private configuration when required. Do not include ordinary television
 shows in this library.
+
+Only two container-level values are needed: `RUN_MODE=kometa` selects the core
+output mode and `FORMULA1_ENABLED=True` opts into the extension. Everything else
+belongs in `/config/formula1/formula1.yml`. The packaged
+`formula1_template.yml` is refreshed without overwriting the active file. The
+active file may contain only the values you want to override because its mappings
+are merged over the packaged defaults. It is read again at the start of every
+scheduled or forced MetaFusion run; changing it does not require recreating the
+container, although an already-running scan keeps the settings it started with.
+
+## Configuration reference
+
+The generated template is the authoritative copyable configuration. Keep provider
+URLs, the managed policies, and `plex_new_race` unchanged unless this document
+explicitly says otherwise.
+
+| Setting | Default | Purpose and constraints |
+| --- | --- | --- |
+| `library.name` | `Formula 1` | Exact dedicated Plex library name. |
+| `library.naming_profile` | `auto` | `auto` accepts both filename conventions; `current` or `kometa` restricts parsing to one convention. |
+| `sessions.aliases` | `{}` | Optional mappings for broadcaster-specific programme labels. Each alias requires a display `title` and internal `kind`. |
+| `sessions.date_fields` | supplied mapping | Maps programme kinds to date-bearing Jolpica schedule fields. Existing defaults are retained when extra fields are added. |
+| `metadata.enabled` | `true` | Creates and reconciles Kometa YAML. Disabling it also prevents new show-artwork references from being activated. |
+| `metadata.original_title` | `Formula Internationale` | Show-level original title written to Kometa. |
+| `metadata.originally_available` | `1950-05-13` | Show-level franchise availability date; race and episode dates remain schedule-derived. |
+| `metadata.content_rating` | `PG-13` | Show-level rating written to Kometa. |
+| `metadata.studio` | `F1TV` | Show-level studio value. |
+| `metadata.tagline` | `We race as one.` | Show-level tagline. |
+| `metadata.genre` | `[Sport]` | Show-level Kometa genre list. |
+| `metadata.round_prefix` | `true` | Passes Kometa's Formula 1 round-prefix control. |
+| `metadata.shorten_gp` | `false` | Passes Kometa's Formula 1 Grand Prix shortening control. |
+| `artwork.enabled` | `true` | Creates race-season posters and their YAML references. |
+| `artwork.width`, `artwork.height` | `1000`, `1500` | Race poster dimensions; must remain exactly 2:3 and within the validated limits. |
+| `artwork.policy` | `managed` | Only supported policy. Extension-owned byte-identical output may be updated; manual or unknown files are preserved. |
+| `artwork.asset_reference_root` | `config/assets/formula1/rounds` | Kometa-visible reference root corresponding to the mounted `/kometa/assets/formula1/rounds` output. |
+| `artwork.logo`, `font_regular`, `font_bold` | paths under `branding/` | Optional user-supplied branding resolved below `/config/formula1`; paths cannot escape that directory. |
+| `show_artwork.enabled` | `true` | Enables rotating show poster/background pairs and detected episode cards. |
+| `show_artwork.trigger` | `plex_new_race` | Only supported trigger. Rotation occurs when a newer valid race-round season first appears in Plex, not on elapsed time. |
+| `show_artwork.policy` | `managed` | Only supported ownership policy. A manual change pauses automatic pair replacement. |
+| `show_artwork.poster_width`, `poster_height` | `1000`, `1500` | Show poster dimensions; must remain exactly 2:3. |
+| `show_artwork.background_width`, `background_height` | `1920`, `1080` | Show background and episode-card dimensions; must remain exactly 16:9. |
+| `show_artwork.minimum_source_width`, `minimum_source_height` | `1600`, `900` | Minimum decoded Commons photograph dimensions before it may be selected. |
+| `show_artwork.retention_pairs_per_season` | `30` | Maximum retained versioned managed show pairs per championship. |
+| `show_artwork.source_cache_retention_days` | `120` | Age after which inactive downloaded source photographs may be pruned and later redownloaded. |
+| `show_artwork.asset_reference_root` | `config/assets/formula1/shows` | Kometa-visible reference root corresponding to the mounted show-artwork output. |
+| `verification.enabled` | `true` | Enables delayed, read-only comparison of expected Kometa results with Plex. |
+| `verification.delay_hours` | `1` | Minimum wait after an output-changing run before checking Plex. Set `0` only for controlled testing. |
+| `verification.retention` | `20` | Number of application-verification reports retained. |
+| `verification.perceptual_distance` | `8` | Maximum perceptual-hash distance accepted for Plex artwork transcodes. |
+| `providers.*_url` | packaged HTTPS URLs | Jolpica, Formula1.com, circuit SVG/manifest, and Commons endpoints. These are adapter contracts, not normal tuning controls. |
+| `providers.cache_hours` | `24` | Validity of schedule, facts, profile, and circuit-provider cache entries. |
+| `providers.commons_cache_hours` | `24` | Validity of team-car and safety-car Commons discovery results. |
+| `providers.retries` | `3` | Bounded provider attempts, from 1 through 5. |
+| `cleanup.enabled` | `false` | Enables reconciliation only for extension-owned state and byte-identical managed artwork. Review a dry run first. |
+| `cleanup.confirmation_scans` | `2` | Consecutive missing inventories required before cleanup eligibility. |
+| `cleanup.grace_hours` | `48` | Minimum elapsed absence required in addition to confirmation scans. |
+| `logging.level` | `INFO` | Detail-log threshold: `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
+| `logging.console` | `summary` | `off`, `summary`, or `full` Formula 1 output in the main console. The separate run log remains available. |
+| `logging.retention` | `20` | Number of private Formula 1 run logs retained. |
+
+Relative branding and reference paths in the template are intentional. The
+extension validates output roots and does not accept arbitrary filesystem escape
+paths. Core Plex URL/token, Kometa path, scheduling, dry-run, and runtime settings
+remain in the normal MetaFusion configuration rather than this private file.
 
 ## Supported layouts
 
@@ -116,6 +223,89 @@ match the scanner title and every later run match the renamed title without a
 one-run gap. Older title-keyed Formula 1 entries are consolidated into the
 stable mapping while manual fields are preserved.
 
+## Optional SABnzbd intake automation
+
+An external Bash post-processing script can automate the intake side before Plex
+and MetaFusion run. This is optional and deliberately remains outside MetaFusion:
+the extension neither searches for NZBs nor controls SABnzbd. SABnzbd supports a
+Scripts Folder, executable Unix scripts, per-category completed folders, and
+per-category post-processing scripts; consult its official
+[folder documentation](https://sabnzbd.org/wiki/configuration/5.1/folders),
+[configuration overview](https://sabnzbd.org/wiki/configuration/5.1/configure),
+and [post-processing documentation](https://sabnzbd.org/wiki/scripts/post-processing-scripts)
+for the version you run.
+
+A recommended private workflow is:
+
+1. Configure a dedicated SABnzbd category named `f1` or `formula1`, with its own
+   completed folder and external executable script.
+2. Let a user-configured RSS filter at an NZB source submit matching jobs into
+   that category. MetaFusion does not provide an indexer, RSS feed, Usenet access,
+   credentials, search terms, or NZB files.
+3. Have the script accept only a successful completed job from that category,
+   find exactly one plausible media file, parse championship year, race identity,
+   programme label, and intended round/episode, then render one selected naming
+   profile.
+4. Stage the canonical filename and move it atomically into the Plex media tree.
+   If source and destination are on different filesystems, copy to a temporary
+   destination, verify size/checksum, atomically rename it, and only then consider
+   the SAB job complete.
+5. Trigger or await a normal Plex library scan. MetaFusion can process the new
+   item only after Plex exposes it under the expected show/season/episode identity.
+6. Run MetaFusion, then Kometa, in that order.
+
+The script should produce one of these forms, selected by one explicit script
+setting rather than mixing formats unpredictably:
+
+```text
+# current profile
+F1 2027/Season 03/S03E10 - Japan Grand Prix - Qualifying.mkv
+
+# adapted Kometa profile
+F1 2027/Season 03/03x10 - Japanese GP - Qualifying Session.mkv
+```
+
+`library.naming_profile: auto` can read both forms during a deliberate migration.
+For a steady-state library, generating only one profile is easier to audit. The
+top-level `F1 <year>` name is recommended for newly scanned media; MetaFusion's
+stable mapping and title aliases continue to work after Kometa displays the show
+as `Formula 1 (<year>)`. `Formula 1 (<year>)` is also year-detectable, but switching
+directory names in place should be coordinated with Plex rather than done by a
+download script during an active scan.
+
+Treat an intake script as privileged filesystem automation. It should:
+
+- validate SABnzbd's argument count, completion status, and category before any
+  move or deletion;
+- reject traversal, symlinks outside the completed job, ambiguous years/events,
+  duplicate media files, unsupported extensions, and unknown programme labels;
+- derive round identity from an independently maintained schedule or an explicit
+  trusted mapping; filename guesses alone must not decide a destructive move;
+- use a lock and idempotent destination checks so duplicate RSS submissions do
+  not overwrite an existing episode;
+- retain a concise separate audit log containing source job, chosen profile,
+  destination, and rejection reason, without credentials or NZB contents;
+- restrict any rejected-job removal to the exact SAB-provided completed-job
+  directory after proving it is inside the configured completed root;
+- never recursively delete a category root, Plex library root, unresolved path,
+  glob, symlink target, or partially copied destination;
+- preserve failed or ambiguous jobs for manual review unless the script can prove
+  that the exact disposable SAB job is the only deletion target; and
+- run under a UID/GID that can read the SAB completed path and create Plex media
+  files with the ownership and mode expected by Unraid and Plex.
+
+Do not assume `ffprobe`, `mediainfo`, or another media utility exists in a
+particular SABnzbd image. Either install and version that dependency deliberately
+or keep the script's required validation to portable shell/filesystem checks.
+Release groups and RSS/indexer coverage can be incomplete or delayed, so a
+missing programme is an intake-source condition, not something MetaFusion should
+invent as an empty Plex episode.
+
+You are responsible for lawful access to Usenet services and NZB sources, their
+terms, RSS/API limits, credentials, download choices, and local copyright rules.
+Do not place NZB-source credentials, private feed URLs, or SABnzbd API keys in
+MetaFusion configuration, reports, logs, or a public repository.
+
 ## Outputs and ownership
 
 - Metadata: `/kometa/metadata/formula1_<year>.yml`
@@ -130,6 +320,124 @@ stable mapping while manual fields are preserved.
 - Issue reports: `/config/formula1/reports/formula1-issues-<run-id>.json`
 - Show-artwork attribution:
   `/config/formula1/reports/formula1-show-artwork-attribution.txt` and `.json`
+
+The corresponding directory layout is:
+
+```text
+/config/
+└── formula1/
+    ├── formula1_template.yml        # generated reference; do not edit
+    ├── formula1.yml                 # optional active overrides; user-created
+    ├── branding/
+    │   ├── logo.png                 # optional, user supplied
+    │   ├── font-regular.ttf         # optional, user supplied
+    │   └── font-bold.ttf            # optional, user supplied
+    ├── cache/
+    │   ├── formula1.sqlite3         # isolated state, cache, bindings and history
+    │   └── show-artwork/            # validated Commons source cache
+    ├── logs/
+    │   └── formula1-<run-id>.log
+    └── reports/
+        ├── formula1-issues-<run-id>.json
+        ├── formula1-application-verification-<run-id>.json
+        ├── formula1-show-artwork-attribution.txt
+        └── formula1-show-artwork-attribution.json
+
+/kometa/
+├── metadata/
+│   └── formula1_<year>.yml
+└── assets/
+    └── formula1/
+        ├── rounds/<year>/round-<nn>/
+        │   ├── poster.png
+        │   └── episodes/episode-<nn>.png
+        └── shows/<year>/round-<nn>-<team>-<source>/
+            ├── poster.png
+            └── background.png
+```
+
+`/config/formula1` is private runtime state and should be included in normal
+appdata backups. `/kometa/metadata` and `/kometa/assets` are generated Kometa
+inputs. Do not point the extension at a media directory or allow another cleanup
+tool to treat these generated directories as source media.
+
+## Generated metadata example
+
+The following abbreviated example shows the ordering and identity contract. The
+actual dates, circuit facts, summaries, paths, episodes, and artwork sources are
+calculated from the detected Plex inventory and validated provider responses.
+
+```yaml
+metadata:
+  F1 2027:
+    match:
+      title:
+        - F1 2027
+        - Formula 1 (2027)
+    title: Formula 1 (2027)
+    sort_title: Formula 1 (2027)
+    original_title: Formula Internationale
+    originally_available: '1950-05-13'
+    content_rating: PG-13
+    studio: F1TV
+    tagline: We race as one.
+    summary: The 2027 FIA Formula One World Championship.
+    genre:
+      - Sport
+    file_poster: /config/assets/formula1/shows/2027/round-03-team-source/poster.png
+    file_background: /config/assets/formula1/shows/2027/round-03-team-source/background.png
+    f1_season: 2027
+    round_prefix: true
+    shorten_gp: false
+    seasons:
+      3:
+        title: Japanese Grand Prix
+        summary: >-
+          Round 3 of the 2027 Formula 1 season at Suzuka International Racing
+          Course in Suzuka, Japan. The circuit measures 5.807 km; the scheduled
+          race runs for 53 laps and covers 307.471 km. The venue first hosted a
+          Formula 1 Grand Prix in 1987. Formula1.com circuit profile: fast,
+          flowing, technical.
+        file_poster: /config/assets/formula1/rounds/2027/round-03/poster.png
+        episodes:
+          10:
+            title: Qualifying Session
+            originally_available: '2027-04-03'
+            summary: >-
+              Qualifying Session from the Japanese Grand Prix at Suzuka
+              International Racing Course, Suzuka, Japan. Round 3 of the 2027
+              Formula 1 season at Suzuka International Racing Course in Suzuka,
+              Japan. The circuit measures 5.807 km; the scheduled race runs for
+              53 laps and covers 307.471 km. The venue first hosted a Formula 1
+              Grand Prix in 1987. Formula1.com circuit profile: fast, flowing,
+              technical.
+            file_poster: /config/assets/formula1/rounds/2027/round-03/episodes/episode-10.png
+```
+
+`match` always remains first, show fields remain above `seasons`, and season
+fields remain above `episodes`. The stable mapping key remains `F1 <year>` even
+after Kometa changes the Plex display title to `Formula 1 (<year>)`.
+
+## Generated artwork examples
+
+These examples were produced by the actual deterministic renderers using generic
+branding and synthetic source-photo placeholders. Runtime output uses your
+supplied logo/fonts and separately validated, licensed Wikimedia Commons team-car
+or safety-car photographs; visual composition and protected text areas remain the
+same.
+
+| Race-season poster | Rotating show poster |
+| --- | --- |
+| ![Example Formula 1 race-season poster](images/formula1/round-poster.png) | ![Example rotating Formula 1 show poster](images/formula1/show-poster.png) |
+
+Episode cards use the race weekend's persistent team-car binding:
+
+![Example Formula 1 episode card](images/formula1/episode-card.png)
+
+The show background keeps a dark Plex-safe canvas and rotates only its restrained
+right-side safety-car panel:
+
+![Example Formula 1 show background](images/formula1/show-background.png)
 
 Generated YAML uses Kometa Formula 1 controls (`f1_season`, `round_prefix`, and
 `shorten_gp`) plus show, round, and episode edits. The stable top-level mapping
@@ -458,3 +766,69 @@ Formula 1 summary through the main logger while retaining item details in the
 separate Formula 1 run log. The summary distinguishes resolved and missing
 circuit facts from resolved and missing circuit profiles. Dry-run mode creates
 no template, database, artwork, metadata, log, or report files.
+
+## Recommended first run and soak test
+
+1. Back up `/config`, the Kometa metadata directory, and existing Formula 1
+   assets. Keep `cleanup.enabled: false`.
+2. Confirm Plex already exposes one dedicated library, one championship show,
+   race-round seasons, and correctly numbered episodes. Resolve duplicates and
+   Season 0 content before enabling the extension.
+3. Set `RUN_MODE=kometa` and `FORMULA1_ENABLED=True`, start one normal run to
+   create the private template, then copy it to `formula1.yml` only if defaults
+   need adjustment. Alternatively, copy the packaged template from this
+   repository before the first run.
+4. Add optional branding, run again, and confirm the branding validation lines,
+   detected naming profile, championship year, schedule identity, fact/profile
+   counts, and artwork actions in the separate Formula 1 log.
+5. Inspect `formula1_<year>.yml`, generated artwork, the issues report when one is
+   present, and both attribution reports before running Kometa.
+6. Run Kometa and verify the Plex show, race seasons, and several programme types.
+   Keep at least one practice, qualifying, Sprint when applicable, race, and
+   analysis episode in the sample.
+7. Allow a later MetaFusion run after `verification.delay_hours` and review the
+   application-verification report. A Plex thumbnail cache may lag behind the
+   underlying selected artwork; verify the item directly before treating a Home
+   screen thumbnail as an application failure.
+8. Repeat across a newly added episode in the same round and the first episode of
+   a later round. The same round must retain its team-car source; the newer round
+   may rotate the show pair and receives its own persistent episode binding.
+9. Test one temporary provider outage or Plex disconnect. Existing YAML, managed
+   artwork, and state should be preserved, with a reported retry rather than a
+   destructive partial update.
+10. Enable cleanup only after multiple successful scans and a reviewed dry run.
+
+## Troubleshooting boundaries
+
+- **Library not detected:** verify the exact `library.name`, Kometa mode, explicit
+  extension opt-in, Plex connection, and that the dedicated library contains a
+  year-bearing show title.
+- **No metadata file:** confirm `metadata.enabled`, a supported non-Season-0
+  episode, a valid filename, and a schedule match for its championship year and
+  round. Calendar entries alone never create YAML.
+- **Schedule pending:** the year was detected but the provider has not published
+  a valid schedule. Existing output is preserved and later runs retry.
+- **Race or episode rejected:** compare the filename's event, round, programme
+  number, and programme label with the supported convention and Plex identity.
+  The extension will not silently attach a conflicting event to a round.
+- **Artwork preserved instead of changed:** inspect the detailed action and
+  attribution report. The output may be manual/modified, the current pair may be
+  newer, or no safely licensed current-season source may yet exist.
+- **Kometa no longer finds the renamed show:** keep the stable `F1 <year>` mapping
+  and generated `match.title` aliases. Do not manually replace the mapping key
+  with only the current Plex display title.
+- **Missing circuit facts or profile:** inspect the issue report for provider page
+  identity or markup failure. Unavailable values are intentionally omitted rather
+  than generated as `to be confirmed`.
+- **Plex still shows an older thumbnail:** first run Kometa, then inspect the Plex
+  item itself and the delayed verification report. Plex Home/Continue Watching
+  thumbnails can remain cached after the selected item artwork changes.
+- **SABnzbd job never appears:** troubleshoot the external NZB/RSS/category/script,
+  completed path, permissions, and Plex scan first. MetaFusion starts only after
+  Plex exposes the media and cannot repair an upstream missing download.
+
+When reporting an extension problem, include the MetaFusion commit or image tag,
+redacted Formula 1 log excerpt, naming profile, one representative media filename,
+Plex show/season/episode identity, and the relevant redacted JSON report. Never
+share Plex tokens, private RSS URLs, NZB contents, indexer credentials, or an
+unredacted private configuration.

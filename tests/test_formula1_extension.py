@@ -2267,3 +2267,48 @@ def test_main_orchestrator_hands_formula_library_to_extension(tmp_path, monkeypa
     else:
         asyncio.run(metafusion.metafusion_main(config, logging.getLogger("f1-main")))
         assert config["_formula1_summary"] == {"episodes": 1}
+
+
+def test_formula1_operator_guide_covers_the_private_runtime_contract():
+    root = Path(__file__).resolve().parents[1]
+    guide = (root / "docs/formula1.md").read_text(encoding="utf-8")
+    for heading in (
+        "## What it does",
+        "## Operating flow",
+        "## Enable and first run",
+        "## Configuration reference",
+        "## Supported layouts",
+        "## Optional SABnzbd intake automation",
+        "## Outputs and ownership",
+        "## Generated metadata example",
+        "## Generated artwork examples",
+        "## Cleanup and diagnostics",
+        "## Recommended first run and soak test",
+        "## Troubleshooting boundaries",
+    ):
+        assert heading in guide
+    for required in (
+        "RUN_MODE=kometa",
+        "FORMULA1_ENABLED=True",
+        "/config/formula1/formula1.yml",
+        "F1 2027/Season 03/S03E10",
+        "F1 2027/Season 03/03x10",
+        "https://sabnzbd.org/wiki/configuration/5.1/folders",
+        "formula1_<year>.yml",
+        "formula1.sqlite3",
+        "Wikimedia Commons",
+    ):
+        assert required in guide
+    expected_images = {
+        "round-poster.png": (600, 900),
+        "show-poster.png": (600, 900),
+        "episode-card.png": (960, 540),
+        "show-background.png": (960, 540),
+    }
+    for name, dimensions in expected_images.items():
+        path = root / "docs/images/formula1" / name
+        assert f"images/formula1/{name}" in guide
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            assert image.size == dimensions
