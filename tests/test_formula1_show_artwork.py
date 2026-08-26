@@ -33,6 +33,13 @@ from extensions.formula1.config import Formula1ConfigError, load_formula1_config
 from extensions.formula1.inventory import Formula1Episode, Formula1Show
 from extensions.formula1.metadata import build_show_entry
 from extensions.formula1.provider import RaceData
+from extensions.formula1.safety_car import (
+    SafetyCarCandidate,
+    _safety_car_category_url,
+    _safety_car_search_url,
+    parse_safety_car_candidates,
+    search_safety_cars,
+)
 from extensions.formula1.show_artwork import (
     EPISODE_RENDERER_VERSION,
     SHOW_RENDERER_VERSION,
@@ -48,6 +55,8 @@ from extensions.formula1.show_artwork import (
     _prune_retained_pairs,
     _prune_source_cache,
     _rounded_flag_badge,
+    _safety_candidate_order,
+    _select_background_source,
     reconcile_episode_posters,
     reconcile_episode_round_artwork,
     render_episode_poster,
@@ -119,6 +128,46 @@ def _commons_payload(team="Alpine F1 Team", constructor_id="alpine", **overrides
     }
 
 
+def _safety_car_payload(*, page_id=901, title=None, **overrides):
+    info = {
+        "url": f"https://upload.wikimedia.org/safety-{page_id}.jpg",
+        "thumburl": f"https://upload.wikimedia.org/safety-thumb-{page_id}.jpg",
+        "width": overrides.pop("width", 3200),
+        "height": overrides.pop("height", 1800),
+        "mime": overrides.pop("mime", "image/jpeg"),
+        "sha1": overrides.pop("sha1", f"safety-sha1-{page_id}"),
+        "extmetadata": {
+            "ImageDescription": {
+                "value": overrides.pop(
+                    "description",
+                    "Official FIA Formula 1 safety car on track during the 2026 season",
+                )
+            },
+            "Artist": {"value": overrides.pop("author", "Safety Photographer")},
+            "LicenseShortName": {"value": overrides.pop("licence", "CC BY 4.0")},
+            "LicenseUrl": {
+                "value": overrides.pop(
+                    "licence_url", "https://creativecommons.org/licenses/by/4.0/"
+                )
+            },
+        },
+    }
+    info.update(overrides)
+    return {
+        "query": {
+            "pages": [
+                {
+                    "pageid": page_id,
+                    "title": title
+                    or f"File:2026 Formula 1 Safety Car track view {page_id}.jpg",
+                    "categories": [{"title": "Category:Formula One safety car"}],
+                    "imageinfo": [info],
+                }
+            ]
+        }
+    }
+
+
 class Response:
     def __init__(self, *, status=200, payload=None, data=b"", headers=None):
         self.status = status
@@ -153,9 +202,20 @@ class CommonsSession:
         if url.endswith("constructors.json"):
             return Response(payload=_constructor_payload())
         if "commons.wikimedia.org" in url:
-            query = parse_qs(urlparse(url).query).get("gsrsearch", [""])[0].casefold()
+            parameters = parse_qs(urlparse(url).query)
+            query = parameters.get("gsrsearch", [""])[0].casefold()
             if not self.candidates:
                 return Response(payload={"query": {"pages": []}})
+            if (
+                parameters.get("generator") == ["categorymembers"]
+                or "safety car" in query
+            ):
+                page_id = (
+                    901
+                    if parameters.get("generator") == ["categorymembers"]
+                    else 902
+                )
+                return Response(payload=_safety_car_payload(page_id=page_id))
             for constructor_id, team in (
                 ("alpine", "Alpine F1 Team"),
                 ("ferrari", "Ferrari"),
@@ -282,6 +342,128 @@ def test_commons_identity_licence_and_payload_filtering(config):
     dictionary_pages["query"]["pages"] = {"1": dictionary_pages["query"]["pages"][0]}
     assert parse_commons_candidates(dictionary_pages, 2026, roster[0], roster, config)
     assert parse_commons_candidates({"query": {"pages": "bad"}}, 2026, roster[0], roster, config) == []
+
+
+def test_safety_car_identity_licence_and_season_filtering(config):
+    candidates = parse_safety_car_candidates(_safety_car_payload(), 2026, config)
+    assert len(candidates) == 1
+    assert candidates[0].vehicle_name.startswith("2026 Formula 1 Safety Car")
+    assert SafetyCarCandidate.from_dict(candidates[0].as_dict()) == candidates[0]
+    assert parse_safety_car_candidates(_safety_car_payload(), 2027, config) == []
+    assert parse_safety_car_candidates(
+        _safety_car_payload(title="File:2026 Formula 1 Medical Car.jpg"), 2026, config
+    ) == []
+    assert parse_safety_car_candidates(
+        _safety_car_payload(
+            title="File:Aston Martin Vantage F1 Safety Car - Museum 2026.jpg"
+        ),
+        2026,
+        config,
+    ) == []
+    plural = _safety_car_payload(
+        title="File:F1 season vehicle at Suzuka 2026.jpg",
+        description="F1 vehicle on track at the 2026 Japanese Grand Prix",
+    )
+    plural["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Safety cars"},
+        {"title": "Category:2026 Japanese Grand Prix"},
+    ]
+    assert parse_safety_car_candidates(plural, 2026, config)
+    assert parse_safety_car_candidates(
+        _safety_car_payload(licence="CC BY-SA 4.0"), 2026, config
+    ) == []
+    assert parse_safety_car_candidates(
+        _safety_car_payload(width=640), 2026, config
+    ) == []
+    unsafe_url = _safety_car_payload()
+    unsafe_url["query"]["pages"][0]["imageinfo"][0]["thumburl"] = (
+        "https://example.com/safety-car.jpg"
+    )
+    unsafe_url["query"]["pages"][0]["imageinfo"][0]["url"] = ""
+    assert parse_safety_car_candidates(unsafe_url, 2026, config) == []
+    assert "safety+car" in _safety_car_search_url(
+        config, 'intitle:2026 intitle:"safety car" F1'
+    )
+    assert "gsroffset=30" in _safety_car_search_url(config, "F1", offset=30)
+    assert "generator=categorymembers" in _safety_car_category_url(config)
+    assert "gcmcontinue=next" in _safety_car_category_url(
+        config, continuation="next"
+    )
+
+
+def test_safety_car_search_cache_and_stale_fallback(config):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    candidates, source = asyncio.run(
+        search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
+    )
+    assert candidates and source == "wikimedia-commons-safety-car"
+    assert asyncio.run(
+        search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
+    )[1] == "cache"
+    state.connection.execute(
+        "UPDATE provider_cache SET expires_at='2020-01-01T00:00:00+00:00'"
+    )
+    state.connection.commit()
+    stale, source = asyncio.run(
+        search_safety_cars(
+            CommonsSession(fail=True),
+            state,
+            config,
+            2026,
+            logging.getLogger("safety-stale"),
+        )
+    )
+    assert stale and source == "stale-cache"
+    state.connection.execute("DELETE FROM provider_cache")
+    state.connection.commit()
+    with pytest.raises(RuntimeError, match="Commons API request failed"):
+        asyncio.run(
+            search_safety_cars(
+                CommonsSession(fail=True),
+                state,
+                config,
+                2026,
+                logging.getLogger("safety-failed"),
+            )
+        )
+    state.close()
+
+
+def test_safety_car_selection_rejects_empty_and_invalid_sources(
+    config, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    assert _safety_candidate_order([], None, 1) == []
+
+    async def empty_search(*_args, **_kwargs):
+        return [], "test"
+
+    monkeypatch.setattr(show_artwork_module, "search_safety_cars", empty_search)
+    with pytest.raises(RuntimeError, match="no licensed current-season"):
+        asyncio.run(
+            _select_background_source(
+                None, state, config, 2026, None, 1, logging.getLogger("empty")
+            )
+        )
+
+    candidate = parse_safety_car_candidates(_safety_car_payload(), 2026, config)[0]
+
+    async def candidate_search(*_args, **_kwargs):
+        return [candidate], "test"
+
+    async def invalid_image(*_args, **_kwargs):
+        raise RuntimeError("invalid safety image")
+
+    monkeypatch.setattr(show_artwork_module, "search_safety_cars", candidate_search)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", invalid_image)
+    with pytest.raises(RuntimeError, match="invalid safety image"):
+        asyncio.run(
+            _select_background_source(
+                None, state, config, 2026, None, 1, logging.getLogger("invalid")
+            )
+        )
+    state.close()
 
 
 def test_future_constructor_identity_requires_no_hard_coded_alias(config):
@@ -512,9 +694,22 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.size == (600, 900)
     with Image.open(background) as image:
         assert image.size == (1280, 720)
+        # The safety-car source is a restrained right-side accent. The stable
+        # black information area must continue to dominate Plex's background.
+        left_luminance = sum(
+            image.resize((16, 9))
+            .crop((0, 0, 7, 9))
+            .convert("L")
+            .get_flattened_data()
+        )
+        full_luminance = sum(
+            image.resize((16, 9)).convert("L").get_flattened_data()
+        )
+        assert left_luminance / (7 * 9) < 55
+        assert full_luminance / (16 * 9) < 95
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 5
+    assert SHOW_RENDERER_VERSION == 6
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -671,6 +866,9 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     ).is_file()
     current = state.show_rotation("show:2026")
     assert _pair_integrity(current) == "managed"
+    assert current["source"]["candidate"]["constructor_id"] == "alpine"
+    assert "Safety Car" in current["source"]["background_candidate"]["title"]
+    assert first.background_vehicle and "Safety Car" in first.background_vehicle
     assert len(state.show_rotation_history()) == 1
     assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
     assert (config["paths"]["reports"] / "formula1-show-artwork-attribution.json").exists()
@@ -898,6 +1096,7 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     current = state.show_rotation("show:2026")
     source = current["source"]
     source.pop("render_fingerprint")
+    source.pop("background_candidate")
     state.connection.execute(
         "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
         (json.dumps(source, sort_keys=True),),

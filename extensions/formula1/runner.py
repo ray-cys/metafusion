@@ -546,11 +546,13 @@ async def run_formula1_extension(
                         }
                         detail_logger.info(
                             "[Show Artwork] %s | Trigger round: %02d | Action: %s | "
-                            "Team: %s | Source: Wikimedia Commons",
+                            "Poster team: %s | Background vehicle: %s | "
+                            "Source: Wikimedia Commons",
                             show.title,
                             rotation.trigger_round,
                             rotation.action,
                             rotation.constructor or "none",
+                            rotation.background_vehicle or "preserved/none",
                         )
                 for episode in show.episodes:
                     destination = (

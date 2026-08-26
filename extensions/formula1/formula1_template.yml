@@ -50,11 +50,12 @@ artwork:
   font_bold: branding/font-bold.ttf
 
 # The supplied logo and fonts above are also used for the show artwork frame and
-# 16:9 episode session cards. Poster/background rotation is triggered by a newly
-# discovered Plex race round; missing cards are created only for Plex-detected
+# 16:9 episode session cards. Rotation is triggered by a newly discovered Plex
+# race round: the show poster and episode cards use licensed current-season team
+# cars, while the stable black show background rotates a restrained right-side
+# current-season safety-car panel. Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
-# Episode cards automatically retain one licensed team-car source per season/round;
-# there is no separate rotation setting to maintain.
+# No separate vehicle-source or rotation setting is required.
 show_artwork:
   enabled: true
   trigger: plex_new_race

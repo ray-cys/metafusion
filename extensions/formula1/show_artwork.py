@@ -29,11 +29,12 @@ from extensions.formula1.commons import (
     load_constructors,
     search_commons,
 )
+from extensions.formula1.safety_car import SafetyCarCandidate, search_safety_cars
 from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 5
+SHOW_RENDERER_VERSION = 6
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class ShowArtworkResult:
     episode_actions: dict[int, str] = field(default_factory=dict)
     photo_path: str | None = None
     source_identity: str | None = None
+    background_vehicle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,7 @@ def _show_render_fingerprint(config):
         "background": [
             config["show_artwork"]["background_width"],
             config["show_artwork"]["background_height"],
+            "safety-car-source",
         ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -492,29 +495,38 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
 
 
 def render_show_background(show, race, photo_path, config, destination):
-    """Render the paired 16:9 background with a Plex-safe title area."""
+    """Render a restrained safety-car panel inside the stable Plex-safe frame."""
     width = config["show_artwork"]["background_width"]
     height = config["show_artwork"]["background_height"]
+    image = Image.new("RGB", (width, height), (5, 6, 9))
+    panel_size = (round(width * 0.58), round(height * 0.72))
     with Image.open(photo_path) as source:
-        source_rgb = source.convert("RGB")
-        image = ImageOps.fit(source_rgb, (width, height), Image.Resampling.LANCZOS)
-        image = image.filter(ImageFilter.GaussianBlur(max(8, width // 100)))
-        image = ImageEnhance.Brightness(image).enhance(0.42)
-        complete_photo = ImageOps.contain(
-            source_rgb,
-            (round(width * 0.82), round(height * 0.88)),
-            Image.Resampling.LANCZOS,
+        panel = _grade_photo(
+            source,
+            panel_size,
+            centering=(0.58, 0.5),
+            strong=True,
         )
-        complete_photo = _grade_photo(
-            complete_photo,
-            complete_photo.size,
-            contain=True,
-        )
-        image.paste(
-            complete_photo,
-            (width - complete_photo.width, (height - complete_photo.height) // 2),
-        )
-    image = ImageEnhance.Contrast(image).enhance(1.05)
+        panel = ImageEnhance.Color(panel).enhance(0.78)
+        panel = ImageEnhance.Brightness(panel).enhance(0.58)
+        panel = ImageEnhance.Contrast(panel).enhance(0.96)
+    panel_mask = Image.new("L", panel_size, 0)
+    feather = max(24, round(min(panel_size) * 0.10))
+    ImageDraw.Draw(panel_mask).rectangle(
+        (feather, feather, panel_size[0] - feather, panel_size[1] - feather),
+        fill=255,
+    )
+    panel_mask = panel_mask.filter(ImageFilter.GaussianBlur(feather))
+    panel_left = width - panel_size[0] - round(width * 0.025)
+    panel_top = (height - panel_size[1]) // 2
+    image.paste(panel, (panel_left, panel_top), panel_mask)
+
+    right_shade = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    ImageDraw.Draw(right_shade).rectangle(
+        (width * 0.42, 0, width, height),
+        fill=(0, 0, 0, 42),
+    )
+    image = Image.alpha_composite(image.convert("RGBA"), right_shade)
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     gradient = Image.new("L", (width, 1))
     gradient.putdata(
@@ -525,7 +537,7 @@ def render_show_background(show, race, photo_path, config, destination):
     )
     black = Image.new("RGBA", (width, height), (3, 4, 7, 255))
     overlay = Image.composite(black, overlay, gradient.resize((width, height)))
-    image = Image.alpha_composite(image.convert("RGBA"), overlay)
+    image = Image.alpha_composite(image, overlay)
     _technical_frame(image)
     logo_path, _regular_path, bold_path = _branding_paths(config)
     season_font = _font(bold_path, max(34, width // 32))
@@ -558,6 +570,11 @@ def render_show_background(show, race, photo_path, config, destination):
 def _current_references(current):
     source = current.get("source") or {}
     return source.get("poster_reference"), source.get("background_reference")
+
+
+def _current_background_vehicle(current):
+    candidate = (current or {}).get("source", {}).get("background_candidate") or {}
+    return candidate.get("vehicle_name")
 
 
 def _existing_episode_outputs(state, config, show, race):
@@ -777,16 +794,20 @@ def _prune_retained_pairs(state, config, logical_key, current):
     return removed
 
 
-def _prune_source_cache(config, active_photo):
+def _prune_source_cache(config, active_photo, *additional_active_photos):
     cutoff = time.time() - config["show_artwork"]["source_cache_retention_days"] * 86400
-    active = Path(active_photo).resolve()
+    active = {
+        Path(value).resolve()
+        for value in (active_photo, *additional_active_photos)
+        if value is not None
+    }
     removed = 0
     root = config["paths"]["show_image_cache"]
     for path in root.glob("*") if root.exists() else ():
         if (
             path.is_file()
             and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
-            and path.resolve() != active
+            and path.resolve() not in active
             and path.stat().st_mtime < cutoff
         ):
             path.unlink()
@@ -814,8 +835,8 @@ def _attribution_reports(config, history, round_sources=()):
     for item in history:
         source = item["source"]
         candidate = source["candidate"]
-        record = {
-            "scope": "show",
+        poster_record = {
+            "scope": "show_poster",
             "season_year": item["season_year"],
             "trigger_round": item["trigger_round"],
             "constructor_id": item["constructor_id"],
@@ -826,23 +847,55 @@ def _attribution_reports(config, history, round_sources=()):
             "licence": candidate["licence"],
             "licence_url": candidate["licence_url"],
             "poster": item["poster_destination"],
-            "background": item["background_destination"],
+            "background": None,
         }
-        records.append(record)
+        records.append(poster_record)
         lines.extend(
             [
-                f"Season {record['season_year']} • Round {record['trigger_round']:02d}",
-                f"Team: {record['constructor_name']}",
-                f"Source: {record['source_title']}",
-                f"Page: {record['source_page']}",
-                f"Author: {record['author']}",
-                f"Licence: {record['licence']}",
-                f"Licence URL: {record['licence_url']}",
-                f"Poster: {record['poster']}",
-                f"Background: {record['background']}",
+                f"Season {poster_record['season_year']} • Round "
+                f"{poster_record['trigger_round']:02d}",
+                "Scope: show poster",
+                f"Team: {poster_record['constructor_name']}",
+                f"Source: {poster_record['source_title']}",
+                f"Page: {poster_record['source_page']}",
+                f"Author: {poster_record['author']}",
+                f"Licence: {poster_record['licence']}",
+                f"Licence URL: {poster_record['licence_url']}",
+                f"Poster: {poster_record['poster']}",
                 "",
             ]
         )
+        background = source.get("background_candidate")
+        if background:
+            background_record = {
+                "scope": "show_background",
+                "season_year": item["season_year"],
+                "trigger_round": item["trigger_round"],
+                "vehicle_name": background["vehicle_name"],
+                "source_title": background["title"],
+                "source_page": background["page_url"],
+                "author": background["author"],
+                "licence": background["licence"],
+                "licence_url": background["licence_url"],
+                "poster": None,
+                "background": item["background_destination"],
+            }
+            records.append(background_record)
+            lines.extend(
+                [
+                    f"Season {background_record['season_year']} • Round "
+                    f"{background_record['trigger_round']:02d}",
+                    "Scope: show background",
+                    f"Vehicle: {background_record['vehicle_name']}",
+                    f"Source: {background_record['source_title']}",
+                    f"Page: {background_record['source_page']}",
+                    f"Author: {background_record['author']}",
+                    f"Licence: {background_record['licence']}",
+                    f"Licence URL: {background_record['licence_url']}",
+                    f"Background: {background_record['background']}",
+                    "",
+                ]
+            )
     for item in round_sources:
         source = item.get("source") or {}
         candidate = source.get("candidate")
@@ -913,6 +966,86 @@ async def _select_source(session, state, config, year, current, trigger_round, l
             except RuntimeError as error:
                 diagnostics.append(f"{constructor.name}/{candidate.title}: {error}")
     reason = "; ".join(diagnostics[-4:]) or "no licensed current-season candidate matched"
+    raise RuntimeError(reason)
+
+
+def _perceptual_hash(path):
+    with Image.open(path) as source:
+        pixels = list(
+            source.convert("L")
+            .resize((9, 8), Image.Resampling.LANCZOS)
+            .get_flattened_data()
+        )
+    bits: list[bool] = []
+    for row in range(8):
+        start = row * 9
+        bits.extend(
+            pixels[start + column] > pixels[start + column + 1]
+            for column in range(8)
+        )
+    hash_value = 0
+    for index, bit in enumerate(bits):
+        if bit:
+            hash_value |= 1 << index
+    return f"{hash_value:016x}"
+
+
+def _hash_distance(left, right):
+    if not left or not right:
+        return 64
+    return (int(left, 16) ^ int(right, 16)).bit_count()
+
+
+def _safety_candidate_order(candidates, current, trigger_round):
+    if not candidates:
+        return []
+    background = (current or {}).get("source", {}).get("background_candidate") or {}
+    page_ids = [candidate.page_id for candidate in candidates]
+    previous = int(background.get("page_id") or 0)
+    if previous in page_ids:
+        start = (page_ids.index(previous) + 1) % len(candidates)
+    else:
+        start = (int(trigger_round) - 1) % len(candidates)
+    return [candidates[(start + offset) % len(candidates)] for offset in range(len(candidates))]
+
+
+async def _select_background_source(
+    session, state, config, year, current, trigger_round, logger
+):
+    candidates, search_source = await search_safety_cars(
+        session, state, config, year, logger
+    )
+    if not candidates:
+        raise RuntimeError("no licensed current-season Formula 1 safety-car candidate matched")
+    current_source = (current or {}).get("source", {})
+    previous_hash = current_source.get("background_perceptual_hash")
+    fallback = None
+    diagnostics = []
+    for candidate in _safety_candidate_order(candidates, current, trigger_round):
+        try:
+            photo_path, image_source = await acquire_candidate_image(
+                session, config, candidate
+            )
+            perceptual_hash = (
+                _perceptual_hash(photo_path)
+                if Path(photo_path).is_file()
+                else hashlib.sha256(candidate.image_url.encode()).hexdigest()[:16]
+            )
+            result = (
+                candidate,
+                photo_path,
+                {"search": search_source, "image": image_source},
+                perceptual_hash,
+            )
+            if fallback is None:
+                fallback = result
+            if _hash_distance(previous_hash, perceptual_hash) > 4:
+                return result
+        except RuntimeError as error:
+            diagnostics.append(f"{candidate.title}: {error}")
+    if fallback is not None:
+        return fallback
+    reason = "; ".join(diagnostics[-4:]) or "no safety-car image passed pixel validation"
     raise RuntimeError(reason)
 
 
@@ -1028,6 +1161,7 @@ async def run_show_artwork_rotation(
                     episode_actions=episode_actions,
                     photo_path=available_photo,
                     source_identity=available_identity,
+                    background_vehicle=_current_background_vehicle(current),
                 )
 
     restoring = (
@@ -1040,10 +1174,54 @@ async def run_show_artwork_rotation(
             candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
             photo_path, image_source = await acquire_candidate_image(session, config, candidate)
             provider_sources = {"roster": "state", "search": "state", "image": image_source}
+            background_value = current["source"].get("background_candidate")
+            if background_value:
+                background_candidate = SafetyCarCandidate.from_dict(background_value)
+                background_photo_path, background_image_source = await acquire_candidate_image(
+                    session, config, background_candidate
+                )
+                background_provider_sources = {
+                    "search": "state",
+                    "image": background_image_source,
+                }
+                background_perceptual_hash = (
+                    _perceptual_hash(background_photo_path)
+                    if Path(background_photo_path).is_file()
+                    else hashlib.sha256(background_candidate.image_url.encode()).hexdigest()[:16]
+                )
+            else:
+                (
+                    background_candidate,
+                    background_photo_path,
+                    background_provider_sources,
+                    background_perceptual_hash,
+                ) = await _select_background_source(
+                    session,
+                    state,
+                    config,
+                    show.year,
+                    current,
+                    trigger_round,
+                    logger,
+                )
             destination_root = Path(current["poster_destination"]).parent
         else:
             candidate, photo_path, provider_sources = await _select_source(
                 session, state, config, show.year, current, trigger_round, logger
+            )
+            (
+                background_candidate,
+                background_photo_path,
+                background_provider_sources,
+                background_perceptual_hash,
+            ) = await _select_background_source(
+                session,
+                state,
+                config,
+                show.year,
+                current,
+                trigger_round,
+                logger,
             )
             source_identity = candidate.source_sha1 or hashlib.sha256(
                 candidate.image_url.encode()
@@ -1067,9 +1245,10 @@ async def run_show_artwork_rotation(
             poster_reference,
             background_reference,
             current.get("constructor_id") if current else None,
-            f"No safe Wikimedia Commons car image: {error}",
+            f"No safe Wikimedia Commons team-car/safety-car pair: {error}",
             episode_references=episode_references,
             episode_actions=episode_actions,
+            background_vehicle=_current_background_vehicle(current),
         )
 
     relative = destination_root.relative_to(config["paths"]["show_assets"])
@@ -1113,17 +1292,26 @@ async def run_show_artwork_rotation(
             episode_actions=episode_actions,
             photo_path=str(photo_path),
             source_identity=source_identity,
+            background_vehicle=background_candidate.vehicle_name,
         )
 
     poster_checksum = render_show_poster(
         show, race, path_data, photo_path, config, poster_destination
     )
     background_checksum = render_show_background(
-        show, race, photo_path, config, background_destination
+        show, race, background_photo_path, config, background_destination
     )
     source = {
         "candidate": candidate.as_dict(),
         "provider_sources": provider_sources,
+        "background_candidate": background_candidate.as_dict(),
+        "background_provider_sources": background_provider_sources,
+        "background_photo_cache": str(background_photo_path),
+        "background_source_identity": (
+            background_candidate.source_sha1
+            or hashlib.sha256(background_candidate.image_url.encode()).hexdigest()
+        ),
+        "background_perceptual_hash": background_perceptual_hash,
         "poster_reference": poster_reference,
         "background_reference": background_reference,
         "renderer_version": SHOW_RENDERER_VERSION,
@@ -1148,7 +1336,7 @@ async def run_show_artwork_rotation(
     )
     current = state.show_rotation(logical_key)
     pairs_pruned = _prune_retained_pairs(state, config, logical_key, current)
-    cache_pruned = _prune_source_cache(config, photo_path)
+    cache_pruned = _prune_source_cache(config, photo_path, background_photo_path)
     write_attribution_reports(state, config)
     return ShowArtworkResult(
         "rerendered" if rerendering else "restored" if restoring else "rotated",
@@ -1162,4 +1350,5 @@ async def run_show_artwork_rotation(
         episode_actions=episode_actions,
         photo_path=str(photo_path),
         source_identity=source_identity,
+        background_vehicle=background_candidate.vehicle_name,
     )
