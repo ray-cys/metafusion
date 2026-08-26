@@ -1763,7 +1763,32 @@ def test_runner_maps_each_show_artwork_outcome(
     tmp_path, core, schedule_payload, monkeypatch, action, counter, references
 ):
     media = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
-    section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
+    second_media = tmp_path / "S02E01 - Chinese Grand Prix - Race.mkv"
+    second_race = {
+        **schedule_payload["MRData"]["RaceTable"]["Races"][0],
+        "round": "2",
+        "raceName": "Chinese Grand Prix",
+        "Circuit": {
+            "circuitId": "shanghai",
+            "circuitName": "Shanghai International Circuit",
+            "Location": {
+                "locality": "Shanghai",
+                "country": "China",
+                "lat": "31.3389",
+                "long": "121.2197",
+            },
+        },
+    }
+    schedule_payload["MRData"]["RaceTable"]["Races"].append(second_race)
+    section = Section(
+        "Formula 1",
+        [
+            Show(
+                "F1 2026",
+                [Season(1, [Episode(1, media)]), Season(2, [Episode(1, second_media)])],
+            )
+        ],
+    )
 
     async def result(*_args, **_kwargs):
         extension_config = _args[2]
@@ -1789,6 +1814,8 @@ def test_runner_maps_each_show_artwork_outcome(
                 3: "preserve-manual",
                 4: "unchanged",
             },
+            photo_path=str(episode_path),
+            source_identity="source",
         )
 
     monkeypatch.setattr("extensions.formula1.runner.run_show_artwork_rotation", result)
@@ -1813,7 +1840,7 @@ def test_runner_maps_each_show_artwork_outcome(
     assert summary[counter] == 1
     assert summary["episode_artwork_created"] == 1
     assert summary["episode_artwork_updated"] == 1
-    assert summary["episode_artwork_preserved"] == 1
+    assert summary["episode_artwork_preserved"] == 2
     assert summary["episode_artwork_unchanged"] == 1
     metadata = yaml.safe_load((tmp_path / "kometa/metadata/formula1_2026.yml").read_text())
     if references:

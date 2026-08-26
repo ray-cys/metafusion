@@ -60,6 +60,8 @@ class ShowArtworkResult:
     cache_pruned: int = 0
     episode_references: dict[int, str] = field(default_factory=dict)
     episode_actions: dict[int, str] = field(default_factory=dict)
+    photo_path: str | None = None
+    source_identity: str | None = None
 
 
 def _checksum(path):
@@ -531,8 +533,16 @@ def _existing_episode_outputs(state, config, show, race):
     return references, actions
 
 
-def _reconcile_episode_posters(
-    state, config, show, race, path_data, photo_path, source_identity
+def reconcile_episode_posters(
+    state,
+    config,
+    show,
+    race,
+    path_data,
+    photo_path,
+    source_identity,
+    *,
+    missing_only=False,
 ):
     references = {}
     actions = {}
@@ -540,6 +550,15 @@ def _reconcile_episode_posters(
         if episode.round_number != race.round_number:
             continue
         destination = _episode_destination(config, episode)
+        if missing_only and destination.is_file():
+            previous = state.artwork(episode.logical_key)
+            actions[episode.episode_number] = (
+                "unchanged"
+                if previous and _checksum(destination) == previous["checksum"]
+                else "preserve-manual"
+            )
+            references[episode.episode_number] = _episode_reference(config, episode)
+            continue
         fingerprint = _episode_fingerprint(
             episode, race, path_data, source_identity, config
         )
@@ -771,6 +790,8 @@ async def run_show_artwork_rotation(
             )
             if not rerendering:
                 candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
+                available_photo = None
+                available_identity = None
                 try:
                     photo_path, _image_source = await acquire_candidate_image(
                         session, config, candidate
@@ -778,7 +799,9 @@ async def run_show_artwork_rotation(
                     source_identity = candidate.source_sha1 or hashlib.sha256(
                         candidate.image_url.encode()
                     ).hexdigest()
-                    episode_references, episode_actions = _reconcile_episode_posters(
+                    available_photo = str(photo_path)
+                    available_identity = source_identity
+                    episode_references, episode_actions = reconcile_episode_posters(
                         state,
                         config,
                         show,
@@ -802,6 +825,8 @@ async def run_show_artwork_rotation(
                     issue,
                     episode_references=episode_references,
                     episode_actions=episode_actions,
+                    photo_path=available_photo,
+                    source_identity=available_identity,
                 )
 
     restoring = (
@@ -851,7 +876,7 @@ async def run_show_artwork_rotation(
     background_destination = destination_root / "background.png"
     poster_reference = _asset_reference(config, relative / "poster.png")
     background_reference = _asset_reference(config, relative / "background.png")
-    episode_references, episode_actions = _reconcile_episode_posters(
+    episode_references, episode_actions = reconcile_episode_posters(
         state,
         config,
         show,
@@ -875,6 +900,8 @@ async def run_show_artwork_rotation(
             candidate.constructor_name,
             episode_references=episode_references,
             episode_actions=episode_actions,
+            photo_path=str(photo_path),
+            source_identity=source_identity,
         )
 
     poster_checksum = render_show_poster(
@@ -922,4 +949,6 @@ async def run_show_artwork_rotation(
         cache_pruned=cache_pruned,
         episode_references=episode_references,
         episode_actions=episode_actions,
+        photo_path=str(photo_path),
+        source_identity=source_identity,
     )

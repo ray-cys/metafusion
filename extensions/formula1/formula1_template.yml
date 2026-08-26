@@ -27,9 +27,9 @@ artwork:
   font_bold: branding/font-bold.ttf
 
 # The supplied logo and fonts above are also used for the show artwork frame and
-# 16:9 episode session cards. Poster/background rotation and new episode cards
-# are triggered by a newly discovered Plex race round, never by container uptime
-# or by a calendar entry that is not yet in Plex.
+# 16:9 episode session cards. Poster/background rotation is triggered by a newly
+# discovered Plex race round; missing cards are created only for Plex-detected
+# episodes, never from container uptime or an event that exists only in a calendar.
 show_artwork:
   enabled: true
   trigger: plex_new_race

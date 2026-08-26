@@ -18,7 +18,10 @@ from extensions.formula1.inventory import discover_formula1_inventory, event_mat
 from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import build_show_entry, write_show_metadata
 from extensions.formula1.provider import load_circuit_path, load_schedule
-from extensions.formula1.show_artwork import run_show_artwork_rotation
+from extensions.formula1.show_artwork import (
+    reconcile_episode_posters,
+    run_show_artwork_rotation,
+)
 from extensions.formula1.state import Formula1State
 from extensions.formula1.verification import (
     queue_application_verification,
@@ -390,9 +393,38 @@ async def run_formula1_extension(
                             show_artwork["poster"] = rotation.poster_reference
                         if rotation.background_reference:
                             show_artwork["background"] = rotation.background_reference
+                        episode_actions = {
+                            (trigger_round, episode_number): action
+                            for episode_number, action in rotation.episode_actions.items()
+                        }
                         for episode_number, reference in rotation.episode_references.items():
                             episode_poster_references[(trigger_round, episode_number)] = reference
-                        for episode_number, action in rotation.episode_actions.items():
+                        if rotation.photo_path and rotation.source_identity:
+                            for round_number in detected_rounds:
+                                if round_number == trigger_round:
+                                    continue
+                                race = race_by_round[round_number]
+                                references, actions = reconcile_episode_posters(
+                                    state,
+                                    config,
+                                    show,
+                                    race,
+                                    circuit_paths.get(round_number),
+                                    Path(rotation.photo_path),
+                                    rotation.source_identity,
+                                    missing_only=True,
+                                )
+                                episode_poster_references.update(
+                                    (
+                                        ((round_number, episode_number), reference)
+                                        for episode_number, reference in references.items()
+                                    )
+                                )
+                                episode_actions.update(
+                                    ((round_number, episode_number), value)
+                                    for episode_number, value in actions.items()
+                                )
+                        for (round_number, episode_number), action in episode_actions.items():
                             if action == "create":
                                 summary["episode_artwork_created"] += 1
                             elif action == "update":
@@ -405,13 +437,13 @@ async def run_formula1_extension(
                                 "[Episode Artwork] %s | Round: %02d | Episode: %02d | "
                                 "Action: %s | Source: Wikimedia Commons",
                                 show.title,
-                                trigger_round,
+                                round_number,
                                 episode_number,
                                 action,
                             )
                         artwork_changed |= any(
                             action in {"create", "update"}
-                            for action in rotation.episode_actions.values()
+                            for action in episode_actions.values()
                         )
                         if rotation.action in {"rotated", "rotate-planned"}:
                             summary["show_artwork_rotated"] += 1

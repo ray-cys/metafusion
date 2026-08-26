@@ -159,15 +159,16 @@ not merely their filenames. Replacing a branding file therefore refreshes
 managed artwork even when its path does not change. Long race, circuit, and
 locality labels are fitted to their safe text area instead of overflowing.
 
-For the newest race round detected in Plex, every parsed episode also receives
-its own 16:9 race/session card. Race identity, circuit, venue, round, date, and
+Every parsed Plex episode receives its own 16:9 race/session card. Race identity,
+circuit, venue, round, date, and
 supplied branding stay consistent across the weekend while the large session
 label changes for practice, qualifying, Sprint, race, analysis, and other
 detected programmes. Each card has a unique round/episode destination and is
 referenced directly by `file_poster` in that episode's Kometa YAML. Plex episode
 views and Continue Watching can use the card after Kometa applies the file.
-Cards already generated for earlier rounds remain stable; a new race does not
-repaint historical episodes.
+On the first upgraded run, missing historical cards are backfilled from the
+active licensed current-season source. Cards already generated for earlier
+rounds remain stable; a new race does not repaint historical episodes.
 
 The licensed car photograph is exposure-controlled before show or episode
 artwork is composed. MetaFusion compresses bright highlights, slightly reduces

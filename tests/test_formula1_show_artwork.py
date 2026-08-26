@@ -47,6 +47,7 @@ from extensions.formula1.show_artwork import (
     _pair_integrity,
     _prune_retained_pairs,
     _prune_source_cache,
+    reconcile_episode_posters,
     render_episode_poster,
     render_show_background,
     render_show_poster,
@@ -620,6 +621,7 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     assert first.episode_references[1].endswith(
         "/2026/round-01/episodes/episode-01.png"
     )
+    assert first.photo_path and first.source_identity
     assert (
         config["paths"]["assets"]
         / "2026/round-01/episodes/episode-01.png"
@@ -715,6 +717,38 @@ def test_existing_episode_output_inventory_preserves_unknown_and_modified(
     references, actions = _existing_episode_outputs(state, config, show, race)
     assert set(references) == {1, 2}
     assert actions == {1: "preserve-manual", 2: "preserve-manual"}
+    state.close()
+
+
+def test_missing_only_episode_backfill_preserves_existing_and_creates_missing(
+    tmp_path, config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    existing = show.episodes[0]
+    missing = replace(existing, episode_number=2, plex_rating_key="episode-2")
+    show.episodes.append(missing)
+    destination = (
+        config["paths"]["assets"] / "2026/round-01/episodes/episode-01.png"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"manual")
+    photo = tmp_path / "car.jpg"
+    photo.write_bytes(_photo_bytes())
+    references, actions = reconcile_episode_posters(
+        state,
+        config,
+        show,
+        race,
+        "M0 0 L10 10",
+        photo,
+        "source",
+        missing_only=True,
+    )
+    assert set(references) == {1, 2}
+    assert actions == {1: "preserve-manual", 2: "create"}
+    assert (
+        config["paths"]["assets"] / "2026/round-01/episodes/episode-02.png"
+    ).is_file()
     state.close()
 
 
