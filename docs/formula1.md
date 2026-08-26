@@ -120,9 +120,15 @@ stable mapping while manual fields are preserved.
   `/config/formula1/reports/formula1-show-artwork-attribution.txt` and `.json`
 
 Generated YAML uses Kometa Formula 1 controls (`f1_season`, `round_prefix`, and
-`shorten_gp`) plus show, round, and episode edits. Existing non-MetaFusion YAML
-fields are preserved. The top-level YAML name exactly matches the Plex show, as
-required by Kometa's Formula 1 guide. Session dates use provider schedule fields
+`shorten_gp`) plus show, round, and episode edits. The stable top-level mapping
+is `F1 <year>`, while `match.title` contains both `F1 <year>` and
+`Formula 1 (<year>)` so Kometa can resolve the show before and after applying
+the canonical title. Existing non-MetaFusion YAML fields are preserved.
+MetaFusion generates the canonical and sort titles, original title, show
+availability date, content rating, studio, tagline, year-aware championship
+summary, and `Sport` genre. It does not generate `visible_library`. Show fields
+are written before `seasons`; season fields are written before `episodes`; and
+`match` is always first. Session dates use provider schedule fields
 when available and fall back to the race date. Circuit length, scheduled race
 distance, and scheduled lap count are taken from the matching official event
 page and cross-validated before use. Each round and episode summary states the

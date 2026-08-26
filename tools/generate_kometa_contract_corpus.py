@@ -144,18 +144,25 @@ def _formula1_document():
     show, _diagnostics = merge_generated_metadata(
         {},
         {
-            "f1_season": 2026,
-            "round_prefix": True,
-            "shorten_gp": False,
+            "match": {"title": ["F1 2026", "Formula 1 (2026)"]},
+            "title": "Formula 1 (2026)",
+            "sort_title": "Formula 1 (2026)",
+            "original_title": "Formula Internationale",
+            "originally_available": "1950-05-13",
+            "content_rating": "PG-13",
+            "studio": "F1TV",
+            "tagline": "We race as one.",
+            "summary": "The 2026 FIA Formula One World Championship.",
+            "genre": ["Sport"],
             "file_poster": (
                 "/config/assets/formula1/shows/2026/round-01-alpine-source/poster.png"
             ),
             "file_background": (
                 "/config/assets/formula1/shows/2026/round-01-alpine-source/background.png"
             ),
-            "content_rating": "PG-13",
-            "studio": "F1TV",
-            "summary": "The 2026 FIA Formula One World Championship.",
+            "f1_season": 2026,
+            "round_prefix": True,
+            "shorten_gp": False,
             "seasons": {
                 1: {
                     "title": "Australian Grand Prix",

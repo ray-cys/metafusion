@@ -22,6 +22,34 @@ PROGRAM_DATE_FIELDS = {
     "post_qualifying": "Qualifying",
 }
 
+SHOW_FIELD_ORDER = (
+    "match",
+    "title",
+    "sort_title",
+    "original_title",
+    "originally_available",
+    "content_rating",
+    "studio",
+    "tagline",
+    "summary",
+    "genre",
+    "file_poster",
+    "file_background",
+    "f1_season",
+    "round_prefix",
+    "shorten_gp",
+)
+SEASON_FIELD_ORDER = ("title", "summary", "file_poster", "file_background")
+EPISODE_FIELD_ORDER = (
+    "title",
+    "sort_title",
+    "originally_available",
+    "content_rating",
+    "summary",
+    "file_poster",
+    "file_background",
+)
+
 
 def _read_document(path):
     path = Path(path)
@@ -109,6 +137,43 @@ def _merge_preserved_fields(primary, secondary):
     return merged
 
 
+def _ordered_fields(entry, preferred, trailing=None):
+    """Return a predictable mapping while retaining unowned manual fields."""
+    if not isinstance(entry, dict):
+        return entry
+    trailing_keys = tuple(trailing or ())
+    trailing_set = set(trailing_keys)
+    ordered = {
+        key: entry[key] for key in preferred if key in entry and key not in trailing_set
+    }
+    ordered.update(
+        (key, value)
+        for key, value in entry.items()
+        if key not in ordered and key not in trailing_set
+    )
+    ordered.update((key, entry[key]) for key in trailing_keys if key in entry)
+    return ordered
+
+
+def _normalize_show_order(entry):
+    """Keep show edits above seasons and season edits above episodes."""
+    ordered = _ordered_fields(entry, SHOW_FIELD_ORDER, trailing=("seasons",))
+    seasons = ordered.get("seasons") if isinstance(ordered, dict) else None
+    if not isinstance(seasons, dict):
+        return ordered
+    for season_key, season in list(seasons.items()):
+        season = _ordered_fields(season, SEASON_FIELD_ORDER, trailing=("episodes",))
+        episodes = season.get("episodes") if isinstance(season, dict) else None
+        if isinstance(episodes, dict):
+            season["episodes"] = {
+                episode_key: _ordered_fields(episode, EPISODE_FIELD_ORDER)
+                for episode_key, episode in episodes.items()
+            }
+        seasons[season_key] = season
+    ordered["seasons"] = seasons
+    return ordered
+
+
 def _existing_show_entry(document, show, previous_title=None):
     metadata = document["metadata"]
     stable = _mapping_name(show.year)
@@ -170,17 +235,26 @@ def build_show_entry(
     generated = {
         "match": {"title": _title_aliases(show, title_aliases)},
         "title": _canonical_title(show.year),
-        "f1_season": show.year,
-        "round_prefix": bool(metadata_config.get("round_prefix", True)),
-        "shorten_gp": bool(metadata_config.get("shorten_gp", False)),
+        "sort_title": _canonical_title(show.year),
+        "original_title": metadata_config.get("original_title"),
+        "originally_available": metadata_config.get("originally_available"),
         "content_rating": metadata_config.get("content_rating"),
         "studio": metadata_config.get("studio"),
+        "tagline": metadata_config.get("tagline"),
         "summary": f"The {show.year} FIA Formula One World Championship.",
-        "seasons": seasons,
+        "genre": metadata_config.get("genre"),
     }
     if show_artwork:
         generated["file_poster"] = show_artwork.get("poster")
         generated["file_background"] = show_artwork.get("background")
+    generated.update(
+        {
+            "f1_season": show.year,
+            "round_prefix": bool(metadata_config.get("round_prefix", True)),
+            "shorten_gp": bool(metadata_config.get("shorten_gp", False)),
+            "seasons": seasons,
+        }
+    )
     return generated, set(seasons), dict(authoritative_episodes)
 
 
@@ -218,6 +292,7 @@ def write_show_metadata(
             episodes if authoritative_episodes is None else authoritative_episodes
         ),
     )
+    merged = _normalize_show_order(merged)
     updated = {"metadata": dict(document["metadata"])}
     for key in migrated_keys:
         if key != mapping_name:

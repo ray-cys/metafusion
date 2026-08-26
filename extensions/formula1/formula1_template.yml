@@ -8,8 +8,13 @@ library:
 
 metadata:
   enabled: true
+  original_title: Formula Internationale
+  originally_available: '1950-05-13'
   content_rating: PG-13
   studio: F1TV
+  tagline: We race as one.
+  genre:
+    - Sport
   round_prefix: true
   shorten_gp: false
 

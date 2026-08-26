@@ -64,6 +64,8 @@ from extensions.formula1.inventory import (
 from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import (
     _merge_preserved_fields,
+    _normalize_show_order,
+    _ordered_fields,
     build_show_entry,
     write_show_metadata,
 )
@@ -254,6 +256,17 @@ def test_config_is_private_validated_and_dry_run_safe(tmp_path, core):
     config = load_formula1_config(core, root)
     assert (root / "formula1" / "formula1_template.yml").exists()
     assert config["paths"]["database"].name == "formula1.sqlite3"
+    assert config["metadata"] == {
+        "enabled": True,
+        "original_title": "Formula Internationale",
+        "originally_available": "1950-05-13",
+        "content_rating": "PG-13",
+        "studio": "F1TV",
+        "tagline": "We race as one.",
+        "genre": ["Sport"],
+        "round_prefix": True,
+        "shorten_gp": False,
+    }
     assert sync_formula1_template(root / "formula1") is False
     config_path = root / "formula1" / "formula1.yml"
     config_path.write_text("artwork:\n  width: 999\n", encoding="utf-8")
@@ -1031,6 +1044,12 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
     )
     assert generated["match"]["title"] == ["F1 2026", "Formula 1 (2026)"]
     assert generated["title"] == "Formula 1 (2026)"
+    assert generated["sort_title"] == "Formula 1 (2026)"
+    assert generated["original_title"] == "Formula Internationale"
+    assert generated["originally_available"] == "1950-05-13"
+    assert generated["tagline"] == "We race as one."
+    assert generated["genre"] == ["Sport"]
+    assert "visible_library" not in generated
     assert "to be confirmed" not in generated["seasons"][1]["summary"]
     assert "Circuit length" not in generated["seasons"][1]["summary"]
     assert generated["seasons"][1]["episodes"][1]["originally_available"] == "2026-03-08"
@@ -1073,12 +1092,45 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
         )[0]
         assert expected in partial["seasons"][1]["summary"]
     path, changed, _diagnostics = write_show_metadata(
-        show, [profiled_race], {1: "/config/poster.png"}, config
+        show,
+        [profiled_race],
+        {1: "/config/poster.png"},
+        config,
+        show_artwork={
+            "poster": "/config/show-poster.png",
+            "background": "/config/show-background.png",
+        },
+        episode_poster_references={(1, 1): "/config/episode.png"},
     )
     persisted = yaml.safe_load(path.read_text())
     assert changed and validate_metadata_document(persisted, "tv")
-    assert next(iter(persisted["metadata"]["F1 2026"])) == "match"
-    persisted_season = persisted["metadata"]["F1 2026"]["seasons"][1]
+    persisted_show = persisted["metadata"]["F1 2026"]
+    assert list(persisted_show) == [
+        "match",
+        "title",
+        "sort_title",
+        "original_title",
+        "originally_available",
+        "content_rating",
+        "studio",
+        "tagline",
+        "summary",
+        "genre",
+        "file_poster",
+        "file_background",
+        "f1_season",
+        "round_prefix",
+        "shorten_gp",
+        "seasons",
+    ]
+    persisted_season = persisted_show["seasons"][1]
+    assert list(persisted_season) == ["title", "summary", "file_poster", "episodes"]
+    assert list(persisted_season["episodes"][1]) == [
+        "title",
+        "originally_available",
+        "summary",
+        "file_poster",
+    ]
     assert expected_facts in persisted_season["summary"]
     assert expected_facts in persisted_season["episodes"][1]["summary"]
     assert (
@@ -1585,6 +1637,16 @@ def test_formula1_alias_merge_preserves_stable_nested_values():
         "summary": "stable",
     }
     assert _merge_preserved_fields(primary, "not-a-mapping") == primary
+
+
+def test_formula1_order_normalizer_handles_partial_manual_entries():
+    assert _ordered_fields("manual", ()) == "manual"
+    assert _normalize_show_order({"title": "Formula 1 (2026)"}) == {
+        "title": "Formula 1 (2026)"
+    }
+    assert _normalize_show_order({"seasons": {1: {"title": "Round 1"}}}) == {
+        "seasons": {1: {"title": "Round 1"}}
+    }
 
 
 def test_legacy_title_key_is_consolidated_without_losing_manual_fields(
