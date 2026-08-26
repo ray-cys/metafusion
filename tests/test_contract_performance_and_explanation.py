@@ -39,7 +39,7 @@ def test_performance_baseline_and_small_workload_are_machine_readable(tmp_path):
     assert metrics["state_seasons"] == 3
     assert metrics["state_episodes"] == 8
     assert metrics["targeted_rows"] == 2
-    assert metrics["corpus_documents"] == 2
+    assert metrics["corpus_documents"] == 3
     assert performance_regression.evaluate(metrics, {"total_seconds": 999}) == []
     assert performance_regression.evaluate(metrics, {"total_seconds": 0})
 
@@ -127,7 +127,7 @@ def test_selection_explanation_skips_current_not_due_state(monkeypatch, tmp_path
     database = tmp_path / "meta_db.sqlite3"
     monkeypatch.setattr(item_explanation, "STATE_DATABASE", database)
     config = complete_config(tmp_path)
-    now = datetime(2026, 8, 19, 1, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
     updated_at = now.isoformat()
     fingerprint = config_fingerprint(config)
     scope = {

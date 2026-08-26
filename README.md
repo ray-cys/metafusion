@@ -140,5 +140,7 @@ and remains the property of TMDB.
 
 ## Copyright
 
-Copyright (c) 2026 ray-cys. All rights reserved. MetaFusion is publicly
-viewable source, but no open-source licence is granted. See [COPYRIGHT](COPYRIGHT).
+Copyright (c) 2026 ray-cys. All rights reserved. No open-source licence is
+granted; see [COPYRIGHT](COPYRIGHT).
+
+The optional [Formula 1 extension](docs/formula1.md) is documented separately.

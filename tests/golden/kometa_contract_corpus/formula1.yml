@@ -1,0 +1,31 @@
+metadata:
+  F1 2026:
+    match:
+      title:
+      - F1 2026
+      - Formula 1 (2026)
+    title: Formula 1 (2026)
+    sort_title: Formula 1 (2026)
+    original_title: Formula Internationale
+    originally_available: '1950-05-13'
+    content_rating: PG-13
+    studio: F1TV
+    tagline: We race as one.
+    summary: The 2026 FIA Formula One World Championship.
+    genre:
+    - Sport
+    file_poster: /config/assets/formula1/shows/2026/round-01-alpine-source/poster.png
+    file_background: /config/assets/formula1/shows/2026/round-01-alpine-source/background.png
+    f1_season: 2026
+    round_prefix: true
+    shorten_gp: false
+    seasons:
+      1:
+        title: Australian Grand Prix
+        summary: Round 1 at Albert Park Grand Prix Circuit.
+        file_poster: /config/assets/formula1/rounds/2026/round-01/poster.png
+        episodes:
+          1:
+            title: Race Session
+            originally_available: '2026-03-08'
+            summary: Race Session from the Australian Grand Prix.

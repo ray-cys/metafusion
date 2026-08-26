@@ -23,7 +23,15 @@ from helper.provider_credentials import fanart_project_api_key
 
 TMDB_API = "https://api.themoviedb.org/3"
 FANART_API = "https://webservice.fanart.tv/v3"
+JOLPICA_API = "https://api.jolpi.ca/ergast/f1"
+FORMULA1_CALENDAR = "https://www.formula1.com/en/racing"
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+CIRCUIT_SAMPLE = (
+    "https://raw.githubusercontent.com/julesr0y/f1-circuits-svg/"
+    "main/circuits/detailed/black-outline/silverstone-8.svg"
+)
 MAX_JSON_BYTES = 2 * 1024 * 1024
+MAX_HTML_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 USER_AGENT = "MetaFusion-provider-canary/1.0 (+https://github.com/ray-cys/metafusion)"
 
@@ -50,6 +58,7 @@ def _request(
     headers=None,
     expected=(200,),
     attempts=3,
+    maximum_bytes=MAX_JSON_BYTES,
 ):
     query_string = urlencode(query or {})
     url = f"{path}?{query_string}" if query_string else path
@@ -61,17 +70,17 @@ def _request(
         try:
             with urlopen(Request(url, headers=request_headers), timeout=20) as response:
                 status = int(response.status)
-                body = response.read(MAX_JSON_BYTES + 1)
+                body = response.read(maximum_bytes + 1)
                 response_headers = response.headers
-            if len(body) > MAX_JSON_BYTES:
-                raise CanaryError(f"{provider} response exceeded {MAX_JSON_BYTES} bytes")
+            if len(body) > maximum_bytes:
+                raise CanaryError(f"{provider} response exceeded {maximum_bytes} bytes")
             if status not in expected:
                 raise CanaryError(f"{provider} returned unexpected HTTP {status}")
             return status, body, response_headers, time.monotonic() - started
         except HTTPError as error:
             status = int(error.code)
             if status in expected:
-                body = error.read(MAX_JSON_BYTES + 1)
+                body = error.read(maximum_bytes + 1)
                 return status, body, error.headers, time.monotonic() - started
             last_error = CanaryError(f"{provider} returned HTTP {status}")
             if status == 429 and attempt < attempts:
@@ -257,6 +266,94 @@ def run_fanart(project_key):
     ]
 
 
+def run_formula1():
+    """Exercise every live, keyless provider used by the private F1 extension."""
+    year = datetime.now(timezone.utc).year
+    checks = []
+    status, schedule, _headers, elapsed = _request_json(
+        "Jolpica Formula 1 schedule", f"{JOLPICA_API}/{year}.json"
+    )
+    races = schedule.get("MRData", {}).get("RaceTable", {}).get("Races", [])
+    if not isinstance(races, list) or not races:
+        raise CanaryError(f"Jolpica returned no races for {year}")
+    first = races[0]
+    if not first.get("round") or not first.get("raceName") or not first.get("Circuit"):
+        raise CanaryError("Jolpica schedule identity contract changed")
+    checks.append(
+        {
+            "provider": "Jolpica",
+            "check": "current-season-schedule",
+            "status": status,
+            "duration_ms": round(elapsed * 1000, 1),
+            "year": year,
+            "races": len(races),
+        }
+    )
+
+    status, body, _headers, elapsed = _request(
+        "Formula1.com calendar",
+        f"{FORMULA1_CALENDAR}/{year}",
+        headers={"Accept": "text/html"},
+        maximum_bytes=MAX_HTML_BYTES,
+    )
+    document = body.decode("utf-8", errors="replace")
+    if not re.search(rf"/en/racing/{year}/[a-z0-9-]+", document, re.IGNORECASE):
+        raise CanaryError("Formula1.com calendar links could not be discovered")
+    checks.append(
+        {
+            "provider": "Formula1.com",
+            "check": "calendar-markup",
+            "status": status,
+            "duration_ms": round(elapsed * 1000, 1),
+            "year": year,
+        }
+    )
+
+    status, body, headers, elapsed = _request(
+        "F1 circuit SVG", CIRCUIT_SAMPLE, headers={"Accept": "image/svg+xml"}
+    )
+    content_type = str(headers.get("Content-Type", "")).casefold()
+    if b"<svg" not in body[:1000].lower() or "svg" not in content_type:
+        raise CanaryError("circuit provider returned no usable SVG")
+    checks.append(
+        {
+            "provider": "f1-circuits-svg",
+            "check": "circuit-shape",
+            "status": status,
+            "duration_ms": round(elapsed * 1000, 1),
+        }
+    )
+
+    status, commons, _headers, elapsed = _request_json(
+        "Wikimedia Commons Formula 1",
+        COMMONS_API,
+        query={
+            "action": "query",
+            "format": "json",
+            "formatversion": "2",
+            "generator": "search",
+            "gsrnamespace": "6",
+            "gsrlimit": "3",
+            "gsrsearch": f'intitle:{year} "Formula 1"',
+            "prop": "imageinfo",
+            "iiprop": "url|size|mime|extmetadata",
+        },
+    )
+    pages = commons.get("query", {}).get("pages", [])
+    if not isinstance(pages, list) or not pages:
+        raise CanaryError("Wikimedia Commons returned no current-season image candidates")
+    checks.append(
+        {
+            "provider": "Wikimedia Commons",
+            "check": "current-season-search",
+            "status": status,
+            "duration_ms": round(elapsed * 1000, 1),
+            "candidates": len(pages),
+        }
+    )
+    return checks
+
+
 def _write_summary(path, report):
     if not path:
         return
@@ -315,6 +412,18 @@ def main(argv=None):
                 {"provider": "Fanart.tv", "status": "failed", "message": message}
             )
             failures.append(f"Fanart.tv: {message}")
+
+    try:
+        checks = run_formula1()
+        providers.append(
+            {"provider": "Formula 1 extension", "status": "passed", "checks": checks}
+        )
+    except Exception as error:
+        message = _redact(error, secrets)
+        providers.append(
+            {"provider": "Formula 1 extension", "status": "failed", "message": message}
+        )
+        failures.append(f"Formula 1 extension: {message}")
 
     report = {
         "schema": 1,

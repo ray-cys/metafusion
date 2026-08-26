@@ -17,6 +17,7 @@ from pathlib import Path
 import aiohttp
 import schedule
 
+from extensions.formula1 import partition_formula1_sections, run_formula1_extension
 from helper.asset_registry import AssetDestinationRegistry
 from helper.build_info import build_info
 from helper.cache import begin_cache_session, flush_cache, load_cache
@@ -1107,6 +1108,34 @@ async def metafusion_main(config, logger):
             library_filesize = {}
             successful_sections = []
             failures = []
+            sections, formula1_sections = partition_formula1_sections(
+                sections,
+                config,
+                os.environ,
+                base_config_dir=BASE_CONFIG_DIR,
+            )
+            formula1_names = {section.title for section in formula1_sections}
+            if formula1_names:
+                selected_libraries = [
+                    name for name in selected_libraries if name not in formula1_names
+                ]
+                all_libraries = [
+                    library
+                    for library in all_libraries
+                    if library.get("title") not in formula1_names
+                ]
+                try:
+                    config["_formula1_summary"] = await run_formula1_extension(
+                        formula1_sections,
+                        config,
+                        session,
+                        logger,
+                        base_config_dir=BASE_CONFIG_DIR,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    failures.append(f"Formula 1: {error}")
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
             scan_scopes = build_scan_scopes(plex, sections, config)
@@ -1198,7 +1227,7 @@ async def metafusion_main(config, logger):
                     + ", ".join(sorted(missing_selected))
                 )
 
-            if not sections:
+            if not sections and not formula1_sections:
                 log_main_event("main_no_libraries")
                 failures.append("No configured Plex libraries were available")
             else:

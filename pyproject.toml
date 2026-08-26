@@ -40,6 +40,7 @@ check_untyped_defs = true
 show_error_codes = true
 pretty = true
 files = [
+    "extensions/formula1/*.py",
     "helper/dashboard.py",
     "helper/database_maintenance.py",
     "helper/fanart.py",

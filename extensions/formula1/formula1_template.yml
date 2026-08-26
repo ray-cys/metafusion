@@ -1,0 +1,99 @@
+# Formula 1 extension configuration.
+# This file is copied to /config/formula1/formula1_template.yml only after
+# RUN_MODE=kometa and FORMULA1_ENABLED=True. Copy it to formula1.yml to edit.
+
+library:
+  name: Formula 1
+  naming_profile: auto
+
+# Optional aliases let an unfamiliar broadcast label use a newly published
+# provider session without a code release. Unknown labels remain visible in the
+# issue report and are otherwise preserved safely.
+sessions:
+  aliases: {}
+  date_fields:
+    warmup: FirstPractice
+    practice1: FirstPractice
+    practice2: SecondPractice
+    practice3: ThirdPractice
+    sprint_qualifying: SprintQualifying
+    pre_sprint: Sprint
+    sprint: Sprint
+    post_sprint: Sprint
+    pre_qualifying: Qualifying
+    qualifying: Qualifying
+    post_qualifying: Qualifying
+
+metadata:
+  enabled: true
+  original_title: Formula Internationale
+  originally_available: '1950-05-13'
+  content_rating: PG-13
+  studio: F1TV
+  tagline: We race as one.
+  genre:
+    - Sport
+  round_prefix: true
+  shorten_gp: false
+
+# MetaFusion owns the stable `F1 <year>` Kometa mapping, its pre/post-rename
+# title aliases, and the canonical `Formula 1 (<year>)` Plex display title.
+
+artwork:
+  enabled: true
+  width: 1000
+  height: 1500
+  policy: managed
+  asset_reference_root: config/assets/formula1/rounds
+  logo: branding/logo.png
+  font_regular: branding/font-regular.ttf
+  font_bold: branding/font-bold.ttf
+
+# The supplied logo and fonts above are also used for the show artwork frame and
+# 16:9 episode session cards. Rotation is triggered by a newly discovered Plex
+# race round: the show poster and episode cards use licensed current-season team
+# cars, while the stable black show background rotates a restrained right-side
+# current-season safety-car panel. Missing cards are created only for Plex-detected
+# episodes, never from container uptime or an event that exists only in a calendar.
+# No separate vehicle-source or rotation setting is required.
+show_artwork:
+  enabled: true
+  trigger: plex_new_race
+  policy: managed
+  poster_width: 1000
+  poster_height: 1500
+  background_width: 1920
+  background_height: 1080
+  minimum_source_width: 1600
+  minimum_source_height: 900
+  retention_pairs_per_season: 30
+  source_cache_retention_days: 120
+  asset_reference_root: config/assets/formula1/shows
+
+# A prior run is checked after Kometa has had time to apply its YAML. This is
+# read-only: MetaFusion compares Plex metadata and selected artwork, then reports.
+verification:
+  enabled: true
+  delay_hours: 1
+  retention: 20
+  perceptual_distance: 8
+
+providers:
+  jolpica_url: https://api.jolpi.ca/ergast/f1
+  formula1_url: https://www.formula1.com/en/racing
+  circuit_svg_url: https://raw.githubusercontent.com/julesr0y/f1-circuits-svg/main/circuits/detailed/black-outline
+  circuit_manifest_url: https://api.github.com/repos/julesr0y/f1-circuits-svg/contents/circuits/detailed/black-outline
+  commons_url: https://commons.wikimedia.org/w/api.php
+  commons_cache_hours: 24
+  cache_hours: 24
+  retries: 3
+
+cleanup:
+  enabled: false
+  confirmation_scans: 2
+  grace_hours: 48
+
+logging:
+  level: INFO
+  console: summary
+  retention: 20

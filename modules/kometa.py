@@ -36,6 +36,12 @@ KOMETA_GENERATED_FIELDS = {
         "summary",
     },
     "show": {
+        "title",
+        "f1_season",
+        "round_prefix",
+        "shorten_gp",
+        "file_poster",
+        "file_background",
         "sort_title",
         "original_title",
         "originally_available",
@@ -45,8 +51,11 @@ KOMETA_GENERATED_FIELDS = {
         "summary",
         "seasons",
     },
-    "season": {"title", "summary", "episodes"},
-    "episode": set(EPISODE_BASIC_FIELDS) | set(EPISODE_ENHANCED_FIELDS),
+    "season": {"title", "summary", "file_poster", "file_background", "episodes"},
+    "episode": set(EPISODE_BASIC_FIELDS) | set(EPISODE_ENHANCED_FIELDS) | {
+        "file_poster",
+        "file_background",
+    },
 }
 
 # These keys were emitted by older MetaFusion builds but are not valid metadata
