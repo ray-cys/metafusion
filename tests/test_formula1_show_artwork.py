@@ -201,7 +201,8 @@ class CommonsSession:
             return Response(status=503)
         if url.endswith("constructors.json"):
             return Response(payload=_constructor_payload())
-        if "commons.wikimedia.org" in url:
+        hostname = urlparse(url).hostname
+        if hostname == "commons.wikimedia.org":
             parameters = parse_qs(urlparse(url).query)
             query = parameters.get("gsrsearch", [""])[0].casefold()
             if not self.candidates:
@@ -224,7 +225,7 @@ class CommonsSession:
                 if constructor_id in query:
                     return Response(payload=_commons_payload(team, constructor_id))
             return Response(payload={"query": {"pages": []}})
-        if "upload.wikimedia.org" in url:
+        if hostname == "upload.wikimedia.org":
             return Response(data=self.image, headers={"Content-Length": str(len(self.image))})
         return Response(status=404)
 

@@ -130,7 +130,7 @@ def test_provider_canary_validates_formula1_provider_surface(monkeypatch):
         return 200, {"query": {"pages": [{"pageid": 1}]}}, {}, 0.01
 
     def fake_request(provider, _path, **_kwargs):
-        if provider.startswith("Formula1.com"):
+        if provider == "Formula1.com calendar":
             return 200, f'<a href="/en/racing/{year}/example">Race</a>'.encode(), {}, 0.01
         return 200, b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
             "Content-Type": "image/svg+xml"

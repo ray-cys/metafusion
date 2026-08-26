@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 import yaml
@@ -199,9 +200,10 @@ class Session:
         self.urls.append(url)
         if self.fail:
             return Response(503)
-        if "api.github.com" in url:
+        hostname = urlparse(url).hostname
+        if hostname == "api.github.com":
             return Response(payload=self.manifest)
-        if "formula1.com" in url:
+        if hostname in {"formula1.com", "www.formula1.com"}:
             is_calendar = bool(re.search(r"/\d{4}$", url.rstrip("/")))
             return Response(text=self.calendar if is_calendar else self.facts)
         if url.endswith(".svg"):
