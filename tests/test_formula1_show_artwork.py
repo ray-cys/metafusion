@@ -575,6 +575,21 @@ def test_renderer_failure_cleanup_and_dry_attribution(
     assert not config["paths"]["reports"].exists()
 
 
+def test_attribution_skips_incomplete_legacy_round_source(config):
+    show_artwork_module._attribution_reports(
+        config,
+        [],
+        [{"season_year": 2026, "round_number": 1, "source": {}}],
+    )
+    report = json.loads(
+        (
+            config["paths"]["reports"]
+            / "formula1-show-artwork-attribution.json"
+        ).read_text()
+    )
+    assert report == {"records": []}
+
+
 def test_source_selection_skips_provider_and_image_failures(
     config, monkeypatch
 ):
