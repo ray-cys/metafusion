@@ -30,6 +30,8 @@ artwork:
 # 16:9 episode session cards. Poster/background rotation is triggered by a newly
 # discovered Plex race round; missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
+# Episode cards automatically retain one licensed team-car source per season/round;
+# there is no separate rotation setting to maintain.
 show_artwork:
   enabled: true
   trigger: plex_new_race

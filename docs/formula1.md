@@ -166,9 +166,21 @@ label changes for practice, qualifying, Sprint, race, analysis, and other
 detected programmes. Each card has a unique round/episode destination and is
 referenced directly by `file_poster` in that episode's Kometa YAML. Plex episode
 views and Continue Watching can use the card after Kometa applies the file.
-On the first upgraded run, missing historical cards are backfilled from the
-active licensed current-season source. Cards already generated for earlier
-rounds remain stable; a new race does not repaint historical episodes.
+Each race round receives one deterministic current-season constructor and one
+validated Commons source. The binding is stored in the isolated Formula 1
+SQLite database, so practice, qualifying, Sprint, race, and analysis cards from
+the same weekend use the same car while different rounds advance through the
+available constructor roster. New episodes added to an existing round inherit
+that stored source; later provider search ordering cannot silently change it.
+
+The first run after this behavior is introduced performs a one-time historical
+reconciliation. Existing byte-identical extension-managed episode cards are
+regenerated against their new per-round source, while unknown or manually
+modified files are preserved. Missing cards are created. Once each round has a
+stored binding, its cards remain stable and later race rotations do not repaint
+historical rounds. If a safe image is unavailable, existing cards are retained
+and the unresolved round is retried on a later run rather than using an
+ambiguous or incorrectly dated car.
 
 The licensed car photograph is exposure-controlled before show or episode
 artwork is composed. MetaFusion compresses bright highlights, slightly reduces
@@ -187,7 +199,12 @@ above. The portrait uses a stable black, charcoal, white, and red technical fram
 with the complete landscape photograph fitted in a highlight-controlled horizontal
 band so the car is not stretched or cut off. The 16:9 background uses the same
 graded photograph with the car kept toward the right and a dark Plex-safe title
-area on the left. All designs use the supplied logo and fonts.
+area on the left. On the portrait only, the circuit name remains in the lower
+information field while the repeated locality/country wording is replaced by a
+small lower-right host-country flag badge. The authentic bundled flag is fitted
+without stretching inside a rounded frame; an unknown flag falls back to country
+text. The background and episode-card layouts are unchanged. All designs use the
+supplied logo and fonts.
 
 Rotation is not time-based. `show_artwork.trigger: plex_new_race` means a new
 pair is selected only when MetaFusion successfully parses at least one episode
@@ -211,10 +228,11 @@ references and artwork intact.
 The team roster is discovered for the detected championship year rather than
 being hard-coded. The next constructor is chosen deterministically after the
 previous one, so new, renamed, or departing constructors can be handled without
-an annual code edit. The current race round is retained in the design while the
-car layer advances through the available constructors. Rotation state is stored
-in the isolated Formula 1 SQLite database and is based on Plex inventory, never
-Docker uptime.
+an annual code edit. The show pair and current-round episode cards share that
+round's selected source. Historical episode rounds use their own persistent
+round bindings. Rotation state and episode-round bindings are stored in the
+isolated Formula 1 SQLite database and are based on Plex inventory, never Docker
+uptime.
 
 If a current-season photograph is not safely available, MetaFusion keeps the
 previous valid pair and retries after the provider cache expires. It will not use
@@ -303,11 +321,13 @@ ShareAlike, NonCommercial, and NoDerivatives media are not used by the automatic
 renderer. Downloaded pixels are decoded and checked for dimensions, aspect ratio,
 visual content, and sharpness before being cached under `/config/formula1/cache`.
 
-For every retained generated pair, the persistent TXT and JSON attribution reports
-record the Commons page, source title, author, licence, licence URL, team, season,
-trigger round, and generated destinations. Old versioned pairs remain covered by
-the report. MetaFusion uses the original photograph as a deterministic compositing
-layer; it does not regenerate, repaint, or distort the car with AI.
+For every retained generated show pair and persistent episode-round source, the
+TXT and JSON attribution reports record the asset scope, Commons page, source
+title, author, licence, licence URL, team, season, and trigger round. Generated
+show destinations are also recorded. Old versioned pairs and the sources behind
+historical episode cards remain covered by the report. MetaFusion uses the
+original photograph as a deterministic compositing layer; it does not regenerate,
+repaint, or distort the car with AI.
 
 Wikimedia's reuse and API guidance is available at
 <https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia>

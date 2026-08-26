@@ -19,8 +19,9 @@ from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import build_show_entry, write_show_metadata
 from extensions.formula1.provider import load_circuit_path, load_schedule
 from extensions.formula1.show_artwork import (
-    reconcile_episode_posters,
+    reconcile_episode_round_artwork,
     run_show_artwork_rotation,
+    write_attribution_reports,
 )
 from extensions.formula1.state import Formula1State
 from extensions.formula1.verification import (
@@ -399,27 +400,56 @@ async def run_formula1_extension(
                         }
                         for episode_number, reference in rotation.episode_references.items():
                             episode_poster_references[(trigger_round, episode_number)] = reference
-                        if rotation.photo_path and rotation.source_identity:
-                            for round_number in detected_rounds:
-                                if round_number == trigger_round:
-                                    continue
-                                race = race_by_round[round_number]
-                                references, actions = reconcile_episode_posters(
-                                    state,
-                                    config,
-                                    show,
-                                    race,
-                                    circuit_paths.get(round_number),
-                                    Path(rotation.photo_path),
-                                    rotation.source_identity,
-                                    missing_only=True,
+                        episode_teams = {
+                            trigger_round: rotation.constructor or "none"
+                        }
+                        trigger_binding = state.episode_round_source(
+                            show.year, trigger_round
+                        )
+                        for round_number in detected_rounds:
+                            expected_episodes = sum(
+                                item.round_number == round_number for item in show.episodes
+                            )
+                            if (
+                                round_number == trigger_round
+                                and len(rotation.episode_actions) >= expected_episodes
+                                and (
+                                    trigger_binding is not None
+                                    or (
+                                        rotation.photo_path
+                                        and rotation.source_identity
+                                    )
                                 )
+                            ):
+                                continue
+                            race = race_by_round[round_number]
+                            round_artwork = await reconcile_episode_round_artwork(
+                                session,
+                                state,
+                                config,
+                                show,
+                                race,
+                                circuit_paths.get(round_number),
+                                detail_logger,
+                            )
+                            if round_artwork.issue:
+                                issues.append(
+                                    f"Episode artwork: {show.title} round "
+                                    f"{round_number:02d}: {round_artwork.issue}"
+                                )
+                            episode_teams[round_number] = (
+                                round_artwork.constructor or "none"
+                            )
+                            references = round_artwork.references
+                            actions = round_artwork.actions
+                            if references:
                                 episode_poster_references.update(
                                     (
                                         ((round_number, episode_number), reference)
                                         for episode_number, reference in references.items()
                                     )
                                 )
+                            if actions:
                                 episode_actions.update(
                                     ((round_number, episode_number), value)
                                     for episode_number, value in actions.items()
@@ -435,11 +465,12 @@ async def run_formula1_extension(
                                 summary["episode_artwork_unchanged"] += 1
                             detail_logger.info(
                                 "[Episode Artwork] %s | Round: %02d | Episode: %02d | "
-                                "Action: %s | Source: Wikimedia Commons",
+                                "Action: %s | Team: %s | Source: Wikimedia Commons",
                                 show.title,
                                 round_number,
                                 episode_number,
                                 action,
+                                episode_teams.get(round_number, "none"),
                             )
                         artwork_changed |= any(
                             action in {"create", "update"}
@@ -461,6 +492,7 @@ async def run_formula1_extension(
                         summary["source_cache_pruned"] += rotation.cache_pruned
                         if rotation.issue:
                             issues.append(f"Show artwork: {show.title}: {rotation.issue}")
+                        write_attribution_reports(state, config)
                         artwork_changed |= rotation.action in {
                             "rotated",
                             "restored",

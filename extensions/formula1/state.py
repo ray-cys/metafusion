@@ -129,6 +129,14 @@ class Formula1State:
                     title TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS episode_round_sources (
+                    season_year INTEGER NOT NULL,
+                    round_number INTEGER NOT NULL,
+                    constructor_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (season_year, round_number)
+                );
                 CREATE TABLE IF NOT EXISTS application_verification_queue (
                     season_year INTEGER PRIMARY KEY,
                     plex_rating_key TEXT NOT NULL,
@@ -341,6 +349,52 @@ class Formula1State:
                      title=excluded.title,
                      updated_at=excluded.updated_at""",
                 (int(season_year), str(rating_key), str(title), current),
+            )
+
+    def episode_round_source(self, season_year, round_number):
+        row = self.connection.execute(
+            """SELECT * FROM episode_round_sources
+               WHERE season_year=? AND round_number=?""",
+            (int(season_year), int(round_number)),
+        ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        value["source"] = json.loads(value["source"])
+        return value
+
+    def episode_round_sources(self):
+        rows = self.connection.execute(
+            """SELECT * FROM episode_round_sources
+               ORDER BY season_year, round_number"""
+        ).fetchall()
+        values = []
+        for row in rows:
+            value = dict(row)
+            value["source"] = json.loads(value["source"])
+            values.append(value)
+        return values
+
+    def save_episode_round_source(
+        self, season_year, round_number, constructor_id, source, *, now=None
+    ):
+        current = (now or utc_now()).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO episode_round_sources(
+                       season_year, round_number, constructor_id, source, updated_at
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(season_year, round_number) DO UPDATE SET
+                     constructor_id=excluded.constructor_id,
+                     source=excluded.source,
+                     updated_at=excluded.updated_at""",
+                (
+                    int(season_year),
+                    int(round_number),
+                    str(constructor_id),
+                    json.dumps(source, sort_keys=True),
+                    current,
+                ),
             )
 
     def queue_application_verification(

@@ -493,9 +493,18 @@ def test_state_cache_bindings_cleanup_and_schema(tmp_path):
     }
     state.bind("2026:r01:e01", "1", "/media/test.mkv", "Race", "current", now=now)
     state.save_artwork("2026:r01", "/art/poster.png", "fp", "sum", now=now)
+    state.save_episode_round_source(
+        2026,
+        1,
+        "alpine",
+        {"candidate": {"constructor_name": "Alpine F1 Team"}},
+        now=now,
+    )
     state.start_run("run", now=now)
     state.finish_run("run", "success", {"ok": True}, now=now)
     assert state.artwork("2026:r01")["fingerprint"] == "fp"
+    assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
+    assert len(state.episode_round_sources()) == 1
     assert (
         state.reconcile_bindings(set(), cleanup=True, confirmation_scans=2, grace_hours=1, now=now)
         == []

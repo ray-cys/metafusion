@@ -18,6 +18,7 @@ from extensions.formula1.artwork import (
     _font,
     branding_fingerprint,
     branding_paths,
+    country_flag_asset,
     fitted_font,
     svg_path_points,
 )
@@ -30,7 +31,7 @@ from extensions.formula1.commons import (
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 3
+SHOW_RENDERER_VERSION = 4
 EPISODE_RENDERER_VERSION = 1
 
 SESSION_DATE_FIELDS = {
@@ -62,6 +63,14 @@ class ShowArtworkResult:
     episode_actions: dict[int, str] = field(default_factory=dict)
     photo_path: str | None = None
     source_identity: str | None = None
+
+
+@dataclass(frozen=True)
+class EpisodeRoundArtworkResult:
+    constructor: str | None = None
+    references: dict[int, str] = field(default_factory=dict)
+    actions: dict[int, str] = field(default_factory=dict)
+    issue: str | None = None
 
 
 def _checksum(path):
@@ -113,6 +122,53 @@ def _place_logo(image, logo_path, box, fallback_font):
         ImageDraw.Draw(image).text(
             (left, top), "FORMULA 1", font=fallback_font, fill=(245, 245, 245, 255)
         )
+
+
+def _rounded_flag_badge(image, country, box):
+    """Place an undistorted host flag inside a restrained rounded badge."""
+    flag_path = country_flag_asset(country)
+    if flag_path is None:
+        return False
+    left, top, right, bottom = map(round, box)
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    radius = max(3, round(height * 0.22))
+    padding = max(3, round(height * 0.10))
+    shadow_offset = max(2, round(height * 0.07))
+
+    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (
+            left + shadow_offset,
+            top + shadow_offset,
+            right + shadow_offset,
+            bottom + shadow_offset,
+        ),
+        radius=radius,
+        fill=(0, 0, 0, 105),
+    )
+    image.paste(shadow, (0, 0), shadow)
+
+    badge = Image.new("RGB", (width, height), (18, 19, 23))
+    with Image.open(flag_path) as source:
+        flag = ImageOps.contain(
+            source.convert("RGB"),
+            (max(1, width - padding * 2), max(1, height - padding * 2)),
+            Image.Resampling.LANCZOS,
+        )
+    badge.paste(flag, ((width - flag.width) // 2, (height - flag.height) // 2))
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, width - 1, height - 1), radius=radius, fill=255
+    )
+    image.paste(badge, (left, top), mask)
+    ImageDraw.Draw(image).rounded_rectangle(
+        (left, top, right - 1, bottom - 1),
+        radius=radius,
+        outline=(238, 238, 242),
+        width=max(2, round(height * 0.035)),
+    )
+    return True
 
 
 def _technical_frame(image, *, dense=False):
@@ -384,8 +440,9 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         fill=(150, 0, 20, 185),
     )
     logo_path, regular_path, bold_path = _branding_paths(config)
-    detail = f"{race.circuit}  •  {race.locality}, {race.country}"
-    regular = fitted_font(regular_path, detail, max(26, width // 28), 18, width * 0.88)
+    flag_available = country_flag_asset(race.country) is not None
+    detail = race.circuit if flag_available else f"{race.circuit}  •  {race.country}"
+    regular = fitted_font(regular_path, detail, max(26, width // 28), 18, width * 0.66)
     bold = fitted_font(
         bold_path, f"{show.year} SEASON", max(42, width // 15), 28, width * 0.88
     )
@@ -434,6 +491,11 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         detail,
         font=regular,
         fill=(235, 235, 238, 225),
+    )
+    _rounded_flag_badge(
+        image,
+        race.country,
+        (width * 0.79, height * 0.855, width * 0.94, height * 0.91),
     )
     draw.text(
         (width * 0.06, height * 0.94),
@@ -577,6 +639,108 @@ def reconcile_episode_posters(
     return references, actions
 
 
+def _round_source_payload(candidate, provider_sources, photo_path, source_identity):
+    return {
+        "candidate": candidate.as_dict(),
+        "provider_sources": provider_sources,
+        "photo_cache": str(photo_path),
+        "source_identity": source_identity,
+    }
+
+
+def _save_round_source(
+    state,
+    config,
+    season_year,
+    round_number,
+    candidate,
+    provider_sources,
+    photo_path,
+    source_identity,
+):
+    if config["dry_run"]:
+        return
+    state.save_episode_round_source(
+        season_year,
+        round_number,
+        candidate.constructor_id,
+        _round_source_payload(
+            candidate, provider_sources, photo_path, source_identity
+        ),
+    )
+
+
+async def reconcile_episode_round_artwork(
+    session,
+    state,
+    config,
+    show,
+    race,
+    path_data,
+    logger,
+):
+    """Use one persistent, licensed team-car source for every episode in a round."""
+    binding = state.episode_round_source(show.year, race.round_number)
+    try:
+        if binding is not None:
+            source = binding["source"]
+            candidate = CommonsCandidate.from_dict(source["candidate"])
+            photo_path, image_source = await acquire_candidate_image(
+                session, config, candidate
+            )
+            provider_sources = {
+                **(source.get("provider_sources") or {}),
+                "image": image_source,
+            }
+        else:
+            candidate, photo_path, provider_sources = await _select_source(
+                session,
+                state,
+                config,
+                show.year,
+                None,
+                race.round_number,
+                logger,
+            )
+        source_identity = candidate.source_sha1 or hashlib.sha256(
+            candidate.image_url.encode()
+        ).hexdigest()
+        _save_round_source(
+            state,
+            config,
+            show.year,
+            race.round_number,
+            candidate,
+            provider_sources,
+            photo_path,
+            source_identity,
+        )
+        references, actions = reconcile_episode_posters(
+            state,
+            config,
+            show,
+            race,
+            path_data,
+            photo_path,
+            source_identity,
+        )
+        return EpisodeRoundArtworkResult(
+            candidate.constructor_name,
+            references,
+            actions,
+        )
+    except (KeyError, RuntimeError, ValueError) as error:
+        references, actions = _existing_episode_outputs(
+            state, config, show, race
+        )
+        return EpisodeRoundArtworkResult(
+            binding["constructor_id"] if binding else None,
+            references,
+            actions,
+            f"No safe persistent round car image: {error}",
+        )
+
+
 def _pair_integrity(current):
     poster = Path(current["poster_destination"])
     background = Path(current["background_destination"])
@@ -657,15 +821,16 @@ def _candidate_order(roster, current, trigger_round):
     return [roster[(start + offset) % len(roster)] for offset in range(len(roster))]
 
 
-def _attribution_reports(config, history):
+def _attribution_reports(config, history, round_sources=()):
     if config["dry_run"]:
         return
     records = []
-    lines = ["MetaFusion Formula 1 show artwork attribution", ""]
+    lines = ["MetaFusion Formula 1 artwork attribution", ""]
     for item in history:
         source = item["source"]
         candidate = source["candidate"]
         record = {
+            "scope": "show",
             "season_year": item["season_year"],
             "trigger_round": item["trigger_round"],
             "constructor_id": item["constructor_id"],
@@ -693,9 +858,50 @@ def _attribution_reports(config, history):
                 "",
             ]
         )
+    for item in round_sources:
+        source = item.get("source") or {}
+        candidate = source.get("candidate")
+        if not candidate:
+            continue
+        record = {
+            "scope": "episode_round",
+            "season_year": item["season_year"],
+            "trigger_round": item["round_number"],
+            "constructor_id": item["constructor_id"],
+            "constructor_name": candidate["constructor_name"],
+            "source_title": candidate["title"],
+            "source_page": candidate["page_url"],
+            "author": candidate["author"],
+            "licence": candidate["licence"],
+            "licence_url": candidate["licence_url"],
+            "poster": None,
+            "background": None,
+        }
+        records.append(record)
+        lines.extend(
+            [
+                f"Season {record['season_year']} • Round {record['trigger_round']:02d}",
+                "Scope: episode cards",
+                f"Team: {record['constructor_name']}",
+                f"Source: {record['source_title']}",
+                f"Page: {record['source_page']}",
+                f"Author: {record['author']}",
+                f"Licence: {record['licence']}",
+                f"Licence URL: {record['licence_url']}",
+                "",
+            ]
+        )
     report_root = config["paths"]["reports"]
     atomic_write_json(report_root / "formula1-show-artwork-attribution.json", {"records": records})
     atomic_write_text(report_root / "formula1-show-artwork-attribution.txt", "\n".join(lines))
+
+
+def write_attribution_reports(state, config):
+    _attribution_reports(
+        config,
+        state.show_rotation_history(),
+        state.episode_round_sources(),
+    )
 
 
 async def _select_source(session, state, config, year, current, trigger_round, logger):
@@ -801,6 +1007,16 @@ async def run_show_artwork_rotation(
                     ).hexdigest()
                     available_photo = str(photo_path)
                     available_identity = source_identity
+                    _save_round_source(
+                        state,
+                        config,
+                        show.year,
+                        trigger_round,
+                        candidate,
+                        {"roster": "state", "search": "state", "image": _image_source},
+                        photo_path,
+                        source_identity,
+                    )
                     episode_references, episode_actions = reconcile_episode_posters(
                         state,
                         config,
@@ -876,6 +1092,16 @@ async def run_show_artwork_rotation(
     background_destination = destination_root / "background.png"
     poster_reference = _asset_reference(config, relative / "poster.png")
     background_reference = _asset_reference(config, relative / "background.png")
+    _save_round_source(
+        state,
+        config,
+        show.year,
+        trigger_round,
+        candidate,
+        provider_sources,
+        photo_path,
+        source_identity,
+    )
     episode_references, episode_actions = reconcile_episode_posters(
         state,
         config,
@@ -938,7 +1164,7 @@ async def run_show_artwork_rotation(
     current = state.show_rotation(logical_key)
     pairs_pruned = _prune_retained_pairs(state, config, logical_key, current)
     cache_pruned = _prune_source_cache(config, photo_path)
-    _attribution_reports(config, state.show_rotation_history())
+    write_attribution_reports(state, config)
     return ShowArtworkResult(
         "rerendered" if rerendering else "restored" if restoring else "rotated",
         trigger_round,

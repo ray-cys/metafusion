@@ -47,7 +47,9 @@ from extensions.formula1.show_artwork import (
     _pair_integrity,
     _prune_retained_pairs,
     _prune_source_cache,
+    _rounded_flag_badge,
     reconcile_episode_posters,
+    reconcile_episode_round_artwork,
     render_episode_poster,
     render_show_background,
     render_show_poster,
@@ -496,12 +498,22 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.size == (1280, 720)
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 3
+    assert SHOW_RENDERER_VERSION == 4
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
     )
+
+
+def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
+    image = Image.new("RGB", (1000, 1500), (6, 7, 10))
+    assert _rounded_flag_badge(
+        image, race.country, (790, 1282, 940, 1365)
+    )
+    assert image.getpixel((790, 1282)) == (6, 7, 10)
+    assert image.getpixel((865, 1323)) != (6, 7, 10)
+    assert not _rounded_flag_badge(image, "Unknown", (790, 1282, 940, 1365))
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(
@@ -629,6 +641,7 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     current = state.show_rotation("show:2026")
     assert _pair_integrity(current) == "managed"
     assert len(state.show_rotation_history()) == 1
+    assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
     assert (config["paths"]["reports"] / "formula1-show-artwork-attribution.json").exists()
     assert "Liauzh" in (
         config["paths"]["reports"] / "formula1-show-artwork-attribution.txt"
@@ -667,6 +680,7 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     )
     assert second.action == "rotated" and second.constructor == "Ferrari"
     assert len(state.show_rotation_history()) == 2
+    assert state.episode_round_source(2026, 2)["constructor_id"] == "ferrari"
     current = state.show_rotation("show:2026")
     Path(current["background_destination"]).unlink()
     restored = asyncio.run(
@@ -692,6 +706,94 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         )
     )
     assert preserved.action == "preserve-manual" and preserved.issue
+    state.close()
+
+
+def test_historical_episode_rounds_receive_persistent_distinct_sources(
+    config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    round_one = asyncio.run(
+        reconcile_episode_round_artwork(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("round-one"),
+        )
+    )
+    assert round_one.constructor == "Alpine F1 Team"
+    assert round_one.actions == {1: "create"}
+
+    second_episode = replace(
+        show.episodes[0],
+        round_number=2,
+        event_name="Chinese Grand Prix",
+        plex_rating_key="episode-2",
+    )
+    show.episodes.append(second_episode)
+    second_race = RaceData(
+        **{
+            **race.__dict__,
+            "round_number": 2,
+            "name": "Chinese Grand Prix",
+            "circuit_id": "shanghai",
+            "circuit": "Shanghai International Circuit",
+            "locality": "Shanghai",
+            "country": "China",
+        }
+    )
+    round_two = asyncio.run(
+        reconcile_episode_round_artwork(
+            session,
+            state,
+            config,
+            show,
+            second_race,
+            "M0 0 L20 20",
+            logging.getLogger("round-two"),
+        )
+    )
+    assert round_two.constructor == "Ferrari"
+    assert round_two.actions == {1: "create"}
+    assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
+    assert state.episode_round_source(2026, 2)["constructor_id"] == "ferrari"
+
+    repeat = asyncio.run(
+        reconcile_episode_round_artwork(
+            session,
+            state,
+            config,
+            show,
+            second_race,
+            "M0 0 L20 20",
+            logging.getLogger("round-two-repeat"),
+        )
+    )
+    assert repeat.constructor == "Ferrari"
+    assert repeat.actions == {1: "unchanged"}
+
+    destination = (
+        config["paths"]["assets"]
+        / "2026/round-02/episodes/episode-01.png"
+    )
+    destination.write_bytes(b"manual episode card")
+    manual = asyncio.run(
+        reconcile_episode_round_artwork(
+            session,
+            state,
+            config,
+            show,
+            second_race,
+            "M0 0 L30 30",
+            logging.getLogger("round-two-manual"),
+        )
+    )
+    assert manual.actions == {1: "preserve-manual"}
+    assert destination.read_bytes() == b"manual episode card"
     state.close()
 
 
