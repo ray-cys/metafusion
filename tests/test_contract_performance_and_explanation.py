@@ -127,7 +127,7 @@ def test_selection_explanation_skips_current_not_due_state(monkeypatch, tmp_path
     database = tmp_path / "meta_db.sqlite3"
     monkeypatch.setattr(item_explanation, "STATE_DATABASE", database)
     config = complete_config(tmp_path)
-    now = datetime(2026, 8, 19, 1, 0, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
     updated_at = now.isoformat()
     fingerprint = config_fingerprint(config)
     scope = {

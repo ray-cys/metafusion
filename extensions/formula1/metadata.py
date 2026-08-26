@@ -38,14 +38,25 @@ def _read_document(path):
 
 def _race_summary(race):
     sprint = " This is a Sprint weekend." if race.sprint else ""
-    facts = []
-    if race.circuit_length_km is not None:
-        facts.append(f"Circuit length: {race.circuit_length_km:.3f} km")
-    if race.race_distance_km is not None:
-        facts.append(f"Race distance: {race.race_distance_km:.3f} km")
-    if race.lap_count is not None:
-        facts.append(f"Lap count: {race.lap_count}")
-    fact_text = f" {'; '.join(facts)}." if facts else ""
+    if (
+        race.circuit_length_km is not None
+        and race.lap_count is not None
+        and race.race_distance_km is not None
+    ):
+        fact_text = (
+            f" The circuit measures {race.circuit_length_km:.3f} km; the scheduled "
+            f"race runs for {race.lap_count} laps and covers "
+            f"{race.race_distance_km:.3f} km."
+        )
+    else:
+        facts = []
+        if race.circuit_length_km is not None:
+            facts.append(f"Circuit length: {race.circuit_length_km:.3f} km")
+        if race.lap_count is not None:
+            facts.append(f"Lap count: {race.lap_count}")
+        if race.race_distance_km is not None:
+            facts.append(f"Race distance: {race.race_distance_km:.3f} km")
+        fact_text = f" {'; '.join(facts)}." if facts else ""
     history = []
     if race.circuit_history:
         history.append(race.circuit_history)

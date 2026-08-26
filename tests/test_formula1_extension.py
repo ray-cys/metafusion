@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,7 +38,9 @@ from extensions.formula1.config import (
     sync_formula1_template,
 )
 from extensions.formula1.facts import (
+    FACT_CACHE_VERSION,
     CircuitFacts,
+    _cached_facts,
     _canonical_venue,
     _circuit_history,
     _circuit_profile,
@@ -593,6 +596,21 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
     )
     assert parse_official_facts(contextual).first_grand_prix_year == 1996
     assert parse_editorial_sections("unrelated page") == {}
+    assert _cached_facts(None) is None
+    assert _cached_facts({}) is None
+    normalized = _cached_facts(
+        {
+            "circuit_length_km": "5.278",
+            "lap_count": "58",
+            "race_distance_km": "306.124",
+        }
+    )
+    assert normalized == CircuitFacts(5.278, 58, 306.124)
+    assert _cached_facts({**asdict(normalized), "circuit_length_km": "bad"}) is None
+    assert _cached_facts({**asdict(normalized), "lap_count": 58.5}) is None
+    assert _cached_facts({**asdict(normalized), "circuit_length_km": 1}) is None
+    assert _cached_facts({**asdict(normalized), "race_distance_km": 500}) is None
+    assert _cached_facts({**asdict(normalized), "race_distance_km": 200}) is None
     assert _identity_matches(race, facts)
     assert _identity_matches(
         race, CircuitFacts(5.278, 58, 306.124, "Albert Park Circuit", "Wrong City")
@@ -642,6 +660,9 @@ def test_official_facts_discovery_validation_and_cache(tmp_path, core, schedule_
         "issues": [],
     }
     assert enriched[0].circuit_length_km == 5.278
+    assert state.cache_get(
+        "formula1.com", f"facts:v{FACT_CACHE_VERSION}:2026:australia"
+    ) is not None
     cached, cached_statistics = asyncio.run(
         enrich_race_facts(session, state, config, [race], {1}, logging.getLogger("facts-cache"))
     )
@@ -742,6 +763,39 @@ def test_official_facts_fail_safe_identity_and_stale_paths(tmp_path, core, sched
         )
     )
     assert unchanged == [unknown] and statistics["missing"] == 1
+    state.connection.execute("DELETE FROM provider_cache")
+    state.connection.commit()
+    state.cache_put(
+        "formula1.com",
+        "events:2026",
+        {"slugs": ["australia"]},
+        1,
+        now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    state.cache_put(
+        "formula1.com",
+        f"facts:v{FACT_CACHE_VERSION}:2026:australia",
+        {
+            "circuit_length_km": 5.278,
+            "lap_count": 58,
+            "race_distance_km": 306.124,
+            "circuit": None,
+            "locality": None,
+        },
+        1,
+        now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    stale, statistics = asyncio.run(
+        enrich_race_facts(
+            Session(schedule_payload, "", fail=True),
+            state,
+            config,
+            [race],
+            {1},
+            logging.getLogger("facts-versioned-stale"),
+        )
+    )
+    assert stale[0].lap_count == 58 and statistics["stale"] == 1
     state.connection.execute("DELETE FROM provider_cache")
     state.connection.commit()
     state.cache_put(
@@ -971,6 +1025,9 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
     profiled_race = type(race)(
         **{
             **race.__dict__,
+            "circuit_length_km": 5.278,
+            "lap_count": 58,
+            "race_distance_km": 306.124,
             "first_grand_prix_year": 1996,
             "circuit_profile": "fast, flowing, heavy-braking zones",
             "circuit_history": "The circuit was created from existing roads.",
@@ -980,14 +1037,38 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
         show, [profiled_race], {1: "/config/poster.png"}, config
     )
     summary = profiled["seasons"][1]["summary"]
+    episode_summary = profiled["seasons"][1]["episodes"][1]["summary"]
+    expected_facts = (
+        "The circuit measures 5.278 km; the scheduled race runs for 58 laps "
+        "and covers 306.124 km."
+    )
+    assert expected_facts in summary
+    assert expected_facts in episode_summary
     assert "The circuit was created from existing roads" in summary
     assert "first hosted a Formula 1 Grand Prix in 1996" in summary
     assert "Formula1.com circuit profile: fast, flowing" in summary
+    for field, value, expected in (
+        ("circuit_length_km", 5.278, "Circuit length: 5.278 km"),
+        ("lap_count", 58, "Lap count: 58"),
+        ("race_distance_km", 306.124, "Race distance: 306.124 km"),
+    ):
+        partial_race = type(race)(**{**race.__dict__, field: value})
+        partial = build_show_entry(
+            show, [partial_race], {1: "/config/poster.png"}, config
+        )[0]
+        assert expected in partial["seasons"][1]["summary"]
     path, changed, _diagnostics = write_show_metadata(
-        show, [race], {1: "/config/poster.png"}, config
+        show, [profiled_race], {1: "/config/poster.png"}, config
     )
-    assert changed and validate_metadata_document(yaml.safe_load(path.read_text()), "tv")
-    assert write_show_metadata(show, [race], {1: "/config/poster.png"}, config)[1] is False
+    persisted = yaml.safe_load(path.read_text())
+    assert changed and validate_metadata_document(persisted, "tv")
+    persisted_season = persisted["metadata"]["F1 2026"]["seasons"][1]
+    assert expected_facts in persisted_season["summary"]
+    assert expected_facts in persisted_season["episodes"][1]["summary"]
+    assert (
+        write_show_metadata(show, [profiled_race], {1: "/config/poster.png"}, config)[1]
+        is False
+    )
     assert artwork_fingerprint(race, "M0 0", config) == artwork_fingerprint(race, "M0 0", config)
     assert artwork_fingerprint(race, "M0 0", config) == artwork_fingerprint(
         profiled_race, "M0 0", config
@@ -1181,7 +1262,12 @@ def test_runner_end_to_end_isolated_outputs(tmp_path, core, schedule_payload):
     )
     assert summary["episodes"] == 1
     assert summary["artwork_created"] == 1
-    assert (tmp_path / "kometa/metadata/formula1_2026.yml").exists()
+    metadata_path = tmp_path / "kometa/metadata/formula1_2026.yml"
+    assert metadata_path.exists()
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    season = metadata["metadata"]["F1 2026"]["seasons"][1]
+    assert "race runs for 58 laps and covers 306.124 km" in season["summary"]
+    assert "race runs for 58 laps and covers 306.124 km" in season["episodes"][1]["summary"]
     assert (tmp_path / "config/formula1/cache/formula1.sqlite3").exists()
     assert not list((tmp_path / "kometa/metadata").glob("tv_metadata.yml"))
 

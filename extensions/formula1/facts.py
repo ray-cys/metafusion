@@ -12,6 +12,7 @@ from typing import TypedDict
 from extensions.formula1.provider import _get
 
 PROVIDER = "formula1.com"
+FACT_CACHE_VERSION = 2
 
 EVENT_SLUGS = {
     "albert_park": "australia",
@@ -274,6 +275,31 @@ def parse_official_facts(document):
     )
 
 
+def _cached_facts(payload):
+    """Return only a complete, plausible cached fact record."""
+    if not isinstance(payload, dict):
+        return None
+    try:
+        facts = CircuitFacts(**payload)
+    except (TypeError, ValueError):
+        return None
+    length = _number(facts.circuit_length_km)
+    laps = _number(facts.lap_count)
+    distance = _number(facts.race_distance_km)
+    if length is None or laps is None or distance is None or laps != int(laps):
+        return None
+    if not 2 <= length <= 10 or not 20 <= int(laps) <= 100:
+        return None
+    if not 150 <= distance <= 400 or abs(length * int(laps) - distance) > 15:
+        return None
+    return replace(
+        facts,
+        circuit_length_km=length,
+        lap_count=int(laps),
+        race_distance_km=distance,
+    )
+
+
 async def _load_event_slugs(session, state, config, year, logger):
     key = f"events:{int(year)}"
     cached = state.cache_get(PROVIDER, key)
@@ -364,10 +390,10 @@ def _canonical_venue(race, facts):
 
 
 async def _load_official_facts(session, state, config, race, event_slug):
-    key = f"facts:{race.year}:{event_slug}"
-    cached = state.cache_get(PROVIDER, key)
+    key = f"facts:v{FACT_CACHE_VERSION}:{race.year}:{event_slug}"
+    cached = _cached_facts(state.cache_get(PROVIDER, key))
     if cached is not None:
-        return CircuitFacts(**cached), "cache"
+        return cached, "cache"
     url = f"{config['providers']['formula1_url']}/{race.year}/{event_slug}"
     try:
         document = await _get(
@@ -387,10 +413,18 @@ async def _load_official_facts(session, state, config, race, event_slug):
         )
         return facts, PROVIDER
     except RuntimeError:
-        stale = state.cache_get(PROVIDER, key, allow_expired=True)
-        if stale is None:
-            raise
-        return CircuitFacts(**stale), "stale-cache"
+        stale = _cached_facts(state.cache_get(PROVIDER, key, allow_expired=True))
+        if stale is not None:
+            return stale, "stale-cache"
+        # Older valid records remain a safe outage fallback, but are never used
+        # as the normal cache hit after the parser contract changes.
+        legacy_key = f"facts:{race.year}:{event_slug}"
+        legacy = _cached_facts(
+            state.cache_get(PROVIDER, legacy_key, allow_expired=True)
+        )
+        if legacy is not None:
+            return legacy, "legacy-stale-cache"
+        raise
 
 
 async def enrich_race_facts(session, state, config, races, round_numbers, logger):
@@ -439,7 +473,7 @@ async def enrich_race_facts(session, state, config, races, round_numbers, logger
             enriched.append(race)
             continue
         statistics["resolved"] += 1
-        statistics["stale"] += int(source == "stale-cache")
+        statistics["stale"] += int(source.endswith("stale-cache"))
         profile_available = bool(
             facts.first_grand_prix_year or facts.circuit_profile or facts.circuit_history
         )
@@ -468,10 +502,14 @@ async def enrich_race_facts(session, state, config, races, round_numbers, logger
         )
         logger.info(
             "[Provider] Circuit facts | Year: %s | Round: %02d | Source: %s | "
+            "Circuit length: %.3f km | Laps: %d | Race distance: %.3f km | "
             "Venue identity: %s | Circuit profile: %s",
             race.year,
             race.round_number,
             source,
+            facts.circuit_length_km,
+            facts.lap_count,
+            facts.race_distance_km,
             "canonicalized" if identity_changed else "unchanged",
             "resolved" if profile_available else "unavailable",
         )

@@ -118,7 +118,9 @@ fields are preserved. The top-level YAML name exactly matches the Plex show, as
 required by Kometa's Formula 1 guide. Session dates use provider schedule fields
 when available and fall back to the race date. Circuit length, scheduled race
 distance, and scheduled lap count are taken from the matching official event
-page and cross-validated before use. MetaFusion omits unavailable facts instead
+page and cross-validated before use. Each round and episode summary states the
+validated values as one sentence: the circuit length, scheduled lap count, and
+total scheduled race distance. MetaFusion omits unavailable facts instead
 of writing a misleading `to be confirmed` value; the missing fact is recorded in
 the Formula 1 issue report. The same validated page supplies the venue's first
 Grand Prix year and its `What's the circuit like?` section. MetaFusion maps the
