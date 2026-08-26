@@ -40,6 +40,7 @@ from extensions.formula1.safety_car import (
     parse_safety_car_candidates,
     search_safety_cars,
 )
+from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import (
     EPISODE_RENDERER_VERSION,
     SHOW_RENDERER_VERSION,
@@ -706,11 +707,20 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         full_luminance = sum(
             image.resize((16, 9)).convert("L").get_flattened_data()
         )
-        assert left_luminance / (7 * 9) < 55
-        assert full_luminance / (16 * 9) < 95
+        right_luminance = sum(
+            image.resize((16, 9))
+            .crop((9, 0, 16, 9))
+            .convert("L")
+            .get_flattened_data()
+        )
+        left_average = left_luminance / (7 * 9)
+        right_average = right_luminance / (7 * 9)
+        assert left_average < 55
+        assert right_average > left_average + 18
+        assert full_luminance / (16 * 9) < 110
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 6
+    assert SHOW_RENDERER_VERSION == 7
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -726,6 +736,37 @@ def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
     assert image.getpixel((790, 1282)) == (6, 7, 10)
     assert image.getpixel((865, 1323)) != (6, 7, 10)
     assert not _rounded_flag_badge(image, "Unknown", (790, 1282, 940, 1365))
+
+
+def test_post_race_press_conference_episode_card_is_rendered(
+    tmp_path, config, show, race
+):
+    episode = replace(
+        show.episodes[0],
+        episode_number=15,
+        program_title="Post-Race Press Conference",
+        program_kind="post_race_press_conference",
+    )
+    photo = tmp_path / "car.jpg"
+    photo.write_bytes(_photo_bytes())
+    destination = tmp_path / "press-conference.png"
+    checksum = render_episode_poster(
+        episode,
+        race,
+        "M0 0 L100 100",
+        photo,
+        config,
+        destination,
+    )
+    assert len(checksum) == 64
+    with Image.open(destination) as image:
+        assert image.size == (1280, 720)
+    assert session_date(episode, race, config)[0] == race.race_date
+    assert _episode_fingerprint(
+        episode, race, "M0 0 L100 100", "source", config
+    ) != _episode_fingerprint(
+        show.episodes[0], race, "M0 0 L100 100", "source", config
+    )
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(

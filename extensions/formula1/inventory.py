@@ -51,6 +51,18 @@ PROGRAM_ALIASES = {
     "race session": ("Race Session", "race"),
     "post race show": ("Post-Race Analysis", "post_race"),
     "post race analysis": ("Post-Race Analysis", "post_race"),
+    "post race press conference": (
+        "Post-Race Press Conference",
+        "post_race_press_conference",
+    ),
+    "post race press conference show": (
+        "Post-Race Press Conference",
+        "post_race_press_conference",
+    ),
+    "post race conference": (
+        "Post-Race Press Conference",
+        "post_race_press_conference",
+    ),
     "highlights": ("Highlights", "highlights"),
 }
 

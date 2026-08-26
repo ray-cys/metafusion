@@ -147,7 +147,8 @@ F1 2026/
 │   ├── S01E10 - Australia Grand Prix - Qualifying.mkv
 │   ├── S01E12 - Australia Grand Prix - Pre-Race.Show.mkv
 │   ├── S01E13 - Australia Grand Prix - Race.mkv
-│   └── S01E14 - Australia Grand Prix - Post-Race.Show.mkv
+│   ├── S01E14 - Australia Grand Prix - Post-Race.Show.mkv
+│   └── S01E15 - Australia Grand Prix - Post-Race.Press.Conference.mkv
 └── Season 02/
     └── S02E01 - China Grand Prix - Weekend.Warm-Up.mkv
 ```
@@ -166,7 +167,8 @@ F1 2018/
 │   ├── 01x07 - Australian GP - Pre-Race Buildup.mkv
 │   ├── 01x08 - Australian GP - Race Session.mkv
 │   ├── 01x09 - Australian GP - Post-Race Analysis.mkv
-│   └── 01x10 - Australian GP - Highlights.mkv
+│   ├── 01x10 - Australian GP - Highlights.mkv
+│   └── 01x11 - Australian GP - Post-Race Press Conference.mkv
 └── Season 02/
     └── 02x01 - Bahrain GP - Free Practice 1.mkv
 ```
@@ -180,9 +182,12 @@ Recognized programme labels include `Weekend Warm-Up`, `FP1` through `FP3`,
 `Free Practice 1` through `Free Practice 3`, `Sprint Qualifying`,
 `Pre-Sprint Show`, `Sprint`, `Post-Sprint Show`, `Pre-Qualifying Show`,
 `Qualifying`, `Post-Qualifying Show`, `Pre-Race Show`, `Race`, `Post-Race Show`,
-and `Highlights`. The equivalent `Buildup`, `Session`, and `Analysis` names from
-the Kometa layout are also accepted. Dots, underscores, and backslashes in the
-programme portion are treated as spaces.
+`Post-Race Press Conference`, and `Highlights`. The equivalent `Buildup`,
+`Session`, and `Analysis` names from the Kometa layout are also accepted. Dots,
+underscores, hyphens, and backslashes in the programme portion are treated as
+spaces. A detected post-race press conference is dated to race day, receives its
+own metadata entry and managed episode card, and does not appear as an unknown
+programme.
 
 The event portion may use `Grand Prix` or `GP`; common aliases such as
 `Australia`/`Australian`, `Britain`/`British`, and
@@ -434,8 +439,8 @@ Episode cards use the race weekend's persistent team-car binding:
 
 ![Example Formula 1 episode card](images/formula1/episode-card.png)
 
-The show background keeps a dark Plex-safe canvas and rotates only its restrained
-right-side safety-car panel:
+The show background keeps a dark Plex-safe information canvas and rotates only
+its brighter, bounded right-side safety-car panel:
 
 ![Example Formula 1 show background](images/formula1/show-background.png)
 
@@ -548,11 +553,13 @@ described above and also enables the episode cards described above.
 The portrait uses a stable black, charcoal, white, and red technical frame, with
 the complete landscape photograph fitted in a highlight-controlled horizontal
 band so the car is not stretched or cut off. The 16:9 design remains a stable
-black technical canvas: only a feathered, strongly darkened safety-car panel on
-the right rotates. The photograph occupies a bounded portion of the frame, while
-the logo, season, round, event wording, gradients, and left-side Plex-safe area
-remain fixed. This deliberately prevents a bright source photograph from
-overpowering show, season, or episode posters in Plex navigation.
+black technical canvas: only a feathered, television-legible safety-car panel on
+the right rotates. The renderer preserves more midtone brightness in that panel
+so safety-car detail remains visible after television black-level compression,
+while the photograph still occupies a bounded portion of the frame. The logo,
+season, round, event wording, gradients, and left-side Plex-safe area remain
+fixed. This deliberately prevents a bright source photograph from overpowering
+show, season, or episode posters in Plex navigation.
 
 On the portrait only, the circuit name remains in the lower information field
 while the repeated locality/country wording is replaced by a small lower-right

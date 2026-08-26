@@ -499,6 +499,20 @@ def test_formula1_provider_replay_corpus():
             "British Grand Prix",
             "post_qualifying",
         ),
+        (
+            "S01E15 - Australia Grand Prix - Post-Race.Press.Conference.mkv",
+            15,
+            "current",
+            "Australian Grand Prix",
+            "post_race_press_conference",
+        ),
+        (
+            "01x11 - Australian GP - Post-Race Press Conference.mkv",
+            11,
+            "kometa",
+            "Australian Grand Prix",
+            "post_race_press_conference",
+        ),
     ],
 )
 def test_dual_filename_parser(filename, episode, profile, event, kind):
@@ -518,6 +532,45 @@ def test_parser_rejects_mismatch_and_normalizes_unknown():
     with pytest.raises(ValueError, match="episode"):
         parse_episode_filename("S01E02 - Japan GP - Race.mkv", expected_episode=1)
     assert parse_episode_filename("S01E01 - Japan GP - Race.mkv", profile="current")["season"] == 1
+
+
+def test_post_race_press_conference_metadata_and_artwork_reference(
+    tmp_path, core, schedule_payload
+):
+    config = load_formula1_config(core, tmp_path / "config")
+    race = parse_schedule(schedule_payload, 2026)[0]
+    parsed = parse_episode_filename(
+        "S01E15 - Australia Grand Prix - Post-Race.Press.Conference.mkv",
+        expected_season=1,
+        expected_episode=15,
+    )
+    inventory = __import__(
+        "extensions.formula1.inventory", fromlist=["Formula1Episode", "Formula1Show"]
+    )
+    episode = inventory.Formula1Episode(
+        2026,
+        1,
+        15,
+        parsed["event"],
+        parsed["program_title"],
+        parsed["program_kind"],
+        tmp_path / "press-conference.mkv",
+        "15",
+        parsed["profile"],
+    )
+    show = inventory.Formula1Show(2026, "F1 2026", "show", [episode])
+    generated = build_show_entry(
+        show,
+        [race],
+        {1: "/config/round.png"},
+        config,
+        episode_poster_references={(1, 15): "/config/press-conference.png"},
+    )[0]
+    entry = generated["seasons"][1]["episodes"][15]
+    assert entry["title"] == "Post-Race Press Conference"
+    assert entry["originally_available"] == race.race_date
+    assert entry["file_poster"] == "/config/press-conference.png"
+    assert "Post-Race Press Conference" in entry["summary"]
 
 
 def test_inventory_ignores_non_race_season_and_all_ambiguous_duplicates(tmp_path):

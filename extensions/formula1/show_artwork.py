@@ -34,7 +34,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 6
+SHOW_RENDERER_VERSION = 7
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -495,7 +495,7 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
 
 
 def render_show_background(show, race, photo_path, config, destination):
-    """Render a restrained safety-car panel inside the stable Plex-safe frame."""
+    """Render a TV-legible safety-car panel inside the stable Plex-safe frame."""
     width = config["show_artwork"]["background_width"]
     height = config["show_artwork"]["background_height"]
     image = Image.new("RGB", (width, height), (5, 6, 9))
@@ -507,9 +507,12 @@ def render_show_background(show, race, photo_path, config, destination):
             centering=(0.58, 0.5),
             strong=True,
         )
-        panel = ImageEnhance.Color(panel).enhance(0.78)
-        panel = ImageEnhance.Brightness(panel).enhance(0.58)
-        panel = ImageEnhance.Contrast(panel).enhance(0.96)
+        # Preserve enough midtone detail for television black levels without
+        # returning to an overpowering full-bleed source photograph. The left
+        # information field remains independently dark and stable.
+        panel = ImageEnhance.Color(panel).enhance(0.88)
+        panel = ImageEnhance.Brightness(panel).enhance(0.84)
+        panel = ImageEnhance.Contrast(panel).enhance(1.02)
     panel_mask = Image.new("L", panel_size, 0)
     feather = max(24, round(min(panel_size) * 0.10))
     ImageDraw.Draw(panel_mask).rectangle(
@@ -524,7 +527,7 @@ def render_show_background(show, race, photo_path, config, destination):
     right_shade = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     ImageDraw.Draw(right_shade).rectangle(
         (width * 0.42, 0, width, height),
-        fill=(0, 0, 0, 42),
+        fill=(0, 0, 0, 18),
     )
     image = Image.alpha_composite(image.convert("RGBA"), right_shade)
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
