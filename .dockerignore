@@ -23,6 +23,7 @@ kometa/
 !extensions/formula1/assets/
 !extensions/formula1/assets/flags/
 !extensions/formula1/assets/flags/*.png
+!extensions/formula1/assets/flags/countries.json
 !extensions/formula1/assets/flags/README.md
 **/*.log
 **/*.pid

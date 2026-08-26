@@ -20,6 +20,7 @@ from extensions.formula1.artwork import (
     branding_paths,
     country_flag_asset,
     fitted_font,
+    opaque_flag,
     svg_path_points,
 )
 from extensions.formula1.commons import (
@@ -28,26 +29,12 @@ from extensions.formula1.commons import (
     load_constructors,
     search_commons,
 )
+from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 4
+SHOW_RENDERER_VERSION = 5
 EPISODE_RENDERER_VERSION = 1
-
-SESSION_DATE_FIELDS = {
-    "warmup": "FirstPractice",
-    "practice1": "FirstPractice",
-    "practice2": "SecondPractice",
-    "practice3": "ThirdPractice",
-    "sprint_qualifying": "SprintQualifying",
-    "pre_sprint": "Sprint",
-    "sprint": "Sprint",
-    "post_sprint": "Sprint",
-    "pre_qualifying": "Qualifying",
-    "qualifying": "Qualifying",
-    "post_qualifying": "Qualifying",
-}
-
 
 @dataclass(frozen=True)
 class ShowArtworkResult:
@@ -152,7 +139,7 @@ def _rounded_flag_badge(image, country, box):
     badge = Image.new("RGB", (width, height), (18, 19, 23))
     with Image.open(flag_path) as source:
         flag = ImageOps.contain(
-            source.convert("RGB"),
+            opaque_flag(source),
             (max(1, width - padding * 2), max(1, height - padding * 2)),
             Image.Resampling.LANCZOS,
         )
@@ -397,9 +384,7 @@ def render_episode_poster(episode, race, path_data, photo_path, config, destinat
         font=detail_font,
         fill=(225, 226, 230, 225),
     )
-    session_field = SESSION_DATE_FIELDS.get(episode.program_kind)
-    date = race.session_dates.get(session_field) if session_field else None
-    date = date or race.race_date
+    date, _session_field = session_date(episode, race, config)
     if date:
         draw.text(
             (width * 0.045, height * 0.82),

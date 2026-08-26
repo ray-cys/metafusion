@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import re
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -18,6 +20,7 @@ from extensions.formula1.artwork import (
     FLAG_ALPHA,
     FLAG_ASSET_ROOT,
     RENDERER_VERSION,
+    _country_flag_codes,
     _country_key,
     _fit,
     _flag_overlay,
@@ -59,6 +62,7 @@ from extensions.formula1.inventory import (
     canonical_program,
     discover_formula1_inventory,
     event_matches_schedule,
+    match_event_to_schedule,
     parse_episode_filename,
 )
 from extensions.formula1.logging import create_formula1_logger, run_identifier
@@ -87,6 +91,7 @@ from extensions.formula1.runner import (
     partition_formula1_sections,
     run_formula1_extension,
 )
+from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import ShowArtworkResult
 from extensions.formula1.state import Formula1State, Formula1StateError
 from extensions.formula1.verification import (
@@ -197,11 +202,24 @@ class Session:
         if "api.github.com" in url:
             return Response(payload=self.manifest)
         if "formula1.com" in url:
-            is_calendar = url.rstrip("/").endswith("/2026")
+            is_calendar = bool(re.search(r"/\d{4}$", url.rstrip("/")))
             return Response(text=self.calendar if is_calendar else self.facts)
         if url.endswith(".svg"):
             return Response(text=self.svg)
         return Response(payload=self.schedule)
+
+
+class MultiYearSession(Session):
+    def __init__(self, schedules, svg, **kwargs):
+        super().__init__({}, svg, **kwargs)
+        self.schedules = schedules
+
+    def get(self, url, **kwargs):
+        match = re.search(r"/(\d{4})\.json$", url)
+        if match:
+            payload = self.schedules.get(int(match.group(1)))
+            return Response(payload=payload) if payload is not None else Response(404)
+        return super().get(url, **kwargs)
 
 
 @pytest.fixture
@@ -285,6 +303,14 @@ def test_config_is_private_validated_and_dry_run_safe(tmp_path, core):
         ("providers:\n  cache_hours: nope\n", "numeric"),
         ("library:\n  name: '  '\n", "must not be empty"),
         ("library:\n  naming_profile: bad\n", "naming_profile"),
+        ("sessions:\n  aliases: []\n", "sessions.aliases"),
+        ("sessions:\n  aliases:\n    New Session: invalid\n", "must contain title"),
+        (
+            "sessions:\n  aliases:\n    New Session:\n      title: ''\n      kind: other\n",
+            "non-empty title",
+        ),
+        ("sessions:\n  date_fields: []\n", "sessions.date_fields"),
+        ("sessions:\n  date_fields:\n    other: ''\n", "keys and values"),
         ("artwork:\n  policy: overwrite\n", "policy"),
         ("providers:\n  jolpica_url: http://unsafe\n", "jolpica"),
         ("providers:\n  formula1_url: http://unsafe\n", "formula1_url"),
@@ -377,6 +403,74 @@ def test_event_schedule_match_and_unknown_program_warning(
     )
     assert result.shows[0].episodes[0].program_kind == "other"
     assert any("Unrecognized programme label" in issue for issue in result.issues)
+
+
+def test_future_event_identity_flags_and_dynamic_session(tmp_path, core, schedule_payload):
+    payload = yaml.safe_load(yaml.safe_dump(schedule_payload))
+    race_payload = payload["MRData"]["RaceTable"]["Races"][0]
+    race_payload.update(
+        round="1",
+        raceName="Turkish Grand Prix",
+        date="2031-03-03",
+        PracticeFour={"date": "2031-03-01"},
+    )
+    race_payload["Circuit"] = {
+        "circuitId": "istanbul",
+        "circuitName": "Istanbul Park",
+        "Location": {"locality": "Istanbul", "country": "Türkiye"},
+    }
+    race = parse_schedule(payload, 2031)[0]
+    decision = match_event_to_schedule("Turkey Grand Prix", race)
+    assert decision.accepted and decision.confidence == 1.0
+    assert match_event_to_schedule(
+        "Turkey Grand Prix",
+        race,
+        {
+            "alias": decision.alias,
+            "scheduled_identity": decision.scheduled_identity,
+        },
+    ).reason == "learned binding"
+    fuzzy = SimpleNamespace(
+        name="New Harbour Grand Prix",
+        country="Exampleland",
+        locality="Port City",
+        circuit="New Harbour Circuit",
+        circuit_id="new_harbour",
+    )
+    assert match_event_to_schedule("New Harbor Grand Prix", fuzzy).accepted
+    blank = SimpleNamespace(name="", country="", locality="", circuit="", circuit_id="")
+    assert not match_event_to_schedule("Unknown", blank).accepted
+    assert country_flag_asset("Andorra").is_file()
+    assert country_flag_asset("Türkiye").is_file()
+
+    episode = SimpleNamespace(program_kind="other", program_title="Practice Four")
+    assert session_date(episode, race, {"sessions": {}}) == (
+        "2031-03-01",
+        "PracticeFour",
+    )
+    race.session_dates.update({"": "2031-02-28", "EmptyDate": ""})
+    assert session_date(SimpleNamespace(program_kind="other", program_title="No Match"), race, {}) == (
+        "2031-03-03",
+        "Race",
+    )
+
+
+def test_country_flag_catalog_missing_file_falls_back_to_core_aliases(monkeypatch, tmp_path):
+    monkeypatch.setattr(formula1_config_module, "Path", Path)
+    artwork_module = __import__("extensions.formula1.artwork", fromlist=["FLAG_ASSET_ROOT"])
+    monkeypatch.setattr(artwork_module, "FLAG_ASSET_ROOT", tmp_path)
+    assert _country_flag_codes()["usa"] == "us"
+
+
+def test_formula1_provider_replay_corpus():
+    fixture = Path("tests/fixtures/provider_replays/formula1-provider-cases.json")
+    replay = json.loads(fixture.read_text(encoding="utf-8"))
+    assert parse_event_slugs(replay["calendar"], 2031) == ["turkiye", "new-harbour"]
+    for case in replay["event_pages"]:
+        facts = parse_official_facts(case["document"])
+        assert facts.circuit_length_km == case["length"], case["name"]
+        assert facts.lap_count == case["laps"], case["name"]
+        assert facts.race_distance_km == case["distance"], case["name"]
 
 
 @pytest.mark.parametrize(
@@ -1194,7 +1288,7 @@ def test_artwork_path_commands_fonts_logo_and_fallback(
 
 
 def test_country_flag_background_resolution_and_visual_structure(tmp_path, monkeypatch):
-    assert RENDERER_VERSION == 5
+    assert RENDERER_VERSION == 6
     for code in set(COUNTRY_FLAG_CODES.values()):
         with Image.open(FLAG_ASSET_ROOT / f"{code}.png") as flag:
             flag.verify()
@@ -1405,6 +1499,121 @@ def test_runner_end_to_end_isolated_outputs(tmp_path, core, schedule_payload):
     )
     assert missing["issues"] == 1
     assert Path(missing["issue_report"]).exists()
+
+
+def test_future_championship_rollover_is_end_to_end_and_year_scoped(
+    tmp_path, core, schedule_payload
+):
+    future = yaml.safe_load(yaml.safe_dump(schedule_payload))
+    race = future["MRData"]["RaceTable"]["Races"][0]
+    race.update(
+        round="1",
+        raceName="Turkish Grand Prix",
+        date="2031-03-03",
+        PracticeFour={"date": "2031-03-01"},
+    )
+    race["Circuit"] = {
+        "circuitId": "istanbul",
+        "circuitName": "Istanbul Park",
+        "Location": {"locality": "Istanbul", "country": "Türkiye"},
+    }
+    base = tmp_path / "config"
+    private = base / "formula1"
+    private.mkdir(parents=True)
+    (private / "formula1.yml").write_text(
+        "show_artwork:\n  enabled: false\n"
+        "sessions:\n"
+        "  aliases:\n"
+        "    Hyper Practice:\n"
+        "      title: Hyper Practice\n"
+        "      kind: practice4\n"
+        "  date_fields:\n"
+        "    practice4: PracticeFour\n",
+        encoding="utf-8",
+    )
+    media = tmp_path / "S01E01 - Turkey Grand Prix - Hyper Practice.mkv"
+    section = Section(
+        "Formula 1", [Show("Formula 1 (2031)", [Season(1, [Episode(1, media)])])]
+    )
+    facts = (
+        r'\"trackLength\":\"5.338\",'
+        r'\"scheduledLapCount\":\"58\",'
+        r'\"scheduledDistance\":\"309.604\",'
+        r'\"circuitOfficialName\":\"Istanbul Park\",'
+        r'\"meetingLocation\":\"Istanbul\"'
+    )
+    summary = asyncio.run(
+        run_formula1_extension(
+            [section],
+            core,
+            Session(
+                future,
+                '<svg><path d="M0 0 L100 0 L100 100 Z"/></svg>',
+                calendar='<a href="/en/racing/2031/turkiye">Türkiye</a>',
+                facts=facts,
+            ),
+            logging.getLogger("future-year"),
+            base_config_dir=base,
+        )
+    )
+    assert summary["schedules_pending"] == 0
+    assert summary["event_identities_learned"] == 1
+    assert summary["episodes"] == 1
+    output = yaml.safe_load(
+        (tmp_path / "kometa/metadata/formula1_2031.yml").read_text(encoding="utf-8")
+    )
+    show = output["metadata"]["F1 2031"]
+    assert show["summary"] == "The 2031 FIA Formula One World Championship."
+    assert show["seasons"][1]["episodes"][1]["originally_available"] == "2031-03-01"
+    assert (tmp_path / "kometa/assets/formula1/rounds/2031/round-01/poster.png").is_file()
+    state = Formula1State(base / "formula1/cache/formula1.sqlite3")
+    learned = state.event_identity(2031, 1, "turkish")
+    state.close()
+    assert learned and learned["scheduled_identity"] == "turkish"
+
+
+def test_unpublished_future_schedule_is_deferred_without_cleanup(
+    tmp_path, core, schedule_payload
+):
+    base = tmp_path / "config"
+    config = load_formula1_config(core, base)
+    state = Formula1State(config["paths"]["database"])
+    state.bind(
+        "2032:r01:e01",
+        "future-episode",
+        "/media/future.mkv",
+        "Future Grand Prix - Race",
+        "current",
+    )
+    state.close()
+    (base / "formula1/formula1.yml").write_text(
+        "show_artwork:\n  enabled: false\n", encoding="utf-8"
+    )
+    media = tmp_path / "S01E01 - Future Grand Prix - Race.mkv"
+    ready_media = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
+    section = Section(
+        "Formula 1",
+        [
+            Show("Formula 1 (2032)", [Season(1, [Episode(1, media)])], key="pending"),
+            Show("Formula 1 (2031)", [Season(1, [Episode(1, ready_media)])], key="ready"),
+        ],
+    )
+    summary = asyncio.run(
+        run_formula1_extension(
+            [section],
+            core,
+            MultiYearSession({2031: schedule_payload}, ""),
+            logging.getLogger("pending-year"),
+            base_config_dir=base,
+        )
+    )
+    assert summary["schedules_pending"] == 1
+    assert summary["episodes"] == 1
+    assert (tmp_path / "kometa/metadata/formula1_2031.yml").is_file()
+    state = Formula1State(config["paths"]["database"])
+    assert "2032:r01:e01" in state.bindings()
+    assert state.connection.execute("SELECT COUNT(*) FROM cleanup_candidates").fetchone()[0] == 0
+    state.close()
 
 
 def test_runner_adoption_dry_run_disabled_outputs_and_failure(tmp_path, core, schedule_payload):

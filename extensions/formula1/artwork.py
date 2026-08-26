@@ -13,58 +13,45 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from helper.io import atomic_replace_file
 
 FILE_MODE = 0o664
-RENDERER_VERSION = 5
+RENDERER_VERSION = 6
 TOKENS = re.compile(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
 FLAG_ASSET_ROOT = Path(__file__).with_name("assets") / "flags"
 FLAG_ALPHA = round(255 * 0.78)
-COUNTRY_FLAG_CODES = {
-    "argentina": "ar",
-    "australia": "au",
-    "austria": "at",
-    "azerbaijan": "az",
-    "bahrain": "bh",
-    "belgium": "be",
-    "brazil": "br",
-    "canada": "ca",
-    "china": "cn",
-    "france": "fr",
-    "germany": "de",
-    "great britain": "gb",
-    "hungary": "hu",
-    "india": "in",
-    "italy": "it",
-    "japan": "jp",
-    "korea": "kr",
-    "malaysia": "my",
-    "mexico": "mx",
-    "monaco": "mc",
-    "morocco": "ma",
-    "netherlands": "nl",
-    "portugal": "pt",
-    "qatar": "qa",
-    "russia": "ru",
-    "saudi arabia": "sa",
-    "singapore": "sg",
-    "south africa": "za",
-    "south korea": "kr",
-    "spain": "es",
-    "sweden": "se",
-    "switzerland": "ch",
-    "turkey": "tr",
-    "turkiye": "tr",
-    "uae": "ae",
-    "uk": "gb",
-    "united arab emirates": "ae",
-    "united kingdom": "gb",
-    "united states": "us",
-    "united states of america": "us",
-    "us": "us",
-    "usa": "us",
-}
 def _country_key(country):
     normalized = unicodedata.normalize("NFKD", str(country or ""))
     ascii_country = normalized.encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z]+", " ", ascii_country.casefold()).strip()
+
+
+def _country_flag_codes():
+    source = FLAG_ASSET_ROOT / "countries.json"
+    try:
+        countries = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        countries = {}
+    codes = {
+        _country_key(name): str(code).casefold()
+        for code, name in countries.items()
+        if _country_key(name)
+    }
+    codes.update(
+        {
+            "great britain": "gb",
+            "korea": "kr",
+            "south korea": "kr",
+            "turkey": "tr",
+            "turkiye": "tr",
+            "uae": "ae",
+            "uk": "gb",
+            "united states of america": "us",
+            "us": "us",
+            "usa": "us",
+        }
+    )
+    return codes
+
+
+COUNTRY_FLAG_CODES = _country_flag_codes()
 
 
 def country_flag_asset(country):
@@ -76,10 +63,18 @@ def country_flag_asset(country):
     return candidate if candidate.is_file() else None
 
 
+def opaque_flag(flag):
+    """Flatten palette transparency onto white without Pillow palette warnings."""
+    rgba = flag.convert("RGBA")
+    canvas = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    canvas.alpha_composite(rgba)
+    return canvas.convert("RGB")
+
+
 def _flag_overlay(flag, width, height):
     """Fit an authentic, undistorted flag into the upper poster field."""
     fitted = ImageOps.contain(
-        flag.convert("RGB"),
+        opaque_flag(flag),
         (max(1, round(width * 0.88)), max(1, round(height * 0.47))),
         method=Image.Resampling.LANCZOS,
     )

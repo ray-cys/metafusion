@@ -86,6 +86,11 @@ def test_provider_canary_redacts_keys_and_supports_unconfigured_tmdb(monkeypatch
         "run_fanart",
         lambda key: [{"provider": "Fanart.tv", "check": "sample", "status": 200}],
     )
+    monkeypatch.setattr(
+        canary,
+        "run_formula1",
+        lambda: [{"provider": "Jolpica", "check": "sample", "status": 200}],
+    )
     assert canary.main(["--output", str(output)]) == 0
     rendered = output.read_text(encoding="utf-8")
     assert "tmdb-secret" not in rendered
@@ -96,6 +101,50 @@ def test_provider_canary_redacts_keys_and_supports_unconfigured_tmdb(monkeypatch
     assert canary.main(["--output", str(output), "--require-tmdb"]) == 1
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["providers"][0]["status"] == "not_configured"
+
+
+def test_provider_canary_validates_formula1_provider_surface(monkeypatch):
+    canary = _load_script("provider_canary.py")
+    year = canary.datetime.now(canary.timezone.utc).year
+
+    def fake_json(provider, _path, **_kwargs):
+        if provider.startswith("Jolpica"):
+            return (
+                200,
+                {
+                    "MRData": {
+                        "RaceTable": {
+                            "Races": [
+                                {
+                                    "round": "1",
+                                    "raceName": "Example Grand Prix",
+                                    "Circuit": {"circuitId": "example"},
+                                }
+                            ]
+                        }
+                    }
+                },
+                {},
+                0.01,
+            )
+        return 200, {"query": {"pages": [{"pageid": 1}]}}, {}, 0.01
+
+    def fake_request(provider, _path, **_kwargs):
+        if provider.startswith("Formula1.com"):
+            return 200, f'<a href="/en/racing/{year}/example">Race</a>'.encode(), {}, 0.01
+        return 200, b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+            "Content-Type": "image/svg+xml"
+        }, 0.01
+
+    monkeypatch.setattr(canary, "_request_json", fake_json)
+    monkeypatch.setattr(canary, "_request", fake_request)
+    checks = canary.run_formula1()
+    assert [check["provider"] for check in checks] == [
+        "Jolpica",
+        "Formula1.com",
+        "f1-circuits-svg",
+        "Wikimedia Commons",
+    ]
 
 
 def test_state_recovery_drill_restores_and_survives_interruption(tmp_path):

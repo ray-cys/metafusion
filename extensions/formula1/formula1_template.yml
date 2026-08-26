@@ -6,6 +6,24 @@ library:
   name: Formula 1
   naming_profile: auto
 
+# Optional aliases let an unfamiliar broadcast label use a newly published
+# provider session without a code release. Unknown labels remain visible in the
+# issue report and are otherwise preserved safely.
+sessions:
+  aliases: {}
+  date_fields:
+    warmup: FirstPractice
+    practice1: FirstPractice
+    practice2: SecondPractice
+    practice3: ThirdPractice
+    sprint_qualifying: SprintQualifying
+    pre_sprint: Sprint
+    sprint: Sprint
+    post_sprint: Sprint
+    pre_qualifying: Qualifying
+    qualifying: Qualifying
+    post_qualifying: Qualifying
+
 metadata:
   enabled: true
   original_title: Formula Internationale

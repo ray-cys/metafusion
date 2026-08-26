@@ -18,6 +18,7 @@ PROVIDER = "wikimedia-commons"
 ROSTER_PROVIDER = "jolpica"
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 COMMONS_REQUEST_INTERVAL_SECONDS = 1.0
+COMMONS_PAGE_LIMIT = 3
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 REJECTED_WORDS = {
     "diecast",
@@ -241,9 +242,11 @@ async def load_constructors(session, state, config, year, logger):
         return parse_constructor_payload(stale), "stale-cache"
 
 
-def _commons_search_url(config, year, constructor, *, broad=False):
+def _commons_search_url(
+    config, year, constructor, *, broad=False, identity=None, offset=None
+):
     aliases = sorted(_constructor_aliases(constructor), key=lambda value: (len(value), value))
-    identity = SEARCH_ALIASES.get(constructor.constructor_id) or (
+    identity = identity or SEARCH_ALIASES.get(constructor.constructor_id) or (
         aliases[0] if aliases else constructor.name
     )
     query = f'intitle:{int(year)} intitle:"{identity}"'
@@ -263,6 +266,8 @@ def _commons_search_url(config, year, constructor, *, broad=False):
         "cllimit": "max",
         "maxlag": "5",
     }
+    if offset is not None:
+        parameters["gsroffset"] = str(offset)
     return f"{config['providers']['commons_url']}?{urlencode(parameters)}"
 
 
@@ -300,20 +305,48 @@ async def _commons_json(session, url, retries):
 
 
 async def search_commons(session, state, config, year, constructor, roster, logger):
-    key = f"search:{int(year)}:{constructor.constructor_id}"
+    key = f"search:v2:{int(year)}:{constructor.constructor_id}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
         return parse_commons_candidates(cached, year, constructor, roster, config), "cache"
     try:
         pages: list[dict] = []
         payload = {"query": {"pages": pages}}
-        for broad in (False, True):
-            response = await _commons_json(
-                session,
-                _commons_search_url(config, year, constructor, broad=broad),
-                config["providers"]["retries"],
+        identities = list(
+            dict.fromkeys(
+                value
+                for value in (
+                    SEARCH_ALIASES.get(constructor.constructor_id),
+                    constructor.name,
+                    constructor.constructor_id.replace("_", " "),
+                )
+                if value
             )
-            pages.extend(_candidate_pages(response))
+        )
+        for identity in identities:
+            for broad in (False, True):
+                offset = None
+                for _page in range(COMMONS_PAGE_LIMIT):
+                    response = await _commons_json(
+                        session,
+                        _commons_search_url(
+                            config,
+                            year,
+                            constructor,
+                            broad=broad,
+                            identity=identity,
+                            offset=offset,
+                        ),
+                        config["providers"]["retries"],
+                    )
+                    pages.extend(_candidate_pages(response))
+                    if parse_commons_candidates(payload, year, constructor, roster, config):
+                        break
+                    offset = (response.get("continue") or {}).get("gsroffset")
+                    if offset is None:
+                        break
+                if parse_commons_candidates(payload, year, constructor, roster, config):
+                    break
             if parse_commons_candidates(payload, year, constructor, roster, config):
                 break
         state.cache_put(

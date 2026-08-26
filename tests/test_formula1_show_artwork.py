@@ -284,6 +284,19 @@ def test_commons_identity_licence_and_payload_filtering(config):
     assert parse_commons_candidates({"query": {"pages": "bad"}}, 2026, roster[0], roster, config) == []
 
 
+def test_future_constructor_identity_requires_no_hard_coded_alias(config):
+    constructor = ConstructorData("nova_racing", "Nova Racing Formula One Team")
+    payload = _commons_payload(team="Nova Racing", constructor_id="nova_racing")
+    page = payload["query"]["pages"][0]
+    page["title"] = "File:2031 New Harbour GP - Nova Racing - Qualifying.jpg"
+    page["categories"] = [{"title": "Category:2031 Formula One cars"}]
+    page["imageinfo"][0]["extmetadata"]["ImageDescription"] = {
+        "value": "Nova Racing at the 2031 New Harbour Grand Prix"
+    }
+    candidates = parse_commons_candidates(payload, 2031, constructor, [constructor], config)
+    assert candidates and candidates[0].constructor_id == "nova_racing"
+
+
 def test_commons_provider_cache_stale_and_url(config):
     state = Formula1State(config["paths"]["database"])
     session = CommonsSession()
@@ -307,6 +320,9 @@ def test_commons_provider_cache_stale_and_url(config):
     )[1] == "cache"
     assert "gsrsearch" in _commons_search_url(config, 2026, roster[0])
     assert "intitle%3AGP" not in _commons_search_url(config, 2026, roster[0], broad=True)
+    assert "gsroffset=30" in _commons_search_url(
+        config, 2026, roster[0], broad=True, offset=30
+    )
     state.connection.execute("UPDATE provider_cache SET expires_at='2020-01-01T00:00:00+00:00'")
     state.connection.commit()
     stale_roster, source = asyncio.run(
@@ -498,7 +514,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.size == (1280, 720)
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 4
+    assert SHOW_RENDERER_VERSION == 5
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(

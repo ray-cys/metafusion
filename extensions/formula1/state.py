@@ -129,6 +129,16 @@ class Formula1State:
                     title TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS event_identity_bindings (
+                    season_year INTEGER NOT NULL,
+                    round_number INTEGER NOT NULL,
+                    alias TEXT NOT NULL,
+                    scheduled_identity TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (season_year, round_number, alias)
+                );
                 CREATE TABLE IF NOT EXISTS episode_round_sources (
                     season_year INTEGER NOT NULL,
                     round_number INTEGER NOT NULL,
@@ -349,6 +359,48 @@ class Formula1State:
                      title=excluded.title,
                      updated_at=excluded.updated_at""",
                 (int(season_year), str(rating_key), str(title), current),
+            )
+
+    def event_identity(self, season_year, round_number, alias):
+        row = self.connection.execute(
+            """SELECT * FROM event_identity_bindings
+               WHERE season_year=? AND round_number=? AND alias=?""",
+            (int(season_year), int(round_number), str(alias)),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def bind_event_identity(
+        self,
+        season_year,
+        round_number,
+        alias,
+        scheduled_identity,
+        confidence,
+        reason,
+        *,
+        now=None,
+    ):
+        current = (now or utc_now()).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO event_identity_bindings(
+                       season_year, round_number, alias, scheduled_identity,
+                       confidence, reason, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(season_year, round_number, alias) DO UPDATE SET
+                     scheduled_identity=excluded.scheduled_identity,
+                     confidence=excluded.confidence,
+                     reason=excluded.reason,
+                     updated_at=excluded.updated_at""",
+                (
+                    int(season_year),
+                    int(round_number),
+                    str(alias),
+                    str(scheduled_identity),
+                    float(confidence),
+                    str(reason),
+                    current,
+                ),
             )
 
     def episode_round_source(self, season_year, round_number):

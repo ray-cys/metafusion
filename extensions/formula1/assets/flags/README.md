@@ -1,11 +1,14 @@
 # Formula 1 host-country flags
 
-These PNG renders were generated from the ISO-coded SVG sources in
+These PNG renders come from the published `svg-country-flags` package generated
+from the ISO-coded SVG sources in
 [`hampusborgos/country-flags`](https://github.com/hampusborgos/country-flags).
 That project documents national flags as public domain, while noting that local
 laws may impose restrictions on flag use.
 
-Source revision: `c09927e63705529bbf59ca6684cd9b23225dddad`.
+Published package: `svg-country-flags` 1.2.10. The included `countries.json`
+provides the matching ISO identity catalogue.
 
-Only current and historical Formula 1 host-country flags are bundled. Runtime
-poster generation does not download flag assets.
+The complete published flag set is bundled so a future host country does not
+require an annual code or asset update. Runtime poster generation does not
+download flag assets.

@@ -6,21 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from extensions.formula1.sessions import session_date
 from modules.kometa import merge_generated_metadata, write_kometa_metadata
-
-PROGRAM_DATE_FIELDS = {
-    "warmup": "FirstPractice",
-    "practice1": "FirstPractice",
-    "practice2": "SecondPractice",
-    "practice3": "ThirdPractice",
-    "sprint_qualifying": "SprintQualifying",
-    "sprint": "Sprint",
-    "post_sprint": "Sprint",
-    "pre_sprint": "Sprint",
-    "pre_qualifying": "Qualifying",
-    "qualifying": "Qualifying",
-    "post_qualifying": "Qualifying",
-}
 
 SHOW_FIELD_ORDER = (
     "match",
@@ -207,9 +194,7 @@ def build_show_entry(
         race = by_round.get(episode.round_number)
         if race is None:
             continue
-        session_field = PROGRAM_DATE_FIELDS.get(episode.program_kind)
-        available = race.session_dates.get(session_field) if session_field else None
-        available = available or race.race_date
+        available, _session_field = session_date(episode, race, config)
         generated_episode = {
             "title": episode.program_title,
             "originally_available": available,

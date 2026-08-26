@@ -96,6 +96,18 @@ to the same year, the run stops during preflight before any YAML, artwork,
 binding, or cleanup change. This prevents two Plex identities from competing
 for `formula1_<year>.yml`.
 
+Championship discovery is not tied to 2026. A plausible four-digit year is read
+from the Plex show title, with the Plex year as a fallback. Provider existence,
+not a rolling `current year + N` limit, decides whether that season is ready. A
+new `Formula 1 (2027)` or later show is handled after Plex exposes its first valid
+episode. MetaFusion does not create empty Plex shows or calendar-only rounds.
+
+If Plex exposes a future championship before its schedule is published, that
+year is marked **schedule pending**. Existing YAML, artwork, bindings,
+verification work, and cleanup authority for that year are preserved; other
+championship years continue normally. The pending year retries automatically on
+every later scheduled run.
+
 The top-level YAML mapping is permanently named `F1 <year>`, even after Kometa
 changes the Plex display title. MetaFusion emits a `match.title` list containing
 both `F1 <year>` and `Formula 1 (<year>)`, plus any currently discovered Plex
@@ -128,8 +140,23 @@ MetaFusion generates the canonical and sort titles, original title, show
 availability date, content rating, studio, tagline, year-aware championship
 summary, and `Sport` genre. It does not generate `visible_library`. Show fields
 are written before `seasons`; season fields are written before `episodes`; and
-`match` is always first. Session dates use provider schedule fields
-when available and fall back to the race date. Circuit length, scheduled race
+`match` is always first. Session dates use every date-bearing provider schedule
+field rather than a fixed annual schema. Known programmes use
+`sessions.date_fields`; an unfamiliar programme is conservatively compared with
+new provider session keys and otherwise falls back to the race date while being
+reported. Broadcaster-specific labels can be configured without code:
+
+```yaml
+sessions:
+  aliases:
+    Hyper Practice:
+      title: Hyper Practice
+      kind: practice4
+  date_fields:
+    practice4: PracticeFour
+```
+
+Circuit length, scheduled race
 distance, and scheduled lap count are taken from the matching official event
 page and cross-validated before use. Each round and episode summary states the
 validated values as one sentence: the circuit length, scheduled lap count, and
@@ -151,9 +178,9 @@ files.
 
 Artwork is deterministic. It combines schedule/circuit facts, a translucent
 host-country flag, circuit outline, race title, circuit, locality, weekend date,
-and a Sprint marker. Public-domain flag assets are bundled for current and
-historical Formula 1 host countries, so rendering does not add a runtime network
-dependency. Every poster uses a neutral charcoal technical canvas rather than
+and a Sprint marker. The complete published public-domain ISO flag catalogue is
+bundled, so a new host country requires no annual asset update or runtime network
+request. Every poster uses a neutral charcoal technical canvas rather than
 recolouring the canvas from the host flag. The complete flag is proportionally
 fitted into the upper field and softly feathered without changing its geometry or
 mixing its white areas with a country-coloured background. Circles remain round,
@@ -322,15 +349,36 @@ may use an explicitly logged stale cache during a temporary outage. Missing
 schedule identity prevents that round from being written rather than guessing.
 
 Current-season car photographs come from the Wikimedia Commons API without an
-API key. MetaFusion discovers the live constructor roster from Jolpica, searches
-each constructor dynamically, and requires the season year plus an unambiguous
-team identity in the Commons file title. It rejects historic cars, models,
+API key. MetaFusion discovers the live constructor roster from Jolpica and uses
+bounded paginated searches derived from the current constructor name, ID, and
+known renamed-team aliases. It requires the season year plus an unambiguous team
+identity in the Commons file title. It rejects historic cars, models,
 sculptures, safety cars, portraits, undersized or portrait images, ambiguous
 teams, non-image responses, corrupt or blank files, and incompatible licences.
 Accepted licences are Public Domain, CC0, and attribution-only CC BY variants;
 ShareAlike, NonCommercial, and NoDerivatives media are not used by the automatic
 renderer. Downloaded pixels are decoded and checked for dimensions, aspect ratio,
 visual content, and sharpness before being cached under `/config/formula1/cache`.
+If no qualifying reusable image has been published yet, the previous safe pair
+is preserved and the unresolved round retries after cache expiry.
+
+Race identity matching is schedule-derived and explainable. It considers the
+official race name, country and demonym, locality, circuit name, and circuit ID,
+requires an exact or high-confidence result, and stores accepted year/round
+bindings in the private SQLite database. A changed scheduled identity invalidates
+an older learned binding. This handles identities such as `Turkey`, `Türkiye`,
+and `Turkish Grand Prix` while still rejecting a filename assigned to the wrong
+round.
+
+The daily live-provider canary checks Jolpica schedule identity, Formula1.com
+calendar-link markup, a circuit SVG, and current-season Wikimedia Commons search.
+Fixture replays cover structured and visible-HTML Formula1.com fact layouts. A
+provider change fails GitHub Actions and uses normal repository notifications;
+it never edits runtime data or opens an automatic compatibility PR.
+
+Future-season regression coverage creates a synthetic later championship with a
+new race identity, circuit, country spelling, and session field, then verifies
+independent YAML, artwork, SQLite state, learned identity, and session dating.
 
 For every retained generated show pair and persistent episode-round source, the
 TXT and JSON attribution reports record the asset scope, Commons page, source

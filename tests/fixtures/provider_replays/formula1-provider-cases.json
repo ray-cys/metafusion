@@ -1,0 +1,19 @@
+{
+  "calendar": "<a href=\"/en/racing/2031/turkiye\">Türkiye</a><a href=\"/en/racing/2031/new-harbour\">New Harbour</a>",
+  "event_pages": [
+    {
+      "name": "structured-current",
+      "document": "\\\"trackLength\\\":\\\"5.338\\\",\\\"scheduledLapCount\\\":\\\"58\\\",\\\"scheduledDistance\\\":\\\"309.604\\\",\\\"circuitOfficialName\\\":\\\"Istanbul Park\\\",\\\"meetingLocation\\\":\\\"Istanbul\\\",\\\"heading\\\":\\\"When was it built?\\\",\\\"content\\\":\\\"The purpose-built venue opened in 2005.\\\",\\\"heading\\\":\\\"When was its first Grand Prix?\\\",\\\"content\\\":\\\"The circuit first hosted a Grand Prix in 2005.\\\",\\\"heading\\\":\\\"What’s the circuit like?\\\",\\\"content\\\":\\\"A fast, flowing circuit with a long straight.\\\"",
+      "length": 5.338,
+      "laps": 58,
+      "distance": 309.604
+    },
+    {
+      "name": "visible-html-fallback",
+      "document": "<dl><dt>Circuit Length</dt><dd>4.321 km</dd><dt>Number of Laps</dt><dd>70</dd><dt>Race Distance</dt><dd>302.470 km</dd></dl>",
+      "length": 4.321,
+      "laps": 70,
+      "distance": 302.47
+    }
+  ]
+}

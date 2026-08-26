@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from extensions.formula1.sessions import DEFAULT_DATE_FIELDS, normalize_session
 from helper.io import atomic_replace_file
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -120,6 +121,38 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     if profile not in {"auto", "current", "kometa"}:
         raise Formula1ConfigError("library.naming_profile must be auto, current, or kometa")
     library["naming_profile"] = profile
+
+    sessions = config.setdefault("sessions", {})
+    raw_aliases = sessions.get("aliases", {})
+    raw_aliases = {} if raw_aliases is None else raw_aliases
+    if not isinstance(raw_aliases, dict):
+        raise Formula1ConfigError("sessions.aliases must be a mapping")
+    aliases = {}
+    for label, value in raw_aliases.items():
+        if not isinstance(value, dict):
+            raise Formula1ConfigError(
+                f"sessions.aliases.{label} must contain title and kind"
+            )
+        title = str(value.get("title") or "").strip()
+        kind = str(value.get("kind") or "").strip()
+        if not title or not kind:
+            raise Formula1ConfigError(
+                f"sessions.aliases.{label} must contain non-empty title and kind"
+            )
+        aliases[normalize_session(label)] = {"title": title, "kind": kind}
+    sessions["aliases"] = aliases
+    raw_date_fields = sessions.get("date_fields", DEFAULT_DATE_FIELDS)
+    raw_date_fields = {} if raw_date_fields is None else raw_date_fields
+    if not isinstance(raw_date_fields, dict):
+        raise Formula1ConfigError("sessions.date_fields must be a mapping")
+    date_fields = dict(DEFAULT_DATE_FIELDS)
+    for kind, provider_field in raw_date_fields.items():
+        kind = str(kind).strip()
+        provider_field = str(provider_field).strip()
+        if not kind or not provider_field:
+            raise Formula1ConfigError("sessions.date_fields keys and values must be non-empty")
+        date_fields[kind] = provider_field
+    sessions["date_fields"] = date_fields
 
     artwork = config.setdefault("artwork", {})
     artwork["width"] = _bounded_int(artwork.get("width", 1000), "artwork.width", 600, 3000)

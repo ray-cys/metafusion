@@ -234,7 +234,7 @@ jobs:
       - name: Verify bundled Formula 1 flag assets
         run: |
           docker run --rm "metafusion-ci:${GITHUB_SHA}" \
-            python -c 'from extensions.formula1.artwork import country_flag_asset; assert country_flag_asset("Canada").is_file(); assert country_flag_asset("USA").is_file(); assert country_flag_asset("United Arab Emirates").is_file()'
+            python -c 'from extensions.formula1.artwork import COUNTRY_FLAG_CODES, country_flag_asset; assert len(COUNTRY_FLAG_CODES) >= 240; assert country_flag_asset("Canada").is_file(); assert country_flag_asset("Andorra").is_file(); assert country_flag_asset("Türkiye").is_file()'
 
       - name: Smoke test Unraid UID/GID remapping
         run: |

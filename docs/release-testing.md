@@ -132,6 +132,10 @@ latency, and retry behavior. Sanitized JSON is retained for 30 days. GitHub-
 hosted runners never contact a private Plex server. A relevant `develop` push
 runs the canary immediately; its daily schedule becomes active when the
 workflow reaches the default `main` branch and still checks out `develop`.
+The same bounded job also validates the current Jolpica Formula 1 schedule,
+Formula1.com calendar-link markup, one circuit SVG, and a current-season
+Wikimedia Commons search. These keyless checks detect extension provider drift
+without requiring another repository secret.
 
 `State and recovery drill` runs weekly against `develop` with synthetic data.
 It verifies cleanup confirmation/history, item exceptions, secret-redacted

@@ -14,7 +14,10 @@ from extensions.formula1.artwork import (
 )
 from extensions.formula1.config import formula1_requested, load_formula1_config
 from extensions.formula1.facts import enrich_race_facts
-from extensions.formula1.inventory import discover_formula1_inventory, event_matches_schedule
+from extensions.formula1.inventory import (
+    discover_formula1_inventory,
+    match_event_to_schedule,
+)
 from extensions.formula1.logging import create_formula1_logger, run_identifier
 from extensions.formula1.metadata import build_show_entry, write_show_metadata
 from extensions.formula1.provider import load_circuit_path, load_schedule
@@ -63,6 +66,8 @@ class Formula1Summary(TypedDict):
     issues: int
     cleanup_removed: int
     event_mismatches: int
+    schedules_pending: int
+    event_identities_learned: int
     branding_warnings: int
     verification_applied: int
     verification_partial: int
@@ -180,8 +185,27 @@ async def _prepare_plans(sections, core_config, session, state, config, logger, 
             f"One Plex show per Formula 1 championship year is required: {detail}"
         )
     plans = []
+    deferred_keys: set[str] = set()
     for show in shows:
-        races, source = await load_schedule(session, state, config, show.year, logger)
+        try:
+            races, source = await load_schedule(session, state, config, show.year, logger)
+        except RuntimeError as error:
+            summary["schedules_pending"] += 1
+            deferred_keys.update(
+                key
+                for key in state.bindings()
+                if key.startswith(f"{show.year}:r")
+            )
+            issues.append(
+                f"Schedule pending: {show.title} ({show.year}); existing output was "
+                f"preserved and the year will retry automatically: {error}"
+            )
+            logger.warning(
+                "[Provider] Schedule pending | Year: %d | Existing output: preserved | Error: %s",
+                show.year,
+                error,
+            )
+            continue
         logger.info(
             "[Provider] Schedule | Year: %d | Races: %d | Source: %s",
             show.year,
@@ -212,20 +236,37 @@ async def _prepare_plans(sections, core_config, session, state, config, logger, 
             race = race_by_round.get(episode.round_number)
             if race is None:
                 issues.append(f"No schedule match: {show.title} round {episode.round_number}")
-            elif not event_matches_schedule(episode.event_name, race):
+            else:
+                initial = match_event_to_schedule(episode.event_name, race)
+                learned = state.event_identity(
+                    show.year, episode.round_number, initial.alias
+                )
+                decision = match_event_to_schedule(episode.event_name, race, learned)
+            if race is not None and not decision.accepted:
                 summary["event_mismatches"] += 1
                 issues.append(
                     f"Filename event rejected: {show.title} S{episode.round_number:02d}"
                     f"E{episode.episode_number:02d} says {episode.event_name}; "
-                    f"scheduled round is {race.name}"
+                    f"scheduled round is {race.name}; confidence={decision.confidence:.3f}; "
+                    f"reason={decision.reason}"
                 )
-            else:
+            elif race is not None:
                 accepted.append(episode)
+                if learned is None and not config["dry_run"]:
+                    state.bind_event_identity(
+                        show.year,
+                        episode.round_number,
+                        decision.alias,
+                        decision.scheduled_identity,
+                        decision.confidence,
+                        decision.reason,
+                    )
+                    summary["event_identities_learned"] += 1
         show.episodes = accepted
         if accepted:
             plans.append((show, races, race_by_round))
     summary["shows"] = len(plans)
-    return plans
+    return plans, shows, deferred_keys
 
 
 async def run_formula1_extension(
@@ -276,6 +317,8 @@ async def run_formula1_extension(
         "issues": 0,
         "cleanup_removed": 0,
         "event_mismatches": 0,
+        "schedules_pending": 0,
+        "event_identities_learned": 0,
         "branding_warnings": 0,
         "verification_applied": 0,
         "verification_partial": 0,
@@ -292,15 +335,15 @@ async def run_formula1_extension(
         summary["branding_warnings"] = len(branding_warnings)
         for warning in branding_warnings:
             detail_logger.warning("[Branding] %s", warning)
-        plans = await _prepare_plans(
+        plans, discovered_shows, deferred_keys = await _prepare_plans(
             sections, core_config, session, state, config, detail_logger, summary, issues
         )
         shows = [plan[0] for plan in plans]
         current_keys = {
             episode.logical_key for show in shows for episode in show.episodes
-        }
+        } | deferred_keys
         verification_records, verification_report = await verify_due_applications(
-            state, shows, config, core_config, session, run_id, detail_logger
+            state, discovered_shows, config, core_config, session, run_id, detail_logger
         )
         summary["verification_applied"] = sum(
             record.get("status") == "applied" for record in verification_records
@@ -662,7 +705,7 @@ async def run_formula1_extension(
                 "Episode artwork created/updated/preserved/unchanged: %d/%d/%d/%d | "
                 "Circuit facts resolved/missing: %d/%d | Circuit profiles resolved/missing: "
                 "%d/%d | Event mismatches: %d | Verification applied/partial: %d/%d | "
-                "Issues: %d",
+                "Pending schedules: %d | Event identities learned: %d | Issues: %d",
                 summary["libraries"],
                 summary["shows"],
                 summary["episodes"],
@@ -684,6 +727,8 @@ async def run_formula1_extension(
                 summary["event_mismatches"],
                 summary["verification_applied"],
                 summary["verification_partial"],
+                summary["schedules_pending"],
+                summary["event_identities_learned"],
                 summary["issues"],
             )
         summary["log"] = str(log_path) if log_path else None

@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/scripts/provider_canary.py"
       - ".github/workflows/provider-canary.yml"
+      - "extensions/formula1/**"
       - "helper/provider_credentials.py"
   schedule:
     # 19:47 UTC is 03:47 Asia/Singapore the next day, after nightly reliability.

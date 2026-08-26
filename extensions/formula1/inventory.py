@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from helper.plex import plex_operation
 
-YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
+YEAR_PATTERN = re.compile(r"\b\d{4}\b")
 CURRENT_PATTERN = re.compile(
     r"^S(?P<season>\d{1,3})E(?P<episode>\d{1,3})\s*-\s*"
     r"(?P<event>.+?)\s*-\s*(?P<program>.+)$",
@@ -60,6 +62,30 @@ EVENT_ALIASES = {
     "netherlands": "Dutch",
     "united states": "United States",
     "usa": "United States",
+    "turkey": "Turkish",
+    "turkiye": "Turkish",
+}
+
+COUNTRY_IDENTITIES = {
+    "australia": {"australia", "australian"},
+    "austria": {"austria", "austrian"},
+    "azerbaijan": {"azerbaijan", "azerbaijani"},
+    "bahrain": {"bahrain", "bahraini"},
+    "belgium": {"belgium", "belgian"},
+    "brazil": {"brazil", "brazilian"},
+    "canada": {"canada", "canadian"},
+    "china": {"china", "chinese"},
+    "great britain": {"great britain", "britain", "british", "united kingdom", "uk"},
+    "hungary": {"hungary", "hungarian"},
+    "italy": {"italy", "italian"},
+    "japan": {"japan", "japanese"},
+    "mexico": {"mexico", "mexican", "mexico city"},
+    "netherlands": {"netherlands", "dutch", "holland"},
+    "saudi arabia": {"saudi arabia", "saudi arabian"},
+    "spain": {"spain", "spanish"},
+    "turkiye": {"turkiye", "turkey", "turkish"},
+    "united arab emirates": {"united arab emirates", "uae", "abu dhabi"},
+    "united states": {"united states", "usa", "us", "american", "miami", "las vegas"},
 }
 
 
@@ -97,6 +123,15 @@ class InventoryResult:
     profiles: dict[str, int] = field(default_factory=lambda: {"current": 0, "kometa": 0})
 
 
+@dataclass(frozen=True)
+class EventMatch:
+    accepted: bool
+    confidence: float
+    reason: str
+    alias: str
+    scheduled_identity: str
+
+
 def _words(value):
     value = re.sub(r"[._\\]+", " ", str(value))
     value = re.sub(r"\s+", " ", value).strip()
@@ -111,25 +146,92 @@ def canonical_event(value):
     return f"{canonical} Grand Prix"
 
 
-def canonical_program(value):
+def canonical_program(value, aliases=None):
     words = _words(value)
     key = re.sub(r"[^a-z0-9]+", " ", words.casefold()).strip()
-    if key in PROGRAM_ALIASES:
-        return PROGRAM_ALIASES[key]
+    combined = dict(PROGRAM_ALIASES)
+    combined.update(aliases or {})
+    if key in combined:
+        mapped = combined[key]
+        if isinstance(mapped, dict):
+            return str(mapped.get("title") or words), str(mapped.get("kind") or "other")
+        return tuple(mapped)
     title = " ".join(part.capitalize() for part in words.split())
     return title, "other"
 
 
-def event_matches_schedule(event_name, race):
-    """Require the filename event to agree with the authoritative scheduled round."""
-    expected = {
-        canonical_event(race.name).casefold(),
-        canonical_event(race.country).casefold(),
+def _identity(value):
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii").casefold()
+    value = re.sub(r"\b(?:grand prix|gp|circuit|international|autodrome)\b", " ", ascii_value)
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _country_family(country):
+    identity = _identity(country)
+    for canonical, values in COUNTRY_IDENTITIES.items():
+        normalized = {_identity(value) for value in values | {canonical}}
+        if identity in normalized:
+            return normalized
+    return {identity}
+
+
+def match_event_to_schedule(event_name, race, learned=None):
+    """Explain a conservative schedule-derived event identity decision."""
+    alias = _identity(event_name)
+    scheduled = _identity(race.name)
+    learned = learned or {}
+    if (
+        learned.get("alias") == alias
+        and learned.get("scheduled_identity") == scheduled
+    ):
+        return EventMatch(True, 1.0, "learned binding", alias, scheduled)
+
+    exact = {
+        scheduled,
+        _identity(race.country),
+        _identity(race.locality),
+        _identity(race.circuit),
+        _identity(race.circuit_id),
+        *(_country_family(race.country)),
     }
-    return canonical_event(event_name).casefold() in expected
+    exact.discard("")
+    if alias in exact:
+        return EventMatch(True, 1.0, "exact schedule identity", alias, scheduled)
+
+    alias_tokens = set(alias.split())
+    candidates = []
+    for expected in exact:
+        expected_tokens = set(expected.split())
+        overlap = len(alias_tokens & expected_tokens) / max(
+            min(len(alias_tokens), len(expected_tokens)), 1
+        )
+        similarity = SequenceMatcher(None, alias, expected).ratio()
+        candidates.append((max(overlap, similarity), expected))
+    candidates.sort(reverse=True)
+    if candidates and candidates[0][0] >= 0.86:
+        return EventMatch(
+            True,
+            round(candidates[0][0], 3),
+            f"high-confidence schedule alias for {candidates[0][1]}",
+            alias,
+            scheduled,
+        )
+    score = candidates[0][0] if candidates else 0.0
+    return EventMatch(False, round(score, 3), "no safe schedule identity", alias, scheduled)
 
 
-def parse_episode_filename(path, expected_season=None, expected_episode=None, profile="auto"):
+def event_matches_schedule(event_name, race):
+    return match_event_to_schedule(event_name, race).accepted
+
+
+def parse_episode_filename(
+    path,
+    expected_season=None,
+    expected_episode=None,
+    profile="auto",
+    session_aliases=None,
+):
     """Parse either supported naming convention and verify Plex numbering."""
     stem = Path(path).stem
     patterns = []
@@ -151,7 +253,7 @@ def parse_episode_filename(path, expected_season=None, expected_episode=None, pr
             raise ValueError(
                 f"filename episode {episode} does not match Plex episode {expected_episode}"
             )
-        title, kind = canonical_program(match.group("program"))
+        title, kind = canonical_program(match.group("program"), session_aliases)
         return {
             "season": season,
             "episode": episode,
@@ -165,7 +267,7 @@ def parse_episode_filename(path, expected_season=None, expected_episode=None, pr
 
 def _show_year(show):
     match = YEAR_PATTERN.search(str(getattr(show, "title", "")))
-    if match:
+    if match and 1950 <= int(match.group()) <= 2200:
         return int(match.group())
     year = getattr(show, "year", None)
     if year is not None and 1950 <= int(year) <= 2200:
@@ -189,6 +291,7 @@ async def discover_formula1_inventory(section, config, detail_logger):
     runtime = config.get("runtime", {})
     extension = config["formula1"]
     profile = extension.get("library", {}).get("naming_profile", "auto")
+    session_aliases = extension.get("sessions", {}).get("aliases", {})
     result = InventoryResult()
     shows = await plex_operation(
         lambda: list(section.all()), runtime, description=f"List Formula 1 library {section.title}"
@@ -237,6 +340,7 @@ async def discover_formula1_inventory(section, config, detail_logger):
                         expected_season=round_number,
                         expected_episode=episode_number,
                         profile=profile,
+                        session_aliases=session_aliases,
                     )
                 except ValueError as error:
                     result.issues.append(str(error))

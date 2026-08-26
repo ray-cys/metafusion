@@ -6,7 +6,6 @@ import asyncio
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 PROVIDER = "jolpica"
 SHAPE_PROVIDER = "f1-circuits-svg"
@@ -82,16 +81,9 @@ def parse_schedule(payload, year):
         except (KeyError, TypeError, ValueError):
             continue
         session_dates = {
-            name: value["date"]
-            for name in (
-                "FirstPractice",
-                "SecondPractice",
-                "ThirdPractice",
-                "SprintQualifying",
-                "Sprint",
-                "Qualifying",
-            )
-            if isinstance((value := race.get(name)), dict) and value.get("date")
+            str(name): str(value["date"])
+            for name, value in race.items()
+            if name != "Circuit" and isinstance(value, dict) and value.get("date")
         }
         parsed.append(
             RaceData(
@@ -113,8 +105,8 @@ def parse_schedule(payload, year):
 
 
 def _valid_year(year):
-    current = datetime.now(timezone.utc).year
-    return 1950 <= int(year) <= current + 2
+    """Accept plausible championship years; provider existence is authoritative."""
+    return 1950 <= int(year) <= 2200
 
 
 async def _response_json(response):
