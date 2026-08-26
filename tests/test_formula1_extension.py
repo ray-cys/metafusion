@@ -242,6 +242,7 @@ def schedule_payload():
                         "round": "1",
                         "raceName": "Australian Grand Prix",
                         "date": "2026-03-08",
+                        "time": "04:00:00Z",
                         "Sprint": {"date": "2026-03-07"},
                         "FirstPractice": {"date": "2026-03-06"},
                         "Qualifying": {"date": "2026-03-07"},
@@ -724,6 +725,7 @@ def test_provider_validates_caches_and_falls_back(tmp_path, core, schedule_paylo
         load_schedule(session, state, config, 2026, logging.getLogger("provider"))
     )
     assert source == "jolpica" and races[0].sprint
+    assert races[0].race_time_utc == "04:00:00Z"
     assert (
         asyncio.run(load_schedule(session, state, config, 2026, logging.getLogger("provider")))[1]
         == "cache"

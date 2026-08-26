@@ -37,6 +37,10 @@ from extensions.formula1.safety_car import (
     SafetyCarCandidate,
     _safety_car_category_url,
     _safety_car_search_url,
+    _solar_elevation,
+    classify_image_environment,
+    derive_race_environment,
+    environment_compatible,
     parse_safety_car_candidates,
     search_safety_cars,
 )
@@ -57,6 +61,7 @@ from extensions.formula1.show_artwork import (
     _prune_source_cache,
     _rounded_flag_badge,
     _safety_candidate_order,
+    _saliency_focal_point,
     _select_background_source,
     reconcile_episode_posters,
     reconcile_episode_round_artwork,
@@ -141,7 +146,8 @@ def _safety_car_payload(*, page_id=901, title=None, **overrides):
             "ImageDescription": {
                 "value": overrides.pop(
                     "description",
-                    "Official FIA Formula 1 safety car on track during the 2026 season",
+                    "Official FIA Formula 1 safety car on track at the 2026 "
+                    "Australian Grand Prix at Albert Park Grand Prix Circuit",
                 )
             },
             "Artist": {"value": overrides.pop("author", "Safety Photographer")},
@@ -399,7 +405,7 @@ def test_safety_car_search_cache_and_stale_fallback(config):
     candidates, source = asyncio.run(
         search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
     )
-    assert candidates and source == "wikimedia-commons-safety-car"
+    assert candidates and source == "wikimedia-commons-race-background"
     assert asyncio.run(
         search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
     )[1] == "cache"
@@ -442,10 +448,14 @@ def test_safety_car_selection_rejects_empty_and_invalid_sources(
         return [], "test"
 
     monkeypatch.setattr(show_artwork_module, "search_safety_cars", empty_search)
-    with pytest.raises(RuntimeError, match="no licensed current-season"):
+    with pytest.raises(RuntimeError, match="no licensed exact-event/circuit"):
         asyncio.run(
             _select_background_source(
-                None, state, config, 2026, None, 1, logging.getLogger("empty")
+                None, state, config, RaceData(
+                    2026, 1, "Australian Grand Prix", "albert_park",
+                    "Albert Park Grand Prix Circuit", "Melbourne", "Australia",
+                    "2026-03-08", None, -37.8, 144.9,
+                ), None, 1, logging.getLogger("empty")
             )
         )
 
@@ -462,10 +472,121 @@ def test_safety_car_selection_rejects_empty_and_invalid_sources(
     with pytest.raises(RuntimeError, match="invalid safety image"):
         asyncio.run(
             _select_background_source(
-                None, state, config, 2026, None, 1, logging.getLogger("invalid")
+                None, state, config, RaceData(
+                    2026, 1, "Australian Grand Prix", "albert_park",
+                    "Albert Park Grand Prix Circuit", "Melbourne", "Australia",
+                    "2026-03-08", None, -37.8, 144.9,
+                ), None, 1, logging.getLogger("invalid")
+            )
+        )
+
+    night_race = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+        circuit_profile="floodlit urban street circuit",
+        race_time_utc="12:00:00Z",
+    )
+    night_candidate = parse_safety_car_candidates(
+        _safety_car_payload(
+            title="File:2027 Singapore Grand Prix Formula 1 Safety Car at night.jpg",
+            description=(
+                "Formula 1 safety car at the floodlit 2027 Singapore Grand Prix "
+                "on the Marina Bay Street Circuit"
+            ),
+        ),
+        night_race,
+        config,
+    )[0]
+    bright = config["paths"]["show_image_cache"] / "daytime.jpg"
+    bright.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1600, 900), (220, 220, 220)).save(bright)
+
+    async def night_search(*_args, **_kwargs):
+        return [night_candidate], "test"
+
+    async def bright_image(*_args, **_kwargs):
+        return bright, "test"
+
+    monkeypatch.setattr(show_artwork_module, "search_safety_cars", night_search)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", bright_image)
+    with pytest.raises(RuntimeError, match="expected night scene"):
+        asyncio.run(
+            _select_background_source(
+                None, state, config, night_race, None, 18, logging.getLogger("mismatch")
             )
         )
     state.close()
+
+
+def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
+    singapore = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+        circuit_profile="A floodlit urban street circuit beside the harbour.",
+        race_time_utc="12:00:00Z",
+    )
+    environment = derive_race_environment(singapore)
+    assert environment.mode == "night"
+    assert "floodlit" in environment.scene_terms
+    assert _solar_elevation(replace(singapore, latitude=None)) is None
+    assert _solar_elevation(replace(singapore, race_time_utc="not-a-time")) is None
+
+    exact = _safety_car_payload(
+        title="File:2027 Singapore Grand Prix Formula 1 Safety Car at night.jpg",
+        description=(
+            "Formula 1 safety car at the floodlit 2027 Singapore Grand Prix "
+            "on the Marina Bay Street Circuit"
+        ),
+    )
+    candidates = parse_safety_car_candidates(exact, singapore, config)
+    assert candidates[0].match_tier == "exact_event_circuit_safety_car"
+    assert candidates[0].race_key == environment.race_key
+    assert "environment" in candidates[0].evidence
+
+    unrelated = _safety_car_payload(
+        title="File:2027 British Grand Prix Formula 1 Safety Car.jpg",
+        description="Formula 1 safety car at Silverstone during the 2027 British Grand Prix",
+    )
+    assert parse_safety_car_candidates(unrelated, singapore, config) == []
+
+    atmosphere = _safety_car_payload(
+        title="File:2027 Singapore Grand Prix Marina Bay night track.jpg",
+        description="Formula 1 floodlit circuit atmosphere at the 2027 Singapore Grand Prix",
+    )
+    atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2027 Singapore Grand Prix"}
+    ]
+    candidates = parse_safety_car_candidates(atmosphere, singapore, config)
+    assert candidates[0].subject_type == "circuit_atmosphere"
+    assert candidates[0].match_tier == "exact_event_atmosphere"
+    rejected_atmosphere = _safety_car_payload(
+        title="File:2027 Singapore Grand Prix driver portrait.jpg",
+        description="Formula 1 driver portrait at the 2027 Singapore Grand Prix",
+    )
+    rejected_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2027 Singapore Grand Prix"}
+    ]
+    assert parse_safety_car_candidates(rejected_atmosphere, singapore, config) == []
+
+    dark = tmp_path / "night.jpg"
+    twilight = tmp_path / "twilight.jpg"
+    bright = tmp_path / "day.jpg"
+    Image.new("RGB", (1600, 900), (24, 30, 42)).save(dark)
+    Image.new("RGB", (1600, 900), (110, 115, 120)).save(twilight)
+    Image.new("RGB", (1600, 900), (205, 210, 215)).save(bright)
+    assert classify_image_environment(dark) == "night"
+    assert classify_image_environment(twilight) == "twilight"
+    assert classify_image_environment(bright) == "day"
+    assert environment_compatible("night", "night")
+    assert not environment_compatible("night", "day")
+    assert environment_compatible("day", "twilight")
+    assert not environment_compatible("day", "night")
+    assert _saliency_focal_point(Image.new("RGB", (1600, 900), (0, 0, 0))) == (
+        0.62,
+        0.5,
+    )
 
 
 def test_future_constructor_identity_requires_no_hard_coded_alias(config):
@@ -696,8 +817,8 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.size == (600, 900)
     with Image.open(background) as image:
         assert image.size == (1280, 720)
-        # The safety-car source is a restrained right-side accent. The stable
-        # black information area must continue to dominate Plex's background.
+        # The source photograph is full bleed; the left is only gently shaded
+        # for Plex title legibility and no red technical border is rendered.
         left_luminance = sum(
             image.resize((16, 9))
             .crop((0, 0, 7, 9))
@@ -715,12 +836,13 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         )
         left_average = left_luminance / (7 * 9)
         right_average = right_luminance / (7 * 9)
-        assert left_average < 55
-        assert right_average > left_average + 18
-        assert full_luminance / (16 * 9) < 110
+        assert left_average > 35
+        assert right_average > left_average
+        assert 45 < full_luminance / (16 * 9) < 170
+        assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 7
+    assert SHOW_RENDERER_VERSION == 8
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -913,7 +1035,18 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     assert first.background_vehicle and "Safety Car" in first.background_vehicle
     assert len(state.show_rotation_history()) == 1
     assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
-    assert (config["paths"]["reports"] / "formula1-show-artwork-attribution.json").exists()
+    attribution_path = (
+        config["paths"]["reports"] / "formula1-show-artwork-attribution.json"
+    )
+    assert attribution_path.exists()
+    background_record = next(
+        record
+        for record in json.loads(attribution_path.read_text())["records"]
+        if record["scope"] == "show_background"
+    )
+    assert background_record["match_tier"] == "exact_event_circuit_safety_car"
+    assert background_record["race_key"].startswith("2026:01:albert-park")
+    assert background_record["observed_environment"] in {"day", "twilight", "night"}
     assert "Liauzh" in (
         config["paths"]["reports"] / "formula1-show-artwork-attribution.txt"
     ).read_text()

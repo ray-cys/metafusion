@@ -57,6 +57,7 @@ class RaceData:
     circuit_profile: str | None = None
     circuit_history: str | None = None
     session_dates: dict[str, str] = field(default_factory=dict)
+    race_time_utc: str | None = None
 
     @property
     def sprint(self):
@@ -99,6 +100,7 @@ def parse_schedule(payload, year):
                 latitude=_number(location.get("lat")),
                 longitude=_number(location.get("long")),
                 session_dates=session_dates,
+                race_time_utc=(str(race.get("time")) if race.get("time") else None),
             )
         )
     return sorted(parsed, key=lambda item: item.round_number)

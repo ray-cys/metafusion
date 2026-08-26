@@ -21,8 +21,8 @@ When explicitly enabled, the extension:
   circuit facts, race distance, lap count, and concise circuit context;
 - creates deterministic race-season posters and per-episode 16:9 cards;
 - rotates the show poster through licensed current-season team-car photographs;
-- rotates only the show background's restrained photographic panel through
-  licensed current-season safety-car photographs;
+- rotates a cinematic, full-bleed show background through licensed photographs
+  matched to the current race, circuit, and expected day/night environment;
 - records identity, source, ownership, attribution, cleanup, and application
   verification state in its private SQLite database and reports; and
 - automatically accommodates later championship years, schedule changes,
@@ -113,7 +113,7 @@ explicitly says otherwise.
 | `verification.perceptual_distance` | `8` | Maximum perceptual-hash distance accepted for Plex artwork transcodes. |
 | `providers.*_url` | packaged HTTPS URLs | Jolpica, Formula1.com, circuit SVG/manifest, and Commons endpoints. These are adapter contracts, not normal tuning controls. |
 | `providers.cache_hours` | `24` | Validity of schedule, facts, profile, and circuit-provider cache entries. |
-| `providers.commons_cache_hours` | `24` | Validity of team-car and safety-car Commons discovery results. |
+| `providers.commons_cache_hours` | `24` | Validity of team-car and race-background Commons discovery results. |
 | `providers.retries` | `3` | Bounded provider attempts, from 1 through 5. |
 | `cleanup.enabled` | `false` | Enables reconciliation only for extension-owned state and byte-identical managed artwork. Review a dry run first. |
 | `cleanup.confirmation_scans` | `2` | Consecutive missing inventories required before cleanup eligibility. |
@@ -428,8 +428,7 @@ after Kometa changes the Plex display title to `Formula 1 (<year>)`.
 These examples were produced by the actual deterministic renderers using generic
 branding and synthetic source-photo placeholders. Runtime output uses your
 supplied logo/fonts and separately validated, licensed Wikimedia Commons team-car
-or safety-car photographs; visual composition and protected text areas remain the
-same.
+or race-background photographs.
 
 | Race-season poster | Rotating show poster |
 | --- | --- |
@@ -439,8 +438,8 @@ Episode cards use the race weekend's persistent team-car binding:
 
 ![Example Formula 1 episode card](images/formula1/episode-card.png)
 
-The show background keeps a dark Plex-safe information canvas and rotates only
-its brighter, bounded right-side safety-car panel:
+The show background is a clean, full-bleed 16:9 race photograph with restrained
+grading, a subtle left readability gradient, and a light vignette:
 
 ![Example Formula 1 show background](images/formula1/show-background.png)
 
@@ -544,22 +543,31 @@ extension ownership record is treated as manual and is not adopted or overwritte
 ### Race-triggered show poster and background rotation
 
 `show_artwork.enabled: true` creates a paired show poster and 16:9 background
-from two independently validated, licensed current-season sources. The portrait
-and episode cards rotate Formula 1 team cars. The show background rotates only
-safety cars; it never substitutes a team car, medical car, display vehicle, model,
-or unrelated racing-series car. This is separate from the round/season posters
-described above and also enables the episode cards described above.
+from two independently validated, licensed sources. The portrait and episode
+cards rotate Formula 1 team cars. The show background prefers a safety car at the
+exact event and circuit. If that does not exist, it may use a recent exact-circuit
+safety-car photograph, then an exact-event/circuit atmospheric track photograph.
+It never substitutes a team car, medical car, display vehicle, model, or unrelated
+event/series photograph. This is separate from the round/season posters described
+above and also enables the episode cards described above.
 
 The portrait uses a stable black, charcoal, white, and red technical frame, with
 the complete landscape photograph fitted in a highlight-controlled horizontal
-band so the car is not stretched or cut off. The 16:9 design remains a stable
-black technical canvas: only a feathered, television-legible safety-car panel on
-the right rotates. The renderer preserves more midtone brightness in that panel
-so safety-car detail remains visible after television black-level compression,
-while the photograph still occupies a bounded portion of the frame. The logo,
-season, round, event wording, gradients, and left-side Plex-safe area remain
-fixed. This deliberately prevents a bright source photograph from overpowering
-show, season, or episode posters in Plex navigation.
+band so the car is not stretched or cut off. The background deliberately uses a
+different treatment: its race photograph is cropped to 16:9 around a detected
+visual focal point, gently graded, shadow-lifted, highlight-compressed, and covered
+only by a subtle left readability gradient and vignette. It contains no F1 logo,
+race name, season/year, decorative border, or heavy graphic effects. This makes
+it cinematic on a TV while preventing bright track lights or advertising from
+overpowering Plex foreground posters and text.
+
+Race environment is derived without a hard-coded circuit list. MetaFusion uses
+the live schedule's race UTC time and circuit coordinates to estimate whether the
+race is day, twilight, or night, then combines that with the official race/circuit,
+locality/country, and validated circuit-profile traits such as street, harbour,
+urban, desert, or floodlit. It also verifies the downloaded image's luminance so
+a bright daytime image cannot satisfy a Singapore-like night race merely because
+its description says “night”.
 
 On the portrait only, the circuit name remains in the lower information field
 while the repeated locality/country wording is replaced by a small lower-right
@@ -578,8 +586,8 @@ unchanged. The next rotation happens when a valid Season 06 episode appears.
 
 The managed poster/background pair is written to a versioned round/team/source
 directory before the Kometa YAML is updated. A complete pair requires both a safe
-team-car source and a safe safety-car source; this prevents a half-written or
-mixed-source pair from becoming active. The generated show entry uses
+team-car source and a safe race-matched background source; this prevents a
+half-written or mixed-source pair from becoming active. The generated show entry uses
 `file_poster` and `file_background`; Kometa applies both to Plex on its next normal
 run. MetaFusion does not call Plex directly from this Kometa-only extension.
 Because those two YAML fields are the application mechanism, disabling
@@ -592,17 +600,18 @@ being hard-coded. The next constructor is chosen deterministically after the
 previous one, so new, renamed, or departing constructors can be handled without
 an annual code edit. The show poster and current-round episode cards share that
 round's selected team-car source. The show background independently advances
-through the valid safety-car pool. Historical episode rounds use their own
+through the valid exact-race/circuit background pool. Historical episode rounds use their own
 persistent team-car bindings. Rotation state and episode-round bindings are
 stored in the isolated Formula 1 SQLite database and are based on Plex inventory,
 never Docker uptime.
 
-If either current-season photograph is not safely available, MetaFusion keeps the
+If either required photograph is not safely available, MetaFusion keeps the
 previous valid pair and retries after the provider cache expires. It will not use
-an older car, a different team, an ambiguous safety car, or a photograph with an
-incompatible licence merely to force a rotation. If Commons has only one valid
-safety-car view for that season, MetaFusion may reuse it behind a newly rotated
-team-car poster rather than select an unsafe or irrelevant image. This workflow
+an older team car, an unrelated circuit, an ambiguous safety car, a scene whose
+pixels conflict with the expected day/night environment, or a photograph with an
+incompatible licence merely to force a rotation. A recent-year safety-car image
+is eligible only when it matches the exact circuit. An atmospheric fallback is
+eligible only when it matches the exact event/circuit. This workflow
 requires no annual input, but a newly revealed car may temporarily retain the
 previous pair until both reusable sources are available.
 
@@ -612,8 +621,9 @@ manual edit cannot be silently displaced. If a managed file is merely missing,
 MetaFusion recreates the matched pair from its recorded licensed source.
 
 A renderer revision or branding-file change may rerender the active pair for
-the same race round. This uses the already selected team and Commons source; it
-does not advance constructor rotation. Versioned pairs are retained per season
+the same race round. This uses the already selected team source and reuses a
+background only when its stored race/environment key is still valid; it does not
+advance constructor rotation. Versioned pairs are retained per season
 according to `show_artwork.retention_pairs_per_season` (default 30). Only
 byte-identical, extension-owned pairs with recorded checksums are pruned.
 Episode cards have separate ownership records: byte-identical managed cards
@@ -689,16 +699,22 @@ visual content, and sharpness before being cached under `/config/formula1/cache`
 If no qualifying reusable image has been published yet, the previous safe pair
 is preserved and the unresolved round retries after cache expiry.
 
-Show-background safety-car photographs use a separate Commons adapter and cache.
-Discovery combines the live Safety cars category with bounded year-specific
-searches, then requires the championship year and explicit Formula 1 safety-car
-identity. Medical cars, toys, models, sculptures, simulators, museum/showroom
-displays, Formula E cars, portrait media, incompatible licences, corrupt files,
-and undersized images are rejected. Selection advances deterministically through
-distinct valid views and uses a perceptual hash to avoid rotating between duplicate
-uploads. The accepted source is independently recorded in the TXT and JSON artwork
-attribution reports. There is no safety-car API key, annual vehicle list, or user
-configuration to maintain.
+Show backgrounds use a separate race-aware Commons adapter and cache. Discovery
+runs bounded queries derived from the current schedule identity and prioritizes:
+
+1. exact-event/circuit, current-season Formula 1 safety car;
+2. recent exact-circuit Formula 1 safety car; then
+3. exact-event/circuit track atmosphere without a safety car.
+
+The adapter requires exact event or circuit evidence and a current/recent year,
+then applies licence, dimensions, aspect-ratio, decoded-pixel, visual-content,
+sharpness, environment-luminance, and perceptual-duplicate checks. Medical cars,
+toys, models, sculptures, simulators, museum/showroom displays, unrelated circuits
+or racing series, portrait media, incompatible licences, corrupt files, and
+undersized images are rejected. TXT and JSON attribution records include subject
+type, match tier, expected environment, race key, and matching evidence. There is
+no API key, annual vehicle list, circuit-specific rule, or user configuration to
+maintain.
 
 Race identity matching is schedule-derived and explainable. It considers the
 official race name, country and demonym, locality, circuit name, and circuit ID,
@@ -721,7 +737,7 @@ independent YAML, artwork, SQLite state, learned identity, and session dating.
 For every retained generated show pair and persistent episode-round source, the
 TXT and JSON attribution reports record the asset scope, Commons page, source
 title, author, licence, licence URL, vehicle/team, season, and trigger round. The
-show poster's team-car source and show background's safety-car source are separate
+show poster's team-car source and show background's race-matched source are separate
 records. Generated show destinations are also recorded. Old versioned pairs and
 the sources behind historical episode cards remain covered by the report.
 MetaFusion uses each original photograph as a deterministic compositing layer; it

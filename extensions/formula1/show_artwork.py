@@ -29,12 +29,18 @@ from extensions.formula1.commons import (
     load_constructors,
     search_commons,
 )
-from extensions.formula1.safety_car import SafetyCarCandidate, search_safety_cars
+from extensions.formula1.safety_car import (
+    SafetyCarCandidate,
+    classify_image_environment,
+    derive_race_environment,
+    environment_compatible,
+    search_safety_cars,
+)
 from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 7
+SHOW_RENDERER_VERSION = 8
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -95,7 +101,7 @@ def _show_render_fingerprint(config):
         "background": [
             config["show_artwork"]["background_width"],
             config["show_artwork"]["background_height"],
-            "safety-car-source",
+            "cinematic-race-aware-background-v1",
         ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -494,80 +500,84 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     return _atomic_save(image, destination)
 
 
+def _saliency_focal_point(photo):
+    """Estimate a robust subject centre from edges and local contrast."""
+    sample = ImageOps.fit(photo.convert("RGB"), (96, 54), Image.Resampling.BILINEAR)
+    edges = sample.convert("L").filter(ImageFilter.FIND_EDGES)
+    values = list(edges.get_flattened_data())
+    threshold = sorted(values)[round(len(values) * 0.72)]
+    weighted_x = weighted_y = total = 0.0
+    for index, value in enumerate(values):
+        weight = max(0, value - threshold)
+        if not weight:
+            continue
+        x, y = index % 96, index // 96
+        # Prefer the television-safe right half when two subjects compete.
+        weight *= 0.85 + x / 192
+        weighted_x += x * weight
+        weighted_y += y * weight
+        total += weight
+    if not total:
+        return 0.62, 0.5
+    return weighted_x / total / 95, weighted_y / total / 53
+
+
+def _cinematic_crop(photo, size):
+    focal_x, focal_y = _saliency_focal_point(photo)
+    # Pillow's centering controls crop alignment, not subject destination. Bias
+    # the crop gently so the detected subject remains in the right visual field.
+    centering_x = max(0.2, min(0.8, focal_x - 0.10))
+    return ImageOps.fit(
+        photo.convert("RGB"), size, Image.Resampling.LANCZOS,
+        centering=(centering_x, max(0.25, min(0.75, focal_y))),
+    )
+
+
+def _cinematic_grade(image, environment):
+    """Produce restrained TV-safe contrast without crushing a night circuit."""
+    image = ImageEnhance.Color(image).enhance(0.96)
+    image = ImageEnhance.Contrast(image).enhance(1.04)
+    image = ImageEnhance.Brightness(image).enhance(0.96 if environment == "night" else 0.94)
+    # Lift deep shadows slightly and compress highlights to preserve track lights.
+    lookup = []
+    for value in range(256):
+        normalized = value / 255
+        lifted = normalized ** 0.92
+        compressed = lifted / (1 + 0.10 * lifted)
+        lookup.append(round(min(1.0, compressed * 1.05) * 255))
+    return image.point(lookup * 3)
+
+
 def render_show_background(show, race, photo_path, config, destination):
-    """Render a TV-legible safety-car panel inside the stable Plex-safe frame."""
+    """Render a race-aware, photo-only cinematic Plex background."""
+    del show  # The clean background intentionally contains no season typography.
     width = config["show_artwork"]["background_width"]
     height = config["show_artwork"]["background_height"]
-    image = Image.new("RGB", (width, height), (5, 6, 9))
-    panel_size = (round(width * 0.58), round(height * 0.72))
+    environment = derive_race_environment(race)
     with Image.open(photo_path) as source:
-        panel = _grade_photo(
-            source,
-            panel_size,
-            centering=(0.58, 0.5),
-            strong=True,
-        )
-        # Preserve enough midtone detail for television black levels without
-        # returning to an overpowering full-bleed source photograph. The left
-        # information field remains independently dark and stable.
-        panel = ImageEnhance.Color(panel).enhance(0.88)
-        panel = ImageEnhance.Brightness(panel).enhance(0.84)
-        panel = ImageEnhance.Contrast(panel).enhance(1.02)
-    panel_mask = Image.new("L", panel_size, 0)
-    feather = max(24, round(min(panel_size) * 0.10))
-    ImageDraw.Draw(panel_mask).rectangle(
-        (feather, feather, panel_size[0] - feather, panel_size[1] - feather),
-        fill=255,
-    )
-    panel_mask = panel_mask.filter(ImageFilter.GaussianBlur(feather))
-    panel_left = width - panel_size[0] - round(width * 0.025)
-    panel_top = (height - panel_size[1]) // 2
-    image.paste(panel, (panel_left, panel_top), panel_mask)
+        image = _cinematic_grade(_cinematic_crop(source, (width, height)), environment.mode)
 
-    right_shade = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    ImageDraw.Draw(right_shade).rectangle(
-        (width * 0.42, 0, width, height),
-        fill=(0, 0, 0, 18),
-    )
-    image = Image.alpha_composite(image.convert("RGBA"), right_shade)
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    gradient = Image.new("L", (width, 1))
-    gradient.putdata(
-        [
-            round(245 * max(0.0, 1 - x / (width * 0.68)) ** 1.6)
-            for x in range(width)
-        ]
-    )
-    black = Image.new("RGBA", (width, height), (3, 4, 7, 255))
-    overlay = Image.composite(black, overlay, gradient.resize((width, height)))
-    image = Image.alpha_composite(image, overlay)
-    _technical_frame(image)
-    logo_path, _regular_path, bold_path = _branding_paths(config)
-    season_font = _font(bold_path, max(34, width // 32))
-    background_title = f"ROUND {race.round_number:02d}  •  {race.name.upper()}"
-    detail_font = fitted_font(
-        bold_path, background_title, max(22, width // 55), 18, width * 0.58
-    )
-    _place_logo(
+    # A restrained left gradient preserves Plex title legibility without turning
+    # the composition back into a black information panel.
+    left_mask = Image.new("L", (width, 1))
+    left_mask.putdata([
+        round(52 * max(0.0, 1 - x / max(1, width * 0.66)) ** 1.7)
+        for x in range(width)
+    ])
+    image = Image.composite(
+        Image.new("RGB", (width, height), (4, 6, 10)),
         image,
-        logo_path,
-        (width * 0.045, height * 0.075, width * 0.25, height * 0.21),
-        season_font,
+        left_mask.resize((width, height)),
     )
-    draw = ImageDraw.Draw(image, "RGBA")
-    draw.text(
-        (width * 0.045, height * 0.77),
-        f"{show.year} SEASON",
-        font=season_font,
-        fill=(235, 30, 48, 245),
+
+    vignette = Image.new("L", (width, height), 0)
+    border = max(20, round(min(width, height) * 0.07))
+    ImageDraw.Draw(vignette).rectangle(
+        (0, 0, width - 1, height - 1), outline=24, width=border
     )
-    draw.text(
-        (width * 0.045, height * 0.86),
-        background_title,
-        font=detail_font,
-        fill=(240, 240, 242, 220),
-    )
-    return _atomic_save(image.convert("RGB"), destination)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(border * 1.5))
+    image = Image.composite(Image.new("RGB", image.size, (3, 5, 8)), image, vignette)
+    return _atomic_save(image, destination)
 
 
 def _current_references(current):
@@ -870,11 +880,20 @@ def _attribution_reports(config, history, round_sources=()):
         )
         background = source.get("background_candidate")
         if background:
+            background_sources = source.get("background_provider_sources") or {}
             background_record = {
                 "scope": "show_background",
                 "season_year": item["season_year"],
                 "trigger_round": item["trigger_round"],
                 "vehicle_name": background["vehicle_name"],
+                "subject_type": background.get("subject_type", "safety_car"),
+                "match_tier": background.get("match_tier", "season_safety_car"),
+                "environment": background.get("environment", "unknown"),
+                "observed_environment": background_sources.get(
+                    "observed_environment", "unknown"
+                ),
+                "race_key": background.get("race_key", ""),
+                "evidence": background.get("evidence", []),
                 "source_title": background["title"],
                 "source_page": background["page_url"],
                 "author": background["author"],
@@ -890,6 +909,12 @@ def _attribution_reports(config, history, round_sources=()):
                     f"{background_record['trigger_round']:02d}",
                     "Scope: show background",
                     f"Vehicle: {background_record['vehicle_name']}",
+                    f"Subject: {background_record['subject_type']}",
+                    f"Match tier: {background_record['match_tier']}",
+                    f"Environment: {background_record['environment']}",
+                    f"Observed pixels: {background_record['observed_environment']}",
+                    f"Race key: {background_record['race_key']}",
+                    f"Evidence: {', '.join(background_record['evidence']) or 'none'}",
                     f"Source: {background_record['source_title']}",
                     f"Page: {background_record['source_page']}",
                     f"Author: {background_record['author']}",
@@ -1003,23 +1028,38 @@ def _safety_candidate_order(candidates, current, trigger_round):
     if not candidates:
         return []
     background = (current or {}).get("source", {}).get("background_candidate") or {}
-    page_ids = [candidate.page_id for candidate in candidates]
     previous = int(background.get("page_id") or 0)
-    if previous in page_ids:
-        start = (page_ids.index(previous) + 1) % len(candidates)
-    else:
-        start = (int(trigger_round) - 1) % len(candidates)
-    return [candidates[(start + offset) % len(candidates)] for offset in range(len(candidates))]
+    ordered: list[SafetyCarCandidate] = []
+    for tier in (
+        "exact_event_circuit_safety_car",
+        "exact_event_safety_car",
+        "recent_circuit_safety_car",
+        "exact_event_atmosphere",
+        "season_safety_car",
+    ):
+        group = [candidate for candidate in candidates if candidate.match_tier == tier]
+        if not group:
+            continue
+        page_ids = [candidate.page_id for candidate in group]
+        if previous in page_ids:
+            start = (page_ids.index(previous) + 1) % len(group)
+        else:
+            start = (int(trigger_round) - 1) % len(group)
+        ordered.extend(group[(start + offset) % len(group)] for offset in range(len(group)))
+    return ordered
 
 
 async def _select_background_source(
-    session, state, config, year, current, trigger_round, logger
+    session, state, config, race, current, trigger_round, logger
 ):
+    environment = derive_race_environment(race)
     candidates, search_source = await search_safety_cars(
-        session, state, config, year, logger
+        session, state, config, race, logger
     )
     if not candidates:
-        raise RuntimeError("no licensed current-season Formula 1 safety-car candidate matched")
+        raise RuntimeError(
+            "no licensed exact-event/circuit Formula 1 background candidate matched"
+        )
     current_source = (current or {}).get("source", {})
     previous_hash = current_source.get("background_perceptual_hash")
     fallback = None
@@ -1029,6 +1069,19 @@ async def _select_background_source(
             photo_path, image_source = await acquire_candidate_image(
                 session, config, candidate
             )
+            actual_environment = (
+                classify_image_environment(photo_path)
+                if Path(photo_path).is_file()
+                else "unknown"
+            )
+            if actual_environment != "unknown" and not environment_compatible(
+                environment.mode, actual_environment
+            ):
+                diagnostics.append(
+                    f"{candidate.title}: expected {environment.mode} scene, "
+                    f"pixels classified as {actual_environment}"
+                )
+                continue
             perceptual_hash = (
                 _perceptual_hash(photo_path)
                 if Path(photo_path).is_file()
@@ -1037,7 +1090,13 @@ async def _select_background_source(
             result = (
                 candidate,
                 photo_path,
-                {"search": search_source, "image": image_source},
+                {
+                    "search": search_source,
+                    "image": image_source,
+                    "expected_environment": environment.mode,
+                    "observed_environment": actual_environment,
+                    "match_tier": candidate.match_tier,
+                },
                 perceptual_hash,
             )
             if fallback is None:
@@ -1048,7 +1107,7 @@ async def _select_background_source(
             diagnostics.append(f"{candidate.title}: {error}")
     if fallback is not None:
         return fallback
-    reason = "; ".join(diagnostics[-4:]) or "no safety-car image passed pixel validation"
+    reason = "; ".join(diagnostics[-4:]) or "no race background passed pixel validation"
     raise RuntimeError(reason)
 
 
@@ -1112,8 +1171,11 @@ async def run_show_artwork_rotation(
                 episode_actions=episode_actions,
             )
         if trigger_round == int(current["trigger_round"]) and integrity == "managed":
+            background_value = current.get("source", {}).get("background_candidate") or {}
+            expected_race_key = derive_race_environment(race).race_key
             rerendering = (
                 current.get("source", {}).get("render_fingerprint") != render_fingerprint
+                or background_value.get("race_key") != expected_race_key
             )
             if not rerendering:
                 candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
@@ -1178,7 +1240,9 @@ async def run_show_artwork_rotation(
             photo_path, image_source = await acquire_candidate_image(session, config, candidate)
             provider_sources = {"roster": "state", "search": "state", "image": image_source}
             background_value = current["source"].get("background_candidate")
-            if background_value:
+            if background_value and SafetyCarCandidate.from_dict(
+                background_value
+            ).race_key == derive_race_environment(race).race_key:
                 background_candidate = SafetyCarCandidate.from_dict(background_value)
                 background_photo_path, background_image_source = await acquire_candidate_image(
                     session, config, background_candidate
@@ -1202,7 +1266,7 @@ async def run_show_artwork_rotation(
                     session,
                     state,
                     config,
-                    show.year,
+                    race,
                     current,
                     trigger_round,
                     logger,
@@ -1221,7 +1285,7 @@ async def run_show_artwork_rotation(
                 session,
                 state,
                 config,
-                show.year,
+                race,
                 current,
                 trigger_round,
                 logger,
@@ -1248,7 +1312,7 @@ async def run_show_artwork_rotation(
             poster_reference,
             background_reference,
             current.get("constructor_id") if current else None,
-            f"No safe Wikimedia Commons team-car/safety-car pair: {error}",
+            f"No safe Wikimedia Commons team-car/race-background pair: {error}",
             episode_references=episode_references,
             episode_actions=episode_actions,
             background_vehicle=_current_background_vehicle(current),

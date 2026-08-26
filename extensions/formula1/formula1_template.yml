@@ -53,8 +53,10 @@ artwork:
 # The supplied logo and fonts above are also used for the show artwork frame and
 # 16:9 episode session cards. Rotation is triggered by a newly discovered Plex
 # race round: the show poster and episode cards use licensed current-season team
-# cars, while the stable black show background rotates a TV-legible right-side
-# current-season safety-car panel. Missing cards are created only for Plex-detected
+# cars, while the clean 16:9 show background uses a licensed cinematic photograph
+# matched to the current race/circuit and expected day/night environment. It
+# prefers an exact-event/circuit safety car, then a recent exact-circuit safety car, then
+# exact-event track atmosphere. Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
 show_artwork:
