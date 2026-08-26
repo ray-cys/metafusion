@@ -36,6 +36,7 @@ KOMETA_GENERATED_FIELDS = {
         "summary",
     },
     "show": {
+        "title",
         "f1_season",
         "round_prefix",
         "shorten_gp",

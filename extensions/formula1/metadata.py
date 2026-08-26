@@ -1,6 +1,7 @@
 """Kometa Formula 1 metadata document generation and safe merging."""
 
 from collections import defaultdict
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -80,6 +81,50 @@ def _episode_summary(episode, race):
     )
 
 
+def _mapping_name(year):
+    """Return the stable Kometa key used before and after the Plex title edit."""
+    return f"F1 {int(year)}"
+
+
+def _canonical_title(year):
+    return f"Formula 1 ({int(year)})"
+
+
+def _title_aliases(show, additional=None):
+    aliases = [_mapping_name(show.year), _canonical_title(show.year), show.title]
+    aliases.extend(additional or [])
+    return list(dict.fromkeys(str(value).strip() for value in aliases if str(value).strip()))
+
+
+def _merge_preserved_fields(primary, secondary):
+    """Merge alias entries without replacing values already held by the stable key."""
+    merged = deepcopy(primary) if isinstance(primary, dict) else {}
+    if not isinstance(secondary, dict):
+        return merged
+    for key, value in secondary.items():
+        if key not in merged:
+            merged[key] = deepcopy(value)
+        elif isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _merge_preserved_fields(merged[key], value)
+    return merged
+
+
+def _existing_show_entry(document, show, previous_title=None):
+    metadata = document["metadata"]
+    stable = _mapping_name(show.year)
+    candidates = [stable, show.title, previous_title, _canonical_title(show.year)]
+    candidates.extend(
+        key
+        for key, entry in metadata.items()
+        if isinstance(entry, dict) and str(entry.get("f1_season")) == str(show.year)
+    )
+    keys = list(dict.fromkeys(key for key in candidates if key in metadata))
+    existing: dict = {}
+    for key in keys:
+        existing = _merge_preserved_fields(existing, metadata[key])
+    return existing, keys
+
+
 def build_show_entry(
     show,
     races,
@@ -87,6 +132,7 @@ def build_show_entry(
     config,
     show_artwork=None,
     episode_poster_references=None,
+    title_aliases=None,
 ):
     episode_poster_references = episode_poster_references or {}
     by_round = {race.round_number: race for race in races}
@@ -122,6 +168,8 @@ def build_show_entry(
         authoritative_episodes[episode.round_number].add(episode.episode_number)
     metadata_config = config["metadata"]
     generated = {
+        "match": {"title": _title_aliases(show, title_aliases)},
+        "title": _canonical_title(show.year),
         "f1_season": show.year,
         "round_prefix": bool(metadata_config.get("round_prefix", True)),
         "shorten_gp": bool(metadata_config.get("shorten_gp", False)),
@@ -157,12 +205,10 @@ def write_show_metadata(
         config,
         show_artwork,
         episode_poster_references,
+        [previous_title] if previous_title else None,
     )
-    existing = document["metadata"].get(show.title, {})
-    if previous_title and previous_title != show.title:
-        previous = document["metadata"].get(previous_title)
-        if isinstance(previous, dict) and not existing:
-            existing = previous
+    mapping_name = _mapping_name(show.year)
+    existing, migrated_keys = _existing_show_entry(document, show, previous_title)
     merged, diagnostics = merge_generated_metadata(
         existing,
         generated,
@@ -173,9 +219,10 @@ def write_show_metadata(
         ),
     )
     updated = {"metadata": dict(document["metadata"])}
-    if previous_title and previous_title != show.title:
-        updated["metadata"].pop(previous_title, None)
-    updated["metadata"][show.title] = merged
+    for key in migrated_keys:
+        if key != mapping_name:
+            updated["metadata"].pop(key, None)
+    updated["metadata"][mapping_name] = merged
     changed = updated != document
     if changed and not config["dry_run"]:
         write_kometa_metadata(

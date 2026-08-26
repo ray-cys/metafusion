@@ -116,7 +116,7 @@ def _slug(value):
 def parse_event_slugs(document, year):
     pattern = rf'href=["\']/en/racing/{int(year)}/([^"\'/?#]+)'
     values = re.findall(pattern, document, flags=re.IGNORECASE)
-    return list(dict.fromkeys(value for value in values if not value.startswith("pre-season")))
+    return list(dict.fromkeys(values))
 
 
 def _structured_value(document, key):

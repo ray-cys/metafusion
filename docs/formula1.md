@@ -47,22 +47,21 @@ F1 2026/
 
 ### Kometa Formula 1 layout
 
-The Kometa-style convention places each race in a round folder. The filename
-still supplies the round and programme slot used by Plex and MetaFusion:
+The adapted Kometa-style convention keeps the same Plex show and season folders
+as the current layout while using Kometa's `round x programme` filename form:
 
 ```text
-Formula/
-└── Season 2018/
-    ├── 01 - Australian GP/
-    │   ├── 01x01 - Australian GP - Free Practice 1.mkv
-    │   ├── 01x04 - Australian GP - Pre-Qualifying Buildup.mkv
-    │   ├── 01x05 - Australian GP - Qualifying Session.mkv
-    │   ├── 01x07 - Australian GP - Pre-Race Buildup.mkv
-    │   ├── 01x08 - Australian GP - Race Session.mkv
-    │   ├── 01x09 - Australian GP - Post-Race Analysis.mkv
-    │   └── 01x10 - Australian GP - Highlights.mkv
-    └── 02 - Bahrain GP/
-        └── 02x01 - Bahrain GP - Free Practice 1.mkv
+F1 2018/
+├── Season 01/
+│   ├── 01x01 - Australian GP - Free Practice 1.mkv
+│   ├── 01x04 - Australian GP - Pre-Qualifying Buildup.mkv
+│   ├── 01x05 - Australian GP - Qualifying Session.mkv
+│   ├── 01x07 - Australian GP - Pre-Race Buildup.mkv
+│   ├── 01x08 - Australian GP - Race Session.mkv
+│   ├── 01x09 - Australian GP - Post-Race Analysis.mkv
+│   └── 01x10 - Australian GP - Highlights.mkv
+└── Season 02/
+    └── 02x01 - Bahrain GP - Free Practice 1.mkv
 ```
 
 In both layouts, the first number is the race round and the second is the
@@ -82,8 +81,8 @@ The event portion may use `Grand Prix` or `GP`; common aliases such as
 `Australia`/`Australian`, `Britain`/`British`, and
 `Netherlands`/`Dutch` are normalized before schedule matching. Ambiguous,
 unsupported, or duplicate logical identities are reported and excluded rather
-than guessed. Season 0 is ignored by default; set `testing.include: true` to
-include testing programmes.
+than guessed. Season 0 is outside the race-weekend scope and is always ignored;
+the extension has no pre-season testing configuration or processing path.
 
 The parsed event name is checked against the authoritative event assigned to
 that round in the current-year schedule. A file labelled for a different Grand
@@ -95,9 +94,15 @@ MetaFusion cannot select a programme-specific session date for it.
 Exactly one Plex show may represent a championship year. If two shows resolve
 to the same year, the run stops during preflight before any YAML, artwork,
 binding, or cleanup change. This prevents two Plex identities from competing
-for `formula1_<year>.yml`. A rename of the same Plex show migrates its
-extension-owned top-level YAML entry to the new title while preserving user
-fields.
+for `formula1_<year>.yml`.
+
+The top-level YAML mapping is permanently named `F1 <year>`, even after Kometa
+changes the Plex display title. MetaFusion emits a `match.title` list containing
+both `F1 <year>` and `Formula 1 (<year>)`, plus any currently discovered Plex
+alias, then applies `title: Formula 1 (<year>)`. This lets the first Kometa run
+match the scanner title and every later run match the renamed title without a
+one-run gap. Older title-keyed Formula 1 entries are consolidated into the
+stable mapping while manual fields are preserved.
 
 ## Outputs and ownership
 

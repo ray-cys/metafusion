@@ -6,15 +6,15 @@ library:
   name: Formula 1
   naming_profile: auto
 
-testing:
-  include: false
-
 metadata:
   enabled: true
   content_rating: PG-13
   studio: F1TV
   round_prefix: true
   shorten_gp: false
+
+# MetaFusion owns the stable `F1 <year>` Kometa mapping, its pre/post-rename
+# title aliases, and the canonical `Formula 1 (<year>)` Plex display title.
 
 artwork:
   enabled: true

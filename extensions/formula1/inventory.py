@@ -94,7 +94,6 @@ class Formula1Show:
 class InventoryResult:
     shows: list[Formula1Show] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
-    ignored_testing: int = 0
     profiles: dict[str, int] = field(default_factory=lambda: {"current": 0, "kometa": 0})
 
 
@@ -189,7 +188,6 @@ async def discover_formula1_inventory(section, config, detail_logger):
     """Load the dedicated Plex library and return a stable logical inventory."""
     runtime = config.get("runtime", {})
     extension = config["formula1"]
-    include_testing = bool(extension.get("testing", {}).get("include", False))
     profile = extension.get("library", {}).get("naming_profile", "auto")
     result = InventoryResult()
     shows = await plex_operation(
@@ -215,8 +213,7 @@ async def discover_formula1_inventory(section, config, detail_logger):
         )
         for season in seasons:
             round_number = int(getattr(season, "index", -1))
-            if round_number == 0 and not include_testing:
-                result.ignored_testing += 1
+            if round_number == 0:
                 continue
             if round_number < 0:
                 result.issues.append(f"Ignored invalid season for {show.title}")

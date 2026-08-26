@@ -62,7 +62,11 @@ from extensions.formula1.inventory import (
     parse_episode_filename,
 )
 from extensions.formula1.logging import create_formula1_logger, run_identifier
-from extensions.formula1.metadata import build_show_entry, write_show_metadata
+from extensions.formula1.metadata import (
+    _merge_preserved_fields,
+    build_show_entry,
+    write_show_metadata,
+)
 from extensions.formula1.provider import (
     _get,
     _load_shape_manifest,
@@ -149,10 +153,7 @@ class Response:
         return self.body
 
 
-OFFICIAL_CALENDAR = (
-    '<a href="/en/racing/2026/pre-season-testing-1">Testing</a>'
-    '<a href="/en/racing/2026/australia">Australia</a>'
-)
+OFFICIAL_CALENDAR = '<a href="/en/racing/2026/australia">Australia</a>'
 OFFICIAL_FACTS = (
     r"\"trackLength\":\"5.278\","
     r"\"scheduledLapCount\":\"58\","
@@ -410,7 +411,7 @@ def test_parser_rejects_mismatch_and_normalizes_unknown():
     assert parse_episode_filename("S01E01 - Japan GP - Race.mkv", profile="current")["season"] == 1
 
 
-def test_inventory_ignores_testing_and_all_ambiguous_duplicates(tmp_path):
+def test_inventory_ignores_non_race_season_and_all_ambiguous_duplicates(tmp_path):
     path = tmp_path / "S01E01 - Australia GP - Race.mkv"
     duplicate = tmp_path / "01x01 - Australian GP - Highlights.mkv"
     section = Section(
@@ -426,13 +427,12 @@ def test_inventory_ignores_testing_and_all_ambiguous_duplicates(tmp_path):
             section,
             {
                 "runtime": {"plex_retries": 1},
-                "formula1": {"testing": {"include": False}, "library": {"naming_profile": "auto"}},
+                "formula1": {"library": {"naming_profile": "auto"}},
             },
             logging.getLogger("f1-test-inventory"),
         )
     )
     assert result.shows == []
-    assert result.ignored_testing == 1
     assert any("Duplicate" in issue for issue in result.issues)
     assert any("championship year" in issue for issue in result.issues)
 
@@ -449,7 +449,7 @@ def test_inventory_reports_invalid_paths_and_uses_plex_fallbacks(tmp_path):
         def iterParts(self):
             return [type("Part", (), {"file": str(self._path)})()]
 
-    valid = tmp_path / "S00E01 - Japan GP - Race.mkv"
+    valid = tmp_path / "S01E01 - Japan GP - Race.mkv"
     section = Section(
         "Formula 1",
         [
@@ -457,10 +457,8 @@ def test_inventory_reports_invalid_paths_and_uses_plex_fallbacks(tmp_path):
                 "Championship",
                 [
                     Season(-1, []),
-                    Season(
-                        0,
-                        [PartEpisode(1, valid), Episode(2, None), Episode(3, tmp_path / "bad.mkv")],
-                    ),
+                    Season(0, [Episode(1, tmp_path / "ignored.mkv")]),
+                    Season(1, [PartEpisode(1, valid), Episode(2, None), Episode(3, tmp_path / "bad.mkv")]),
                 ],
                 year=2026,
             )
@@ -471,7 +469,7 @@ def test_inventory_reports_invalid_paths_and_uses_plex_fallbacks(tmp_path):
             section,
             {
                 "runtime": {"plex_retries": 1},
-                "formula1": {"testing": {"include": True}, "library": {"naming_profile": "auto"}},
+                "formula1": {"library": {"naming_profile": "auto"}},
             },
             logging.getLogger("inventory-fallbacks"),
         )
@@ -1031,7 +1029,8 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
         config,
         episode_poster_references={(1, 1): "/config/episode.png"},
     )
-    assert "match" not in generated
+    assert generated["match"]["title"] == ["F1 2026", "Formula 1 (2026)"]
+    assert generated["title"] == "Formula 1 (2026)"
     assert "to be confirmed" not in generated["seasons"][1]["summary"]
     assert "Circuit length" not in generated["seasons"][1]["summary"]
     assert generated["seasons"][1]["episodes"][1]["originally_available"] == "2026-03-08"
@@ -1078,11 +1077,25 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
     )
     persisted = yaml.safe_load(path.read_text())
     assert changed and validate_metadata_document(persisted, "tv")
+    assert next(iter(persisted["metadata"]["F1 2026"])) == "match"
     persisted_season = persisted["metadata"]["F1 2026"]["seasons"][1]
     assert expected_facts in persisted_season["summary"]
     assert expected_facts in persisted_season["episodes"][1]["summary"]
     assert (
         write_show_metadata(show, [profiled_race], {1: "/config/poster.png"}, config)[1]
+        is False
+    )
+    canonical_show = inventory.Formula1Show(
+        2026, "Formula 1 (2026)", "show", [episode]
+    )
+    assert (
+        write_show_metadata(
+            canonical_show,
+            [profiled_race],
+            {1: "/config/poster.png"},
+            config,
+            previous_title="F1 2026",
+        )[1]
         is False
     )
     assert artwork_fingerprint(race, "M0 0", config) == artwork_fingerprint(race, "M0 0", config)
@@ -1529,7 +1542,7 @@ def test_cleanup_grace_also_controls_yaml_reconciliation(
     assert 2 not in document["metadata"]["F1 2026"]["seasons"][1]["episodes"]
 
 
-def test_show_rename_migrates_owned_yaml_entry(tmp_path, core, schedule_payload):
+def test_show_rename_keeps_stable_mapping_and_match_aliases(tmp_path, core, schedule_payload):
     config = load_formula1_config(core, tmp_path / "config")
     inventory = __import__(
         "extensions.formula1.inventory", fromlist=["Formula1Episode", "Formula1Show"]
@@ -1553,8 +1566,79 @@ def test_show_rename_migrates_owned_yaml_entry(tmp_path, core, schedule_payload)
         previous_title="F1 2026",
     )
     migrated = yaml.safe_load(path.read_text())["metadata"]
-    assert "F1 2026" not in migrated
-    assert migrated["Formula One 2026"]["user_note"] == "keep"
+    assert list(migrated) == ["F1 2026"]
+    assert migrated["F1 2026"]["user_note"] == "keep"
+    assert migrated["F1 2026"]["match"]["title"] == [
+        "F1 2026",
+        "Formula 1 (2026)",
+        "Formula One 2026",
+    ]
+    assert migrated["F1 2026"]["title"] == "Formula 1 (2026)"
+
+
+def test_formula1_alias_merge_preserves_stable_nested_values():
+    primary = {"manual": {"owner": "user"}, "summary": "stable"}
+    secondary = {"manual": {"note": "keep"}, "summary": "legacy"}
+
+    assert _merge_preserved_fields(primary, secondary) == {
+        "manual": {"owner": "user", "note": "keep"},
+        "summary": "stable",
+    }
+    assert _merge_preserved_fields(primary, "not-a-mapping") == primary
+
+
+def test_legacy_title_key_is_consolidated_without_losing_manual_fields(
+    tmp_path, core, schedule_payload
+):
+    config = load_formula1_config(core, tmp_path / "config")
+    inventory = __import__(
+        "extensions.formula1.inventory", fromlist=["Formula1Episode", "Formula1Show"]
+    )
+    episode = inventory.Formula1Episode(
+        2026,
+        1,
+        1,
+        "Australian Grand Prix",
+        "Race Session",
+        "race",
+        tmp_path / "race.mkv",
+        "episode",
+        "current",
+    )
+    show = inventory.Formula1Show(2026, "Formula 1 (2026)", "same-show", [episode])
+    destination = config["paths"]["metadata"] / "formula1_2026.yml"
+    destination.parent.mkdir(parents=True)
+    destination.write_text(
+        yaml.safe_dump(
+            {
+                "metadata": {
+                    "Formula 1 (2026)": {
+                        "title": "Formula 1 (2026)",
+                        "f1_season": "2026",
+                        "user_note": "preserve",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    path, changed, _diagnostics = write_show_metadata(
+        show,
+        [parse_schedule(schedule_payload, 2026)[0]],
+        {1: "/config/poster.png"},
+        config,
+        previous_title="F1 2026",
+    )
+
+    metadata = yaml.safe_load(path.read_text(encoding="utf-8"))["metadata"]
+    assert changed and list(metadata) == ["F1 2026"]
+    assert metadata["F1 2026"]["user_note"] == "preserve"
+    assert metadata["F1 2026"]["match"]["title"] == [
+        "F1 2026",
+        "Formula 1 (2026)",
+    ]
 
 
 def test_delayed_application_verification_queue_and_report(tmp_path, core, monkeypatch):
