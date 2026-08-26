@@ -46,6 +46,10 @@ class Formula1Summary(TypedDict):
     show_artwork_rerendered: int
     show_artwork_pruned: int
     source_cache_pruned: int
+    episode_artwork_created: int
+    episode_artwork_updated: int
+    episode_artwork_preserved: int
+    episode_artwork_unchanged: int
     facts_resolved: int
     facts_missing: int
     facts_stale: int
@@ -91,6 +95,15 @@ def _asset_reference(config, year, round_number):
     root = str(config["artwork"].get("asset_reference_root", "/config/assets/formula1/rounds"))
     root = "/" + root.lstrip("/")
     return f"{root.rstrip('/')}/{year}/round-{round_number:02d}/poster.png"
+
+
+def _episode_asset_reference(config, episode):
+    root = str(config["artwork"].get("asset_reference_root", "/config/assets/formula1/rounds"))
+    root = "/" + root.lstrip("/")
+    return (
+        f"{root.rstrip('/')}/{episode.year}/round-{episode.round_number:02d}/"
+        f"episodes/episode-{episode.episode_number:02d}.png"
+    )
 
 
 def _write_issues(config, run_id, issues):
@@ -246,6 +259,10 @@ async def run_formula1_extension(
         "show_artwork_rerendered": 0,
         "show_artwork_pruned": 0,
         "source_cache_pruned": 0,
+        "episode_artwork_created": 0,
+        "episode_artwork_updated": 0,
+        "episode_artwork_preserved": 0,
+        "episode_artwork_unchanged": 0,
         "facts_resolved": 0,
         "facts_missing": 0,
         "facts_stale": 0,
@@ -350,6 +367,7 @@ async def run_formula1_extension(
                         shape_source,
                     )
                 show_artwork = {}
+                episode_poster_references = {}
                 detected_rounds = sorted({item.round_number for item in show.episodes})
                 if (
                     config["show_artwork"].get("enabled", True)
@@ -372,6 +390,29 @@ async def run_formula1_extension(
                             show_artwork["poster"] = rotation.poster_reference
                         if rotation.background_reference:
                             show_artwork["background"] = rotation.background_reference
+                        for episode_number, reference in rotation.episode_references.items():
+                            episode_poster_references[(trigger_round, episode_number)] = reference
+                        for episode_number, action in rotation.episode_actions.items():
+                            if action == "create":
+                                summary["episode_artwork_created"] += 1
+                            elif action == "update":
+                                summary["episode_artwork_updated"] += 1
+                            elif action == "preserve-manual":
+                                summary["episode_artwork_preserved"] += 1
+                            else:
+                                summary["episode_artwork_unchanged"] += 1
+                            detail_logger.info(
+                                "[Episode Artwork] %s | Round: %02d | Episode: %02d | "
+                                "Action: %s | Source: Wikimedia Commons",
+                                show.title,
+                                trigger_round,
+                                episode_number,
+                                action,
+                            )
+                        artwork_changed |= any(
+                            action in {"create", "update"}
+                            for action in rotation.episode_actions.values()
+                        )
                         if rotation.action in {"rotated", "rotate-planned"}:
                             summary["show_artwork_rotated"] += 1
                         elif rotation.action in {"restored", "restore-planned"}:
@@ -404,6 +445,19 @@ async def run_formula1_extension(
                             rotation.action,
                             rotation.constructor or "none",
                         )
+                for episode in show.episodes:
+                    destination = (
+                        config["paths"]["assets"]
+                        / str(episode.year)
+                        / f"round-{episode.round_number:02d}"
+                        / "episodes"
+                        / f"episode-{episode.episode_number:02d}.png"
+                    )
+                    if destination.is_file():
+                        episode_poster_references.setdefault(
+                            (episode.round_number, episode.episode_number),
+                            _episode_asset_reference(config, episode),
+                        )
                 if config["metadata"].get("enabled", True):
                     authoritative_seasons, authoritative_episodes = _authoritative_children(
                         retained_keys, show.year
@@ -425,6 +479,7 @@ async def run_formula1_extension(
                         authoritative_seasons=authoritative_seasons,
                         authoritative_episodes=authoritative_episodes,
                         previous_title=previous_title,
+                        episode_poster_references=episode_poster_references,
                     )
                     summary["metadata_updated" if changed else "metadata_unchanged"] += 1
                     detail_logger.info(
@@ -436,7 +491,12 @@ async def run_formula1_extension(
                     )
                     if changed or artwork_changed:
                         expected_entry = build_show_entry(
-                            show, races, poster_references, config, show_artwork
+                            show,
+                            races,
+                            poster_references,
+                            config,
+                            show_artwork,
+                            episode_poster_references,
                         )[0]
                         expected_artwork = [
                             {
@@ -452,6 +512,20 @@ async def run_formula1_extension(
                             for round_number in poster_references
                         ]
                         current_rotation = state.show_rotation(f"show:{show.year}")
+                        expected_artwork.extend(
+                            {
+                                "child_key": f"episode:{round_number}:{episode_number}",
+                                "asset_type": "poster",
+                                "destination": str(
+                                    config["paths"]["assets"]
+                                    / str(show.year)
+                                    / f"round-{round_number:02d}"
+                                    / "episodes"
+                                    / f"episode-{episode_number:02d}.png"
+                                ),
+                            }
+                            for round_number, episode_number in episode_poster_references
+                        )
                         if current_rotation:
                             expected_artwork.extend(
                                 [
@@ -489,6 +563,16 @@ async def run_formula1_extension(
         removed_rounds = set()
         for binding in stale:
             round_key = binding["logical_key"].rsplit(":e", 1)[0]
+            episode_artwork = state.artwork(binding["logical_key"])
+            if episode_artwork:
+                episode_destination = Path(episode_artwork["destination"])
+                if (
+                    episode_destination.exists()
+                    and _checksum(episode_destination) == episode_artwork["checksum"]
+                ):
+                    if not dry_run:
+                        episode_destination.unlink()
+                    summary["cleanup_removed"] += 1
             artwork = state.artwork(round_key)
             if round_key not in active_rounds and artwork and round_key not in removed_rounds:
                 destination = Path(artwork["destination"])
@@ -511,6 +595,7 @@ async def run_formula1_extension(
                 "[Formula 1] Summary | Libraries: %d | Shows: %d | Episodes: %d | "
                 "Metadata updated: %d | Artwork created/updated: %d/%d | "
                 "Show artwork rotated/rerendered/preserved/missing: %d/%d/%d/%d | "
+                "Episode artwork created/updated/preserved/unchanged: %d/%d/%d/%d | "
                 "Circuit facts resolved/missing: %d/%d | Circuit profiles resolved/missing: "
                 "%d/%d | Event mismatches: %d | Verification applied/partial: %d/%d | "
                 "Issues: %d",
@@ -524,6 +609,10 @@ async def run_formula1_extension(
                 summary["show_artwork_rerendered"],
                 summary["show_artwork_preserved"],
                 summary["show_artwork_missing"],
+                summary["episode_artwork_created"],
+                summary["episode_artwork_updated"],
+                summary["episode_artwork_preserved"],
+                summary["episode_artwork_unchanged"],
                 summary["facts_resolved"],
                 summary["facts_missing"],
                 summary["profiles_resolved"],

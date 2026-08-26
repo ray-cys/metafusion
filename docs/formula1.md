@@ -103,6 +103,8 @@ fields.
 
 - Metadata: `/kometa/metadata/formula1_<year>.yml`
 - Artwork: `/kometa/assets/formula1/rounds/<year>/round-<nn>/poster.png`
+- Episode artwork:
+  `/kometa/assets/formula1/rounds/<year>/round-<nn>/episodes/episode-<nn>.png`
 - Rotating show artwork:
   `/kometa/assets/formula1/shows/<year>/round-<nn>-<team>-<source>/poster.png`
   and `background.png`
@@ -157,15 +159,34 @@ not merely their filenames. Replacing a branding file therefore refreshes
 managed artwork even when its path does not change. Long race, circuit, and
 locality labels are fitted to their safe text area instead of overflowing.
 
+For the newest race round detected in Plex, every parsed episode also receives
+its own 16:9 race/session card. Race identity, circuit, venue, round, date, and
+supplied branding stay consistent across the weekend while the large session
+label changes for practice, qualifying, Sprint, race, analysis, and other
+detected programmes. Each card has a unique round/episode destination and is
+referenced directly by `file_poster` in that episode's Kometa YAML. Plex episode
+views and Continue Watching can use the card after Kometa applies the file.
+Cards already generated for earlier rounds remain stable; a new race does not
+repaint historical episodes.
+
+The licensed car photograph is exposure-controlled before show or episode
+artwork is composed. MetaFusion compresses bright highlights, slightly reduces
+saturation, shades the top and edges, and adds a stronger left-side text gradient
+to episode cards. Trackside advertising, sky, fencing, and asphalt therefore do
+not dominate the design, while the car and team colours remain legible. The
+photograph is never stretched. A pre-existing episode image without a matching
+extension ownership record is treated as manual and is not adopted or overwritten.
+
 ### Race-triggered show poster and background rotation
 
 `show_artwork.enabled: true` creates a paired show poster and 16:9 background
 using the same licensed current-season car photograph. This is separate from the
-round/season posters described above. The portrait uses a stable black, charcoal,
-white, and red technical frame, with the complete landscape photograph fitted in
-a horizontal band so the car is not stretched or cut off. The 16:9 background
-uses the same photograph with the car kept toward the right and a dark Plex-safe
-title area on the left. Both designs use the supplied logo and fonts.
+round/season posters described above and also enables the episode cards described
+above. The portrait uses a stable black, charcoal, white, and red technical frame,
+with the complete landscape photograph fitted in a highlight-controlled horizontal
+band so the car is not stretched or cut off. The 16:9 background uses the same
+graded photograph with the car kept toward the right and a dark Plex-safe title
+area on the left. All designs use the supplied logo and fonts.
 
 Rotation is not time-based. `show_artwork.trigger: plex_new_race` means a new
 pair is selected only when MetaFusion successfully parses at least one episode
@@ -211,6 +232,9 @@ the same race round. This uses the already selected team and Commons source; it
 does not advance constructor rotation. Versioned pairs are retained per season
 according to `show_artwork.retention_pairs_per_season` (default 30). Only
 byte-identical, extension-owned pairs with recorded checksums are pruned.
+Episode cards have separate ownership records: byte-identical managed cards
+follow the same episode cleanup grace and confirmation decision, while modified
+or unknown files are preserved.
 Downloaded Commons sources older than
 `show_artwork.source_cache_retention_days` (default 120) are removed when they
 are not active and can be downloaded again from their recorded identity.
@@ -317,7 +341,7 @@ cleanup is disabled, inventory absence alone never prunes generated records.
 With `verification.enabled: true`, output-changing runs place an expectation in
 the private SQLite database. After `verification.delay_hours` (default one
 hour), a later run reads Plex without changing it and compares generated show,
-season, and episode fields plus selected show and season artwork. Perceptually
+season, and episode fields plus selected show, season, and episode artwork. Perceptually
 equivalent Plex transcodes are accepted within
 `verification.perceptual_distance`. Results are written to
 `/config/formula1/reports/formula1-application-verification-<run-id>.json` and

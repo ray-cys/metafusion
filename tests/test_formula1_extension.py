@@ -1015,11 +1015,18 @@ def test_metadata_and_artwork_rendering(tmp_path, core, schedule_payload):
         2026, 1, 1, "Australian Grand Prix", "Race Session", "race", episode_path, "1", "current"
     )
     show = inventory.Formula1Show(2026, "F1 2026", "show", [episode])
-    generated, seasons, episodes = build_show_entry(show, [race], {1: "/config/poster.png"}, config)
+    generated, seasons, episodes = build_show_entry(
+        show,
+        [race],
+        {1: "/config/poster.png"},
+        config,
+        episode_poster_references={(1, 1): "/config/episode.png"},
+    )
     assert "match" not in generated
     assert "to be confirmed" not in generated["seasons"][1]["summary"]
     assert "Circuit length" not in generated["seasons"][1]["summary"]
     assert generated["seasons"][1]["episodes"][1]["originally_available"] == "2026-03-08"
+    assert generated["seasons"][1]["episodes"][1]["file_poster"] == "/config/episode.png"
     assert seasons == {1} and episodes == {1: {1}}
     assert validate_generated_metadata(generated, "show")
     profiled_race = type(race)(
@@ -1411,13 +1418,28 @@ def test_runner_cleanup_removes_only_owned_unchanged_round(tmp_path, core, sched
     )
     poster = tmp_path / "kometa/assets/formula1/rounds/2026/round-01/poster.png"
     assert poster.exists()
+    episode_poster = (
+        tmp_path
+        / "kometa/assets/formula1/rounds/2026/round-01/episodes/episode-01.png"
+    )
+    episode_poster.parent.mkdir(parents=True)
+    episode_poster.write_bytes(b"managed episode")
+    state = Formula1State(private / "cache/formula1.sqlite3")
+    state.save_artwork(
+        "2026:r01:e01",
+        episode_poster,
+        "episode-fingerprint",
+        __import__("hashlib").sha256(episode_poster.read_bytes()).hexdigest(),
+    )
+    state.close()
     cleaned = asyncio.run(
         run_formula1_extension(
             [empty], core, session, logging.getLogger("cleanup-empty"), base_config_dir=base
         )
     )
-    assert cleaned["cleanup_removed"] == 1
+    assert cleaned["cleanup_removed"] == 2
     assert not poster.exists()
+    assert not episode_poster.exists()
 
 
 def test_runner_rejects_duplicate_year_before_outputs(tmp_path, core, schedule_payload):
@@ -1744,6 +1766,13 @@ def test_runner_maps_each_show_artwork_outcome(
     section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
 
     async def result(*_args, **_kwargs):
+        extension_config = _args[2]
+        episode_path = (
+            extension_config["paths"]["assets"]
+            / "2026/round-01/episodes/episode-01.png"
+        )
+        episode_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (32, 18), "black").save(episode_path)
         return ShowArtworkResult(
             action,
             1,
@@ -1751,6 +1780,15 @@ def test_runner_maps_each_show_artwork_outcome(
             "/config/assets/formula1/shows/2026/background.png" if references else None,
             "Test Team" if references else None,
             "no source" if action == "missing" else None,
+            episode_references={
+                1: "/config/assets/formula1/rounds/2026/round-01/episodes/episode-01.png"
+            },
+            episode_actions={
+                1: "create",
+                2: "update",
+                3: "preserve-manual",
+                4: "unchanged",
+            },
         )
 
     monkeypatch.setattr("extensions.formula1.runner.run_show_artwork_rotation", result)
@@ -1773,6 +1811,10 @@ def test_runner_maps_each_show_artwork_outcome(
         )
     )
     assert summary[counter] == 1
+    assert summary["episode_artwork_created"] == 1
+    assert summary["episode_artwork_updated"] == 1
+    assert summary["episode_artwork_preserved"] == 1
+    assert summary["episode_artwork_unchanged"] == 1
     metadata = yaml.safe_load((tmp_path / "kometa/metadata/formula1_2026.yml").read_text())
     if references:
         assert metadata["metadata"]["F1 2026"]["file_poster"].endswith("poster.png")

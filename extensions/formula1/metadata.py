@@ -80,7 +80,15 @@ def _episode_summary(episode, race):
     )
 
 
-def build_show_entry(show, races, poster_references, config, show_artwork=None):
+def build_show_entry(
+    show,
+    races,
+    poster_references,
+    config,
+    show_artwork=None,
+    episode_poster_references=None,
+):
+    episode_poster_references = episode_poster_references or {}
     by_round = {race.round_number: race for race in races}
     seasons: dict[int, dict] = {}
     authoritative_episodes: defaultdict[int, set[int]] = defaultdict(set)
@@ -96,6 +104,11 @@ def build_show_entry(show, races, poster_references, config, show_artwork=None):
             "originally_available": available,
             "summary": _episode_summary(episode, race),
         }
+        episode_reference = episode_poster_references.get(
+            (episode.round_number, episode.episode_number)
+        )
+        if episode_reference:
+            generated_episode["file_poster"] = episode_reference
         season = seasons.setdefault(
             episode.round_number,
             {
@@ -133,11 +146,17 @@ def write_show_metadata(
     authoritative_seasons=None,
     authoritative_episodes=None,
     previous_title=None,
+    episode_poster_references=None,
 ):
     destination = config["paths"]["metadata"] / f"formula1_{show.year}.yml"
     document = _read_document(destination)
     generated, seasons, episodes = build_show_entry(
-        show, races, poster_references, config, show_artwork
+        show,
+        races,
+        poster_references,
+        config,
+        show_artwork,
+        episode_poster_references,
     )
     existing = document["metadata"].get(show.title, {})
     if previous_title and previous_title != show.title:

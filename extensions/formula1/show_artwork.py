@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
@@ -30,7 +30,22 @@ from extensions.formula1.commons import (
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 2
+SHOW_RENDERER_VERSION = 3
+EPISODE_RENDERER_VERSION = 1
+
+SESSION_DATE_FIELDS = {
+    "warmup": "FirstPractice",
+    "practice1": "FirstPractice",
+    "practice2": "SecondPractice",
+    "practice3": "ThirdPractice",
+    "sprint_qualifying": "SprintQualifying",
+    "pre_sprint": "Sprint",
+    "sprint": "Sprint",
+    "post_sprint": "Sprint",
+    "pre_qualifying": "Qualifying",
+    "qualifying": "Qualifying",
+    "post_qualifying": "Qualifying",
+}
 
 
 @dataclass(frozen=True)
@@ -43,6 +58,8 @@ class ShowArtworkResult:
     issue: str | None = None
     pairs_pruned: int = 0
     cache_pruned: int = 0
+    episode_references: dict[int, str] = field(default_factory=dict)
+    episode_actions: dict[int, str] = field(default_factory=dict)
 
 
 def _checksum(path):
@@ -143,6 +160,198 @@ def _photo_band(photo, size):
     return layer
 
 
+def _grade_photo(photo, size, *, contain=False, centering=(0.5, 0.5), strong=False):
+    """Contain bright trackside scenery without flattening the car or team colours."""
+    if contain:
+        image = _photo_band(photo, size)
+    else:
+        image = ImageOps.fit(
+            photo.convert("RGB"), size, Image.Resampling.LANCZOS, centering=centering
+        )
+    image = ImageEnhance.Color(image).enhance(0.90)
+    image = ImageEnhance.Contrast(image).enhance(1.03)
+    shoulder = 0.54
+    strength = 0.58 if strong else 0.66
+    exposure = 0.84 if strong else 0.88
+    lookup = []
+    for value in range(256):
+        normalized = value / 255
+        compressed = (
+            normalized
+            if normalized <= shoulder
+            else shoulder + (normalized - shoulder) * strength
+        )
+        lookup.append(round(min(1.0, compressed * exposure) * 255))
+    image = image.point(lookup * 3)
+
+    width, height = size
+    top_alpha = 62 if strong else 50
+    bottom_alpha = 20 if strong else 16
+    shade = Image.new("L", (1, height))
+    shade.putdata(
+        [
+            round(top_alpha + (bottom_alpha - top_alpha) * y / max(1, height - 1))
+            for y in range(height)
+        ]
+    )
+    black = Image.new("RGB", size, (3, 5, 9))
+    image = Image.composite(black, image, shade.resize(size))
+
+    vignette = Image.new("L", size, 0)
+    vignette_draw = ImageDraw.Draw(vignette)
+    border = max(12, round(min(size) * 0.08))
+    vignette_draw.rectangle((0, 0, width - 1, height - 1), outline=38, width=border)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(border * 1.4))
+    return Image.composite(black, image, vignette)
+
+
+def _episode_destination(config, episode):
+    return (
+        config["paths"]["assets"]
+        / str(episode.year)
+        / f"round-{episode.round_number:02d}"
+        / "episodes"
+        / f"episode-{episode.episode_number:02d}.png"
+    )
+
+
+def _episode_reference(config, episode):
+    root = str(
+        config["artwork"].get(
+            "asset_reference_root", "config/assets/formula1/rounds"
+        )
+    )
+    return (
+        f"/{root.strip('/')}/{episode.year}/round-{episode.round_number:02d}/"
+        f"episodes/episode-{episode.episode_number:02d}.png"
+    )
+
+
+def _episode_fingerprint(episode, race, path_data, source_identity, config):
+    payload = {
+        "renderer": EPISODE_RENDERER_VERSION,
+        "branding": branding_fingerprint(config),
+        "source": source_identity,
+        "episode": [
+            episode.year,
+            episode.round_number,
+            episode.episode_number,
+            episode.program_title,
+            episode.program_kind,
+        ],
+        "race": [race.name, race.circuit, race.locality, race.country, race.race_date],
+        "path": path_data or "",
+        "size": [
+            config["show_artwork"]["background_width"],
+            config["show_artwork"]["background_height"],
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _managed_episode_action(state, episode, destination, fingerprint):
+    previous = state.artwork(episode.logical_key)
+    if not destination.exists():
+        return "create"
+    checksum = _checksum(destination)
+    if previous is None:
+        return "preserve-manual"
+    if checksum != previous["checksum"]:
+        return "preserve-manual"
+    if previous["fingerprint"] == fingerprint:
+        return "unchanged"
+    return "update"
+
+
+def render_episode_poster(episode, race, path_data, photo_path, config, destination):
+    """Render an immutable 16:9 race/session card for Kometa episode metadata."""
+    width = config["show_artwork"]["background_width"]
+    height = config["show_artwork"]["background_height"]
+    with Image.open(photo_path) as source:
+        image = _grade_photo(
+            source, (width, height), centering=(0.62, 0.5), strong=True
+        ).convert("RGBA")
+
+    left_mask = Image.new("L", (width, 1))
+    left_mask.putdata(
+        [
+            round(238 * max(0.0, 1 - x / (width * 0.70)) ** 1.45)
+            for x in range(width)
+        ]
+    )
+    black = Image.new("RGBA", image.size, (3, 4, 7, 255))
+    clear = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    overlay = Image.composite(black, clear, left_mask.resize(image.size))
+    image = Image.alpha_composite(image, overlay)
+    _technical_frame(image)
+
+    logo_path, regular_path, bold_path = _branding_paths(config)
+    round_font = _font(bold_path, max(24, width // 45))
+    session_font = fitted_font(
+        bold_path,
+        episode.program_title.upper(),
+        max(42, width // 18),
+        28,
+        width * 0.56,
+    )
+    grand_prix = race.name.upper()
+    race_font = fitted_font(
+        bold_path, grand_prix, max(28, width // 29), 22, width * 0.56
+    )
+    detail = f"{race.circuit}  •  {race.locality}, {race.country}"
+    detail_font = fitted_font(
+        regular_path, detail, max(22, width // 42), 18, width * 0.58
+    )
+    _place_logo(
+        image,
+        logo_path,
+        (width * 0.045, height * 0.07, width * 0.23, height * 0.21),
+        round_font,
+    )
+    draw = ImageDraw.Draw(image, "RGBA")
+    _draw_circuit(
+        draw,
+        path_data,
+        (width * 0.68, height * 0.08, width * 0.94, height * 0.42),
+        width,
+    )
+    draw.text(
+        (width * 0.045, height * 0.35),
+        f"ROUND {race.round_number:02d}  •  {race.year}",
+        font=round_font,
+        fill=(235, 30, 48, 245),
+    )
+    draw.text(
+        (width * 0.045, height * 0.45),
+        grand_prix,
+        font=race_font,
+        fill=(245, 245, 247, 235),
+    )
+    draw.text(
+        (width * 0.045, height * 0.57),
+        episode.program_title.upper(),
+        font=session_font,
+        fill=(255, 255, 255, 255),
+    )
+    draw.text(
+        (width * 0.045, height * 0.73),
+        detail,
+        font=detail_font,
+        fill=(225, 226, 230, 225),
+    )
+    session_field = SESSION_DATE_FIELDS.get(episode.program_kind)
+    date = race.session_dates.get(session_field) if session_field else None
+    date = date or race.race_date
+    if date:
+        draw.text(
+            (width * 0.045, height * 0.82),
+            str(date),
+            font=round_font,
+            fill=(225, 226, 230, 190),
+        )
+    return _atomic_save(image.convert("RGB"), destination)
+
+
 def _atomic_save(image, destination):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -206,7 +415,7 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     band_height = round(width * 9 / 16)
     band_top = round(height * 0.39)
     with Image.open(photo_path) as source:
-        band = _photo_band(source, (width, band_height))
+        band = _grade_photo(source, (width, band_height), contain=True)
     image.paste(band, (0, band_top))
     draw = ImageDraw.Draw(image, "RGBA")
     draw.rectangle(
@@ -246,6 +455,11 @@ def render_show_background(show, race, photo_path, config, destination):
             source_rgb,
             (round(width * 0.82), round(height * 0.88)),
             Image.Resampling.LANCZOS,
+        )
+        complete_photo = _grade_photo(
+            complete_photo,
+            complete_photo.size,
+            contain=True,
         )
         image.paste(
             complete_photo,
@@ -295,6 +509,53 @@ def render_show_background(show, race, photo_path, config, destination):
 def _current_references(current):
     source = current.get("source") or {}
     return source.get("poster_reference"), source.get("background_reference")
+
+
+def _existing_episode_outputs(state, config, show, race):
+    references = {}
+    actions = {}
+    for episode in show.episodes:
+        if episode.round_number != race.round_number:
+            continue
+        destination = _episode_destination(config, episode)
+        previous = state.artwork(episode.logical_key)
+        if not destination.is_file():
+            continue
+        if previous and _checksum(destination) != previous["checksum"]:
+            actions[episode.episode_number] = "preserve-manual"
+        else:
+            actions[episode.episode_number] = (
+                "unchanged" if previous else "preserve-manual"
+            )
+        references[episode.episode_number] = _episode_reference(config, episode)
+    return references, actions
+
+
+def _reconcile_episode_posters(
+    state, config, show, race, path_data, photo_path, source_identity
+):
+    references = {}
+    actions = {}
+    for episode in show.episodes:
+        if episode.round_number != race.round_number:
+            continue
+        destination = _episode_destination(config, episode)
+        fingerprint = _episode_fingerprint(
+            episode, race, path_data, source_identity, config
+        )
+        previous = state.artwork(episode.logical_key)
+        if path_data is None and previous is not None:
+            fingerprint = previous["fingerprint"]
+        action = _managed_episode_action(state, episode, destination, fingerprint)
+        actions[episode.episode_number] = action
+        if action in {"create", "update"} and not config["dry_run"]:
+            checksum = render_episode_poster(
+                episode, race, path_data, photo_path, config, destination
+            )
+            state.save_artwork(episode.logical_key, destination, fingerprint, checksum)
+        if destination.exists() or action in {"create", "update"}:
+            references[episode.episode_number] = _episode_reference(config, episode)
+    return references, actions
 
 
 def _pair_integrity(current):
@@ -464,6 +725,9 @@ async def run_show_artwork_rotation(
         integrity = _pair_integrity(current)
         poster_reference, background_reference = _current_references(current)
         if integrity == "manual":
+            episode_references, episode_actions = _existing_episode_outputs(
+                state, config, show, race
+            )
             return ShowArtworkResult(
                 "preserve-manual",
                 trigger_round,
@@ -471,16 +735,26 @@ async def run_show_artwork_rotation(
                 background_reference,
                 current["constructor_id"],
                 "Managed show artwork was modified; automatic rotation is paused",
+                episode_references=episode_references,
+                episode_actions=episode_actions,
             )
         if trigger_round < int(current["trigger_round"]) and integrity == "managed":
+            episode_references, episode_actions = _existing_episode_outputs(
+                state, config, show, race
+            )
             return ShowArtworkResult(
                 "unchanged",
                 trigger_round,
                 poster_reference,
                 background_reference,
                 current["constructor_id"],
+                episode_references=episode_references,
+                episode_actions=episode_actions,
             )
         if trigger_round < int(current["trigger_round"]) and integrity == "missing":
+            episode_references, episode_actions = _existing_episode_outputs(
+                state, config, show, race
+            )
             return ShowArtworkResult(
                 "preserved",
                 trigger_round,
@@ -488,18 +762,46 @@ async def run_show_artwork_rotation(
                 background_reference,
                 current["constructor_id"],
                 "The active artwork belongs to a newer round; repair waits for that round",
+                episode_references=episode_references,
+                episode_actions=episode_actions,
             )
         if trigger_round == int(current["trigger_round"]) and integrity == "managed":
             rerendering = (
                 current.get("source", {}).get("render_fingerprint") != render_fingerprint
             )
             if not rerendering:
+                candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
+                try:
+                    photo_path, _image_source = await acquire_candidate_image(
+                        session, config, candidate
+                    )
+                    source_identity = candidate.source_sha1 or hashlib.sha256(
+                        candidate.image_url.encode()
+                    ).hexdigest()
+                    episode_references, episode_actions = _reconcile_episode_posters(
+                        state,
+                        config,
+                        show,
+                        race,
+                        path_data,
+                        photo_path,
+                        source_identity,
+                    )
+                    issue = None
+                except RuntimeError as error:
+                    episode_references, episode_actions = _existing_episode_outputs(
+                        state, config, show, race
+                    )
+                    issue = f"Episode artwork source unavailable: {error}"
                 return ShowArtworkResult(
                     "unchanged",
                     trigger_round,
                     poster_reference,
                     background_reference,
                     current["constructor_id"],
+                    issue,
+                    episode_references=episode_references,
+                    episode_actions=episode_actions,
                 )
 
     restoring = (
@@ -525,8 +827,14 @@ async def run_show_artwork_rotation(
                 f"{source_identity[:10]}"
             )
             destination_root = config["paths"]["show_assets"] / str(show.year) / directory_name
+        source_identity = candidate.source_sha1 or hashlib.sha256(
+            candidate.image_url.encode()
+        ).hexdigest()
     except RuntimeError as error:
         poster_reference, background_reference = _current_references(current or {})
+        episode_references, episode_actions = _existing_episode_outputs(
+            state, config, show, race
+        )
         return ShowArtworkResult(
             "preserved" if current else "missing",
             trigger_round,
@@ -534,6 +842,8 @@ async def run_show_artwork_rotation(
             background_reference,
             current.get("constructor_id") if current else None,
             f"No safe Wikimedia Commons car image: {error}",
+            episode_references=episode_references,
+            episode_actions=episode_actions,
         )
 
     relative = destination_root.relative_to(config["paths"]["show_assets"])
@@ -541,6 +851,15 @@ async def run_show_artwork_rotation(
     background_destination = destination_root / "background.png"
     poster_reference = _asset_reference(config, relative / "poster.png")
     background_reference = _asset_reference(config, relative / "background.png")
+    episode_references, episode_actions = _reconcile_episode_posters(
+        state,
+        config,
+        show,
+        race,
+        path_data,
+        photo_path,
+        source_identity,
+    )
     if config["dry_run"]:
         return ShowArtworkResult(
             (
@@ -554,6 +873,8 @@ async def run_show_artwork_rotation(
             poster_reference,
             background_reference,
             candidate.constructor_name,
+            episode_references=episode_references,
+            episode_actions=episode_actions,
         )
 
     poster_checksum = render_show_poster(
@@ -569,6 +890,7 @@ async def run_show_artwork_rotation(
         "background_reference": background_reference,
         "renderer_version": SHOW_RENDERER_VERSION,
         "render_fingerprint": render_fingerprint,
+        "photo_cache": str(photo_path),
         "generated_checksums": {
             "poster": poster_checksum,
             "background": background_checksum,
@@ -598,4 +920,6 @@ async def run_show_artwork_rotation(
         candidate.constructor_name,
         pairs_pruned=pairs_pruned,
         cache_pruned=cache_pruned,
+        episode_references=episode_references,
+        episode_actions=episode_actions,
     )

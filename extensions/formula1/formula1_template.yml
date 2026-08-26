@@ -26,9 +26,10 @@ artwork:
   font_regular: branding/font-regular.ttf
   font_bold: branding/font-bold.ttf
 
-# The supplied logo and fonts above are also used for the show artwork frame.
-# Poster/background rotation is triggered by a newly discovered Plex race round,
-# never by container uptime or by a calendar entry that is not yet in Plex.
+# The supplied logo and fonts above are also used for the show artwork frame and
+# 16:9 episode session cards. Poster/background rotation and new episode cards
+# are triggered by a newly discovered Plex race round, never by container uptime
+# or by a calendar entry that is not yet in Plex.
 show_artwork:
   enabled: true
   trigger: plex_new_race

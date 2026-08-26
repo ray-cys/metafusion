@@ -34,13 +34,20 @@ from extensions.formula1.inventory import Formula1Episode, Formula1Show
 from extensions.formula1.metadata import build_show_entry
 from extensions.formula1.provider import RaceData
 from extensions.formula1.show_artwork import (
+    EPISODE_RENDERER_VERSION,
     SHOW_RENDERER_VERSION,
     _asset_reference,
     _candidate_order,
     _checksum,
+    _episode_fingerprint,
+    _episode_reference,
+    _existing_episode_outputs,
+    _grade_photo,
+    _managed_episode_action,
     _pair_integrity,
     _prune_retained_pairs,
     _prune_source_cache,
+    render_episode_poster,
     render_show_background,
     render_show_poster,
     run_show_artwork_rotation,
@@ -474,14 +481,67 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     photo.write_bytes(_photo_bytes())
     poster = tmp_path / "poster.png"
     background = tmp_path / "background.png"
+    episode = tmp_path / "episode.png"
     assert len(render_show_poster(show, race, "M0 0 L100 100", photo, config, poster)) == 64
     assert len(render_show_background(show, race, photo, config, background)) == 64
+    assert len(
+        render_episode_poster(
+            show.episodes[0], race, "M0 0 L100 100", photo, config, episode
+        )
+    ) == 64
     with Image.open(poster) as image:
         assert image.size == (600, 900)
     with Image.open(background) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 2
+    with Image.open(episode) as image:
+        assert image.size == (1280, 720)
+    assert SHOW_RENDERER_VERSION == 3
+    assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
+    assert _episode_reference(config, show.episodes[0]).endswith(
+        "/2026/round-01/episodes/episode-01.png"
+    )
+
+
+def test_photo_grade_compresses_bright_background_and_episode_ownership(
+    tmp_path, config, show, race
+):
+    bright = Image.new("RGB", (1600, 900), (250, 245, 235))
+    draw = ImageDraw.Draw(bright)
+    draw.rectangle((700, 350, 1450, 720), fill=(220, 20, 45))
+    graded = _grade_photo(bright, (1280, 720), centering=(0.62, 0.5), strong=True)
+    assert sum(graded.getpixel((100, 100))) < sum(bright.getpixel((100, 100))) * 0.8
+    assert graded.getpixel((1000, 450))[0] > graded.getpixel((1000, 450))[1] * 2
+
+    state = Formula1State(config["paths"]["database"])
+    destination = tmp_path / "episode.png"
+    fingerprint = _episode_fingerprint(
+        show.episodes[0], race, "M0 0", "source", config
+    )
+    assert _managed_episode_action(
+        state, show.episodes[0], destination, fingerprint
+    ) == "create"
+    destination.write_bytes(b"manual")
+    assert _managed_episode_action(
+        state, show.episodes[0], destination, fingerprint
+    ) == "preserve-manual"
+    state.save_artwork(
+        show.episodes[0].logical_key,
+        destination,
+        fingerprint,
+        _checksum(destination),
+    )
+    assert _managed_episode_action(
+        state, show.episodes[0], destination, fingerprint
+    ) == "unchanged"
+    assert _managed_episode_action(
+        state, show.episodes[0], destination, "changed"
+    ) == "update"
+    destination.write_bytes(b"manual edit")
+    assert _managed_episode_action(
+        state, show.episodes[0], destination, "changed"
+    ) == "preserve-manual"
+    state.close()
 
 
 def test_renderer_failure_cleanup_and_dry_attribution(
@@ -546,7 +606,7 @@ def test_source_selection_skips_provider_and_image_failures(
 
 
 def test_race_triggered_rotation_state_restore_manual_and_attribution(
-    tmp_path, config, show, race
+    tmp_path, config, show, race, monkeypatch
 ):
     state = Formula1State(config["paths"]["database"])
     session = CommonsSession()
@@ -556,6 +616,14 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         )
     )
     assert first.action == "rotated" and first.constructor == "Alpine F1 Team"
+    assert first.episode_actions == {1: "create"}
+    assert first.episode_references[1].endswith(
+        "/2026/round-01/episodes/episode-01.png"
+    )
+    assert (
+        config["paths"]["assets"]
+        / "2026/round-01/episodes/episode-01.png"
+    ).is_file()
     current = state.show_rotation("show:2026")
     assert _pair_integrity(current) == "managed"
     assert len(state.show_rotation_history()) == 1
@@ -569,6 +637,19 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         )
     )
     assert unchanged.action == "unchanged"
+    assert unchanged.episode_actions == {1: "unchanged"}
+    with monkeypatch.context() as patch:
+        async def unavailable(*_args, **_kwargs):
+            raise RuntimeError("offline")
+
+        patch.setattr(show_artwork_module, "acquire_candidate_image", unavailable)
+        unavailable_result = asyncio.run(
+            run_show_artwork_rotation(
+                session, state, config, show, race, None, logging.getLogger("unavailable")
+            )
+        )
+    assert unavailable_result.action == "unchanged"
+    assert "source unavailable" in unavailable_result.issue
 
     second_race = RaceData(**{**race.__dict__, "round_number": 2, "name": "Chinese Grand Prix"})
     second = asyncio.run(
@@ -609,6 +690,31 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         )
     )
     assert preserved.action == "preserve-manual" and preserved.issue
+    state.close()
+
+
+def test_existing_episode_output_inventory_preserves_unknown_and_modified(
+    tmp_path, config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    first = show.episodes[0]
+    second = replace(first, episode_number=2, plex_rating_key="episode-2")
+    show.episodes.append(second)
+    for episode, content in ((first, b"first"), (second, b"second")):
+        destination = (
+            config["paths"]["assets"]
+            / f"2026/round-01/episodes/episode-{episode.episode_number:02d}.png"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+    first_destination = (
+        config["paths"]["assets"] / "2026/round-01/episodes/episode-01.png"
+    )
+    state.save_artwork(first.logical_key, first_destination, "fp", _checksum(first_destination))
+    first_destination.write_bytes(b"manual")
+    references, actions = _existing_episode_outputs(state, config, show, race)
+    assert set(references) == {1, 2}
+    assert actions == {1: "preserve-manual", 2: "preserve-manual"}
     state.close()
 
 
