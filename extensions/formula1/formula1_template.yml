@@ -57,7 +57,10 @@ artwork:
 # of visible Formula 1 race action matched to the current event or circuit. It
 # prefers the exact event, then recent and historical action at the exact circuit.
 # Empty/aerial track scenes, static cars, monochrome photos, and safety cars are
-# not selected. Missing cards are created only for Plex-detected
+# not selected. If that strict pool is empty, the selected current-season team-car
+# photograph is used only when its decoded source is colour, safely licensed, and
+# at least 3840x2160; the clean show background itself renders at 3840x2160.
+# Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
 show_artwork:
@@ -66,10 +69,14 @@ show_artwork:
   policy: managed
   poster_width: 1000
   poster_height: 1500
-  background_width: 1920
-  background_height: 1080
+  background_width: 3840
+  background_height: 2160
+  episode_width: 1920
+  episode_height: 1080
   minimum_source_width: 1600
   minimum_source_height: 900
+  minimum_background_source_width: 3840
+  minimum_background_source_height: 2160
   retention_pairs_per_season: 30
   source_cache_retention_days: 120
   asset_reference_root: config/assets/formula1/shows

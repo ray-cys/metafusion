@@ -23,7 +23,7 @@ from extensions.formula1.commons import (
 )
 
 PROVIDER = "wikimedia-commons-race-background"
-BACKGROUND_CANDIDATE_VERSION = 4
+BACKGROUND_CANDIDATE_VERSION = 5
 CATEGORY_DEPTH_LIMIT = 2
 CATEGORY_FETCH_LIMIT = 28
 ACTION_BACKGROUND_TIERS = (
@@ -31,6 +31,8 @@ ACTION_BACKGROUND_TIERS = (
     "recent_circuit_action_race_car",
     "historical_circuit_action_race_car",
 )
+TEAM_CAR_FALLBACK_TIER = "current_season_team_car_fallback"
+ELIGIBLE_BACKGROUND_TIERS = (*ACTION_BACKGROUND_TIERS, TEAM_CAR_FALLBACK_TIER)
 REJECTED_IDENTITIES = {
     "black and white",
     "diecast",
@@ -436,8 +438,8 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
     candidates = []
-    minimum_width = config["show_artwork"]["minimum_source_width"]
-    minimum_height = config["show_artwork"]["minimum_source_height"]
+    minimum_width = config["show_artwork"]["minimum_background_source_width"]
+    minimum_height = config["show_artwork"]["minimum_background_source_height"]
     for page in _candidate_pages(payload):
         image_info = (page.get("imageinfo") or [{}])[0]
         metadata = image_info.get("extmetadata") or {}
@@ -619,7 +621,7 @@ def _race_background_search_url(config, query, *, offset=None):
         "gsrsearch": query,
         "prop": "imageinfo|categories",
         "iiprop": "url|size|sha1|mime|extmetadata",
-        "iiurlwidth": "2560",
+        "iiurlwidth": "3840",
         "cllimit": "max",
         "maxlag": "5",
     }
@@ -645,7 +647,7 @@ def _race_background_category_url(
         "gcmlimit": "max",
         "prop": "imageinfo|categories",
         "iiprop": "url|size|sha1|mime|extmetadata",
-        "iiurlwidth": "2560",
+        "iiurlwidth": "3840",
         "cllimit": "max",
         "maxlag": "5",
     }
@@ -759,7 +761,7 @@ async def search_race_backgrounds(session, state, config, race_or_year, logger):
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
-    key = f"search:v8:{environment.race_key}" if environment else f"search:v6:{year}"
+    key = f"search:v9:{environment.race_key}" if environment else f"search:v7:{year}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
         return parse_race_background_candidates(cached, race_or_year, config), "cache"

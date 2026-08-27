@@ -173,19 +173,33 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     if show_artwork["poster_height"] * 2 != show_artwork["poster_width"] * 3:
         raise Formula1ConfigError("show artwork poster dimensions must use a 2:3 aspect ratio")
     show_artwork["background_width"] = _bounded_int(
-        show_artwork.get("background_width", 1920),
+        show_artwork.get("background_width", 3840),
         "show_artwork.background_width",
         1280,
         3840,
     )
     show_artwork["background_height"] = _bounded_int(
-        show_artwork.get("background_height", 1080),
+        show_artwork.get("background_height", 2160),
         "show_artwork.background_height",
         720,
         2160,
     )
     if show_artwork["background_width"] * 9 != show_artwork["background_height"] * 16:
         raise Formula1ConfigError("show artwork background dimensions must use a 16:9 aspect ratio")
+    show_artwork["episode_width"] = _bounded_int(
+        show_artwork.get("episode_width", 1920),
+        "show_artwork.episode_width",
+        1280,
+        3840,
+    )
+    show_artwork["episode_height"] = _bounded_int(
+        show_artwork.get("episode_height", 1080),
+        "show_artwork.episode_height",
+        720,
+        2160,
+    )
+    if show_artwork["episode_width"] * 9 != show_artwork["episode_height"] * 16:
+        raise Formula1ConfigError("show artwork episode dimensions must use a 16:9 aspect ratio")
     if str(show_artwork.get("trigger", "plex_new_race")).casefold() != "plex_new_race":
         raise Formula1ConfigError("show_artwork.trigger currently supports only plex_new_race")
     show_artwork["trigger"] = "plex_new_race"
@@ -203,6 +217,18 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         "show_artwork.minimum_source_height",
         450,
         3000,
+    )
+    show_artwork["minimum_background_source_width"] = _bounded_int(
+        show_artwork.get("minimum_background_source_width", 3840),
+        "show_artwork.minimum_background_source_width",
+        1920,
+        7680,
+    )
+    show_artwork["minimum_background_source_height"] = _bounded_int(
+        show_artwork.get("minimum_background_source_height", 2160),
+        "show_artwork.minimum_background_source_height",
+        1080,
+        4320,
     )
     show_artwork["retention_pairs_per_season"] = _bounded_int(
         show_artwork.get("retention_pairs_per_season", 30),

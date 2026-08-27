@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat
@@ -32,6 +32,8 @@ from extensions.formula1.commons import (
 from extensions.formula1.race_background import (
     ACTION_BACKGROUND_TIERS,
     BACKGROUND_CANDIDATE_VERSION,
+    ELIGIBLE_BACKGROUND_TIERS,
+    TEAM_CAR_FALLBACK_TIER,
     RaceBackgroundCandidate,
     classify_image_environment,
     derive_race_environment,
@@ -345,8 +347,8 @@ def _episode_fingerprint(episode, race, path_data, source_identity, config):
         "race": [race.name, race.circuit, race.locality, race.country, race.race_date],
         "path": path_data or "",
         "size": [
-            config["show_artwork"]["background_width"],
-            config["show_artwork"]["background_height"],
+            config["show_artwork"]["episode_width"],
+            config["show_artwork"]["episode_height"],
         ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -368,8 +370,8 @@ def _managed_episode_action(state, episode, destination, fingerprint):
 
 def render_episode_poster(episode, race, path_data, photo_path, config, destination):
     """Render an immutable 16:9 race/session card for Kometa episode metadata."""
-    width = config["show_artwork"]["background_width"]
-    height = config["show_artwork"]["background_height"]
+    width = config["show_artwork"]["episode_width"]
+    height = config["show_artwork"]["episode_height"]
     with Image.open(photo_path) as source:
         image = _grade_photo(
             source, (width, height), centering=(0.62, 0.5), strong=True
@@ -1094,25 +1096,137 @@ def _background_candidate_order(candidates, current, trigger_round):
     return ordered
 
 
+def _background_acquisition_config(config):
+    """Apply the independent 4K background-source floor to pixel validation."""
+    return {
+        **config,
+        "show_artwork": {
+            **config["show_artwork"],
+            "minimum_source_width": config["show_artwork"][
+                "minimum_background_source_width"
+            ],
+            "minimum_source_height": config["show_artwork"][
+                "minimum_background_source_height"
+            ],
+        },
+    }
+
+
+def _requested_commons_width(url, width):
+    """Upgrade an older persisted Commons thumbnail URL without guessing another file."""
+    return re.sub(r"/\d+px-", f"/{int(width)}px-", str(url), count=1)
+
+
+async def _acquire_background_image(session, config, candidate):
+    width = config["show_artwork"]["minimum_background_source_width"]
+    candidate = replace(
+        candidate,
+        image_url=_requested_commons_width(candidate.image_url, width),
+    )
+    return await acquire_candidate_image(
+        session,
+        _background_acquisition_config(config),
+        candidate,
+    )
+
+
+async def _team_car_background_fallback(session, config, race, candidate, diagnostics):
+    """Use the selected current-season team car only after race-aware sources fail."""
+    minimum_width = config["show_artwork"]["minimum_background_source_width"]
+    minimum_height = config["show_artwork"]["minimum_background_source_height"]
+    if candidate is None:
+        raise RuntimeError("no selected current-season team-car fallback was available")
+    if candidate.width < minimum_width or candidate.height < minimum_height:
+        raise RuntimeError(
+            f"selected team-car fallback is {candidate.width}x{candidate.height}; "
+            f"4K source floor is {minimum_width}x{minimum_height}"
+        )
+    photo_path, image_source = await _acquire_background_image(
+        session, config, candidate
+    )
+    photo_available = Path(photo_path).is_file()
+    if photo_available and not image_has_meaningful_colour(photo_path):
+        raise RuntimeError("selected 4K team-car fallback was monochrome")
+    if not photo_available and not config["dry_run"]:
+        raise RuntimeError("selected 4K team-car fallback was not cached after validation")
+    environment = derive_race_environment(race)
+    observed_environment = (
+        classify_image_environment(photo_path) if photo_available else "unknown"
+    )
+    background_candidate = RaceBackgroundCandidate(
+        page_id=candidate.page_id,
+        title=candidate.title,
+        page_url=candidate.page_url,
+        image_url=_requested_commons_width(candidate.image_url, minimum_width),
+        width=candidate.width,
+        height=candidate.height,
+        mime=candidate.mime,
+        source_sha1=candidate.source_sha1,
+        author=candidate.author,
+        licence=candidate.licence,
+        licence_url=candidate.licence_url,
+        vehicle_name=candidate.constructor_name,
+        score=candidate.score,
+        subject_type="race_car",
+        match_tier=TEAM_CAR_FALLBACK_TIER,
+        environment=environment.mode,
+        race_key=environment.race_key,
+        evidence=("current-season-team-car", "4k-source", "last-resort-fallback"),
+        eligibility_version=BACKGROUND_CANDIDATE_VERSION,
+    )
+    perceptual_hash = (
+        _perceptual_hash(photo_path)
+        if photo_available
+        else hashlib.sha256(candidate.image_url.encode()).hexdigest()[:16]
+    )
+    diagnostics.append(
+        f"using 4K current-season team-car fallback: {candidate.title}"
+    )
+    return (
+        background_candidate,
+        photo_path,
+        {
+            "search": "show-poster-source",
+            "image": image_source,
+            "expected_environment": environment.mode,
+            "observed_environment": observed_environment,
+            "match_tier": TEAM_CAR_FALLBACK_TIER,
+            "fallback_reason": "; ".join(diagnostics[-4:]),
+        },
+        perceptual_hash,
+    )
+
+
 async def _select_background_source(
-    session, state, config, race, current, trigger_round, logger
+    session,
+    state,
+    config,
+    race,
+    current,
+    trigger_round,
+    logger,
+    team_candidate=None,
 ):
     environment = derive_race_environment(race)
-    candidates, search_source = await search_race_backgrounds(
-        session, state, config, race, logger
-    )
+    diagnostics = []
+    try:
+        candidates, search_source = await search_race_backgrounds(
+            session, state, config, race, logger
+        )
+    except RuntimeError as error:
+        candidates, search_source = [], "unavailable"
+        diagnostics.append(f"race-aware search failed: {error}")
     if not candidates:
-        raise RuntimeError(
-            "no safely licensed colour Formula 1 race-action photograph matched "
-            "the exact event or circuit"
+        diagnostics.append(
+            "no safely licensed 4K colour Formula 1 race-action photograph "
+            "matched the exact event or circuit"
         )
     current_source = (current or {}).get("source", {})
     previous_hash = current_source.get("background_perceptual_hash")
     fallback = None
-    diagnostics = []
     for candidate in _background_candidate_order(candidates, current, trigger_round):
         try:
-            photo_path, image_source = await acquire_candidate_image(
+            photo_path, image_source = await _acquire_background_image(
                 session, config, candidate
             )
             if Path(photo_path).is_file() and not image_has_meaningful_colour(photo_path):
@@ -1156,8 +1270,14 @@ async def _select_background_source(
             diagnostics.append(f"{candidate.title}: {error}")
     if fallback is not None:
         return fallback
-    reason = "; ".join(diagnostics[-4:]) or "no race background passed pixel validation"
-    raise RuntimeError(reason)
+    try:
+        return await _team_car_background_fallback(
+            session, config, race, team_candidate, diagnostics
+        )
+    except RuntimeError as error:
+        diagnostics.append(str(error))
+        reason = "; ".join(diagnostics[-4:])
+        raise RuntimeError(reason) from error
 
 
 async def run_show_artwork_rotation(
@@ -1299,12 +1419,14 @@ async def run_show_artwork_rotation(
                 and saved_background.eligibility_version == BACKGROUND_CANDIDATE_VERSION
                 and saved_background.race_key == derive_race_environment(race).race_key
                 and saved_background.subject_type == "race_car"
-                and saved_background.match_tier in ACTION_BACKGROUND_TIERS
+                and saved_background.match_tier in ELIGIBLE_BACKGROUND_TIERS
             ):
                 background_candidate = saved_background
-                background_photo_path, background_image_source = await acquire_candidate_image(
+                background_photo_path, background_image_source = await _acquire_background_image(
                     session, config, background_candidate
                 )
+                if not image_has_meaningful_colour(background_photo_path):
+                    raise RuntimeError("saved background source was monochrome")
                 background_provider_sources = {
                     "search": "state",
                     "image": background_image_source,
@@ -1328,6 +1450,7 @@ async def run_show_artwork_rotation(
                     current,
                     trigger_round,
                     logger,
+                    candidate,
                 )
             destination_root = Path(current["poster_destination"]).parent
         else:
@@ -1347,6 +1470,7 @@ async def run_show_artwork_rotation(
                 current,
                 trigger_round,
                 logger,
+                candidate,
             )
             source_identity = candidate.source_sha1 or hashlib.sha256(
                 candidate.image_url.encode()
@@ -1365,7 +1489,7 @@ async def run_show_artwork_rotation(
             state, config, show, race
         )
         return ShowArtworkResult(
-            "preserved" if current else "missing",
+            "repair-failed" if restoring else "preserved" if current else "missing",
             trigger_round,
             poster_reference,
             background_reference,

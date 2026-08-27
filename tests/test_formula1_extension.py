@@ -2178,6 +2178,7 @@ def test_authoritative_child_parser_ignores_unrelated_and_malformed_keys():
         ("unchanged", "show_artwork_unchanged", True),
         ("preserved", "show_artwork_preserved", True),
         ("missing", "show_artwork_missing", False),
+        ("repair-failed", "show_artwork_missing", False),
     ],
 )
 def test_runner_maps_each_show_artwork_outcome(

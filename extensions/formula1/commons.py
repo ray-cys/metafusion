@@ -262,7 +262,7 @@ def _commons_search_url(
         "gsrsearch": query,
         "prop": "imageinfo|categories",
         "iiprop": "url|size|sha1|mime|extmetadata",
-        "iiurlwidth": "2560",
+        "iiurlwidth": "3840",
         "cllimit": "max",
         "maxlag": "5",
     }
@@ -305,7 +305,7 @@ async def _commons_json(session, url, retries):
 
 
 async def search_commons(session, state, config, year, constructor, roster, logger):
-    key = f"search:v2:{int(year)}:{constructor.constructor_id}"
+    key = f"search:v3:{int(year)}:{constructor.constructor_id}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
         return parse_commons_candidates(cached, year, constructor, roster, config), "cache"
@@ -433,8 +433,13 @@ async def acquire_candidate_image(session, config, candidate):
     ]
     destination = config["paths"]["show_image_cache"] / f"{digest}{extension}"
     if destination.exists():
-        _validate_image(destination.read_bytes(), config)
-        return destination, "cache"
+        try:
+            _validate_image(destination.read_bytes(), config)
+            return destination, "cache"
+        except RuntimeError:
+            # A stricter source policy or wider Commons thumbnail request may
+            # supersede a previously valid lower-resolution cache entry.
+            pass
     data = await _download_bytes(
         session, candidate.image_url, retries=config["providers"]["retries"]
     )

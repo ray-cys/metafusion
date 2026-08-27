@@ -266,8 +266,12 @@ def config(tmp_path, core):
         poster_height=900,
         background_width=1280,
         background_height=720,
+        episode_width=1280,
+        episode_height=720,
         minimum_source_width=800,
         minimum_source_height=450,
+        minimum_background_source_width=800,
+        minimum_background_source_height=450,
     )
     return value
 
@@ -427,6 +431,7 @@ def test_race_background_identity_licence_and_season_filtering(config):
     assert "race+car" in _race_background_search_url(
         config, 'intitle:2026 "Formula 1" "race car"'
     )
+    assert "iiurlwidth=3840" in _race_background_search_url(config, "F1")
     assert "gsroffset=30" in _race_background_search_url(config, "F1", offset=30)
     assert "generator=categorymembers" in _race_background_category_url(config)
     assert "gcmcontinue=next" in _race_background_category_url(
@@ -572,6 +577,211 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
                 None, state, config, night_race, None, 18, logging.getLogger("mismatch")
             )
         )
+    state.close()
+
+
+def test_background_uses_colour_4k_team_car_as_last_resort(
+    config, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    roster = parse_constructor_payload(_constructor_payload())
+    team_candidate = parse_commons_candidates(
+        _commons_payload(width=3840, height=2160),
+        2026,
+        roster[0],
+        roster,
+        config,
+    )[0]
+    source = config["paths"]["show_image_cache"] / "fallback-4k.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_photo_bytes((3840, 2160)))
+
+    async def empty_search(*_args, **_kwargs):
+        return [], "test"
+
+    async def fallback_image(*_args, **_kwargs):
+        return source, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
+    selected, path, providers, _image_hash = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            1,
+            logging.getLogger("4k-fallback"),
+            team_candidate,
+        )
+    )
+    assert selected.match_tier == "current_season_team_car_fallback"
+    assert "4k-source" in selected.evidence
+    assert path == source
+    assert providers["search"] == "show-poster-source"
+
+    async def failed_search(*_args, **_kwargs):
+        raise RuntimeError("Commons temporarily unavailable")
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", failed_search)
+    recovered = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            1,
+            logging.getLogger("fallback-after-search-failure"),
+            team_candidate,
+        )
+    )
+    assert recovered[0].match_tier == "current_season_team_car_fallback"
+
+    monochrome = config["paths"]["show_image_cache"] / "fallback-monochrome.jpg"
+    Image.new("RGB", (1600, 900), (45, 45, 45)).save(monochrome)
+
+    async def monochrome_image(*_args, **_kwargs):
+        return monochrome, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", monochrome_image)
+    with pytest.raises(RuntimeError, match="fallback was monochrome"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                1,
+                logging.getLogger("monochrome-fallback"),
+                team_candidate,
+            )
+        )
+
+    async def missing_image(*_args, **_kwargs):
+        return config["paths"]["show_image_cache"] / "does-not-exist.jpg", "test"
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", missing_image)
+    with pytest.raises(RuntimeError, match="not cached after validation"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                1,
+                logging.getLogger("missing-fallback"),
+                team_candidate,
+            )
+        )
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
+    config["show_artwork"]["minimum_background_source_width"] = 4096
+    with pytest.raises(RuntimeError, match="4K source floor"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                1,
+                logging.getLogger("undersized-fallback"),
+                team_candidate,
+            )
+        )
+    state.close()
+
+
+def test_rotation_persists_restores_and_reports_team_car_background_fallback(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def empty_background_search(*_args, **_kwargs):
+        return [], "test"
+
+    monkeypatch.setattr(
+        show_artwork_module, "search_race_backgrounds", empty_background_search
+    )
+    session = CommonsSession()
+    rotated = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("fallback-rotation"),
+        )
+    )
+    assert rotated.action == "rotated"
+    current = state.show_rotation("show:2026")
+    assert (
+        current["source"]["background_candidate"]["match_tier"]
+        == "current_season_team_car_fallback"
+    )
+    background = Path(current["background_destination"])
+    assert background.is_file()
+    background.unlink()
+    restored = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            None,
+            logging.getLogger("fallback-restore"),
+        )
+    )
+    assert restored.action == "restored"
+    assert background.is_file()
+
+    background.unlink()
+    cached_source = Path(current["source"]["background_photo_cache"])
+    grayscale = Image.new("RGB", (1600, 900), (55, 55, 55))
+    grayscale_draw = ImageDraw.Draw(grayscale)
+    grayscale_draw.line((0, 0, 1599, 899), fill=(235, 235, 235), width=18)
+    grayscale_draw.rectangle((300, 250, 1350, 700), outline=(5, 5, 5), width=20)
+    grayscale.save(cached_source)
+    monochrome = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            None,
+            logging.getLogger("saved-monochrome-rejected"),
+        )
+    )
+    assert monochrome.action == "repair-failed"
+    assert "saved background source was monochrome" in monochrome.issue
+
+    cached_source.write_bytes(_photo_bytes())
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("provider offline")
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", unavailable)
+    failed = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            None,
+            logging.getLogger("fallback-repair-failed"),
+        )
+    )
+    assert failed.action == "repair-failed"
+    assert "provider offline" in failed.issue
     state.close()
 
 
@@ -851,7 +1061,7 @@ def test_old_background_candidate_records_are_marked_ineligible(config):
     candidate = parse_race_background_candidates(
         _race_background_payload(), 2026, config
     )[0]
-    assert candidate.eligibility_version == 4
+    assert candidate.eligibility_version == 5
     legacy = candidate.as_dict()
     legacy.pop("eligibility_version")
     assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
@@ -994,6 +1204,7 @@ def test_commons_provider_cache_stale_and_url(config):
         )
     )[1] == "cache"
     assert "gsrsearch" in _commons_search_url(config, 2026, roster[0])
+    assert "iiurlwidth=3840" in _commons_search_url(config, 2026, roster[0])
     assert "intitle%3AGP" not in _commons_search_url(config, 2026, roster[0], broad=True)
     assert "gsroffset=30" in _commons_search_url(
         config, 2026, roster[0], broad=True, offset=30
@@ -1065,6 +1276,11 @@ def test_image_acquisition_validation_and_cache(config, monkeypatch):
         acquire_candidate_image(session, config, replace(candidate, source_sha1=""))
     )
     assert len(no_hash_destination.stem) == 64
+    destination.write_bytes(b"obsolete lower-resolution cache")
+    refreshed, source = asyncio.run(acquire_candidate_image(session, config, candidate))
+    assert refreshed == destination and source == "wikimedia-commons"
+    with Image.open(refreshed) as refreshed_image:
+        assert refreshed_image.size == (1600, 900)
     with pytest.raises(RuntimeError, match="blank"):
         _validate_image(_photo_bytes(blank=True), config)
     with pytest.raises(RuntimeError, match="dimensions"):
@@ -1218,6 +1434,24 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
     )
+
+
+def test_default_show_background_is_4k_while_episode_cards_remain_full_hd(
+    tmp_path, core, show, race
+):
+    config = load_formula1_config(core, tmp_path / "default-config")
+    assert config["show_artwork"]["background_width"] == 3840
+    assert config["show_artwork"]["background_height"] == 2160
+    assert config["show_artwork"]["episode_width"] == 1920
+    assert config["show_artwork"]["episode_height"] == 1080
+    assert config["show_artwork"]["minimum_background_source_width"] == 3840
+    assert config["show_artwork"]["minimum_background_source_height"] == 2160
+    photo = tmp_path / "source-4k.jpg"
+    photo.write_bytes(_photo_bytes((3840, 2160)))
+    destination = tmp_path / "background-4k.png"
+    render_show_background(show, race, photo, config, destination)
+    with Image.open(destination) as rendered:
+        assert rendered.size == (3840, 2160)
 
 
 def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
@@ -1679,7 +1913,7 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     assert rerendered.action == "rerendered"
     assert len(state.show_rotation_history()) == 1
     current = state.show_rotation("show:2026")
-    assert current["source"]["background_candidate"]["eligibility_version"] == 4
+    assert current["source"]["background_candidate"]["eligibility_version"] == 5
     assert (
         current["source"]["background_candidate"]["match_tier"]
         == "exact_event_action_race_car"
@@ -1871,6 +2105,7 @@ def test_rotation_missing_dry_run_order_and_metadata(tmp_path, config, show, rac
     [
         ("show_artwork:\n  poster_width: 601\n", "2:3"),
         ("show_artwork:\n  background_width: 1281\n", "16:9"),
+        ("show_artwork:\n  episode_width: 1281\n", "episode dimensions"),
         ("show_artwork:\n  trigger: weekly\n", "trigger"),
         ("show_artwork:\n  policy: overwrite\n", "policy"),
         ("providers:\n  commons_url: https://example.com/api\n", "commons_url"),

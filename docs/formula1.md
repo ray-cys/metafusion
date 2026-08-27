@@ -102,8 +102,10 @@ explicitly says otherwise.
 | `show_artwork.trigger` | `plex_new_race` | Only supported trigger. Rotation occurs when a newer valid race-round season first appears in Plex, not on elapsed time. |
 | `show_artwork.policy` | `managed` | Only supported ownership policy. A manual change pauses automatic pair replacement. |
 | `show_artwork.poster_width`, `poster_height` | `1000`, `1500` | Show poster dimensions; must remain exactly 2:3. |
-| `show_artwork.background_width`, `background_height` | `1920`, `1080` | Show background and episode-card dimensions; must remain exactly 16:9. |
-| `show_artwork.minimum_source_width`, `minimum_source_height` | `1600`, `900` | Minimum decoded Commons photograph dimensions before it may be selected. |
+| `show_artwork.background_width`, `background_height` | `3840`, `2160` | Clean show-background output dimensions; the default is true 4K UHD and must remain exactly 16:9. |
+| `show_artwork.episode_width`, `episode_height` | `1920`, `1080` | Episode-card dimensions, kept at Full HD independently of the show background. |
+| `show_artwork.minimum_source_width`, `minimum_source_height` | `1600`, `900` | Minimum decoded Commons photograph dimensions for portrait and episode artwork. |
+| `show_artwork.minimum_background_source_width`, `minimum_background_source_height` | `3840`, `2160` | Independent minimum decoded photograph dimensions for show backgrounds and the team-car fallback. |
 | `show_artwork.retention_pairs_per_season` | `30` | Maximum retained versioned managed show pairs per championship. |
 | `show_artwork.source_cache_retention_days` | `120` | Age after which inactive downloaded source photographs may be pruned and later redownloaded. |
 | `show_artwork.asset_reference_root` | `config/assets/formula1/shows` | Kometa-visible reference root corresponding to the mounted show-artwork output. |
@@ -554,11 +556,15 @@ categories as well as literal `F1 car` wording, so Commons files named only for 
 team, driver, or chassis remain discoverable. Empty or aerial track views,
 venue-only scenes, static cars, black-and-white or effectively monochrome photos,
 safety and medical cars, testing, launch or display vehicles, models, and unrelated
-event/series photographs are rejected. There is deliberately no atmosphere-only
-fallback: if race action cannot be verified, the existing safe artwork is preserved
-and the unresolved round is reported for a later retry. This is separate from the
-round/season posters described above and also enables the episode cards described
-above.
+event/series photographs are rejected. There is no atmosphere-only fallback. If
+no exact-event or exact-circuit race-action source survives validation, MetaFusion
+uses the already selected current-season team-car photograph as the explicit last
+resort. That fallback must still be a decoded, colour, safely licensed 4K landscape
+source; its attribution and `current_season_team_car_fallback` match tier make the
+degraded circuit specificity visible. If even that source is unsuitable, existing
+safe artwork is preserved and the unresolved round is reported for a later retry.
+This is separate from the round/season posters described above and also enables
+the episode cards described above.
 
 The portrait uses a stable black, charcoal, white, and red technical frame, with
 the complete landscape photograph fitted in an adaptively exposed horizontal
@@ -566,7 +572,7 @@ band so the car is not stretched or cut off. The renderer measures each source's
 luminance, lifts dark team cars within a bounded TV-safe range, retains team
 colour, and rolls off bright signage and trackside highlights. Its restrained
 shade and vignette keep the car prominent without washing out the photograph.
-The background deliberately uses a
+The 4K background deliberately uses a
 different treatment: its race photograph is cropped to 16:9 around a detected
 visual focal point, gently graded, shadow-lifted, highlight-compressed, and covered
 only by a subtle left readability gradient and vignette. It contains no F1 logo,
@@ -728,7 +734,9 @@ prioritizes:
 
 1. exact-event/circuit, current-season Formula 1 race action;
 2. recent exact-circuit Formula 1 race action; then
-3. historical exact-circuit Formula 1 race action, with newer files ranked higher.
+3. historical exact-circuit Formula 1 race action, with newer files ranked higher;
+   then
+4. the validated 4K current-season team-car source selected for the show poster.
 
 Historical candidates require exact-circuit evidence. They are not tied to a
 hard-coded constructor, so any safely licensed Formula 1 race car from the correct
