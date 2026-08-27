@@ -30,11 +30,13 @@ from extensions.formula1.commons import (
     search_commons,
 )
 from extensions.formula1.race_background import (
+    ACTION_BACKGROUND_TIERS,
     BACKGROUND_CANDIDATE_VERSION,
     RaceBackgroundCandidate,
     classify_image_environment,
     derive_race_environment,
     environment_compatible,
+    image_has_meaningful_colour,
     search_race_backgrounds,
 )
 from extensions.formula1.sessions import session_date
@@ -103,6 +105,7 @@ def _show_render_fingerprint(config):
             config["show_artwork"]["background_width"],
             config["show_artwork"]["background_height"],
             "cinematic-race-aware-background-v1",
+            BACKGROUND_CANDIDATE_VERSION,
         ],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -934,7 +937,7 @@ def _attribution_reports(config, history, round_sources=()):
                 "vehicle_name": background["vehicle_name"],
                 "subject_type": background.get("subject_type", "race_car"),
                 "match_tier": background.get(
-                    "match_tier", "exact_event_circuit_race_car"
+                    "match_tier", "exact_event_action_race_car"
                 ),
                 "environment": background.get("environment", "unknown"),
                 "observed_environment": background_sources.get(
@@ -1078,17 +1081,7 @@ def _background_candidate_order(candidates, current, trigger_round):
     background = (current or {}).get("source", {}).get("background_candidate") or {}
     previous = int(background.get("page_id") or 0)
     ordered: list[RaceBackgroundCandidate] = []
-    for tier in (
-        "exact_event_action_race_car",
-        "recent_circuit_action_race_car",
-        "historical_circuit_action_race_car",
-        "exact_event_circuit_race_car",
-        "recent_circuit_race_car",
-        "historical_circuit_race_car",
-        "exact_event_atmosphere",
-        "exact_circuit_atmosphere",
-        "exact_locality_motorsport_atmosphere",
-    ):
+    for tier in ACTION_BACKGROUND_TIERS:
         group = [candidate for candidate in candidates if candidate.match_tier == tier]
         if not group:
             continue
@@ -1110,8 +1103,8 @@ async def _select_background_source(
     )
     if not candidates:
         raise RuntimeError(
-            "no safely licensed exact-event, historical exact-circuit Formula 1 "
-            "race-car, exact-circuit atmosphere, or locality motorsport candidate matched"
+            "no safely licensed colour Formula 1 race-action photograph matched "
+            "the exact event or circuit"
         )
     current_source = (current or {}).get("source", {})
     previous_hash = current_source.get("background_perceptual_hash")
@@ -1122,6 +1115,9 @@ async def _select_background_source(
             photo_path, image_source = await acquire_candidate_image(
                 session, config, candidate
             )
+            if Path(photo_path).is_file() and not image_has_meaningful_colour(photo_path):
+                diagnostics.append(f"{candidate.title}: monochrome image rejected")
+                continue
             actual_environment = (
                 classify_image_environment(photo_path)
                 if Path(photo_path).is_file()
@@ -1302,7 +1298,8 @@ async def run_show_artwork_rotation(
                 saved_background
                 and saved_background.eligibility_version == BACKGROUND_CANDIDATE_VERSION
                 and saved_background.race_key == derive_race_environment(race).race_key
-                and saved_background.subject_type in {"race_car", "circuit_atmosphere"}
+                and saved_background.subject_type == "race_car"
+                and saved_background.match_tier in ACTION_BACKGROUND_TIERS
             ):
                 background_candidate = saved_background
                 background_photo_path, background_image_source = await acquire_candidate_image(

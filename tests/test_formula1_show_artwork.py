@@ -46,6 +46,7 @@ from extensions.formula1.race_background import (
     classify_image_environment,
     derive_race_environment,
     environment_compatible,
+    image_has_meaningful_colour,
     parse_race_background_candidates,
     search_race_backgrounds,
 )
@@ -405,7 +406,7 @@ def test_race_background_identity_licence_and_season_filtering(config):
     assert parse_race_background_candidates(plural, 2026, config)
     localized_formula = _race_background_payload(
         title="File:2026 Motorsport Formel 1 Großer Preis der Niederlande.jpg",
-        description="Motorsport, Formel 1, at the 2026 Dutch Grand Prix",
+        description="Motorsport, Formel 1, on track during the 2026 Dutch Grand Prix race",
     )
     localized_formula["query"]["pages"][0]["categories"] = [
         {"title": "Category:Formula One cars at the 2026 Dutch Grand Prix"}
@@ -482,7 +483,7 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
         return [], "test"
 
     monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
-    with pytest.raises(RuntimeError, match="historical exact-circuit"):
+    with pytest.raises(RuntimeError, match="colour Formula 1 race-action"):
         asyncio.run(
             _select_background_source(
                 None, state, config, RaceData(
@@ -525,16 +526,19 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
         _race_background_payload(
             title="File:2027 Singapore Grand Prix McLaren Formula 1 race car at night.jpg",
             description=(
-                "McLaren Formula 1 race car at the floodlit 2027 Singapore Grand Prix "
-                "on the Marina Bay Street Circuit"
+                "McLaren Formula 1 race car on track at the floodlit 2027 Singapore "
+                "Grand Prix on the Marina Bay Street Circuit"
             ),
         ),
         night_race,
         config,
     )[0]
+    monochrome = config["paths"]["show_image_cache"] / "monochrome.jpg"
+    monochrome.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1600, 900), (35, 35, 35)).save(monochrome)
     bright = config["paths"]["show_image_cache"] / "daytime.jpg"
     bright.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (1600, 900), (220, 220, 220)).save(bright)
+    Image.new("RGB", (1600, 900), (220, 205, 185)).save(bright)
 
     async def night_search(*_args, **_kwargs):
         return [night_candidate], "test"
@@ -542,7 +546,25 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
     async def bright_image(*_args, **_kwargs):
         return bright, "test"
 
+    async def monochrome_image(*_args, **_kwargs):
+        return monochrome, "test"
+
     monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", night_search)
+    monkeypatch.setattr(
+        show_artwork_module, "acquire_candidate_image", monochrome_image
+    )
+    with pytest.raises(RuntimeError, match="monochrome image rejected"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                night_race,
+                None,
+                18,
+                logging.getLogger("monochrome"),
+            )
+        )
     monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", bright_image)
     with pytest.raises(RuntimeError, match="expected night scene"):
         asyncio.run(
@@ -571,7 +593,7 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
         title="File:2027 Singapore Grand Prix McLaren Formula 1 race car at night.jpg",
         description=(
             "McLaren Formula 1 race car at the floodlit 2027 Singapore Grand Prix "
-            "on the Marina Bay Street Circuit"
+            "on track at the Marina Bay Street Circuit"
         ),
     )
     candidates = parse_race_background_candidates(exact, singapore, config)
@@ -585,16 +607,16 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     )
     assert parse_race_background_candidates(unrelated, singapore, config) == []
 
-    atmosphere = _race_background_payload(
-        title="File:2027 Singapore Grand Prix Marina Bay night track.jpg",
-        description="Formula 1 floodlit circuit atmosphere at the 2027 Singapore Grand Prix",
+    aerial_track = _race_background_payload(
+        title="File:2027 Singapore Grand Prix aerial circuit view.jpg",
+        description=(
+            "Aerial view of the empty Formula 1 circuit at the 2027 Singapore Grand Prix"
+        ),
     )
-    atmosphere["query"]["pages"][0]["categories"] = [
+    aerial_track["query"]["pages"][0]["categories"] = [
         {"title": "Category:2027 Singapore Grand Prix"}
     ]
-    candidates = parse_race_background_candidates(atmosphere, singapore, config)
-    assert candidates[0].subject_type == "circuit_atmosphere"
-    assert candidates[0].match_tier == "exact_event_atmosphere"
+    assert parse_race_background_candidates(aerial_track, singapore, config) == []
 
     historical_atmosphere = _race_background_payload(
         page_id=903,
@@ -604,23 +626,23 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     historical_atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:Marina Bay Street Circuit"}
     ]
-    candidates = parse_race_background_candidates(
+    assert parse_race_background_candidates(
         historical_atmosphere, singapore, config
-    )
-    assert candidates[0].match_tier == "exact_circuit_atmosphere"
-    assert "commons-category" in candidates[0].evidence
-    assert "historical-or-year-neutral-circuit" in candidates[0].evidence
+    ) == []
 
     historical_car = _race_background_payload(
         page_id=907,
         title="File:2014 McLaren Formula 1 race car at Marina Bay.jpg",
-        description="McLaren Formula 1 race car at the Marina Bay Street Circuit",
+        description=(
+            "McLaren Formula 1 race car on track during the race at "
+            "Marina Bay Street Circuit"
+        ),
     )
     historical_car["query"]["pages"][0]["categories"] = [
         {"title": "Category:Marina Bay Street Circuit"}
     ]
     candidates = parse_race_background_candidates(historical_car, singapore, config)
-    assert candidates[0].match_tier == "historical_circuit_race_car"
+    assert candidates[0].match_tier == "historical_circuit_action_race_car"
     assert "historical-exact-circuit-race-car" in candidates[0].evidence
 
     commons_named_car = _race_background_payload(
@@ -653,8 +675,9 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     exact_static_candidates = parse_race_background_candidates(
         exact_static, singapore, config
     )
+    assert exact_static_candidates == []
     ordered = _background_candidate_order(
-        [*exact_static_candidates, *candidates], None, singapore.round_number
+        candidates, None, singapore.round_number
     )
     assert ordered[0].match_tier == "historical_circuit_action_race_car"
 
@@ -666,10 +689,9 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     year_neutral_atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:Marina Bay Street Circuit"}
     ]
-    candidates = parse_race_background_candidates(
+    assert parse_race_background_candidates(
         year_neutral_atmosphere, singapore, config
-    )
-    assert candidates[0].match_tier == "exact_circuit_atmosphere"
+    ) == []
 
     event_only_historical = _race_background_payload(
         page_id=905,
@@ -679,10 +701,9 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     event_only_historical["query"]["pages"][0]["categories"] = [
         {"title": "Category:2018 Singapore Grand Prix"}
     ]
-    candidates = parse_race_background_candidates(
+    assert parse_race_background_candidates(
         event_only_historical, singapore, config
-    )
-    assert candidates[0].match_tier == "exact_locality_motorsport_atmosphere"
+    ) == []
 
     future_atmosphere = _race_background_payload(
         page_id=906,
@@ -699,21 +720,16 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     locality_atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:Motorsport in Singapore"}
     ]
-    candidates = parse_race_background_candidates(
+    assert parse_race_background_candidates(
         locality_atmosphere, singapore, config
-    )
-    assert candidates[0].match_tier == "exact_locality_motorsport_atmosphere"
-    assert "locality-motorsport-fallback" in candidates[0].evidence
+    ) == []
 
     queries = _race_queries(singapore, environment)
     assert any(
-        '"Marina Bay Street Circuit" "Formula 1" track' in query
+        '"Marina Bay Street Circuit" F1 "track action"' in query
         for query in queries
     )
-    assert any(
-        '"Marina Bay Street Circuit" motorsport circuit' in query
-        for query in queries
-    )
+    assert not any("atmosphere" in query for query in queries)
     rejected_atmosphere = _race_background_payload(
         title="File:2027 Singapore Grand Prix driver portrait.jpg",
         description="Formula 1 driver portrait at the 2027 Singapore Grand Prix",
@@ -726,12 +742,18 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     dark = tmp_path / "night.jpg"
     twilight = tmp_path / "twilight.jpg"
     bright = tmp_path / "day.jpg"
+    colour = tmp_path / "colour.jpg"
     Image.new("RGB", (1600, 900), (24, 30, 42)).save(dark)
     Image.new("RGB", (1600, 900), (110, 115, 120)).save(twilight)
     Image.new("RGB", (1600, 900), (205, 210, 215)).save(bright)
+    colour_image = Image.new("RGB", (1600, 900), (42, 42, 42))
+    ImageDraw.Draw(colour_image).rectangle((500, 250, 1400, 750), fill=(220, 25, 45))
+    colour_image.save(colour)
     assert classify_image_environment(dark) == "night"
     assert classify_image_environment(twilight) == "twilight"
     assert classify_image_environment(bright) == "day"
+    assert not image_has_meaningful_colour(bright)
+    assert image_has_meaningful_colour(colour)
     assert environment_compatible("night", "night")
     assert not environment_compatible("night", "day")
     assert environment_compatible("day", "twilight")
@@ -829,7 +851,7 @@ def test_old_background_candidate_records_are_marked_ineligible(config):
     candidate = parse_race_background_candidates(
         _race_background_payload(), 2026, config
     )[0]
-    assert candidate.eligibility_version == 3
+    assert candidate.eligibility_version == 4
     legacy = candidate.as_dict()
     legacy.pop("eligibility_version")
     assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
@@ -857,10 +879,10 @@ def test_race_background_diagnostics_explain_rejections(config):
         ({"mime": "text/html"}, "unsupported-media-type"),
         ({"page_id": 0}, "missing-page-identity"),
         ({"width": 1600, "height": 1600}, "incompatible-aspect-ratio"),
-        ({"provider_identity": False}, "not-formula-one-or-motorsport-atmosphere"),
+        ({"provider_identity": False}, "not-formula-one-race-action"),
         (
-            {"identity": "formula 1 circuit atmosphere driver portrait"},
-            "rejected-atmosphere-subject",
+            {"identity": "black and white formula 1 race car on track"},
+            "rejected-subject-or-series",
         ),
         ({"author": ""}, "missing-required-author"),
         ({"licence_url": "http://example.test/licence"}, "missing-required-licence-url"),
@@ -1640,7 +1662,9 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     current = state.show_rotation("show:2026")
     source = current["source"]
     source.pop("render_fingerprint")
-    source.pop("background_candidate")
+    source["background_candidate"]["eligibility_version"] = 3
+    source["background_candidate"]["subject_type"] = "circuit_atmosphere"
+    source["background_candidate"]["match_tier"] = "exact_event_atmosphere"
     state.connection.execute(
         "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
         (json.dumps(source, sort_keys=True),),
@@ -1654,6 +1678,12 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     assert first.constructor == rerendered.constructor
     assert rerendered.action == "rerendered"
     assert len(state.show_rotation_history()) == 1
+    current = state.show_rotation("show:2026")
+    assert current["source"]["background_candidate"]["eligibility_version"] == 4
+    assert (
+        current["source"]["background_candidate"]["match_tier"]
+        == "exact_event_action_race_car"
+    )
     state.close()
 
 

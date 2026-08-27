@@ -23,10 +23,16 @@ from extensions.formula1.commons import (
 )
 
 PROVIDER = "wikimedia-commons-race-background"
-BACKGROUND_CANDIDATE_VERSION = 3
+BACKGROUND_CANDIDATE_VERSION = 4
 CATEGORY_DEPTH_LIMIT = 2
 CATEGORY_FETCH_LIMIT = 28
+ACTION_BACKGROUND_TIERS = (
+    "exact_event_action_race_car",
+    "recent_circuit_action_race_car",
+    "historical_circuit_action_race_car",
+)
 REJECTED_IDENTITIES = {
+    "black and white",
     "diecast",
     "exhibition",
     "formula e",
@@ -36,6 +42,7 @@ REJECTED_IDENTITIES = {
     "lego",
     "medical car",
     "miniature",
+    "monochrome",
     "mock up",
     "mock-up",
     "model car",
@@ -53,44 +60,9 @@ REJECTED_IDENTITIES = {
     "store display",
     "support race",
     "support races",
+    "grayscale",
+    "greyscale",
     "toy",
-}
-ATMOSPHERE_REJECTED_IDENTITIES = {
-    "award ceremony",
-    "bicycle",
-    "cycling",
-    "cyclist",
-    "crowd only",
-    "driver portrait",
-    "interview",
-    "journalist",
-    "parade",
-    "person portrait",
-    "podium",
-    "press conference",
-    "presenter",
-    "spectator portrait",
-    "tour de france",
-    "trophy",
-}
-ATMOSPHERE_SUBJECT_IDENTITIES = {
-    "aerial view",
-    "atmosphere",
-    "circuit atmosphere",
-    "circuit park",
-    "circuit view",
-    "floodlight",
-    "grandstand",
-    "night view",
-    "pit lane",
-    "panorama",
-    "race track",
-    "racetrack",
-    "starting grid",
-    "trackside",
-    "track atmosphere",
-    "track view",
-    "venue view",
 }
 RACE_CAR_SUBJECT_IDENTITIES = {
     "f1 car",
@@ -108,6 +80,7 @@ ACTIVE_RACE_IDENTITIES = {
     "final race",
     "formation lap",
     "free practice",
+    "night race",
     "on circuit",
     "on track",
     "qualifying",
@@ -154,21 +127,6 @@ SCENE_CONTEXT_IDENTITIES = {
     "trackside",
     "under lights",
     "urban circuit",
-    "wet track",
-}
-CINEMATIC_CONTEXT_IDENTITIES = {
-    "barrier",
-    "city lights",
-    "fence",
-    "fencing",
-    "floodlight",
-    "floodlit",
-    "grandstand",
-    "night race",
-    "reflection",
-    "track lights",
-    "trackside",
-    "under lights",
     "wet track",
 }
 MULTI_CAR_IDENTITIES = {
@@ -222,7 +180,7 @@ class RaceBackgroundCandidate:
     vehicle_name: str
     score: float
     subject_type: str = "race_car"
-    match_tier: str = "exact_event_circuit_race_car"
+    match_tier: str = "exact_event_action_race_car"
     environment: str = "unknown"
     race_key: str = ""
     evidence: tuple[str, ...] = ()
@@ -355,6 +313,18 @@ def classify_image_environment(path):
     return "day"
 
 
+def image_has_meaningful_colour(path):
+    """Reject grayscale or weakly tinted photographs after pixel decoding."""
+    with Image.open(path) as source:
+        sample = source.convert("RGB")
+        sample.thumbnail((160, 90), Image.Resampling.BILINEAR)
+        pixels = list(sample.get_flattened_data())
+    chroma = [max(pixel) - min(pixel) for pixel in pixels]
+    coloured_ratio = sum(value >= 12 for value in chroma) / max(1, len(chroma))
+    mean_chroma = sum(chroma) / max(1, len(chroma))
+    return coloured_ratio >= 0.08 and mean_chroma >= 6.0
+
+
 def environment_compatible(expected, actual):
     if expected == "unknown":
         return True
@@ -413,9 +383,7 @@ def _event_category_match(categories, environment):
     return False
 
 
-def _vehicle_name(title, subject_type="race_car"):
-    if subject_type == "circuit_atmosphere":
-        return "Circuit atmosphere"
+def _vehicle_name(title):
     value = str(title or "").removeprefix("File:")
     return value.rsplit(".", 1)[0].strip() or "Formula 1 race car"
 
@@ -448,11 +416,9 @@ def _candidate_rejection_reason(
     if not identity_allowed:
         return "event-circuit-location-mismatch"
     if not provider_identity:
-        return "not-formula-one-or-motorsport-atmosphere"
+        return "not-formula-one-race-action"
     if any(value in identity for value in REJECTED_IDENTITIES):
         return "rejected-subject-or-series"
-    if any(value in identity for value in ATMOSPHERE_REJECTED_IDENTITIES):
-        return "rejected-atmosphere-subject"
     if not _licence_allowed(licence):
         return "incompatible-or-unknown-licence"
     if attribution_required and not author:
@@ -465,13 +431,7 @@ def _candidate_rejection_reason(
 
 
 def parse_race_background_candidates(payload, race_or_year, config, diagnostics=None):
-    """Return licensed, race-aware Formula 1 car or circuit backgrounds.
-
-    Race-car photographs prefer the current event/circuit and season, but may
-    come from any earlier season when exact-circuit evidence is available.
-    Track-atmosphere photographs may be older or year-neutral with exact-circuit
-    evidence, or may provide a last-resort exact-locality motorsport scene.
-    """
+    """Return licensed Formula 1 race-action photographs for the target circuit."""
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
@@ -524,9 +484,6 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 or _contains_terms(location_identity, environment.circuit_terms)
             )
         )
-        atmosphere = any(
-            marker in subject_identity for marker in ATMOSPHERE_SUBJECT_IDENTITIES
-        )
         race_car_subject = any(
             marker in subject_identity for marker in RACE_CAR_SUBJECT_IDENTITIES
         ) or chassis_category
@@ -537,26 +494,14 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         scene_context = any(
             marker in subject_identity for marker in SCENE_CONTEXT_IDENTITIES
         )
-        cinematic_context = any(
-            marker in subject_identity for marker in CINEMATIC_CONTEXT_IDENTITIES
-        )
         active_race = (
             race_car
-            and (_active_race_match(subject_identity) or cinematic_context)
+            and _active_race_match(subject_identity)
             and not tight_crop
         )
         multi_car = any(marker in subject_identity for marker in MULTI_CAR_IDENTITIES)
         static_race_car = any(
             marker in subject_identity for marker in STATIC_RACE_CAR_IDENTITIES
-        )
-        motorsport_identity = f1_identity or any(
-            marker in subject_words
-            for marker in (
-                " grand prix ",
-                " motorsport ",
-                " race track ",
-                " racetrack ",
-            )
         )
         years = _year_values(identity)
         exact_year = year in years
@@ -564,25 +509,13 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         future_year = any(value > year for value in years)
         historical_year = any(value < year for value in years)
         if race is None:
-            identity_allowed = exact_year and race_car
-        elif race_car:
-            identity_allowed = (
-                exact_year and (event_match or circuit_match)
-            ) or (circuit_match and not future_year)
+            identity_allowed = exact_year and active_race
         else:
-            identity_allowed = atmosphere and (
+            identity_allowed = active_race and (
                 (exact_year and (event_match or circuit_match))
                 or (circuit_match and not future_year)
-                or (location_match and motorsport_identity and not future_year)
             )
-        provider_identity = f1_identity or (
-            race is not None
-            and atmosphere
-            and (
-                circuit_match
-                or (location_match and motorsport_identity)
-            )
-        )
+        provider_identity = f1_identity and race_car and active_race
         if static_race_car:
             identity_allowed = False
         image_url = str(image_info.get("thumburl") or image_info.get("url") or "")
@@ -606,25 +539,12 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
             if diagnostics is not None:
                 diagnostics.append({"title": title or "unknown", "reason": rejection})
             continue
-        subject_type = "race_car" if race_car else "circuit_atmosphere"
         if active_race and exact_year and (event_match or circuit_match):
             match_tier, tier_score = "exact_event_action_race_car", 520
         elif active_race and recent_year:
             match_tier, tier_score = "recent_circuit_action_race_car", 490
-        elif active_race:
-            match_tier, tier_score = "historical_circuit_action_race_car", 460
-        elif race_car and exact_year and (event_match or circuit_match):
-            match_tier, tier_score = "exact_event_circuit_race_car", 400
-        elif race_car and recent_year:
-            match_tier, tier_score = "recent_circuit_race_car", 320
-        elif race_car:
-            match_tier, tier_score = "historical_circuit_race_car", 260
-        elif exact_year:
-            match_tier, tier_score = "exact_event_atmosphere", 200
-        elif circuit_match:
-            match_tier, tier_score = "exact_circuit_atmosphere", 150
         else:
-            match_tier, tier_score = "exact_locality_motorsport_atmosphere", 80
+            match_tier, tier_score = "historical_circuit_action_race_car", 460
         scene_match = bool(
             environment and any(term in identity for term in environment.scene_terms)
         )
@@ -647,15 +567,7 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                     "historical-exact-circuit-race-car",
                     race_car and circuit_match and historical_year and not recent_year,
                 ),
-                (
-                    "historical-or-year-neutral-circuit",
-                    atmosphere and circuit_match and not exact_year,
-                ),
                 ("location", location_match),
-                (
-                    "locality-motorsport-fallback",
-                    atmosphere and location_match and not circuit_match,
-                ),
                 ("environment", scene_match),
             )
             if matched
@@ -683,9 +595,9 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 author or "Unknown contributor",
                 licence,
                 licence_url,
-                _vehicle_name(title, subject_type),
+                _vehicle_name(title),
                 round(score, 4),
-                subject_type,
+                "race_car",
                 match_tier,
                 environment.mode if environment else "unknown",
                 environment.race_key if environment else "",
@@ -760,9 +672,7 @@ def _race_category_seeds(race):
 
 def _category_is_rejected(title):
     identity = _normalize(title)
-    return any(value in identity for value in REJECTED_IDENTITIES) or any(
-        value in identity for value in ATMOSPHERE_REJECTED_IDENTITIES
-    )
+    return any(value in identity for value in REJECTED_IDENTITIES)
 
 
 def _category_priority(title, target_year):
@@ -840,12 +750,7 @@ def _race_queries(race, environment):
         f'"{event}" "Formula One" racing {scene}'.strip(),
         f'"{circuit}" "Formula One" racing {scene}'.strip(),
         f'"{event}" F1 "night race"'.strip(),
-        f'"{circuit}" F1 floodlit'.strip(),
-        f'"{event}" "Formula 1" track {scene}'.strip(),
-        f'"{circuit}" "Formula 1" track {scene}'.strip(),
-        f'"{circuit}" motorsport circuit {scene}'.strip(),
-        f'"{race.locality}" "{race.country}" motorsport atmosphere {scene}'.strip(),
-        f'"{race.locality}" "Formula 1" atmosphere {scene}'.strip(),
+        f'"{circuit}" F1 "track action" {scene}'.strip(),
     )
 
 
@@ -854,7 +759,7 @@ async def search_race_backgrounds(session, state, config, race_or_year, logger):
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
-    key = f"search:v7:{environment.race_key}" if environment else f"search:v5:{year}"
+    key = f"search:v8:{environment.race_key}" if environment else f"search:v6:{year}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
         return parse_race_background_candidates(cached, race_or_year, config), "cache"

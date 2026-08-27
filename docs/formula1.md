@@ -545,20 +545,20 @@ extension ownership record is treated as manual and is not adopted or overwritte
 `show_artwork.enabled: true` creates a paired show poster and 16:9 background
 from two independently validated, licensed sources. The portrait and episode
 cards rotate current-season Formula 1 team cars. The show background independently
-prefers active Formula 1 race-session photography from the exact event and circuit,
-then recent and historical race action at that exact circuit. Active qualifying,
-practice, sprint, and race photographs rank ahead of static car photographs, while
-night lighting, street-circuit context, barriers, grandstands, wet-track reflections,
-and multiple-car scenes improve ranking. MetaFusion recognizes car identity from
-Formula 1 event and chassis categories as well as literal `F1 car` wording, so
-Commons files named only for a team, driver, or chassis remain discoverable. The
-remaining fallback is an exact-circuit atmospheric track photograph. Atmospheric
-sources may be current, historical, or year-neutral when Commons metadata or category
-membership establishes the exact venue. An exact-locality motorsport atmosphere is
-used only as the final fallback. Safety cars are not selected. Medical cars,
-testing, launch or display vehicles, models, and unrelated
-event/series photographs are also rejected. This is separate from the round/season
-posters described above and also enables the episode cards described above.
+requires a colour photograph with visible Formula 1 action from practice,
+qualifying, Sprint, or the race. It prefers the exact event, then recent and
+historical action at that exact circuit. Night lighting, street-circuit context,
+barriers, grandstands, wet-track reflections, and multiple-car scenes improve
+ranking. MetaFusion recognizes car identity from Formula 1 event and chassis
+categories as well as literal `F1 car` wording, so Commons files named only for a
+team, driver, or chassis remain discoverable. Empty or aerial track views,
+venue-only scenes, static cars, black-and-white or effectively monochrome photos,
+safety and medical cars, testing, launch or display vehicles, models, and unrelated
+event/series photographs are rejected. There is deliberately no atmosphere-only
+fallback: if race action cannot be verified, the existing safe artwork is preserved
+and the unresolved round is reported for a later retry. This is separate from the
+round/season posters described above and also enables the episode cards described
+above.
 
 The portrait uses a stable black, charcoal, white, and red technical frame, with
 the complete landscape photograph fitted in an adaptively exposed horizontal
@@ -620,14 +620,13 @@ never Docker uptime.
 
 If either required photograph is not safely available, MetaFusion keeps the
 previous valid pair and retries after the provider cache expires. It will not use
-an unrelated circuit, a safety or medical car, a scene whose
+an unrelated circuit, an empty or aerial track scene, a monochrome photograph, a
+safety or medical car, or a scene whose
 pixels conflict with the expected day/night environment, or a photograph with an
 incompatible licence merely to force a rotation. A historical Formula 1 race-car
 image remains eligible only when it matches the exact circuit; age affects ranking
-rather than acting as a hard cutoff. An atmospheric fallback may
-omit the current year or come from an earlier season only when it matches the exact
-circuit. If none exists, a motorsport scene must match the exact locality/country.
-An older event-name-only match and any future-dated source are rejected.
+rather than acting as a hard cutoff. An older event-name-only match and any
+future-dated source are rejected. There is no venue-only or locality-only fallback.
 This workflow
 requires no annual input, but a newly revealed car may temporarily retain the
 previous pair until both reusable sources are available.
@@ -719,36 +718,38 @@ is preserved and the unresolved round retries after cache expiry.
 Show backgrounds use a separate race-aware Commons adapter and cache. Discovery
 uses event/category ancestry only to establish the circuit or location. The image's
 own title, description, and native Commons categories must independently identify
-a Formula 1 race car or a track/venue scene; unrelated people, cycling, ceremonies,
-and other non-motorsport subjects found beneath a circuit category are rejected.
+a visible Formula 1 car actively on track; unrelated people, empty track views,
+cycling, ceremonies, and other non-race subjects found beneath a circuit category
+are rejected.
 It runs bounded text queries plus a two-level traversal of exact event, circuit,
 automobile-race, and Grand Prix Commons categories. Category ancestry is retained
 as location evidence even when an individual filename is sparse. Discovery
 prioritizes:
 
-1. exact-event/circuit, current-season Formula 1 race car;
-2. recent exact-circuit Formula 1 race car;
-3. any-year exact-circuit Formula 1 race car, with newer files ranked higher;
-4. current exact-event/circuit track atmosphere;
-5. historical or year-neutral exact-circuit track atmosphere; then
-6. exact-locality motorsport atmosphere.
+1. exact-event/circuit, current-season Formula 1 race action;
+2. recent exact-circuit Formula 1 race action; then
+3. historical exact-circuit Formula 1 race action, with newer files ranked higher.
 
-Historical race-car candidates require exact-circuit evidence. They are not tied
-to a hard-coded constructor, so any safely licensed
-Formula 1 car from the correct event/circuit may be selected. Atmospheric candidates
-may be older or omit a year with exact-circuit evidence from the file metadata or
-Commons categories. The final locality tier still requires motorsport identity and
-an exact locality/country match. The adapter then
-applies licence, dimensions, aspect-ratio, decoded-pixel, visual-content,
-sharpness, environment-luminance, and perceptual-duplicate checks. Safety and medical cars,
-toys, models, sculptures, simulators, museum/showroom displays, unrelated circuits
-or racing series, portrait media, incompatible licences, corrupt files, and
-undersized images are rejected. TXT and JSON attribution records include subject
-type, match tier, expected environment, race key, and matching evidence. There is
-no API key, annual vehicle list, circuit-specific rule, or user configuration to
-maintain. Candidate rejection totals and bounded per-file reasons are written at
-DEBUG level. Public Domain, CC0, and attribution-only CC BY remain the accepted
-licences; relaxing the date never relaxes licence safety.
+Historical candidates require exact-circuit evidence. They are not tied to a
+hard-coded constructor, so any safely licensed Formula 1 race car from the correct
+event/circuit may be selected. The adapter then applies licence, dimensions,
+aspect-ratio, decoded-pixel, visual-content, colour, sharpness,
+environment-luminance, and perceptual-duplicate checks. Safety and medical cars,
+toys, models, sculptures, simulators, museum/showroom displays, black-and-white or
+effectively monochrome images, unrelated circuits or racing series, portrait media,
+incompatible licences, corrupt files, and undersized images are rejected. TXT and
+JSON attribution records include subject type, match tier, expected environment,
+race key, and matching evidence. There is no API key, annual vehicle list,
+circuit-specific rule, or user configuration to maintain. Candidate rejection
+totals and bounded per-file reasons are written at DEBUG level. Public Domain,
+CC0, and attribution-only CC BY remain the accepted licences; broadening the
+candidate date never relaxes identity, colour, or licence safety.
+
+The background candidate-policy version is included in the render fingerprint.
+After this policy changes, a stored atmosphere-only or monochrome candidate from
+an older run is invalidated and the same race round is re-evaluated. A qualifying
+replacement is rendered atomically; otherwise the last safe managed pair remains
+in place and the failure is recorded rather than substituting an unrelated image.
 
 Race identity matching is schedule-derived and explainable. It considers the
 official race name, country and demonym, locality, circuit name, and circuit ID,

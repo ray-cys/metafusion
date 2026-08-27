@@ -53,13 +53,11 @@ artwork:
 # The supplied logo and fonts above are also used for the show artwork frame and
 # 16:9 episode session cards. Rotation is triggered by a newly discovered Plex
 # race round: the show poster and episode cards use licensed current-season team
-# cars, while the clean 16:9 show background uses a licensed cinematic photograph
-# matched to the current race/circuit and expected day/night environment. It
-# prefers an exact-event/circuit Formula 1 race car, then a recent or historical
-# race car at the exact circuit, then current, historical, or year-neutral
-# exact-circuit track atmosphere. A locality-matched motorsport scene is the last
-# resort. Safety cars are not selected. Missing
-# cards are created only for Plex-detected
+# cars, while the clean 16:9 show background uses a licensed colour photograph
+# of visible Formula 1 race action matched to the current event or circuit. It
+# prefers the exact event, then recent and historical action at the exact circuit.
+# Empty/aerial track scenes, static cars, monochrome photos, and safety cars are
+# not selected. Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
 show_artwork:
