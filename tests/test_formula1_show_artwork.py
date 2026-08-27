@@ -383,8 +383,10 @@ def test_race_background_identity_licence_and_season_filtering(config):
         config,
     ) == []
     showcar = _race_background_payload(
-        title="File:Red Bull Racing RB14.jpg",
-        description="Red Bull Racing RB14 in Singapore",
+        title="File:2026 Red Bull Formula 1 race car.jpg",
+        description=(
+            "Red Bull Formula 1 race car static display at the 2026 Australian Grand Prix"
+        ),
     )
     showcar["query"]["pages"][0]["categories"] = [
         {"title": "Category:2026 Singapore Grand Prix"},
@@ -907,9 +909,10 @@ def test_race_background_search_logs_rejection_reasons(config, caplog):
     class RejectedSession(CommonsSession):
         def get(self, url, **_kwargs):
             self.urls.append(url)
-            return Response(
-                payload=_race_background_payload(licence="CC BY-SA 4.0")
-            )
+            payload = _race_background_payload(licence="CC BY-SA 4.0")
+            missing_page = _race_background_payload(page_id=0)["query"]["pages"][0]
+            payload["query"]["pages"].append(missing_page)
+            return Response(payload=payload)
 
     state = Formula1State(config["paths"]["database"])
     with caplog.at_level(logging.DEBUG):
