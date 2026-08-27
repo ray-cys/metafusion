@@ -54,6 +54,7 @@ from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import (
     EPISODE_RENDERER_VERSION,
     SHOW_RENDERER_VERSION,
+    _adaptive_showcase_crop,
     _asset_reference,
     _background_candidate_order,
     _candidate_order,
@@ -64,6 +65,7 @@ from extensions.formula1.show_artwork import (
     _grade_photo,
     _managed_episode_action,
     _pair_integrity,
+    _poster_photo_profile,
     _poster_showcase_grade,
     _prune_retained_pairs,
     _prune_source_cache,
@@ -1430,7 +1432,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 12
+    assert SHOW_RENDERER_VERSION == 13
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -1683,6 +1685,53 @@ def test_show_poster_grade_adapts_exposure_without_clipping_team_colours():
     assert showcased_bright.getpixel((900, 450))[0] > (
         showcased_bright.getpixel((900, 450))[1] * 3
     )
+
+
+def test_show_poster_profile_preserves_car_position_and_visual_lead_room():
+    left = Image.new("RGB", (1600, 900), (195, 200, 205))
+    right = left.copy()
+    ImageDraw.Draw(left).rounded_rectangle(
+        (120, 300, 760, 680), 30, fill=(220, 20, 40), outline=(5, 5, 5), width=16
+    )
+    ImageDraw.Draw(right).rounded_rectangle(
+        (840, 300, 1480, 680), 30, fill=(220, 20, 40), outline=(5, 5, 5), width=16
+    )
+
+    left_profile = _poster_photo_profile(left)
+    right_profile = _poster_photo_profile(right)
+    assert left_profile.focal_x < 0.4
+    assert left_profile.composition_x == 0.38
+    assert right_profile.focal_x > 0.6
+    assert right_profile.composition_x == 0.62
+    assert left_profile.shadow_luminance < left_profile.median_luminance
+
+    left_crop = _adaptive_showcase_crop(left, (600, 350), left_profile)
+    right_crop = _adaptive_showcase_crop(right, (600, 350), right_profile)
+    assert left_crop.size == right_crop.size == (600, 350)
+    assert left_crop.getpixel((100, 200))[0] > 180
+    assert right_crop.getpixel((500, 200))[0] > 180
+
+
+def test_show_poster_profile_and_crop_have_safe_blank_and_portrait_fallbacks():
+    blank = Image.new("RGB", (1600, 900), (20, 20, 20))
+    profile = _poster_photo_profile(blank)
+    assert profile.focal_x == 0.5
+    assert profile.subject_box == (0.08, 0.12, 0.92, 0.92)
+    assert _adaptive_showcase_crop(blank, (600, 350), profile).size == (600, 350)
+    assert _adaptive_showcase_crop(blank, (600, 750), profile).size == (600, 750)
+    portrait_blank = Image.new("RGB", (700, 1200), (20, 20, 20))
+    assert _adaptive_showcase_crop(
+        portrait_blank, (600, 350), _poster_photo_profile(portrait_blank)
+    ).size == (600, 350)
+
+    portrait = Image.new("RGB", (700, 1200), (185, 185, 185))
+    ImageDraw.Draw(portrait).rectangle(
+        (80, 500, 620, 680), fill=(30, 90, 220), outline=(4, 4, 4), width=12
+    )
+    portrait_profile = _poster_photo_profile(portrait)
+    cropped = _adaptive_showcase_crop(portrait, (600, 350), portrait_profile)
+    assert cropped.size == (600, 350)
+    assert cropped.getpixel((300, 175))[2] > cropped.getpixel((300, 175))[0] * 2
 
 
 def test_renderer_failure_cleanup_and_dry_attribution(

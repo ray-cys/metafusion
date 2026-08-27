@@ -571,12 +571,19 @@ the unresolved round is reported for a later retry.
 This is separate from the round/season posters described above and also enables
 the episode cards described above.
 
-The portrait uses a stable black, charcoal, white, and red technical frame, with
-the complete landscape photograph fitted in an adaptively exposed horizontal
-band so the car is not stretched or cut off. The renderer measures each source's
-luminance, lifts dark team cars within a bounded TV-safe range, retains team
-colour, and rolls off bright signage and trackside highlights. Its restrained
-shade and vignette keep the car prominent without washing out the photograph.
+The portrait uses the premium broadcast-style Concept A layout: a quiet black and
+charcoal technical field, restrained red geometry, a clear season/round header,
+a large race title, circuit detail, and the floating host-country flag. The team
+car photograph owns the middle of the design and is feathered into the frame
+instead of being enclosed by a hard rectangular border. The renderer profiles
+each source rather than assuming that all photographs were shot under the same
+conditions. It safely lifts night or underexposed cars, reduces bright daylight
+and trackside highlights, retains team colour, and adapts the vignette strength.
+Edge and colour saliency estimate the car's position; the protected crop retains
+the detected subject and the photograph's existing left/right visual lead room,
+so different car angles remain intentional. It never stretches or mirrors the
+photograph. A restrained shade and subject-aware crop keep the car prominent
+without washing out the source or allowing daylight advertising to dominate.
 The 4K background deliberately uses a
 different treatment: its race photograph is cropped to 16:9 around a detected
 visual focal point, gently graded, shadow-lifted, highlight-compressed, and covered

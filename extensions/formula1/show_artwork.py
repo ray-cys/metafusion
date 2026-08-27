@@ -45,7 +45,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 12
+SHOW_RENDERER_VERSION = 13
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -71,6 +71,17 @@ class EpisodeRoundArtworkResult:
     references: dict[int, str] = field(default_factory=dict)
     actions: dict[int, str] = field(default_factory=dict)
     issue: str | None = None
+
+
+@dataclass(frozen=True)
+class PosterPhotoProfile:
+    median_luminance: float
+    shadow_luminance: float
+    highlight_luminance: float
+    focal_x: float
+    focal_y: float
+    subject_box: tuple[float, float, float, float]
+    composition_x: float
 
 
 def _checksum(path):
@@ -207,7 +218,7 @@ def _technical_frame(image, *, dense=False):
         for offset in range(-height, width, spacing):
             draw.line(
                 (offset, 0, offset + height, height),
-                fill=(235, 20, 40, 24),
+                fill=(235, 20, 40, 14),
                 width=max(1, width // 900),
             )
     else:
@@ -223,12 +234,17 @@ def _technical_frame(image, *, dense=False):
             fill=accent,
             width=line_width,
         )
-    draw.line((0, 3, width, 3), fill=(235, 20, 40, 210), width=max(3, width // 450))
-    draw.line(
-        (0, height - 4, width, height - 4),
-        fill=(235, 20, 40, 210),
-        width=max(3, width // 450),
-    )
+    if not dense:
+        draw.line(
+            (0, 3, width, 3),
+            fill=(235, 20, 40, 210),
+            width=max(3, width // 450),
+        )
+        draw.line(
+            (0, height - 4, width, height - 4),
+            fill=(235, 20, 40, 210),
+            width=max(3, width // 450),
+        )
 
 
 def _draw_circuit(draw, path_data, box, width):
@@ -291,22 +307,113 @@ def _grade_photo(photo, size, *, contain=False, centering=(0.5, 0.5), strong=Fal
     return Image.composite(black, image, vignette)
 
 
-def _poster_showcase_grade(photo, size):
-    """Lift a team car for television while retaining bright-scene detail."""
-    source = photo.convert("RGB")
-    sample = source.copy()
-    sample.thumbnail((160, 90), Image.Resampling.BILINEAR)
-    median_luminance = float(ImageStat.Stat(sample.convert("L")).median[0])
-    exposure_gain = max(1.0, min(1.25, 112.0 / max(1.0, median_luminance)))
+def _poster_photo_profile(photo):
+    """Measure light and composition without requiring a model or source metadata."""
+    sample = photo.convert("RGB").resize((160, 90), Image.Resampling.BILINEAR)
+    luminance = list(sample.convert("L").get_flattened_data())
+    ordered = sorted(luminance)
+    edges = list(
+        sample.convert("L").filter(ImageFilter.FIND_EDGES).get_flattened_data()
+    )
+    edge_threshold = sorted(edges)[round(len(edges) * 0.70)]
+    pixels = list(sample.get_flattened_data())
+    weighted = []
+    for index, (pixel, edge) in enumerate(zip(pixels, edges, strict=True)):
+        x, y = index % 160, index // 160
+        if x < 3 or x > 156 or y < 3 or y > 86:
+            continue
+        chroma = max(pixel) - min(pixel)
+        weight = max(0.0, edge - edge_threshold) + max(0.0, chroma - 24) * 0.35
+        if weight:
+            # Cars normally occupy the lower two-thirds; this reduces sky/signage bias.
+            weight *= 0.82 + y / 180
+            weighted.append((x / 159, y / 89, weight))
 
-    image = _photo_band(source, size)
-    image = ImageEnhance.Color(image).enhance(0.98)
-    image = ImageEnhance.Contrast(image).enhance(1.02)
-    shoulder = 0.72
-    highlight_strength = 0.75
+    if weighted:
+        total = sum(point[2] for point in weighted)
+        focal_x = sum(point[0] * point[2] for point in weighted) / total
+        focal_y = sum(point[1] * point[2] for point in weighted) / total
+        ranked = sorted(weighted, key=lambda point: point[2], reverse=True)
+        core = ranked[: max(8, round(len(ranked) * 0.55))]
+        xs = sorted(point[0] for point in core)
+        ys = sorted(point[1] for point in core)
+        low = round((len(core) - 1) * 0.04)
+        high = round((len(core) - 1) * 0.96)
+        subject_box = (xs[low], ys[low], xs[high], ys[high])
+    else:
+        focal_x, focal_y = 0.5, 0.55
+        subject_box = (0.08, 0.12, 0.92, 0.92)
+
+    box_center = (subject_box[0] + subject_box[2]) / 2
+    # Retain the source photograph's visual direction and existing lead room.
+    composition_x = max(
+        0.38, min(0.62, focal_x + (focal_x - box_center) * 0.30)
+    )
+    return PosterPhotoProfile(
+        median_luminance=float(ordered[len(ordered) // 2]),
+        shadow_luminance=float(ordered[round((len(ordered) - 1) * 0.10)]),
+        highlight_luminance=float(ordered[round((len(ordered) - 1) * 0.90)]),
+        focal_x=focal_x,
+        focal_y=focal_y,
+        subject_box=subject_box,
+        composition_x=composition_x,
+    )
+
+
+def _adaptive_showcase_crop(photo, size, profile):
+    """Fill a poster band while protecting the detected car and its visual lead room."""
+    source = photo.convert("RGB")
+    source_width, source_height = source.size
+    target_ratio = size[0] / size[1]
+    source_ratio = source_width / source_height
+    if source_ratio >= target_ratio:
+        crop_height = source_height
+        crop_width = round(source_height * target_ratio)
+        ideal_left = profile.focal_x * source_width - profile.composition_x * crop_width
+        box_left = profile.subject_box[0] * source_width
+        box_right = profile.subject_box[2] * source_width
+        padding = crop_width * 0.025
+        minimum = max(0.0, box_right + padding - crop_width)
+        maximum = min(source_width - crop_width, box_left - padding)
+        if minimum <= maximum:
+            left = max(minimum, min(maximum, ideal_left))
+        else:
+            left = max(0.0, min(source_width - crop_width, ideal_left))
+        box = (round(left), 0, round(left + crop_width), source_height)
+    else:
+        crop_width = source_width
+        crop_height = round(source_width / target_ratio)
+        ideal_top = profile.focal_y * source_height - 0.52 * crop_height
+        box_top = profile.subject_box[1] * source_height
+        box_bottom = profile.subject_box[3] * source_height
+        padding = crop_height * 0.025
+        minimum = max(0.0, box_bottom + padding - crop_height)
+        maximum = min(source_height - crop_height, box_top - padding)
+        if minimum <= maximum:
+            top = max(minimum, min(maximum, ideal_top))
+        else:
+            top = max(0.0, min(source_height - crop_height, ideal_top))
+        box = (0, round(top), source_width, round(top + crop_height))
+    return source.crop(box).resize(size, Image.Resampling.LANCZOS)
+
+
+def _poster_showcase_grade(photo, size):
+    """Adapt daylight or night car photography to a consistent television showcase."""
+    source = photo.convert("RGB")
+    profile = _poster_photo_profile(source)
+    exposure_gain = max(
+        0.82, min(1.36, 112.0 / max(1.0, profile.median_luminance))
+    )
+
+    image = _adaptive_showcase_crop(source, size, profile)
+    daylight = max(0.0, min(1.0, (profile.highlight_luminance - 150) / 85))
+    image = ImageEnhance.Color(image).enhance(1.02 - daylight * 0.06)
+    image = ImageEnhance.Contrast(image).enhance(1.04 - daylight * 0.03)
+    shoulder = 0.68 - daylight * 0.06
+    highlight_strength = 0.78 - daylight * 0.18
     lookup = []
     for value in range(256):
-        lifted = (value / 255) ** 0.92
+        lifted = (value / 255) ** (0.90 if exposure_gain > 1 else 0.96)
         exposed = min(1.0, lifted * exposure_gain)
         compressed = (
             exposed
@@ -318,9 +425,11 @@ def _poster_showcase_grade(photo, size):
 
     width, height = size
     shade = Image.new("L", (1, height))
+    top_shade = round(14 + daylight * 16)
+    bottom_shade = round(4 + daylight * 7)
     shade.putdata(
         [
-            round(22 + (6 - 22) * y / max(1, height - 1))
+            round(top_shade + (bottom_shade - top_shade) * y / max(1, height - 1))
             for y in range(height)
         ]
     )
@@ -328,12 +437,26 @@ def _poster_showcase_grade(photo, size):
     image = Image.composite(black, image, shade.resize(size))
 
     vignette = Image.new("L", size, 0)
-    border = max(12, round(min(size) * 0.07))
+    border = max(12, round(min(size) * 0.075))
     ImageDraw.Draw(vignette).rectangle(
-        (0, 0, width - 1, height - 1), outline=18, width=border
+        (0, 0, width - 1, height - 1),
+        outline=round(14 + daylight * 12),
+        width=border,
     )
-    vignette = vignette.filter(ImageFilter.GaussianBlur(border * 1.4))
+    vignette = vignette.filter(ImageFilter.GaussianBlur(border * 1.5))
     return Image.composite(black, image, vignette)
+
+
+def _paste_showcase_band(image, band, top):
+    """Blend the photograph into Concept A without a hard rectangular frame."""
+    fade = max(12, round(band.height * 0.055))
+    mask = Image.new("L", (1, band.height), 255)
+    values = []
+    for y in range(band.height):
+        edge_distance = min(y, band.height - 1 - y)
+        values.append(round(255 * min(1.0, edge_distance / fade)))
+    mask.putdata(values)
+    image.paste(band, (0, top), mask.resize(band.size))
 
 
 def _episode_destination(config, episode):
@@ -500,15 +623,19 @@ def _atomic_save(image, destination):
 
 
 def render_show_poster(show, race, path_data, photo_path, config, destination):
-    """Render the stable portrait frame around an undistorted landscape car photograph."""
+    """Render adaptive Concept A around a protected team-car composition."""
     width = config["show_artwork"]["poster_width"]
     height = config["show_artwork"]["poster_height"]
     image = Image.new("RGB", (width, height), (6, 7, 10))
     _technical_frame(image, dense=True)
     draw = ImageDraw.Draw(image, "RGBA")
     draw.polygon(
-        [(0, height), (width, height * 0.67), (width, height), (0, height)],
-        fill=(150, 0, 20, 185),
+        [(0, height), (width, height * 0.81), (width, height), (0, height)],
+        fill=(142, 0, 20, 175),
+    )
+    draw.rectangle(
+        (width * 0.055, height * 0.315, width * 0.16, height * 0.319),
+        fill=(235, 20, 40, 220),
     )
     logo_path, regular_path, bold_path = _branding_paths(config)
     flag_available = country_flag_asset(race.country) is not None
@@ -518,6 +645,9 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         bold_path, f"{show.year} SEASON", max(42, width // 15), 28, width * 0.88
     )
     small_bold = _font(bold_path, max(24, width // 30))
+    race_font = fitted_font(
+        bold_path, race.name.upper(), max(46, width // 11), 25, width * 0.88
+    )
     _place_logo(
         image,
         logo_path,
@@ -525,13 +655,13 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         small_bold,
     )
     draw.text(
-        (width * 0.06, height * 0.22),
+        (width * 0.06, height * 0.19),
         f"{show.year} SEASON",
         font=bold,
         fill=(245, 245, 245, 255),
     )
     draw.text(
-        (width * 0.06, height * 0.29),
+        (width * 0.06, height * 0.27),
         f"CURRENT RACE  •  ROUND {race.round_number:02d}",
         font=small_bold,
         fill=(235, 30, 48, 255),
@@ -539,37 +669,34 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     _draw_circuit(
         draw,
         path_data,
-        (width * 0.61, height * 0.07, width * 0.93, height * 0.34),
+        (width * 0.63, height * 0.065, width * 0.93, height * 0.285),
         width,
     )
-    band_height = round(width * 9 / 16)
-    band_top = round(height * 0.39)
+    band_height = round(height * 0.39)
+    band_top = round(height * 0.345)
     with Image.open(photo_path) as source:
         band = _poster_showcase_grade(source, (width, band_height))
-    image.paste(band, (0, band_top))
+    _paste_showcase_band(image, band, band_top)
     draw = ImageDraw.Draw(image, "RGBA")
-    draw.rectangle(
-        (0, band_top, width, band_top + band_height), outline=(235, 20, 40, 210), width=4
-    )
     draw.text(
-        (width * 0.06, height * 0.82),
+        (width * 0.06, height * 0.765),
         race.name.upper(),
-        font=small_bold,
+        font=race_font,
         fill=(255, 255, 255, 245),
     )
     draw.text(
-        (width * 0.06, height * 0.87),
+        (width * 0.06, height * 0.855),
         detail,
         font=regular,
-        fill=(235, 235, 238, 225),
+        fill=(241, 45, 61, 240),
     )
     _rounded_flag_badge(
         image,
         race.country,
-        (width * 0.77, height * 0.84, width * 0.94, height * 0.91),
+        (width * 0.77, height * 0.835, width * 0.94, height * 0.905),
     )
     draw.text(
-        (width * 0.06, height * 0.94),
+        (width * 0.06, height * 0.935),
         "RACE-WEEK ROTATION",
         font=small_bold,
         fill=(255, 255, 255, 185),
