@@ -595,8 +595,11 @@ its description says “night”.
 
 On the portrait only, the circuit name remains in the lower information field
 while the repeated locality/country wording is replaced by a small lower-right
-host-country flag badge. The authentic bundled flag is fitted without stretching
-inside a rounded frame; an unknown flag falls back to country text. All designs
+host-country flag. The authentic bundled flag floats directly over the poster,
+without stretching, a backing card, or a fixed white border. Rounded clipping, a
+soft offset shadow, and an optional one-pixel adaptive keyline preserve separation
+only when the flag edge and underlying poster have similar luminance. An unknown
+flag falls back to country text. All designs
 use the supplied logo and fonts.
 
 Rotation is not time-based. `show_artwork.trigger: plex_new_race` means a new

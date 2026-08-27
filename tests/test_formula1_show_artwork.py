@@ -1430,7 +1430,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 11
+    assert SHOW_RENDERER_VERSION == 12
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -1577,7 +1577,19 @@ def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
     )
     assert image.getpixel((790, 1282)) == (6, 7, 10)
     assert image.getpixel((865, 1323)) != (6, 7, 10)
+    assert max(image.getpixel((865, 1282))) < 230
     assert not _rounded_flag_badge(image, "Unknown", (790, 1282, 940, 1365))
+
+
+def test_show_poster_flag_uses_dark_adaptive_keyline_on_light_background(race):
+    image = Image.new("RGB", (1000, 1500), (245, 245, 245))
+    assert _rounded_flag_badge(
+        image,
+        replace(race, country="Japan").country,
+        (790, 1282, 940, 1365),
+    )
+    assert image.getpixel((790, 1282)) == (245, 245, 245)
+    assert max(image.getpixel((865, 1282))) < 220
 
 
 def test_post_race_press_conference_episode_card_is_rendered(

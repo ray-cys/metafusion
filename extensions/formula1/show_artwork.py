@@ -45,7 +45,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 11
+SHOW_RENDERER_VERSION = 12
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -127,49 +127,75 @@ def _place_logo(image, logo_path, box, fallback_font):
 
 
 def _rounded_flag_badge(image, country, box):
-    """Place an undistorted host flag inside a restrained rounded badge."""
+    """Float an undistorted host flag with adaptive, television-safe separation."""
     flag_path = country_flag_asset(country)
     if flag_path is None:
         return False
     left, top, right, bottom = map(round, box)
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-    radius = max(3, round(height * 0.22))
-    padding = max(3, round(height * 0.10))
-    shadow_offset = max(2, round(height * 0.07))
-
-    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle(
-        (
-            left + shadow_offset,
-            top + shadow_offset,
-            right + shadow_offset,
-            bottom + shadow_offset,
-        ),
-        radius=radius,
-        fill=(0, 0, 0, 105),
-    )
-    image.paste(shadow, (0, 0), shadow)
-
-    badge = Image.new("RGB", (width, height), (18, 19, 23))
+    maximum_width = max(1, right - left)
+    maximum_height = max(1, bottom - top)
     with Image.open(flag_path) as source:
         flag = ImageOps.contain(
             opaque_flag(source),
-            (max(1, width - padding * 2), max(1, height - padding * 2)),
+            (maximum_width, maximum_height),
             Image.Resampling.LANCZOS,
         )
-    badge.paste(flag, ((width - flag.width) // 2, (height - flag.height) // 2))
-    mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, width - 1, height - 1), radius=radius, fill=255
+    flag_left = right - flag.width
+    flag_top = top + (maximum_height - flag.height) // 2
+    flag_right = flag_left + flag.width
+    flag_bottom = flag_top + flag.height
+    radius = max(4, round(flag.height * 0.17))
+    shadow_offset = max(2, round(flag.height * 0.05))
+    shadow_blur = max(4, round(flag.height * 0.12))
+    background_luminance = float(
+        ImageStat.Stat(
+            image.crop((flag_left, flag_top, flag_right, flag_bottom))
+            .resize((24, 16), Image.Resampling.BILINEAR)
+            .convert("L")
+        ).median[0]
     )
-    image.paste(badge, (left, top), mask)
-    ImageDraw.Draw(image).rounded_rectangle(
-        (left, top, right - 1, bottom - 1),
+
+    shadow_mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(shadow_mask).rounded_rectangle(
+        (
+            flag_left + shadow_offset,
+            flag_top + shadow_offset,
+            flag_right + shadow_offset,
+            flag_bottom + shadow_offset,
+        ),
         radius=radius,
-        outline=(238, 238, 242),
-        width=max(2, round(height * 0.035)),
+        fill=82,
     )
+    shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(shadow_blur))
+    image.paste(Image.new("RGB", image.size, (2, 3, 5)), (0, 0), shadow_mask)
+
+    mask = Image.new("L", flag.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, flag.width - 1, flag.height - 1), radius=radius, fill=255
+    )
+    edge = max(1, round(min(flag.size) * 0.04))
+    flag_luminance = flag.resize((48, 32), Image.Resampling.BILINEAR).convert("L")
+    edge_samples = [
+        *flag_luminance.crop((0, 0, 48, edge)).get_flattened_data(),
+        *flag_luminance.crop((0, 32 - edge, 48, 32)).get_flattened_data(),
+        *flag_luminance.crop((0, 0, edge, 32)).get_flattened_data(),
+        *flag_luminance.crop((48 - edge, 0, 48, 32)).get_flattened_data(),
+    ]
+    edge_luminance = float(sorted(edge_samples)[len(edge_samples) // 2])
+    image.paste(flag, (flag_left, flag_top), mask)
+
+    if abs(background_luminance - edge_luminance) < 64:
+        outline = (
+            (246, 247, 250, 52)
+            if background_luminance < 128
+            else (3, 5, 8, 72)
+        )
+        ImageDraw.Draw(image, "RGBA").rounded_rectangle(
+            (flag_left, flag_top, flag_right - 1, flag_bottom - 1),
+            radius=radius,
+            outline=outline,
+            width=max(1, round(flag.height * 0.015)),
+        )
     return True
 
 
@@ -540,7 +566,7 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     _rounded_flag_badge(
         image,
         race.country,
-        (width * 0.79, height * 0.855, width * 0.94, height * 0.91),
+        (width * 0.77, height * 0.84, width * 0.94, height * 0.91),
     )
     draw.text(
         (width * 0.06, height * 0.94),
