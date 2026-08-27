@@ -11,7 +11,15 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageEnhance,
+    ImageFilter,
+    ImageOps,
+    ImageStat,
+    PngImagePlugin,
+)
 
 from extensions.formula1.artwork import (
     _fit,
@@ -45,7 +53,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 14
+SHOW_RENDERER_VERSION = 15
 SHOW_BACKGROUND_RENDERER_VERSION = 1
 EPISODE_RENDERER_VERSION = 1
 
@@ -64,6 +72,8 @@ class ShowArtworkResult:
     photo_path: str | None = None
     source_identity: str | None = None
     background_vehicle: str | None = None
+    poster_renderer_version: int | None = None
+    poster_checksum: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +125,7 @@ def _show_render_fingerprints(config):
             config["show_artwork"]["poster_width"],
             config["show_artwork"]["poster_height"],
         ],
-        "design": "adaptive-concept-a-v2",
+        "design": "adaptive-concept-a-v3",
     }
     background_payload = {
         "renderer": SHOW_BACKGROUND_RENDERER_VERSION,
@@ -618,7 +628,7 @@ def render_episode_poster(episode, race, path_data, photo_path, config, destinat
     return _atomic_save(image.convert("RGB"), destination)
 
 
-def _atomic_save(image, destination):
+def _atomic_save(image, destination, *, pnginfo=None):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -626,7 +636,7 @@ def _atomic_save(image, destination):
         descriptor, name = tempfile.mkstemp(dir=destination.parent, suffix=".png")
         os.close(descriptor)
         temporary = Path(name)
-        image.save(temporary, format="PNG", optimize=True)
+        image.save(temporary, format="PNG", optimize=True, pnginfo=pnginfo)
         checksum = _checksum(temporary)
         atomic_replace_file(temporary, destination, new_file_mode=FILE_MODE)
         temporary = None
@@ -715,7 +725,13 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         font=small_bold,
         fill=(255, 255, 255, 185),
     )
-    return _atomic_save(image, destination)
+    provenance = PngImagePlugin.PngInfo()
+    provenance.add_text("MetaFusion asset", "Formula 1 rotating show poster")
+    provenance.add_text("MetaFusion renderer", f"show-poster-v{SHOW_RENDERER_VERSION}")
+    provenance.add_text("MetaFusion design", "adaptive-concept-a-v3")
+    provenance.add_text("MetaFusion championship year", str(show.year))
+    provenance.add_text("MetaFusion trigger round", str(race.round_number))
+    return _atomic_save(image, destination, pnginfo=provenance)
 
 
 def _saliency_focal_point(photo):
@@ -1517,8 +1533,10 @@ def _rerender_current_poster(
     render_fingerprint,
     *,
     background_integrity,
+    action,
+    planned_action,
 ):
-    """Update a managed poster without reacquiring or rewriting its background."""
+    """Restore or update a managed poster without touching its background."""
     trigger_round = int(race.round_number)
     source_identity = candidate.source_sha1 or hashlib.sha256(
         candidate.image_url.encode()
@@ -1552,7 +1570,7 @@ def _rerender_current_poster(
     )
     if config["dry_run"]:
         return ShowArtworkResult(
-            "rerender-planned",
+            planned_action,
             trigger_round,
             poster_reference,
             background_reference,
@@ -1563,6 +1581,7 @@ def _rerender_current_poster(
             photo_path=str(photo_path),
             source_identity=source_identity,
             background_vehicle=_current_background_vehicle(current),
+            poster_renderer_version=SHOW_RENDERER_VERSION,
         )
 
     poster_destination = Path(current["poster_destination"])
@@ -1602,7 +1621,7 @@ def _rerender_current_poster(
     )
     write_attribution_reports(state, config)
     return ShowArtworkResult(
-        "rerendered",
+        action,
         trigger_round,
         poster_reference,
         background_reference,
@@ -1613,6 +1632,8 @@ def _rerender_current_poster(
         photo_path=str(photo_path),
         source_identity=source_identity,
         background_vehicle=_current_background_vehicle(current),
+        poster_renderer_version=SHOW_RENDERER_VERSION,
+        poster_checksum=poster_checksum,
     )
 
 
@@ -1634,7 +1655,8 @@ async def run_show_artwork_rotation(
     )
     render_fingerprint = _show_render_fingerprint(config)
     rerendering = False
-    poster_only_rerendering = False
+    poster_only_maintenance = False
+    poster_repairing = False
     background_integrity = "managed"
     if current is not None:
         integrity = _pair_integrity(current)
@@ -1658,14 +1680,25 @@ async def run_show_artwork_rotation(
             and current_source.get("background_render_fingerprint")
             != background_render_fingerprint
         )
+        if same_round and background_integrity == "managed":
+            background_value = current_source.get("background_candidate") or {}
+            background_rerendering = background_rerendering or (
+                background_value.get("race_key")
+                != derive_race_environment(race).race_key
+            )
         rerendering = poster_rerendering or background_rerendering
-        poster_only_rerendering = (
-            poster_rerendering
-            and not background_rerendering
-            and poster_integrity == "managed"
+        poster_repairing = (
+            same_round
+            and poster_integrity == "missing"
             and background_integrity != "missing"
         )
-        if integrity == "manual" and not poster_only_rerendering:
+        poster_only_maintenance = (
+            (poster_rerendering or poster_repairing)
+            and not background_rerendering
+            and poster_integrity in {"managed", "missing"}
+            and background_integrity != "missing"
+        )
+        if integrity == "manual" and not poster_only_maintenance:
             episode_references, episode_actions = _existing_episode_outputs(
                 state, config, show, race
             )
@@ -1707,13 +1740,8 @@ async def run_show_artwork_rotation(
                 episode_actions=episode_actions,
             )
         if same_round and integrity == "managed":
-            background_value = current.get("source", {}).get("background_candidate") or {}
-            expected_race_key = derive_race_environment(race).race_key
-            background_rerendering = background_rerendering or (
-                background_value.get("race_key") != expected_race_key
-            )
             rerendering = poster_rerendering or background_rerendering
-            poster_only_rerendering = (
+            poster_only_maintenance = (
                 poster_rerendering and not background_rerendering
             )
             if not rerendering:
@@ -1777,7 +1805,7 @@ async def run_show_artwork_rotation(
         if restoring or rerendering:
             candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
             photo_path, image_source = await acquire_candidate_image(session, config, candidate)
-            if poster_only_rerendering:
+            if poster_only_maintenance:
                 return _rerender_current_poster(
                     state,
                     config,
@@ -1792,6 +1820,10 @@ async def run_show_artwork_rotation(
                     background_render_fingerprint,
                     render_fingerprint,
                     background_integrity=background_integrity,
+                    action="restored" if poster_repairing else "rerendered",
+                    planned_action=(
+                        "restore-planned" if poster_repairing else "rerender-planned"
+                    ),
                 )
             provider_sources = {"roster": "state", "search": "state", "image": image_source}
             background_value = current["source"].get("background_candidate")
@@ -1881,8 +1913,8 @@ async def run_show_artwork_rotation(
             background_reference,
             current.get("constructor_id") if current else None,
             (
-                f"No safe cached/current team-car source for poster rerender: {error}"
-                if poster_only_rerendering
+                f"No safe cached/current team-car source for poster maintenance: {error}"
+                if poster_only_maintenance
                 else f"No safe Wikimedia Commons race-car/background pair: {error}"
             ),
             episode_references=episode_references,
@@ -1992,4 +2024,6 @@ async def run_show_artwork_rotation(
         photo_path=str(photo_path),
         source_identity=source_identity,
         background_vehicle=background_candidate.vehicle_name,
+        poster_renderer_version=SHOW_RENDERER_VERSION,
+        poster_checksum=poster_checksum,
     )

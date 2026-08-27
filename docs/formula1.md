@@ -635,9 +635,14 @@ reuses the already validated team-car cache and rewrites only a checksum-matchin
 managed poster; it does not reacquire, rewrite, or otherwise depend on the current
 background. A manually modified background is preserved and reported without
 blocking that managed poster upgrade. Legacy paired state is adopted into this
-split-fingerprint model on its first successful poster maintenance run. Missing
-pair members still use the normal repair path so an incomplete active pair is not
-silently accepted.
+split-fingerprint model on its first successful poster maintenance run. If only a
+managed poster is missing, MetaFusion independently recreates it with the current
+renderer and leaves the existing background byte-for-byte unchanged. If only the
+background is missing, or both files are missing, the normal paired repair remains
+in force because a background still requires its separately validated source.
+Generated show-poster PNGs contain textual MetaFusion renderer/design provenance,
+and the private Formula 1 run log records its exact YAML reference plus the renderer
+version and checksum prefix when a poster is created, restored, or rerendered.
 
 The team roster is discovered for the detected championship year rather than
 being hard-coded. The next constructor is chosen deterministically after the

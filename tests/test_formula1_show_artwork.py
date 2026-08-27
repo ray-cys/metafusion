@@ -1405,6 +1405,8 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     ) == 64
     with Image.open(poster) as image:
         assert image.size == (600, 900)
+        assert image.info["MetaFusion renderer"] == "show-poster-v15"
+        assert image.info["MetaFusion design"] == "adaptive-concept-a-v3"
     with Image.open(background) as image:
         assert image.size == (1280, 720)
         # The source photograph is full bleed; the left is only gently shaded
@@ -1432,7 +1434,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 14
+    assert SHOW_RENDERER_VERSION == 15
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -2147,6 +2149,60 @@ def test_background_renderer_change_remains_an_independent_full_rerender(
         current["source"]["background_candidate"]["match_tier"]
         == "exact_event_action_race_car"
     )
+    state.close()
+
+
+def test_missing_poster_is_restored_without_background_acquisition(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("first"),
+        )
+    )
+    current = state.show_rotation("show:2026")
+    poster = Path(current["poster_destination"])
+    background = Path(current["background_destination"])
+    background_content = background.read_bytes()
+    background_checksum = current["background_checksum"]
+    poster.unlink()
+
+    async def background_must_not_be_acquired(*_args, **_kwargs):
+        raise AssertionError("missing-poster repair acquired a background")
+
+    monkeypatch.setattr(
+        show_artwork_module,
+        "_acquire_background_image",
+        background_must_not_be_acquired,
+    )
+    restored = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("restore"),
+        )
+    )
+    assert restored.action == "restored"
+    assert restored.poster_renderer_version == 15
+    assert restored.poster_checksum == _checksum(poster)
+    assert background.read_bytes() == background_content
+    current = state.show_rotation("show:2026")
+    assert current["background_checksum"] == background_checksum
+    with Image.open(poster) as image:
+        assert image.info["MetaFusion renderer"] == "show-poster-v15"
+        assert image.info["MetaFusion design"] == "adaptive-concept-a-v3"
     state.close()
 
 

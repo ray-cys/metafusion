@@ -546,11 +546,16 @@ async def run_formula1_extension(
                         }
                         detail_logger.info(
                             "[Show Artwork] %s | Trigger round: %02d | Action: %s | "
+                            "Poster renderer: v%s | Poster checksum: %s | "
+                            "Poster reference: %s | "
                             "Poster team: %s | Background vehicle: %s | "
                             "Source: Wikimedia Commons",
                             show.title,
                             rotation.trigger_round,
                             rotation.action,
+                            rotation.poster_renderer_version or "unknown",
+                            (rotation.poster_checksum or "unavailable")[:12],
+                            rotation.poster_reference or "unavailable",
                             rotation.constructor or "none",
                             rotation.background_vehicle or "preserved/none",
                         )
