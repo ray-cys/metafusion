@@ -29,18 +29,18 @@ from extensions.formula1.commons import (
     load_constructors,
     search_commons,
 )
-from extensions.formula1.safety_car import (
-    SafetyCarCandidate,
+from extensions.formula1.race_background import (
+    RaceBackgroundCandidate,
     classify_image_environment,
     derive_race_environment,
     environment_compatible,
-    search_safety_cars,
+    search_race_backgrounds,
 )
 from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 8
+SHOW_RENDERER_VERSION = 9
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -886,8 +886,10 @@ def _attribution_reports(config, history, round_sources=()):
                 "season_year": item["season_year"],
                 "trigger_round": item["trigger_round"],
                 "vehicle_name": background["vehicle_name"],
-                "subject_type": background.get("subject_type", "safety_car"),
-                "match_tier": background.get("match_tier", "season_safety_car"),
+                "subject_type": background.get("subject_type", "race_car"),
+                "match_tier": background.get(
+                    "match_tier", "exact_event_circuit_race_car"
+                ),
                 "environment": background.get("environment", "unknown"),
                 "observed_environment": background_sources.get(
                     "observed_environment", "unknown"
@@ -1024,19 +1026,17 @@ def _hash_distance(left, right):
     return (int(left, 16) ^ int(right, 16)).bit_count()
 
 
-def _safety_candidate_order(candidates, current, trigger_round):
+def _background_candidate_order(candidates, current, trigger_round):
     if not candidates:
         return []
     background = (current or {}).get("source", {}).get("background_candidate") or {}
     previous = int(background.get("page_id") or 0)
-    ordered: list[SafetyCarCandidate] = []
+    ordered: list[RaceBackgroundCandidate] = []
     for tier in (
-        "exact_event_circuit_safety_car",
-        "exact_event_safety_car",
-        "recent_circuit_safety_car",
+        "exact_event_circuit_race_car",
+        "recent_circuit_race_car",
         "exact_event_atmosphere",
         "exact_circuit_atmosphere",
-        "season_safety_car",
     ):
         group = [candidate for candidate in candidates if candidate.match_tier == tier]
         if not group:
@@ -1054,19 +1054,20 @@ async def _select_background_source(
     session, state, config, race, current, trigger_round, logger
 ):
     environment = derive_race_environment(race)
-    candidates, search_source = await search_safety_cars(
+    candidates, search_source = await search_race_backgrounds(
         session, state, config, race, logger
     )
     if not candidates:
         raise RuntimeError(
-            "no licensed current/recent safety-car or exact-circuit atmosphere "
+            "no licensed current/recent circuit-matched Formula 1 race-car or "
+            "exact-circuit atmosphere "
             "candidate matched"
         )
     current_source = (current or {}).get("source", {})
     previous_hash = current_source.get("background_perceptual_hash")
     fallback = None
     diagnostics = []
-    for candidate in _safety_candidate_order(candidates, current, trigger_round):
+    for candidate in _background_candidate_order(candidates, current, trigger_round):
         try:
             photo_path, image_source = await acquire_candidate_image(
                 session, config, candidate
@@ -1242,10 +1243,17 @@ async def run_show_artwork_rotation(
             photo_path, image_source = await acquire_candidate_image(session, config, candidate)
             provider_sources = {"roster": "state", "search": "state", "image": image_source}
             background_value = current["source"].get("background_candidate")
-            if background_value and SafetyCarCandidate.from_dict(
-                background_value
-            ).race_key == derive_race_environment(race).race_key:
-                background_candidate = SafetyCarCandidate.from_dict(background_value)
+            saved_background = (
+                RaceBackgroundCandidate.from_dict(background_value)
+                if background_value
+                else None
+            )
+            if (
+                saved_background
+                and saved_background.race_key == derive_race_environment(race).race_key
+                and saved_background.subject_type in {"race_car", "circuit_atmosphere"}
+            ):
+                background_candidate = saved_background
                 background_photo_path, background_image_source = await acquire_candidate_image(
                     session, config, background_candidate
                 )

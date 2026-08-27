@@ -33,23 +33,24 @@ from extensions.formula1.config import Formula1ConfigError, load_formula1_config
 from extensions.formula1.inventory import Formula1Episode, Formula1Show
 from extensions.formula1.metadata import build_show_entry
 from extensions.formula1.provider import RaceData
-from extensions.formula1.safety_car import (
-    SafetyCarCandidate,
+from extensions.formula1.race_background import (
+    RaceBackgroundCandidate,
+    _race_background_category_url,
+    _race_background_search_url,
     _race_queries,
-    _safety_car_category_url,
-    _safety_car_search_url,
     _solar_elevation,
     classify_image_environment,
     derive_race_environment,
     environment_compatible,
-    parse_safety_car_candidates,
-    search_safety_cars,
+    parse_race_background_candidates,
+    search_race_backgrounds,
 )
 from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import (
     EPISODE_RENDERER_VERSION,
     SHOW_RENDERER_VERSION,
     _asset_reference,
+    _background_candidate_order,
     _candidate_order,
     _checksum,
     _episode_fingerprint,
@@ -61,7 +62,6 @@ from extensions.formula1.show_artwork import (
     _prune_retained_pairs,
     _prune_source_cache,
     _rounded_flag_badge,
-    _safety_candidate_order,
     _saliency_focal_point,
     _select_background_source,
     reconcile_episode_posters,
@@ -135,23 +135,23 @@ def _commons_payload(team="Alpine F1 Team", constructor_id="alpine", **overrides
     }
 
 
-def _safety_car_payload(*, page_id=901, title=None, **overrides):
+def _race_background_payload(*, page_id=901, title=None, **overrides):
     info = {
-        "url": f"https://upload.wikimedia.org/safety-{page_id}.jpg",
-        "thumburl": f"https://upload.wikimedia.org/safety-thumb-{page_id}.jpg",
+        "url": f"https://upload.wikimedia.org/race-{page_id}.jpg",
+        "thumburl": f"https://upload.wikimedia.org/race-thumb-{page_id}.jpg",
         "width": overrides.pop("width", 3200),
         "height": overrides.pop("height", 1800),
         "mime": overrides.pop("mime", "image/jpeg"),
-        "sha1": overrides.pop("sha1", f"safety-sha1-{page_id}"),
+        "sha1": overrides.pop("sha1", f"race-sha1-{page_id}"),
         "extmetadata": {
             "ImageDescription": {
                 "value": overrides.pop(
                     "description",
-                    "Official FIA Formula 1 safety car on track at the 2026 "
+                    "McLaren Formula 1 race car on track at the 2026 "
                     "Australian Grand Prix at Albert Park Grand Prix Circuit",
                 )
             },
-            "Artist": {"value": overrides.pop("author", "Safety Photographer")},
+            "Artist": {"value": overrides.pop("author", "Race Photographer")},
             "LicenseShortName": {"value": overrides.pop("licence", "CC BY 4.0")},
             "LicenseUrl": {
                 "value": overrides.pop(
@@ -167,8 +167,8 @@ def _safety_car_payload(*, page_id=901, title=None, **overrides):
                 {
                     "pageid": page_id,
                     "title": title
-                    or f"File:2026 Formula 1 Safety Car track view {page_id}.jpg",
-                    "categories": [{"title": "Category:Formula One safety car"}],
+                    or f"File:2026 McLaren Formula 1 race car {page_id}.jpg",
+                    "categories": [{"title": "Category:2026 Formula One cars"}],
                     "imageinfo": [info],
                 }
             ]
@@ -217,14 +217,15 @@ class CommonsSession:
                 return Response(payload={"query": {"pages": []}})
             if (
                 parameters.get("generator") == ["categorymembers"]
-                or "safety car" in query
+                or "race car" in query
+                or "formula one cars" in query
             ):
                 page_id = (
                     901
                     if parameters.get("generator") == ["categorymembers"]
                     else 902
                 )
-                return Response(payload=_safety_car_payload(page_id=page_id))
+                return Response(payload=_race_background_payload(page_id=page_id))
             for constructor_id, team in (
                 ("alpine", "Alpine F1 Team"),
                 ("ferrari", "Ferrari"),
@@ -353,69 +354,77 @@ def test_commons_identity_licence_and_payload_filtering(config):
     assert parse_commons_candidates({"query": {"pages": "bad"}}, 2026, roster[0], roster, config) == []
 
 
-def test_safety_car_identity_licence_and_season_filtering(config):
-    candidates = parse_safety_car_candidates(_safety_car_payload(), 2026, config)
+def test_race_background_identity_licence_and_season_filtering(config):
+    candidates = parse_race_background_candidates(_race_background_payload(), 2026, config)
     assert len(candidates) == 1
-    assert candidates[0].vehicle_name.startswith("2026 Formula 1 Safety Car")
-    assert SafetyCarCandidate.from_dict(candidates[0].as_dict()) == candidates[0]
-    assert parse_safety_car_candidates(_safety_car_payload(), 2027, config) == []
-    assert parse_safety_car_candidates(
-        _safety_car_payload(title="File:2026 Formula 1 Medical Car.jpg"), 2026, config
+    assert candidates[0].vehicle_name.startswith("2026 McLaren Formula 1 race car")
+    assert RaceBackgroundCandidate.from_dict(candidates[0].as_dict()) == candidates[0]
+    assert parse_race_background_candidates(_race_background_payload(), 2027, config) == []
+    assert parse_race_background_candidates(
+        _race_background_payload(title="File:2026 Formula 1 Medical Car.jpg"), 2026, config
     ) == []
-    assert parse_safety_car_candidates(
-        _safety_car_payload(
-            title="File:Aston Martin Vantage F1 Safety Car - Museum 2026.jpg"
+    assert parse_race_background_candidates(
+        _race_background_payload(
+            title="File:Aston Martin Formula 1 race car - Museum 2026.jpg"
         ),
         2026,
         config,
     ) == []
-    plural = _safety_car_payload(
+    assert parse_race_background_candidates(
+        _race_background_payload(
+            title="File:2026 Formula 1 Safety Car.jpg",
+            description="Formula 1 safety car at the 2026 Australian Grand Prix",
+        ),
+        2026,
+        config,
+    ) == []
+    plural = _race_background_payload(
         title="File:F1 season vehicle at Suzuka 2026.jpg",
         description="F1 vehicle on track at the 2026 Japanese Grand Prix",
     )
     plural["query"]["pages"][0]["categories"] = [
-        {"title": "Category:Safety cars"},
+        {"title": "Category:2026 Formula One cars"},
         {"title": "Category:2026 Japanese Grand Prix"},
     ]
-    assert parse_safety_car_candidates(plural, 2026, config)
-    assert parse_safety_car_candidates(
-        _safety_car_payload(licence="CC BY-SA 4.0"), 2026, config
+    assert parse_race_background_candidates(plural, 2026, config)
+    assert parse_race_background_candidates(
+        _race_background_payload(licence="CC BY-SA 4.0"), 2026, config
     ) == []
-    assert parse_safety_car_candidates(
-        _safety_car_payload(width=640), 2026, config
+    assert parse_race_background_candidates(
+        _race_background_payload(width=640), 2026, config
     ) == []
-    unsafe_url = _safety_car_payload()
+    unsafe_url = _race_background_payload()
     unsafe_url["query"]["pages"][0]["imageinfo"][0]["thumburl"] = (
-        "https://example.com/safety-car.jpg"
+        "https://example.com/race-car.jpg"
     )
     unsafe_url["query"]["pages"][0]["imageinfo"][0]["url"] = ""
-    assert parse_safety_car_candidates(unsafe_url, 2026, config) == []
-    assert "safety+car" in _safety_car_search_url(
-        config, 'intitle:2026 intitle:"safety car" F1'
+    assert parse_race_background_candidates(unsafe_url, 2026, config) == []
+    assert "race+car" in _race_background_search_url(
+        config, 'intitle:2026 "Formula 1" "race car"'
     )
-    assert "gsroffset=30" in _safety_car_search_url(config, "F1", offset=30)
-    assert "generator=categorymembers" in _safety_car_category_url(config)
-    assert "gcmcontinue=next" in _safety_car_category_url(
+    assert "gsroffset=30" in _race_background_search_url(config, "F1", offset=30)
+    assert "generator=categorymembers" in _race_background_category_url(config)
+    assert "gcmcontinue=next" in _race_background_category_url(
         config, continuation="next"
     )
 
 
-def test_safety_car_search_cache_and_stale_fallback(config):
+def test_race_background_search_cache_and_stale_fallback(config):
     state = Formula1State(config["paths"]["database"])
     session = CommonsSession()
     candidates, source = asyncio.run(
-        search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
+        search_race_backgrounds(session, state, config, 2026, logging.getLogger("safety"))
     )
     assert candidates and source == "wikimedia-commons-race-background"
     assert asyncio.run(
-        search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
+        search_race_backgrounds(session, state, config, 2026, logging.getLogger("safety"))
     )[1] == "cache"
     state.connection.execute(
         "UPDATE provider_cache SET expires_at='2020-01-01T00:00:00+00:00'"
     )
     state.connection.commit()
     stale, source = asyncio.run(
-        search_safety_cars(
+        search_race_backgrounds(
             CommonsSession(fail=True),
             state,
             config,
@@ -428,7 +437,7 @@ def test_safety_car_search_cache_and_stale_fallback(config):
     state.connection.commit()
     with pytest.raises(RuntimeError, match="Commons API request failed"):
         asyncio.run(
-            search_safety_cars(
+            search_race_backgrounds(
                 CommonsSession(fail=True),
                 state,
                 config,
@@ -439,17 +448,17 @@ def test_safety_car_search_cache_and_stale_fallback(config):
     state.close()
 
 
-def test_safety_car_selection_rejects_empty_and_invalid_sources(
+def test_race_background_selection_rejects_empty_and_invalid_sources(
     config, monkeypatch
 ):
     state = Formula1State(config["paths"]["database"])
-    assert _safety_candidate_order([], None, 1) == []
+    assert _background_candidate_order([], None, 1) == []
 
     async def empty_search(*_args, **_kwargs):
         return [], "test"
 
-    monkeypatch.setattr(show_artwork_module, "search_safety_cars", empty_search)
-    with pytest.raises(RuntimeError, match="no licensed current/recent safety-car"):
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
+    with pytest.raises(RuntimeError, match="no licensed current/recent circuit-matched"):
         asyncio.run(
             _select_background_source(
                 None, state, config, RaceData(
@@ -460,17 +469,17 @@ def test_safety_car_selection_rejects_empty_and_invalid_sources(
             )
         )
 
-    candidate = parse_safety_car_candidates(_safety_car_payload(), 2026, config)[0]
+    candidate = parse_race_background_candidates(_race_background_payload(), 2026, config)[0]
 
     async def candidate_search(*_args, **_kwargs):
         return [candidate], "test"
 
     async def invalid_image(*_args, **_kwargs):
-        raise RuntimeError("invalid safety image")
+        raise RuntimeError("invalid race image")
 
-    monkeypatch.setattr(show_artwork_module, "search_safety_cars", candidate_search)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", candidate_search)
     monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", invalid_image)
-    with pytest.raises(RuntimeError, match="invalid safety image"):
+    with pytest.raises(RuntimeError, match="invalid race image"):
         asyncio.run(
             _select_background_source(
                 None, state, config, RaceData(
@@ -488,11 +497,11 @@ def test_safety_car_selection_rejects_empty_and_invalid_sources(
         circuit_profile="floodlit urban street circuit",
         race_time_utc="12:00:00Z",
     )
-    night_candidate = parse_safety_car_candidates(
-        _safety_car_payload(
-            title="File:2027 Singapore Grand Prix Formula 1 Safety Car at night.jpg",
+    night_candidate = parse_race_background_candidates(
+        _race_background_payload(
+            title="File:2027 Singapore Grand Prix McLaren Formula 1 race car at night.jpg",
             description=(
-                "Formula 1 safety car at the floodlit 2027 Singapore Grand Prix "
+                "McLaren Formula 1 race car at the floodlit 2027 Singapore Grand Prix "
                 "on the Marina Bay Street Circuit"
             ),
         ),
@@ -509,7 +518,7 @@ def test_safety_car_selection_rejects_empty_and_invalid_sources(
     async def bright_image(*_args, **_kwargs):
         return bright, "test"
 
-    monkeypatch.setattr(show_artwork_module, "search_safety_cars", night_search)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", night_search)
     monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", bright_image)
     with pytest.raises(RuntimeError, match="expected night scene"):
         asyncio.run(
@@ -534,36 +543,36 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     assert _solar_elevation(replace(singapore, latitude=None)) is None
     assert _solar_elevation(replace(singapore, race_time_utc="not-a-time")) is None
 
-    exact = _safety_car_payload(
-        title="File:2027 Singapore Grand Prix Formula 1 Safety Car at night.jpg",
+    exact = _race_background_payload(
+        title="File:2027 Singapore Grand Prix McLaren Formula 1 race car at night.jpg",
         description=(
-            "Formula 1 safety car at the floodlit 2027 Singapore Grand Prix "
+            "McLaren Formula 1 race car at the floodlit 2027 Singapore Grand Prix "
             "on the Marina Bay Street Circuit"
         ),
     )
-    candidates = parse_safety_car_candidates(exact, singapore, config)
-    assert candidates[0].match_tier == "exact_event_circuit_safety_car"
+    candidates = parse_race_background_candidates(exact, singapore, config)
+    assert candidates[0].match_tier == "exact_event_circuit_race_car"
     assert candidates[0].race_key == environment.race_key
     assert "environment" in candidates[0].evidence
 
-    unrelated = _safety_car_payload(
-        title="File:2027 British Grand Prix Formula 1 Safety Car.jpg",
-        description="Formula 1 safety car at Silverstone during the 2027 British Grand Prix",
+    unrelated = _race_background_payload(
+        title="File:2027 British Grand Prix McLaren Formula 1 race car.jpg",
+        description="McLaren Formula 1 race car at Silverstone during the 2027 British Grand Prix",
     )
-    assert parse_safety_car_candidates(unrelated, singapore, config) == []
+    assert parse_race_background_candidates(unrelated, singapore, config) == []
 
-    atmosphere = _safety_car_payload(
+    atmosphere = _race_background_payload(
         title="File:2027 Singapore Grand Prix Marina Bay night track.jpg",
         description="Formula 1 floodlit circuit atmosphere at the 2027 Singapore Grand Prix",
     )
     atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:2027 Singapore Grand Prix"}
     ]
-    candidates = parse_safety_car_candidates(atmosphere, singapore, config)
+    candidates = parse_race_background_candidates(atmosphere, singapore, config)
     assert candidates[0].subject_type == "circuit_atmosphere"
     assert candidates[0].match_tier == "exact_event_atmosphere"
 
-    historical_atmosphere = _safety_car_payload(
+    historical_atmosphere = _race_background_payload(
         page_id=903,
         title="File:2018 Marina Bay Street Circuit at night.jpg",
         description="Floodlit motorsport circuit atmosphere in Singapore",
@@ -571,14 +580,14 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     historical_atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:Marina Bay Street Circuit"}
     ]
-    candidates = parse_safety_car_candidates(
+    candidates = parse_race_background_candidates(
         historical_atmosphere, singapore, config
     )
     assert candidates[0].match_tier == "exact_circuit_atmosphere"
     assert "commons-category" in candidates[0].evidence
     assert "historical-or-year-neutral-circuit" in candidates[0].evidence
 
-    year_neutral_atmosphere = _safety_car_payload(
+    year_neutral_atmosphere = _race_background_payload(
         page_id=904,
         title="File:Marina Bay Street Circuit floodlights.jpg",
         description="Night view of the Marina Bay Street Circuit",
@@ -586,12 +595,12 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     year_neutral_atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:Marina Bay Street Circuit"}
     ]
-    candidates = parse_safety_car_candidates(
+    candidates = parse_race_background_candidates(
         year_neutral_atmosphere, singapore, config
     )
     assert candidates[0].match_tier == "exact_circuit_atmosphere"
 
-    event_only_historical = _safety_car_payload(
+    event_only_historical = _race_background_payload(
         page_id=905,
         title="File:2018 Singapore Grand Prix at night.jpg",
         description="Formula 1 floodlit atmosphere at the Singapore Grand Prix",
@@ -599,14 +608,14 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     event_only_historical["query"]["pages"][0]["categories"] = [
         {"title": "Category:2018 Singapore Grand Prix"}
     ]
-    assert parse_safety_car_candidates(event_only_historical, singapore, config) == []
+    assert parse_race_background_candidates(event_only_historical, singapore, config) == []
 
-    future_atmosphere = _safety_car_payload(
+    future_atmosphere = _race_background_payload(
         page_id=906,
         title="File:2028 Marina Bay Street Circuit at night.jpg",
         description="Formula 1 floodlit atmosphere at Marina Bay Street Circuit",
     )
-    assert parse_safety_car_candidates(future_atmosphere, singapore, config) == []
+    assert parse_race_background_candidates(future_atmosphere, singapore, config) == []
 
     queries = _race_queries(singapore, environment)
     assert any(
@@ -617,14 +626,14 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
         '"Marina Bay Street Circuit" motorsport circuit' in query
         for query in queries
     )
-    rejected_atmosphere = _safety_car_payload(
+    rejected_atmosphere = _race_background_payload(
         title="File:2027 Singapore Grand Prix driver portrait.jpg",
         description="Formula 1 driver portrait at the 2027 Singapore Grand Prix",
     )
     rejected_atmosphere["query"]["pages"][0]["categories"] = [
         {"title": "Category:2027 Singapore Grand Prix"}
     ]
-    assert parse_safety_car_candidates(rejected_atmosphere, singapore, config) == []
+    assert parse_race_background_candidates(rejected_atmosphere, singapore, config) == []
 
     dark = tmp_path / "night.jpg"
     twilight = tmp_path / "twilight.jpg"
@@ -898,7 +907,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 8
+    assert SHOW_RENDERER_VERSION == 9
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -1087,8 +1096,8 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     current = state.show_rotation("show:2026")
     assert _pair_integrity(current) == "managed"
     assert current["source"]["candidate"]["constructor_id"] == "alpine"
-    assert "Safety Car" in current["source"]["background_candidate"]["title"]
-    assert first.background_vehicle and "Safety Car" in first.background_vehicle
+    assert "race car" in current["source"]["background_candidate"]["title"]
+    assert first.background_vehicle and "race car" in first.background_vehicle
     assert len(state.show_rotation_history()) == 1
     assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
     attribution_path = (
@@ -1100,7 +1109,7 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         for record in json.loads(attribution_path.read_text())["records"]
         if record["scope"] == "show_background"
     )
-    assert background_record["match_tier"] == "exact_event_circuit_safety_car"
+    assert background_record["match_tier"] == "exact_event_circuit_race_car"
     assert background_record["race_key"].startswith("2026:01:albert-park")
     assert background_record["observed_environment"] in {"day", "twilight", "night"}
     assert "Liauzh" in (

@@ -31,6 +31,7 @@ REJECTED_IDENTITIES = {
     "miniature",
     "model car",
     "museum",
+    "safety car",
     "sculpture",
     "showroom",
     "simulator",
@@ -43,6 +44,20 @@ ATMOSPHERE_REJECTED_IDENTITIES = {
     "podium",
     "press conference",
     "trophy",
+}
+ATMOSPHERE_SUBJECT_IDENTITIES = {
+    "aerial view",
+    "atmosphere",
+    "circuit atmosphere",
+    "circuit park",
+    "circuit view",
+    "grandstand",
+    "panorama",
+    "race track",
+    "racetrack",
+    "track atmosphere",
+    "track view",
+    "venue view",
 }
 
 
@@ -57,7 +72,7 @@ class RaceEnvironment:
 
 
 @dataclass(frozen=True)
-class SafetyCarCandidate:
+class RaceBackgroundCandidate:
     page_id: int
     title: str
     page_url: str
@@ -71,8 +86,8 @@ class SafetyCarCandidate:
     licence_url: str
     vehicle_name: str
     score: float
-    subject_type: str = "safety_car"
-    match_tier: str = "season_safety_car"
+    subject_type: str = "race_car"
+    match_tier: str = "exact_event_circuit_race_car"
     environment: str = "unknown"
     race_key: str = ""
     evidence: tuple[str, ...] = ()
@@ -221,20 +236,20 @@ def _year_values(identity):
     return {int(value) for value in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", identity)}
 
 
-def _vehicle_name(title, subject_type="safety_car"):
+def _vehicle_name(title, subject_type="race_car"):
     if subject_type == "circuit_atmosphere":
         return "Circuit atmosphere"
     value = str(title or "").removeprefix("File:")
-    return value.rsplit(".", 1)[0].strip() or "Official FIA F1 Safety Car"
+    return value.rsplit(".", 1)[0].strip() or "Formula 1 race car"
 
 
-def parse_safety_car_candidates(payload, race_or_year, config):
-    """Return licensed race backgrounds, preferring current safety cars.
+def parse_race_background_candidates(payload, race_or_year, config):
+    """Return licensed, race-aware Formula 1 car or circuit backgrounds.
 
-    Safety-car photographs remain season-aware. Track-atmosphere photographs
-    may be older or year-neutral only when their Commons metadata or category
-    membership establishes the exact circuit; this avoids rejecting reusable
-    venue photography merely because the file description omits the race year.
+    Race-car photographs must match the current event/circuit and season, or a
+    recent season at the exact circuit. Track-atmosphere photographs may be
+    older or year-neutral only when their Commons metadata or category
+    membership establishes the exact circuit.
     """
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
@@ -264,7 +279,6 @@ def parse_safety_car_candidates(payload, race_or_year, config):
         licence_url = _metadata_value(metadata, "LicenseUrl")
         attribution_required = _normalize(licence).startswith("cc by ")
         f1_identity = any(marker in words for marker in (" formula 1 ", " formula one ", " f1 "))
-        safety_car = any(marker in words for marker in (" safety car ", " safety cars "))
         event_match = bool(environment and _contains_terms(identity, environment.event_terms))
         circuit_match = bool(environment and _contains_terms(identity, environment.circuit_terms))
         category_match = bool(
@@ -274,13 +288,17 @@ def parse_safety_car_candidates(payload, race_or_year, config):
                 or _contains_terms(category_identity, environment.circuit_terms)
             )
         )
+        atmosphere = any(marker in identity for marker in ATMOSPHERE_SUBJECT_IDENTITIES) or (
+            not f1_identity and circuit_match
+        )
+        race_car = f1_identity and not atmosphere
         years = _year_values(identity)
         exact_year = year in years
         recent_year = any(0 <= year - value <= 3 for value in years)
         future_year = any(value > year for value in years)
         if race is None:
-            identity_allowed = exact_year and safety_car
-        elif safety_car:
+            identity_allowed = exact_year and race_car
+        elif race_car:
             identity_allowed = (
                 exact_year and (event_match or circuit_match)
             ) or (recent_year and circuit_match)
@@ -289,7 +307,7 @@ def parse_safety_car_candidates(payload, race_or_year, config):
                 exact_year and (event_match or circuit_match)
             ) or (circuit_match and not future_year)
         provider_identity = f1_identity or (
-            race is not None and not safety_car and circuit_match
+            race is not None and atmosphere and circuit_match
         )
         if (
             mime not in ALLOWED_MIME_TYPES
@@ -300,23 +318,22 @@ def parse_safety_car_candidates(payload, race_or_year, config):
             or not identity_allowed
             or not provider_identity
             or any(value in identity for value in REJECTED_IDENTITIES)
+            or any(value in identity for value in ATMOSPHERE_REJECTED_IDENTITIES)
             or not _licence_allowed(licence)
             or (attribution_required and not author)
             or (attribution_required and not licence_url.startswith("https://"))
         ):
             continue
-        if not safety_car and (
-            race is None or any(value in identity for value in ATMOSPHERE_REJECTED_IDENTITIES)
-        ):
+        if atmosphere and race is None:
             continue
         image_url = str(image_info.get("thumburl") or image_info.get("url") or "")
         if not image_url.startswith("https://upload.wikimedia.org/"):
             continue
-        subject_type = "safety_car" if safety_car else "circuit_atmosphere"
-        if safety_car and exact_year and (event_match or circuit_match):
-            match_tier, tier_score = "exact_event_circuit_safety_car", 300
-        elif safety_car:
-            match_tier, tier_score = "recent_circuit_safety_car", 200
+        subject_type = "race_car" if race_car else "circuit_atmosphere"
+        if race_car and exact_year and (event_match or circuit_match):
+            match_tier, tier_score = "exact_event_circuit_race_car", 300
+        elif race_car:
+            match_tier, tier_score = "recent_circuit_race_car", 200
         elif exact_year:
             match_tier, tier_score = "exact_event_atmosphere", 100
         else:
@@ -337,7 +354,7 @@ def parse_safety_car_candidates(payload, race_or_year, config):
                 ("recent-season", recent_year and not exact_year),
                 (
                     "historical-or-year-neutral-circuit",
-                    not safety_car and circuit_match and not exact_year,
+                    atmosphere and circuit_match and not exact_year,
                 ),
                 ("location", location_match),
                 ("environment", scene_match),
@@ -350,7 +367,7 @@ def parse_safety_car_candidates(payload, race_or_year, config):
         score += 8 if location_match else 0
         score += 12 if scene_match else 0
         candidates.append(
-            SafetyCarCandidate(
+            RaceBackgroundCandidate(
                 page_id,
                 title,
                 f"https://commons.wikimedia.org/?curid={page_id}",
@@ -375,7 +392,7 @@ def parse_safety_car_candidates(payload, race_or_year, config):
     return sorted(unique.values(), key=lambda item: (-item.score, item.title.casefold()))
 
 
-def _safety_car_search_url(config, query, *, offset=None):
+def _race_background_search_url(config, query, *, offset=None):
     parameters = {
         "action": "query",
         "format": "json",
@@ -395,14 +412,14 @@ def _safety_car_search_url(config, query, *, offset=None):
     return f"{config['providers']['commons_url']}?{urlencode(parameters)}"
 
 
-def _safety_car_category_url(config, *, continuation=None):
+def _race_background_category_url(config, *, continuation=None):
     """Retained for compatibility diagnostics; production uses targeted search."""
     parameters = {
         "action": "query",
         "format": "json",
         "formatversion": "2",
         "generator": "categorymembers",
-        "gcmtitle": "Category:Safety cars",
+        "gcmtitle": "Category:Formula One cars",
         "gcmnamespace": "6",
         "gcmlimit": "max",
         "gcmtype": "file",
@@ -423,9 +440,11 @@ def _race_queries(race, environment):
     circuit = str(race.circuit).replace('"', "")
     scene = " ".join(environment.scene_terms[:2])
     return (
-        f'"{event}" {year} "Formula 1" "safety car" {scene}'.strip(),
-        f'"{circuit}" {year} "Formula 1" "safety car" {scene}'.strip(),
-        f'"{circuit}" "Formula One" "safety car" {scene}'.strip(),
+        f'"{event}" {year} "Formula 1" "race car" {scene}'.strip(),
+        f'"{circuit}" {year} "Formula 1" "race car" {scene}'.strip(),
+        f'"{circuit}" "Formula One" "race car" {scene}'.strip(),
+        f'"{event}" {year} "Formula One cars" {scene}'.strip(),
+        f'"{circuit}" {year} "Formula One cars" {scene}'.strip(),
         f'"{event}" {year} "Formula 1" track {scene}'.strip(),
         f'"{circuit}" {year} "Formula 1" track {scene}'.strip(),
         f'"{event}" "Formula 1" track {scene}'.strip(),
@@ -434,22 +453,22 @@ def _race_queries(race, environment):
     )
 
 
-async def search_safety_cars(session, state, config, race_or_year, logger):
-    """Discover licensed exact-race cinematic backgrounds, safety car first."""
+async def search_race_backgrounds(session, state, config, race_or_year, logger):
+    """Discover licensed exact-race cinematic race-car backgrounds."""
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
-    key = f"search:v3:{environment.race_key}" if environment else f"search:v1:{year}"
+    key = f"search:v4:{environment.race_key}" if environment else f"search:v2:{year}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
-        return parse_safety_car_candidates(cached, race_or_year, config), "cache"
+        return parse_race_background_candidates(cached, race_or_year, config), "cache"
     queries = (
         _race_queries(race, environment)
         if race
         else (
-            f'intitle:{year} intitle:"safety car" F1',
-            f'intitle:{year} intitle:"safety car" "Formula One"',
-            f'{year} "Formula One safety car"',
+            f'intitle:{year} "Formula 1" "race car"',
+            f'intitle:{year} "Formula One cars"',
+            f'{year} "Formula One race car"',
         )
     )
     try:
@@ -460,7 +479,7 @@ async def search_safety_cars(session, state, config, race_or_year, logger):
             for _page in range(COMMONS_PAGE_LIMIT):
                 response = await _commons_json(
                     session,
-                    _safety_car_search_url(config, query, offset=offset),
+                    _race_background_search_url(config, query, offset=offset),
                     config["providers"]["retries"],
                 )
                 for page in _candidate_pages(response):
@@ -473,7 +492,7 @@ async def search_safety_cars(session, state, config, race_or_year, logger):
                     break
         payload = {"query": {"pages": pages}}
         state.cache_put(PROVIDER, key, payload, config["providers"]["commons_cache_hours"])
-        return parse_safety_car_candidates(payload, race_or_year, config), PROVIDER
+        return parse_race_background_candidates(payload, race_or_year, config), PROVIDER
     except RuntimeError:
         stale = state.cache_get(PROVIDER, key, allow_expired=True)
         if stale is None:
@@ -483,4 +502,4 @@ async def search_safety_cars(session, state, config, race_or_year, logger):
             year,
             getattr(race, "round_number", "season"),
         )
-        return parse_safety_car_candidates(stale, race_or_year, config), "stale-cache"
+        return parse_race_background_candidates(stale, race_or_year, config), "stale-cache"

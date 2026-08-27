@@ -544,14 +544,14 @@ extension ownership record is treated as manual and is not adopted or overwritte
 
 `show_artwork.enabled: true` creates a paired show poster and 16:9 background
 from two independently validated, licensed sources. The portrait and episode
-cards rotate Formula 1 team cars. The show background prefers a safety car at the
-exact event and circuit. If that does not exist, it may use a recent exact-circuit
-safety-car photograph, then an exact-circuit atmospheric track photograph. The
-atmospheric source may be current, historical, or year-neutral when its Commons
-metadata or category membership establishes the exact venue.
-It never substitutes a team car, medical car, display vehicle, model, or unrelated
-event/series photograph. This is separate from the round/season posters described
-above and also enables the episode cards described above.
+cards rotate current-season Formula 1 team cars. The show background independently
+prefers Formula 1 race-car action from the exact event and circuit, followed by a
+recent Formula 1 race car at that exact circuit, then an exact-circuit atmospheric
+track photograph. Atmospheric sources may be current, historical, or year-neutral
+when Commons metadata or category membership establishes the exact venue. Safety
+cars are not selected. Medical cars, display vehicles, models, and unrelated
+event/series photographs are also rejected. This is separate from the round/season
+posters described above and also enables the episode cards described above.
 
 The portrait uses a stable black, charcoal, white, and red technical frame, with
 the complete landscape photograph fitted in a highlight-controlled horizontal
@@ -609,10 +609,10 @@ never Docker uptime.
 
 If either required photograph is not safely available, MetaFusion keeps the
 previous valid pair and retries after the provider cache expires. It will not use
-an older team car, an unrelated circuit, an ambiguous safety car, a scene whose
+an unrelated circuit, a safety or medical car, a scene whose
 pixels conflict with the expected day/night environment, or a photograph with an
-incompatible licence merely to force a rotation. A recent-year safety-car image
-is eligible only when it matches the exact circuit. An atmospheric fallback may
+incompatible licence merely to force a rotation. A recent-year Formula 1 race-car
+image is eligible only when it matches the exact circuit. An atmospheric fallback may
 omit the current year or come from an earlier season only when it matches the exact
 circuit; an older event-name-only match and any future-dated source are rejected.
 This workflow
@@ -706,16 +706,18 @@ is preserved and the unresolved round retries after cache expiry.
 Show backgrounds use a separate race-aware Commons adapter and cache. Discovery
 runs bounded queries derived from the current schedule identity and prioritizes:
 
-1. exact-event/circuit, current-season Formula 1 safety car;
-2. recent exact-circuit Formula 1 safety car; then
-3. current exact-event/circuit track atmosphere without a safety car; then
+1. exact-event/circuit, current-season Formula 1 race car;
+2. recent exact-circuit Formula 1 race car; then
+3. current exact-event/circuit track atmosphere; then
 4. historical or year-neutral exact-circuit track atmosphere.
 
-Safety-car candidates require a current year or a recent year plus exact-circuit
-evidence. Atmospheric candidates may be older or omit a year, but only with exact
+Race-car candidates require a current year or a recent year plus exact-circuit
+evidence. They are not tied to a hard-coded constructor, so any safely licensed
+Formula 1 car from the correct event/circuit may be selected. Atmospheric candidates
+may be older or omit a year, but only with exact
 circuit evidence from the file metadata or Commons categories. The adapter then
 applies licence, dimensions, aspect-ratio, decoded-pixel, visual-content,
-sharpness, environment-luminance, and perceptual-duplicate checks. Medical cars,
+sharpness, environment-luminance, and perceptual-duplicate checks. Safety and medical cars,
 toys, models, sculptures, simulators, museum/showroom displays, unrelated circuits
 or racing series, portrait media, incompatible licences, corrupt files, and
 undersized images are rejected. TXT and JSON attribution records include subject
