@@ -545,13 +545,18 @@ extension ownership record is treated as manual and is not adopted or overwritte
 `show_artwork.enabled: true` creates a paired show poster and 16:9 background
 from two independently validated, licensed sources. The portrait and episode
 cards rotate current-season Formula 1 team cars. The show background independently
-prefers Formula 1 race-car action from the exact event and circuit, followed by a
-recent and then any older Formula 1 race car at that exact circuit, followed by an
-exact-circuit atmospheric track photograph. Atmospheric sources may be current,
-historical, or year-neutral when Commons metadata or category membership establishes
-the exact venue. An exact-locality motorsport atmosphere is used only as the final
-fallback. Safety
-cars are not selected. Medical cars, display vehicles, models, and unrelated
+prefers active Formula 1 race-session photography from the exact event and circuit,
+then recent and historical race action at that exact circuit. Active qualifying,
+practice, sprint, and race photographs rank ahead of static car photographs, while
+night lighting, street-circuit context, barriers, grandstands, wet-track reflections,
+and multiple-car scenes improve ranking. MetaFusion recognizes car identity from
+Formula 1 event and chassis categories as well as literal `F1 car` wording, so
+Commons files named only for a team, driver, or chassis remain discoverable. The
+remaining fallback is an exact-circuit atmospheric track photograph. Atmospheric
+sources may be current, historical, or year-neutral when Commons metadata or category
+membership establishes the exact venue. An exact-locality motorsport atmosphere is
+used only as the final fallback. Safety cars are not selected. Medical cars,
+testing, launch or display vehicles, models, and unrelated
 event/series photographs are also rejected. This is separate from the round/season
 posters described above and also enables the episode cards described above.
 

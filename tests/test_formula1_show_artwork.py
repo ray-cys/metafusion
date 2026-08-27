@@ -382,6 +382,15 @@ def test_race_background_identity_licence_and_season_filtering(config):
         2026,
         config,
     ) == []
+    showcar = _race_background_payload(
+        title="File:Red Bull Racing RB14.jpg",
+        description="Red Bull Racing RB14 in Singapore",
+    )
+    showcar["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2026 Singapore Grand Prix"},
+        {"title": "Category:Red Bull Formula One showcars"},
+    ]
+    assert parse_race_background_candidates(showcar, 2026, config) == []
     plural = _race_background_payload(
         title="File:F1 season vehicle at Suzuka 2026.jpg",
         description="F1 vehicle on track at the 2026 Japanese Grand Prix",
@@ -563,7 +572,7 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
         ),
     )
     candidates = parse_race_background_candidates(exact, singapore, config)
-    assert candidates[0].match_tier == "exact_event_circuit_race_car"
+    assert candidates[0].match_tier == "exact_event_action_race_car"
     assert candidates[0].race_key == environment.race_key
     assert "environment" in candidates[0].evidence
 
@@ -610,6 +619,41 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     candidates = parse_race_background_candidates(historical_car, singapore, config)
     assert candidates[0].match_tier == "historical_circuit_race_car"
     assert "historical-exact-circuit-race-car" in candidates[0].evidence
+
+    commons_named_car = _race_background_payload(
+        page_id=909,
+        title="File:2012 Singapore GP - Ferrari.jpg",
+        description="Singapore GP Final Race 1",
+    )
+    commons_page = commons_named_car["query"]["pages"][0]
+    commons_page["categories"] = [
+        {"title": "Category:2012 Singapore Grand Prix"},
+        {"title": "Category:Ferrari F2012 of Felipe Massa"},
+    ]
+    commons_page["_metafusion_category_context"] = [
+        "Category:Marina Bay Street Circuit",
+        "Category:2012 Singapore Grand Prix",
+    ]
+    candidates = parse_race_background_candidates(
+        commons_named_car, singapore, config
+    )
+    assert candidates[0].match_tier == "historical_circuit_action_race_car"
+    assert "formula-one-event-category" in candidates[0].evidence
+    assert "formula-one-chassis-category" in candidates[0].evidence
+    assert "active-race" in candidates[0].evidence
+
+    exact_static = _race_background_payload(
+        page_id=910,
+        title="File:2027 McLaren Formula 1 race car at Marina Bay.jpg",
+        description="McLaren Formula 1 race car at the Marina Bay Street Circuit",
+    )
+    exact_static_candidates = parse_race_background_candidates(
+        exact_static, singapore, config
+    )
+    ordered = _background_candidate_order(
+        [*exact_static_candidates, *candidates], None, singapore.round_number
+    )
+    assert ordered[0].match_tier == "historical_circuit_action_race_car"
 
     year_neutral_atmosphere = _race_background_payload(
         page_id=904,
@@ -746,7 +790,7 @@ def test_race_background_category_traversal_preserves_circuit_evidence(config):
     candidates = parse_race_background_candidates(
         {"query": {"pages": pages}}, race, config
     )
-    assert candidates[0].match_tier == "historical_circuit_race_car"
+    assert candidates[0].match_tier == "historical_circuit_action_race_car"
     assert "commons-category" in candidates[0].evidence
     assert any("gcmnamespace=6%7C14" in url for url in session.urls)
 
@@ -782,7 +826,7 @@ def test_old_background_candidate_records_are_marked_ineligible(config):
     candidate = parse_race_background_candidates(
         _race_background_payload(), 2026, config
     )[0]
-    assert candidate.eligibility_version == 2
+    assert candidate.eligibility_version == 3
     legacy = candidate.as_dict()
     legacy.pop("eligibility_version")
     assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
@@ -1344,7 +1388,7 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
         for record in json.loads(attribution_path.read_text())["records"]
         if record["scope"] == "show_background"
     )
-    assert background_record["match_tier"] == "exact_event_circuit_race_car"
+    assert background_record["match_tier"] == "exact_event_action_race_car"
     assert background_record["race_key"].startswith("2026:01:albert-park")
     assert background_record["observed_environment"] in {"day", "twilight", "night"}
     assert "Liauzh" in (

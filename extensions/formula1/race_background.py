@@ -23,9 +23,9 @@ from extensions.formula1.commons import (
 )
 
 PROVIDER = "wikimedia-commons-race-background"
-BACKGROUND_CANDIDATE_VERSION = 2
+BACKGROUND_CANDIDATE_VERSION = 3
 CATEGORY_DEPTH_LIMIT = 2
-CATEGORY_FETCH_LIMIT = 16
+CATEGORY_FETCH_LIMIT = 28
 REJECTED_IDENTITIES = {
     "diecast",
     "exhibition",
@@ -36,12 +36,21 @@ REJECTED_IDENTITIES = {
     "lego",
     "medical car",
     "miniature",
+    "mock up",
+    "mock-up",
     "model car",
     "museum",
+    "replica",
+    "road show",
+    "roadshow",
     "safety car",
     "sculpture",
+    "showcar",
+    "showcars",
     "showroom",
+    "shopping mall",
     "simulator",
+    "store display",
     "support race",
     "support races",
     "toy",
@@ -93,6 +102,90 @@ RACE_CAR_SUBJECT_IDENTITIES = {
     "racing car",
     "single seater",
     "single-seater",
+}
+ACTIVE_RACE_IDENTITIES = {
+    "during the race",
+    "final race",
+    "formation lap",
+    "free practice",
+    "on circuit",
+    "on track",
+    "qualifying",
+    "race action",
+    "racing at",
+    "racing for",
+    "sprint race",
+    "starting grid",
+    "track action",
+}
+ACTIVE_RACE_PATTERNS = (
+    re.compile(r"\bfp[123]\b"),
+    re.compile(r"\bracing\b"),
+    re.compile(r"\brace(?:d|s|ing)?\s+(?:at|during|on|through)\b"),
+    re.compile(r"\bturn\s+\d{1,2}\b"),
+)
+STATIC_RACE_CAR_IDENTITIES = {
+    "car launch",
+    "display car",
+    "garage display",
+    "in garage",
+    "in the garage",
+    "parked car",
+    "paddock display",
+    "pre season test",
+    "pre-season test",
+    "promotional display",
+    "show car",
+    "static display",
+    "testing session",
+}
+SCENE_CONTEXT_IDENTITIES = {
+    "barrier",
+    "city lights",
+    "fence",
+    "fencing",
+    "floodlight",
+    "floodlit",
+    "grandstand",
+    "night race",
+    "reflection",
+    "street circuit",
+    "track lights",
+    "trackside",
+    "under lights",
+    "urban circuit",
+    "wet track",
+}
+CINEMATIC_CONTEXT_IDENTITIES = {
+    "barrier",
+    "city lights",
+    "fence",
+    "fencing",
+    "floodlight",
+    "floodlit",
+    "grandstand",
+    "night race",
+    "reflection",
+    "track lights",
+    "trackside",
+    "under lights",
+    "wet track",
+}
+MULTI_CAR_IDENTITIES = {
+    "cars racing",
+    "field of cars",
+    "formula one cars",
+    "multiple cars",
+    "race pack",
+    "racing cars",
+}
+TIGHT_CROP_IDENTITIES = {
+    "car detail",
+    "close up",
+    "close-up",
+    "cockpit detail",
+    "front wing detail",
+    "rear wing detail",
 }
 FORMULA_ONE_IDENTITIES = (
     " formula 1 ",
@@ -280,6 +373,46 @@ def _year_values(identity):
     return {int(value) for value in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", identity)}
 
 
+def _formula_one_chassis_category(value):
+    """Recognize future chassis categories without maintaining a team-name list."""
+    category = str(value or "").removeprefix("Category:")
+    if " of " not in category.casefold():
+        return False
+    prefix = category.split(" of ", 1)[0]
+    tokens = re.findall(r"\b[A-Z][A-Z0-9-]{1,10}\b", prefix)
+    ignored = {"FP1", "FP2", "FP3", "GP", "Q1", "Q2", "Q3"}
+    return any(
+        token not in ignored
+        and any(character.isalpha() for character in token)
+        and any(character.isdigit() for character in token)
+        for token in tokens
+    )
+
+
+def _active_race_match(identity):
+    return any(marker in identity for marker in ACTIVE_RACE_IDENTITIES) or any(
+        pattern.search(identity) for pattern in ACTIVE_RACE_PATTERNS
+    )
+
+
+def _event_category_match(categories, environment):
+    if environment is None:
+        return False
+    for category in categories:
+        identity = _normalize(category)
+        if not (
+            "grand prix" in identity
+            or "formula one" in identity
+            or "formula 1" in identity
+        ):
+            continue
+        if _contains_terms(identity, environment.event_terms) or _contains_terms(
+            identity, environment.circuit_terms
+        ):
+            return True
+    return False
+
+
 def _vehicle_name(title, subject_type="race_car"):
     if subject_type == "circuit_atmosphere":
         return "Circuit atmosphere"
@@ -353,9 +486,10 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         height = int(image_info.get("height") or 0)
         page_id = int(page.get("pageid") or 0)
         title = _plain_text(page.get("title"))
-        categories = " ".join(
+        category_values = [
             str(category.get("title") or "") for category in page.get("categories") or []
-        )
+        ]
+        categories = " ".join(category_values)
         category_context = " ".join(
             str(category) for category in page.get("_metafusion_category_context") or []
         )
@@ -371,7 +505,13 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         author = _metadata_value(metadata, "Artist")
         licence_url = _metadata_value(metadata, "LicenseUrl")
         attribution_required = _normalize(licence).startswith("cc by ")
-        f1_identity = any(marker in subject_words for marker in FORMULA_ONE_IDENTITIES)
+        event_category = _event_category_match(category_values, environment)
+        chassis_category = any(
+            _formula_one_chassis_category(category) for category in category_values
+        )
+        f1_identity = any(marker in subject_words for marker in FORMULA_ONE_IDENTITIES) or (
+            event_category and chassis_category
+        )
         event_match = bool(environment and _contains_terms(identity, environment.event_terms))
         circuit_match = bool(environment and _contains_terms(identity, environment.circuit_terms))
         location_match = bool(
@@ -389,8 +529,26 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         )
         race_car_subject = any(
             marker in subject_identity for marker in RACE_CAR_SUBJECT_IDENTITIES
+        ) or chassis_category
+        race_car = f1_identity and race_car_subject
+        tight_crop = any(
+            marker in subject_identity for marker in TIGHT_CROP_IDENTITIES
         )
-        race_car = f1_identity and race_car_subject and not atmosphere
+        scene_context = any(
+            marker in subject_identity for marker in SCENE_CONTEXT_IDENTITIES
+        )
+        cinematic_context = any(
+            marker in subject_identity for marker in CINEMATIC_CONTEXT_IDENTITIES
+        )
+        active_race = (
+            race_car
+            and (_active_race_match(subject_identity) or cinematic_context)
+            and not tight_crop
+        )
+        multi_car = any(marker in subject_identity for marker in MULTI_CAR_IDENTITIES)
+        static_race_car = any(
+            marker in subject_identity for marker in STATIC_RACE_CAR_IDENTITIES
+        )
         motorsport_identity = f1_identity or any(
             marker in subject_words
             for marker in (
@@ -425,6 +583,8 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 or (location_match and motorsport_identity)
             )
         )
+        if static_race_car:
+            identity_allowed = False
         image_url = str(image_info.get("thumburl") or image_info.get("url") or "")
         rejection = _candidate_rejection_reason(
             mime=mime,
@@ -447,7 +607,13 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 diagnostics.append({"title": title or "unknown", "reason": rejection})
             continue
         subject_type = "race_car" if race_car else "circuit_atmosphere"
-        if race_car and exact_year and (event_match or circuit_match):
+        if active_race and exact_year and (event_match or circuit_match):
+            match_tier, tier_score = "exact_event_action_race_car", 520
+        elif active_race and recent_year:
+            match_tier, tier_score = "recent_circuit_action_race_car", 490
+        elif active_race:
+            match_tier, tier_score = "historical_circuit_action_race_car", 460
+        elif race_car and exact_year and (event_match or circuit_match):
             match_tier, tier_score = "exact_event_circuit_race_car", 400
         elif race_car and recent_year:
             match_tier, tier_score = "recent_circuit_race_car", 320
@@ -469,6 +635,12 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 ("circuit", circuit_match),
                 ("commons-category", category_match),
                 ("race-car-subject", race_car_subject),
+                ("formula-one-event-category", event_category),
+                ("formula-one-chassis-category", chassis_category),
+                ("active-race", active_race),
+                ("scene-context", scene_context),
+                ("multiple-cars", multi_car),
+                ("tight-crop", tight_crop),
                 ("season", exact_year),
                 ("recent-season", recent_year and not exact_year),
                 (
@@ -495,6 +667,9 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         score += 20 if exact_year else max(0, 18 - min(age, 18))
         score += 8 if location_match else 0
         score += 12 if scene_match else 0
+        score += 24 if scene_context else 0
+        score += 16 if multi_car else 0
+        score -= 40 if tight_crop else 0
         candidates.append(
             RaceBackgroundCandidate(
                 page_id,
@@ -576,8 +751,8 @@ def _race_category_seeds(race):
             (
                 f"Category:{year} {event}",
                 f"Category:{circuit}",
-                f"Category:Automobile races at {circuit}",
                 f"Category:{event}",
+                f"Category:Automobile races at {circuit}",
             )
         )
     )
@@ -659,11 +834,13 @@ def _race_queries(race, environment):
     return (
         f'"{event}" {year} "Formula 1" "race car" {scene}'.strip(),
         f'"{circuit}" {year} "Formula 1" "race car" {scene}'.strip(),
-        f'"{circuit}" "Formula One" "race car" {scene}'.strip(),
-        f'"{event}" {year} "Formula One cars" {scene}'.strip(),
-        f'"{circuit}" {year} "Formula One cars" {scene}'.strip(),
-        f'"{event}" {year} "Formula 1" track {scene}'.strip(),
-        f'"{circuit}" {year} "Formula 1" track {scene}'.strip(),
+        f'"{event}" {year} F1 qualifying {scene}'.strip(),
+        f'"{event}" {year} F1 racing {scene}'.strip(),
+        f'"{circuit}" {year} F1 racing {scene}'.strip(),
+        f'"{event}" "Formula One" racing {scene}'.strip(),
+        f'"{circuit}" "Formula One" racing {scene}'.strip(),
+        f'"{event}" F1 "night race"'.strip(),
+        f'"{circuit}" F1 floodlit'.strip(),
         f'"{event}" "Formula 1" track {scene}'.strip(),
         f'"{circuit}" "Formula 1" track {scene}'.strip(),
         f'"{circuit}" motorsport circuit {scene}'.strip(),
@@ -677,7 +854,7 @@ async def search_race_backgrounds(session, state, config, race_or_year, logger):
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
-    key = f"search:v6:{environment.race_key}" if environment else f"search:v4:{year}"
+    key = f"search:v7:{environment.race_key}" if environment else f"search:v5:{year}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
         return parse_race_background_candidates(cached, race_or_year, config), "cache"
@@ -692,13 +869,36 @@ async def search_race_backgrounds(session, state, config, race_or_year, logger):
     )
     try:
         pages: list[dict] = []
-        seen = set()
+        page_indexes: dict[int, int] = {}
+
+        def remember(page):
+            page_id = int(page.get("pageid") or 0)
+            if page_id <= 0:
+                return
+            if page_id not in page_indexes:
+                page_indexes[page_id] = len(pages)
+                pages.append(page)
+                return
+            existing = pages[page_indexes[page_id]]
+            existing_categories = {
+                str(item.get("title") or ""): item
+                for item in existing.get("categories") or []
+            }
+            for item in page.get("categories") or []:
+                existing_categories.setdefault(str(item.get("title") or ""), item)
+            existing["categories"] = list(existing_categories.values())
+            existing["_metafusion_category_context"] = list(
+                dict.fromkeys(
+                    [
+                        *(existing.get("_metafusion_category_context") or []),
+                        *(page.get("_metafusion_category_context") or []),
+                    ]
+                )
+            )
+
         if race is not None:
             for page in await _category_pages(session, config, race):
-                page_id = int(page.get("pageid") or 0)
-                if page_id not in seen:
-                    pages.append(page)
-                    seen.add(page_id)
+                remember(page)
         for query in queries:
             offset = None
             for _page in range(COMMONS_PAGE_LIMIT):
@@ -708,10 +908,7 @@ async def search_race_backgrounds(session, state, config, race_or_year, logger):
                     config["providers"]["retries"],
                 )
                 for page in _candidate_pages(response):
-                    page_id = int(page.get("pageid") or 0)
-                    if page_id not in seen:
-                        pages.append(page)
-                        seen.add(page_id)
+                    remember(page)
                 offset = (response.get("continue") or {}).get("gsroffset")
                 if offset is None:
                     break

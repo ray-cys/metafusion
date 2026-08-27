@@ -1034,6 +1034,9 @@ def _background_candidate_order(candidates, current, trigger_round):
     previous = int(background.get("page_id") or 0)
     ordered: list[RaceBackgroundCandidate] = []
     for tier in (
+        "exact_event_action_race_car",
+        "recent_circuit_action_race_car",
+        "historical_circuit_action_race_car",
         "exact_event_circuit_race_car",
         "recent_circuit_race_car",
         "historical_circuit_race_car",
