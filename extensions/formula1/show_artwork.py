@@ -45,7 +45,8 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 13
+SHOW_RENDERER_VERSION = 14
+SHOW_BACKGROUND_RENDERER_VERSION = 1
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -106,22 +107,35 @@ def _branding_paths(config):
     return paths["logo"], paths["font_regular"], paths["font_bold"]
 
 
-def _show_render_fingerprint(config):
-    payload = {
+def _show_render_fingerprints(config):
+    poster_payload = {
         "renderer": SHOW_RENDERER_VERSION,
         "branding": branding_fingerprint(config),
-        "poster": [
+        "dimensions": [
             config["show_artwork"]["poster_width"],
             config["show_artwork"]["poster_height"],
         ],
-        "background": [
+        "design": "adaptive-concept-a-v2",
+    }
+    background_payload = {
+        "renderer": SHOW_BACKGROUND_RENDERER_VERSION,
+        "dimensions": [
             config["show_artwork"]["background_width"],
             config["show_artwork"]["background_height"],
-            "cinematic-race-aware-background-v1",
-            BACKGROUND_CANDIDATE_VERSION,
         ],
+        "design": "cinematic-race-aware-background-v1",
+        "candidate_version": BACKGROUND_CANDIDATE_VERSION,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    return tuple(
+        hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        for payload in (poster_payload, background_payload)
+    )
+
+
+def _show_render_fingerprint(config):
+    return hashlib.sha256(
+        "|".join(_show_render_fingerprints(config)).encode()
+    ).hexdigest()
 
 
 def _place_logo(image, logo_path, box, fallback_font):
@@ -960,16 +974,24 @@ async def reconcile_episode_round_artwork(
         )
 
 
-def _pair_integrity(current):
-    poster = Path(current["poster_destination"])
-    background = Path(current["background_destination"])
-    if not poster.exists() or not background.exists():
+def _asset_integrity(path, expected_checksum):
+    destination = Path(path)
+    if not destination.exists():
         return "missing"
-    if (
-        _checksum(poster) != current["poster_checksum"]
-        or _checksum(background) != current["background_checksum"]
-    ):
+    if _checksum(destination) != expected_checksum:
         return "manual"
+    return "managed"
+
+
+def _pair_integrity(current):
+    statuses = {
+        _asset_integrity(current["poster_destination"], current["poster_checksum"]),
+        _asset_integrity(current["background_destination"], current["background_checksum"]),
+    }
+    if "manual" in statuses:
+        return "manual"
+    if "missing" in statuses:
+        return "missing"
     return "managed"
 
 
@@ -1480,6 +1502,120 @@ async def _select_background_source(
         raise RuntimeError(reason) from error
 
 
+def _rerender_current_poster(
+    state,
+    config,
+    show,
+    race,
+    path_data,
+    current,
+    candidate,
+    photo_path,
+    image_source,
+    poster_render_fingerprint,
+    background_render_fingerprint,
+    render_fingerprint,
+    *,
+    background_integrity,
+):
+    """Update a managed poster without reacquiring or rewriting its background."""
+    trigger_round = int(race.round_number)
+    source_identity = candidate.source_sha1 or hashlib.sha256(
+        candidate.image_url.encode()
+    ).hexdigest()
+    provider_sources = {"roster": "state", "search": "state", "image": image_source}
+    _save_round_source(
+        state,
+        config,
+        show.year,
+        trigger_round,
+        candidate,
+        provider_sources,
+        photo_path,
+        source_identity,
+    )
+    episode_references, episode_actions = reconcile_episode_posters(
+        state,
+        config,
+        show,
+        race,
+        path_data,
+        photo_path,
+        source_identity,
+    )
+    poster_reference, background_reference = _current_references(current)
+    issue = (
+        "Background artwork is manually modified; it was preserved while the managed "
+        "poster renderer was updated"
+        if background_integrity == "manual"
+        else None
+    )
+    if config["dry_run"]:
+        return ShowArtworkResult(
+            "rerender-planned",
+            trigger_round,
+            poster_reference,
+            background_reference,
+            candidate.constructor_name,
+            issue,
+            episode_references=episode_references,
+            episode_actions=episode_actions,
+            photo_path=str(photo_path),
+            source_identity=source_identity,
+            background_vehicle=_current_background_vehicle(current),
+        )
+
+    poster_destination = Path(current["poster_destination"])
+    poster_checksum = render_show_poster(
+        show, race, path_data, photo_path, config, poster_destination
+    )
+    source = dict(current["source"])
+    source.update(
+        {
+            "candidate": candidate.as_dict(),
+            "provider_sources": provider_sources,
+            "renderer_version": SHOW_RENDERER_VERSION,
+            "poster_render_fingerprint": poster_render_fingerprint,
+            # A missing background fingerprint identifies a legacy paired record.
+            # Its managed background is accepted in place without being rewritten.
+            "background_render_fingerprint": source.get(
+                "background_render_fingerprint", background_render_fingerprint
+            ),
+            "render_fingerprint": render_fingerprint,
+            "photo_cache": str(photo_path),
+        }
+    )
+    checksums = dict(source.get("generated_checksums") or {})
+    checksums["poster"] = poster_checksum
+    checksums.setdefault("background", current["background_checksum"])
+    source["generated_checksums"] = checksums
+    state.save_show_rotation(
+        current["logical_key"],
+        show.year,
+        trigger_round,
+        candidate.constructor_id,
+        source,
+        poster_destination,
+        poster_checksum,
+        current["background_destination"],
+        current["background_checksum"],
+    )
+    write_attribution_reports(state, config)
+    return ShowArtworkResult(
+        "rerendered",
+        trigger_round,
+        poster_reference,
+        background_reference,
+        candidate.constructor_name,
+        issue,
+        episode_references=episode_references,
+        episode_actions=episode_actions,
+        photo_path=str(photo_path),
+        source_identity=source_identity,
+        background_vehicle=_current_background_vehicle(current),
+    )
+
+
 async def run_show_artwork_rotation(
     session,
     state,
@@ -1493,12 +1629,43 @@ async def run_show_artwork_rotation(
     trigger_round = int(race.round_number)
     logical_key = f"show:{show.year}"
     current = state.show_rotation(logical_key)
+    poster_render_fingerprint, background_render_fingerprint = (
+        _show_render_fingerprints(config)
+    )
     render_fingerprint = _show_render_fingerprint(config)
     rerendering = False
+    poster_only_rerendering = False
+    background_integrity = "managed"
     if current is not None:
         integrity = _pair_integrity(current)
+        poster_integrity = _asset_integrity(
+            current["poster_destination"], current["poster_checksum"]
+        )
+        background_integrity = _asset_integrity(
+            current["background_destination"], current["background_checksum"]
+        )
         poster_reference, background_reference = _current_references(current)
-        if integrity == "manual":
+        same_round = trigger_round == int(current["trigger_round"])
+        current_source = current.get("source", {})
+        poster_rerendering = same_round and (
+            current_source.get("poster_render_fingerprint")
+            != poster_render_fingerprint
+        )
+        # Legacy paired records have no independent background fingerprint. Their
+        # already-managed background is adopted in place during poster migration.
+        background_rerendering = same_round and (
+            current_source.get("background_render_fingerprint") is not None
+            and current_source.get("background_render_fingerprint")
+            != background_render_fingerprint
+        )
+        rerendering = poster_rerendering or background_rerendering
+        poster_only_rerendering = (
+            poster_rerendering
+            and not background_rerendering
+            and poster_integrity == "managed"
+            and background_integrity != "missing"
+        )
+        if integrity == "manual" and not poster_only_rerendering:
             episode_references, episode_actions = _existing_episode_outputs(
                 state, config, show, race
             )
@@ -1539,12 +1706,15 @@ async def run_show_artwork_rotation(
                 episode_references=episode_references,
                 episode_actions=episode_actions,
             )
-        if trigger_round == int(current["trigger_round"]) and integrity == "managed":
+        if same_round and integrity == "managed":
             background_value = current.get("source", {}).get("background_candidate") or {}
             expected_race_key = derive_race_environment(race).race_key
-            rerendering = (
-                current.get("source", {}).get("render_fingerprint") != render_fingerprint
-                or background_value.get("race_key") != expected_race_key
+            background_rerendering = background_rerendering or (
+                background_value.get("race_key") != expected_race_key
+            )
+            rerendering = poster_rerendering or background_rerendering
+            poster_only_rerendering = (
+                poster_rerendering and not background_rerendering
             )
             if not rerendering:
                 candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
@@ -1607,6 +1777,22 @@ async def run_show_artwork_rotation(
         if restoring or rerendering:
             candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
             photo_path, image_source = await acquire_candidate_image(session, config, candidate)
+            if poster_only_rerendering:
+                return _rerender_current_poster(
+                    state,
+                    config,
+                    show,
+                    race,
+                    path_data,
+                    current,
+                    candidate,
+                    photo_path,
+                    image_source,
+                    poster_render_fingerprint,
+                    background_render_fingerprint,
+                    render_fingerprint,
+                    background_integrity=background_integrity,
+                )
             provider_sources = {"roster": "state", "search": "state", "image": image_source}
             background_value = current["source"].get("background_candidate")
             saved_background = (
@@ -1694,7 +1880,11 @@ async def run_show_artwork_rotation(
             poster_reference,
             background_reference,
             current.get("constructor_id") if current else None,
-            f"No safe Wikimedia Commons race-car/background pair: {error}",
+            (
+                f"No safe cached/current team-car source for poster rerender: {error}"
+                if poster_only_rerendering
+                else f"No safe Wikimedia Commons race-car/background pair: {error}"
+            ),
             episode_references=episode_references,
             episode_actions=episode_actions,
             background_vehicle=_current_background_vehicle(current),
@@ -1764,6 +1954,8 @@ async def run_show_artwork_rotation(
         "poster_reference": poster_reference,
         "background_reference": background_reference,
         "renderer_version": SHOW_RENDERER_VERSION,
+        "poster_render_fingerprint": poster_render_fingerprint,
+        "background_render_fingerprint": background_render_fingerprint,
         "render_fingerprint": render_fingerprint,
         "photo_cache": str(photo_path),
         "generated_checksums": {

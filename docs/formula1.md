@@ -629,6 +629,16 @@ Because those two YAML fields are the application mechanism, disabling
 `show_artwork.enabled` stops future rotation while leaving the last valid YAML
 references and artwork intact.
 
+New race-week rotations remain atomic, but maintenance of an existing round uses
+independent poster and background renderer fingerprints. A poster-layout upgrade
+reuses the already validated team-car cache and rewrites only a checksum-matching
+managed poster; it does not reacquire, rewrite, or otherwise depend on the current
+background. A manually modified background is preserved and reported without
+blocking that managed poster upgrade. Legacy paired state is adopted into this
+split-fingerprint model on its first successful poster maintenance run. Missing
+pair members still use the normal repair path so an incomplete active pair is not
+silently accepted.
+
 The team roster is discovered for the detected championship year rather than
 being hard-coded. The next constructor is chosen deterministically after the
 previous one, so new, renamed, or departing constructors can be handled without

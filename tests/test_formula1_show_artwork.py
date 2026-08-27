@@ -1432,7 +1432,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 13
+    assert SHOW_RENDERER_VERSION == 14
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -2061,6 +2061,58 @@ def test_missing_only_episode_backfill_preserves_existing_and_creates_missing(
 
 
 def test_same_round_renderer_change_rerenders_without_team_rotation(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    first = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("first")
+        )
+    )
+    current = state.show_rotation("show:2026")
+    background = Path(current["background_destination"])
+    background_content = background.read_bytes()
+    background_checksum = current["background_checksum"]
+    source = current["source"]
+    source.pop("poster_render_fingerprint")
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+
+    async def background_must_not_be_acquired(*_args, **_kwargs):
+        raise AssertionError("poster-only maintenance acquired a background")
+
+    monkeypatch.setattr(
+        show_artwork_module, "_acquire_background_image", background_must_not_be_acquired
+    )
+    config["dry_run"] = True
+    planned = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("plan")
+        )
+    )
+    assert planned.action == "rerender-planned"
+    config["dry_run"] = False
+    rerendered = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
+        )
+    )
+    assert first.constructor == rerendered.constructor
+    assert rerendered.action == "rerendered"
+    assert len(state.show_rotation_history()) == 1
+    current = state.show_rotation("show:2026")
+    assert current["source"]["poster_render_fingerprint"]
+    assert current["source"]["background_render_fingerprint"]
+    assert current["background_checksum"] == background_checksum
+    assert background.read_bytes() == background_content
+    state.close()
+
+
+def test_background_renderer_change_remains_an_independent_full_rerender(
     config, show, race
 ):
     state = Formula1State(config["paths"]["database"])
@@ -2072,7 +2124,7 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     )
     current = state.show_rotation("show:2026")
     source = current["source"]
-    source.pop("render_fingerprint")
+    source["background_render_fingerprint"] = "older-background-renderer"
     source["background_candidate"]["eligibility_version"] = 3
     source["background_candidate"]["subject_type"] = "circuit_atmosphere"
     source["background_candidate"]["match_tier"] = "exact_event_atmosphere"
@@ -2081,20 +2133,52 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
         (json.dumps(source, sort_keys=True),),
     )
     state.connection.commit()
+
     rerendered = asyncio.run(
         run_show_artwork_rotation(
             session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
         )
     )
-    assert first.constructor == rerendered.constructor
     assert rerendered.action == "rerendered"
-    assert len(state.show_rotation_history()) == 1
+    assert rerendered.constructor == first.constructor
     current = state.show_rotation("show:2026")
     assert current["source"]["background_candidate"]["eligibility_version"] == 6
     assert (
         current["source"]["background_candidate"]["match_tier"]
         == "exact_event_action_race_car"
     )
+    state.close()
+
+
+def test_manual_background_does_not_block_managed_poster_renderer_update(
+    config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("first")
+        )
+    )
+    current = state.show_rotation("show:2026")
+    background = Path(current["background_destination"])
+    background.write_bytes(b"manual background")
+    source = current["source"]
+    source.pop("poster_render_fingerprint")
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+
+    result = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
+        )
+    )
+    assert result.action == "rerendered"
+    assert "manually modified" in result.issue
+    assert background.read_bytes() == b"manual background"
     state.close()
 
 
