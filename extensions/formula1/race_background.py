@@ -324,8 +324,6 @@ def parse_race_background_candidates(payload, race_or_year, config):
             or (attribution_required and not licence_url.startswith("https://"))
         ):
             continue
-        if atmosphere and race is None:
-            continue
         image_url = str(image_info.get("thumburl") or image_info.get("url") or "")
         if not image_url.startswith("https://upload.wikimedia.org/"):
             continue
