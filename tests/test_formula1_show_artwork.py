@@ -396,7 +396,7 @@ def test_race_background_identity_licence_and_season_filtering(config):
         description="Motorsport, Formel 1, at the 2026 Dutch Grand Prix",
     )
     localized_formula["query"]["pages"][0]["categories"] = [
-        {"title": "Category:2026 Dutch Grand Prix"}
+        {"title": "Category:Formula One cars at the 2026 Dutch Grand Prix"}
     ]
     assert parse_race_background_candidates(localized_formula, 2026, config)
     assert parse_race_background_candidates(
@@ -738,15 +738,54 @@ def test_race_background_category_traversal_preserves_circuit_evidence(config):
     session = CategorySession()
     pages = asyncio.run(_category_pages(session, config, race))
     assert len(pages) == 1
-    categories = {item["title"] for item in pages[0]["categories"]}
-    assert "Category:Marina Bay Street Circuit" in categories
-    assert "Category:2014 at Marina Bay Street Circuit" in categories
+    assert pages[0]["categories"] == []
+    assert pages[0]["_metafusion_category_context"] == [
+        "Category:Marina Bay Street Circuit",
+        "Category:2014 at Marina Bay Street Circuit",
+    ]
     candidates = parse_race_background_candidates(
         {"query": {"pages": pages}}, race, config
     )
     assert candidates[0].match_tier == "historical_circuit_race_car"
     assert "commons-category" in candidates[0].evidence
     assert any("gcmnamespace=6%7C14" in url for url in session.urls)
+
+
+def test_category_ancestry_does_not_turn_unrelated_people_into_atmosphere(config):
+    race = RaceData(
+        2027, 12, "Dutch Grand Prix", "zandvoort",
+        "Circuit Zandvoort", "Zandvoort", "Netherlands",
+        "2027-08-29", None, 52.3888, 4.5409,
+    )
+    payload = _race_background_payload(
+        page_id=1501,
+        title="File:Cyclist wearing Pelforth Sauvage Lejeune jersey.jpg",
+        description="A person at a cycling event in Zandvoort",
+    )
+    page = payload["query"]["pages"][0]
+    page["categories"] = [{"title": "Category:Cycling in the Netherlands"}]
+    page["_metafusion_category_context"] = [
+        "Category:Circuit Zandvoort",
+        "Category:Events at Circuit Zandvoort",
+    ]
+    diagnostics = []
+    assert parse_race_background_candidates(payload, race, config, diagnostics) == []
+    assert diagnostics == [
+        {
+            "title": "File:Cyclist wearing Pelforth Sauvage Lejeune jersey.jpg",
+            "reason": "event-circuit-location-mismatch",
+        }
+    ]
+
+
+def test_old_background_candidate_records_are_marked_ineligible(config):
+    candidate = parse_race_background_candidates(
+        _race_background_payload(), 2026, config
+    )[0]
+    assert candidate.eligibility_version == 2
+    legacy = candidate.as_dict()
+    legacy.pop("eligibility_version")
+    assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
 
 
 def test_race_background_diagnostics_explain_rejections(config):
@@ -772,6 +811,10 @@ def test_race_background_diagnostics_explain_rejections(config):
         ({"page_id": 0}, "missing-page-identity"),
         ({"width": 1600, "height": 1600}, "incompatible-aspect-ratio"),
         ({"provider_identity": False}, "not-formula-one-or-motorsport-atmosphere"),
+        (
+            {"identity": "formula 1 circuit atmosphere driver portrait"},
+            "rejected-atmosphere-subject",
+        ),
         ({"author": ""}, "missing-required-author"),
         ({"licence_url": "http://example.test/licence"}, "missing-required-licence-url"),
     ),
@@ -1099,7 +1142,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 9
+    assert SHOW_RENDERER_VERSION == 10
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(

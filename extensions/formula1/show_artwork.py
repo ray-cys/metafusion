@@ -30,6 +30,7 @@ from extensions.formula1.commons import (
     search_commons,
 )
 from extensions.formula1.race_background import (
+    BACKGROUND_CANDIDATE_VERSION,
     RaceBackgroundCandidate,
     classify_image_environment,
     derive_race_environment,
@@ -40,7 +41,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 9
+SHOW_RENDERER_VERSION = 10
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -1251,6 +1252,7 @@ async def run_show_artwork_rotation(
             )
             if (
                 saved_background
+                and saved_background.eligibility_version == BACKGROUND_CANDIDATE_VERSION
                 and saved_background.race_key == derive_race_environment(race).race_key
                 and saved_background.subject_type in {"race_car", "circuit_atmosphere"}
             ):

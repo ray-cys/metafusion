@@ -23,6 +23,7 @@ from extensions.formula1.commons import (
 )
 
 PROVIDER = "wikimedia-commons-race-background"
+BACKGROUND_CANDIDATE_VERSION = 2
 CATEGORY_DEPTH_LIMIT = 2
 CATEGORY_FETCH_LIMIT = 16
 REJECTED_IDENTITIES = {
@@ -47,10 +48,20 @@ REJECTED_IDENTITIES = {
 }
 ATMOSPHERE_REJECTED_IDENTITIES = {
     "award ceremony",
+    "bicycle",
+    "cycling",
+    "cyclist",
     "crowd only",
     "driver portrait",
+    "interview",
+    "journalist",
+    "parade",
+    "person portrait",
     "podium",
     "press conference",
+    "presenter",
+    "spectator portrait",
+    "tour de france",
     "trophy",
 }
 ATMOSPHERE_SUBJECT_IDENTITIES = {
@@ -59,13 +70,29 @@ ATMOSPHERE_SUBJECT_IDENTITIES = {
     "circuit atmosphere",
     "circuit park",
     "circuit view",
+    "floodlight",
     "grandstand",
+    "night view",
+    "pit lane",
     "panorama",
     "race track",
     "racetrack",
+    "starting grid",
+    "trackside",
     "track atmosphere",
     "track view",
     "venue view",
+}
+RACE_CAR_SUBJECT_IDENTITIES = {
+    "f1 car",
+    "formula 1 car",
+    "formula 1 racing car",
+    "formula one car",
+    "formula one racing car",
+    "race car",
+    "racing car",
+    "single seater",
+    "single-seater",
 }
 FORMULA_ONE_IDENTITIES = (
     " formula 1 ",
@@ -106,6 +133,7 @@ class RaceBackgroundCandidate:
     environment: str = "unknown"
     race_key: str = ""
     evidence: tuple[str, ...] = ()
+    eligibility_version: int = BACKGROUND_CANDIDATE_VERSION
 
     def as_dict(self):
         return asdict(self)
@@ -114,6 +142,7 @@ class RaceBackgroundCandidate:
     def from_dict(cls, value):
         payload = dict(value)
         payload["evidence"] = tuple(payload.get("evidence") or ())
+        payload.setdefault("eligibility_version", 1)
         return cls(**payload)
 
 
@@ -327,17 +356,22 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         categories = " ".join(
             str(category.get("title") or "") for category in page.get("categories") or []
         )
+        category_context = " ".join(
+            str(category) for category in page.get("_metafusion_category_context") or []
+        )
         description = _metadata_value(metadata, "ImageDescription")
-        identity = _normalize(f"{title} {description} {categories}")
+        subject_identity = _normalize(f"{title} {description} {categories}")
+        identity = _normalize(f"{subject_identity} {category_context}")
         category_identity = _normalize(categories)
-        words = f" {identity} "
+        location_identity = _normalize(f"{category_identity} {category_context}")
+        subject_words = f" {subject_identity} "
         licence = _metadata_value(metadata, "LicenseShortName") or _metadata_value(
             metadata, "UsageTerms"
         )
         author = _metadata_value(metadata, "Artist")
         licence_url = _metadata_value(metadata, "LicenseUrl")
         attribution_required = _normalize(licence).startswith("cc by ")
-        f1_identity = any(marker in words for marker in FORMULA_ONE_IDENTITIES)
+        f1_identity = any(marker in subject_words for marker in FORMULA_ONE_IDENTITIES)
         event_match = bool(environment and _contains_terms(identity, environment.event_terms))
         circuit_match = bool(environment and _contains_terms(identity, environment.circuit_terms))
         location_match = bool(
@@ -346,16 +380,19 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
         category_match = bool(
             environment
             and (
-                _contains_terms(category_identity, environment.event_terms)
-                or _contains_terms(category_identity, environment.circuit_terms)
+                _contains_terms(location_identity, environment.event_terms)
+                or _contains_terms(location_identity, environment.circuit_terms)
             )
         )
-        atmosphere = any(marker in identity for marker in ATMOSPHERE_SUBJECT_IDENTITIES) or (
-            not f1_identity and circuit_match
+        atmosphere = any(
+            marker in subject_identity for marker in ATMOSPHERE_SUBJECT_IDENTITIES
         )
-        race_car = f1_identity and not atmosphere
+        race_car_subject = any(
+            marker in subject_identity for marker in RACE_CAR_SUBJECT_IDENTITIES
+        )
+        race_car = f1_identity and race_car_subject and not atmosphere
         motorsport_identity = f1_identity or any(
-            marker in words
+            marker in subject_words
             for marker in (
                 " grand prix ",
                 " motorsport ",
@@ -375,10 +412,10 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 exact_year and (event_match or circuit_match)
             ) or (circuit_match and not future_year)
         else:
-            identity_allowed = (
-                exact_year and (event_match or circuit_match)
-            ) or (circuit_match and not future_year) or (
-                atmosphere and location_match and motorsport_identity and not future_year
+            identity_allowed = atmosphere and (
+                (exact_year and (event_match or circuit_match))
+                or (circuit_match and not future_year)
+                or (location_match and motorsport_identity and not future_year)
             )
         provider_identity = f1_identity or (
             race is not None
@@ -396,7 +433,7 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
             height=height,
             identity_allowed=identity_allowed,
             provider_identity=provider_identity,
-            identity=identity,
+            identity=subject_identity,
             licence=licence,
             attribution_required=attribution_required,
             author=author,
@@ -431,6 +468,7 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 ("event", event_match),
                 ("circuit", circuit_match),
                 ("commons-category", category_match),
+                ("race-car-subject", race_car_subject),
                 ("season", exact_year),
                 ("recent-season", recent_year and not exact_year),
                 (
@@ -566,13 +604,8 @@ def _category_priority(title, target_year):
 
 def _page_with_category_context(page, categories):
     value = dict(page)
-    existing = [dict(item) for item in page.get("categories") or []]
-    titles = {str(item.get("title") or "") for item in existing}
-    for category in categories:
-        if category not in titles:
-            existing.append({"title": category})
-            titles.add(category)
-    value["categories"] = existing
+    value["categories"] = [dict(item) for item in page.get("categories") or []]
+    value["_metafusion_category_context"] = list(dict.fromkeys(categories))
     return value
 
 
@@ -644,7 +677,7 @@ async def search_race_backgrounds(session, state, config, race_or_year, logger):
     race = race_or_year if hasattr(race_or_year, "round_number") else None
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
-    key = f"search:v5:{environment.race_key}" if environment else f"search:v3:{year}"
+    key = f"search:v6:{environment.race_key}" if environment else f"search:v4:{year}"
     cached = state.cache_get(PROVIDER, key)
     if cached is not None:
         return parse_race_background_candidates(cached, race_or_year, config), "cache"

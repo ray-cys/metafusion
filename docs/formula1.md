@@ -708,7 +708,11 @@ If no qualifying reusable image has been published yet, the previous safe pair
 is preserved and the unresolved round retries after cache expiry.
 
 Show backgrounds use a separate race-aware Commons adapter and cache. Discovery
-runs bounded text queries plus a two-level traversal of exact event, circuit,
+uses event/category ancestry only to establish the circuit or location. The image's
+own title, description, and native Commons categories must independently identify
+a Formula 1 race car or a track/venue scene; unrelated people, cycling, ceremonies,
+and other non-motorsport subjects found beneath a circuit category are rejected.
+It runs bounded text queries plus a two-level traversal of exact event, circuit,
 automobile-race, and Grand Prix Commons categories. Category ancestry is retained
 as location evidence even when an individual filename is sparse. Discovery
 prioritizes:
