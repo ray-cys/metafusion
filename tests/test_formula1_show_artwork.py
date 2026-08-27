@@ -11,6 +11,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from extensions.formula1 import commons as commons_module
+from extensions.formula1 import race_background as race_background_module
 from extensions.formula1 import show_artwork as show_artwork_module
 from extensions.formula1.commons import (
     CommonsCandidate,
@@ -35,6 +36,9 @@ from extensions.formula1.metadata import build_show_entry
 from extensions.formula1.provider import RaceData
 from extensions.formula1.race_background import (
     RaceBackgroundCandidate,
+    _candidate_rejection_reason,
+    _category_pages,
+    _category_priority,
     _race_background_category_url,
     _race_background_search_url,
     _race_queries,
@@ -387,6 +391,14 @@ def test_race_background_identity_licence_and_season_filtering(config):
         {"title": "Category:2026 Japanese Grand Prix"},
     ]
     assert parse_race_background_candidates(plural, 2026, config)
+    localized_formula = _race_background_payload(
+        title="File:2026 Motorsport Formel 1 Großer Preis der Niederlande.jpg",
+        description="Motorsport, Formel 1, at the 2026 Dutch Grand Prix",
+    )
+    localized_formula["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2026 Dutch Grand Prix"}
+    ]
+    assert parse_race_background_candidates(localized_formula, 2026, config)
     assert parse_race_background_candidates(
         _race_background_payload(licence="CC BY-SA 4.0"), 2026, config
     ) == []
@@ -458,7 +470,7 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
         return [], "test"
 
     monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
-    with pytest.raises(RuntimeError, match="no licensed current/recent circuit-matched"):
+    with pytest.raises(RuntimeError, match="historical exact-circuit"):
         asyncio.run(
             _select_background_source(
                 None, state, config, RaceData(
@@ -587,6 +599,18 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     assert "commons-category" in candidates[0].evidence
     assert "historical-or-year-neutral-circuit" in candidates[0].evidence
 
+    historical_car = _race_background_payload(
+        page_id=907,
+        title="File:2014 McLaren Formula 1 race car at Marina Bay.jpg",
+        description="McLaren Formula 1 race car at the Marina Bay Street Circuit",
+    )
+    historical_car["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Marina Bay Street Circuit"}
+    ]
+    candidates = parse_race_background_candidates(historical_car, singapore, config)
+    assert candidates[0].match_tier == "historical_circuit_race_car"
+    assert "historical-exact-circuit-race-car" in candidates[0].evidence
+
     year_neutral_atmosphere = _race_background_payload(
         page_id=904,
         title="File:Marina Bay Street Circuit floodlights.jpg",
@@ -608,7 +632,10 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     event_only_historical["query"]["pages"][0]["categories"] = [
         {"title": "Category:2018 Singapore Grand Prix"}
     ]
-    assert parse_race_background_candidates(event_only_historical, singapore, config) == []
+    candidates = parse_race_background_candidates(
+        event_only_historical, singapore, config
+    )
+    assert candidates[0].match_tier == "exact_locality_motorsport_atmosphere"
 
     future_atmosphere = _race_background_payload(
         page_id=906,
@@ -616,6 +643,20 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
         description="Formula 1 floodlit atmosphere at Marina Bay Street Circuit",
     )
     assert parse_race_background_candidates(future_atmosphere, singapore, config) == []
+
+    locality_atmosphere = _race_background_payload(
+        page_id=908,
+        title="File:Singapore motorsport atmosphere at night.jpg",
+        description="Floodlit motorsport atmosphere at Marina Bay, Singapore",
+    )
+    locality_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Motorsport in Singapore"}
+    ]
+    candidates = parse_race_background_candidates(
+        locality_atmosphere, singapore, config
+    )
+    assert candidates[0].match_tier == "exact_locality_motorsport_atmosphere"
+    assert "locality-motorsport-fallback" in candidates[0].evidence
 
     queries = _race_queries(singapore, environment)
     assert any(
@@ -648,6 +689,157 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     assert not environment_compatible("night", "day")
     assert environment_compatible("day", "twilight")
     assert not environment_compatible("day", "night")
+
+
+def test_race_background_category_traversal_preserves_circuit_evidence(config):
+    race = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+        circuit_profile="A floodlit urban street circuit beside the harbour.",
+        race_time_utc="12:00:00Z",
+    )
+
+    class CategorySession:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            parameters = parse_qs(urlparse(url).query)
+            if parameters.get("generator") != ["categorymembers"]:
+                return Response(payload={"query": {"pages": []}})
+            category = parameters.get("gcmtitle", [""])[0]
+            if category == "Category:Marina Bay Street Circuit":
+                return Response(
+                    payload={
+                        "query": {
+                            "pages": [
+                                {
+                                    "pageid": 1401,
+                                    "ns": 14,
+                                    "title": "Category:2014 at Marina Bay Street Circuit",
+                                }
+                            ]
+                        }
+                    }
+                )
+            if category == "Category:2014 at Marina Bay Street Circuit":
+                payload = _race_background_payload(
+                    page_id=1402,
+                    title="File:2014 Formula 1 race car on track.jpg",
+                    description="Formula 1 race car during a night race",
+                )
+                payload["query"]["pages"][0]["ns"] = 6
+                payload["query"]["pages"][0]["categories"] = []
+                return Response(payload=payload)
+            return Response(payload={"query": {"pages": []}})
+
+    session = CategorySession()
+    pages = asyncio.run(_category_pages(session, config, race))
+    assert len(pages) == 1
+    categories = {item["title"] for item in pages[0]["categories"]}
+    assert "Category:Marina Bay Street Circuit" in categories
+    assert "Category:2014 at Marina Bay Street Circuit" in categories
+    candidates = parse_race_background_candidates(
+        {"query": {"pages": pages}}, race, config
+    )
+    assert candidates[0].match_tier == "historical_circuit_race_car"
+    assert "commons-category" in candidates[0].evidence
+    assert any("gcmnamespace=6%7C14" in url for url in session.urls)
+
+
+def test_race_background_diagnostics_explain_rejections(config):
+    diagnostics = []
+    assert parse_race_background_candidates(
+        _race_background_payload(licence="CC BY-SA 4.0"),
+        2026,
+        config,
+        diagnostics,
+    ) == []
+    assert diagnostics == [
+        {
+            "title": "File:2026 McLaren Formula 1 race car 901.jpg",
+            "reason": "incompatible-or-unknown-licence",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    (
+        ({"mime": "text/html"}, "unsupported-media-type"),
+        ({"page_id": 0}, "missing-page-identity"),
+        ({"width": 1600, "height": 1600}, "incompatible-aspect-ratio"),
+        ({"provider_identity": False}, "not-formula-one-or-motorsport-atmosphere"),
+        ({"author": ""}, "missing-required-author"),
+        ({"licence_url": "http://example.test/licence"}, "missing-required-licence-url"),
+    ),
+)
+def test_race_background_rejection_reason_contract(overrides, expected):
+    values = {
+        "mime": "image/jpeg",
+        "page_id": 1,
+        "width": 3200,
+        "height": 1800,
+        "identity_allowed": True,
+        "provider_identity": True,
+        "identity": "formula 1 race car",
+        "licence": "CC BY 4.0",
+        "attribution_required": True,
+        "author": "Photographer",
+        "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+        "image_url": "https://upload.wikimedia.org/example.jpg",
+        "minimum_width": 1600,
+        "minimum_height": 900,
+    }
+    values.update(overrides)
+    assert _candidate_rejection_reason(**values) == expected
+
+
+def test_race_background_category_priority_and_rejected_seed(config, monkeypatch):
+    assert _category_priority("Category:2027 Singapore Grand Prix", 2027) == 0
+    assert _category_priority("Category:2028 Singapore Grand Prix", 2027) == 101
+    assert _category_priority("Category:Singapore Grand Prix", 2027) == 60
+    monkeypatch.setattr(
+        race_background_module,
+        "_race_category_seeds",
+        lambda _race: ("Category:Formula 2",),
+    )
+    session = CommonsSession(candidates=False)
+    race = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+    )
+    assert asyncio.run(_category_pages(session, config, race)) == []
+    assert session.urls == []
+
+
+def test_race_background_search_logs_rejection_reasons(config, caplog):
+    class RejectedSession(CommonsSession):
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            return Response(
+                payload=_race_background_payload(licence="CC BY-SA 4.0")
+            )
+
+    state = Formula1State(config["paths"]["database"])
+    with caplog.at_level(logging.DEBUG):
+        candidates, source = asyncio.run(
+            search_race_backgrounds(
+                RejectedSession(),
+                state,
+                config,
+                2026,
+                logging.getLogger("rejection-reasons"),
+            )
+        )
+    assert candidates == []
+    assert source == "wikimedia-commons-race-background"
+    assert "incompatible-or-unknown-licence=1" in caplog.text
+    assert "Wikimedia race-background rejected" in caplog.text
+    state.close()
     assert _saliency_focal_point(Image.new("RGB", (1600, 900), (0, 0, 0))) == (
         0.62,
         0.5,

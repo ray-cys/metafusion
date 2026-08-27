@@ -113,7 +113,7 @@ explicitly says otherwise.
 | `verification.perceptual_distance` | `8` | Maximum perceptual-hash distance accepted for Plex artwork transcodes. |
 | `providers.*_url` | packaged HTTPS URLs | Jolpica, Formula1.com, circuit SVG/manifest, and Commons endpoints. These are adapter contracts, not normal tuning controls. |
 | `providers.cache_hours` | `24` | Validity of schedule, facts, profile, and circuit-provider cache entries. |
-| `providers.commons_cache_hours` | `24` | Validity of team-car and race-background Commons discovery results. |
+| `providers.commons_cache_hours` | `24` | Validity of team-car and race-car/background Commons discovery results. |
 | `providers.retries` | `3` | Bounded provider attempts, from 1 through 5. |
 | `cleanup.enabled` | `false` | Enables reconciliation only for extension-owned state and byte-identical managed artwork. Review a dry run first. |
 | `cleanup.confirmation_scans` | `2` | Consecutive missing inventories required before cleanup eligibility. |
@@ -546,9 +546,11 @@ extension ownership record is treated as manual and is not adopted or overwritte
 from two independently validated, licensed sources. The portrait and episode
 cards rotate current-season Formula 1 team cars. The show background independently
 prefers Formula 1 race-car action from the exact event and circuit, followed by a
-recent Formula 1 race car at that exact circuit, then an exact-circuit atmospheric
-track photograph. Atmospheric sources may be current, historical, or year-neutral
-when Commons metadata or category membership establishes the exact venue. Safety
+recent and then any older Formula 1 race car at that exact circuit, followed by an
+exact-circuit atmospheric track photograph. Atmospheric sources may be current,
+historical, or year-neutral when Commons metadata or category membership establishes
+the exact venue. An exact-locality motorsport atmosphere is used only as the final
+fallback. Safety
 cars are not selected. Medical cars, display vehicles, models, and unrelated
 event/series photographs are also rejected. This is separate from the round/season
 posters described above and also enables the episode cards described above.
@@ -611,10 +613,12 @@ If either required photograph is not safely available, MetaFusion keeps the
 previous valid pair and retries after the provider cache expires. It will not use
 an unrelated circuit, a safety or medical car, a scene whose
 pixels conflict with the expected day/night environment, or a photograph with an
-incompatible licence merely to force a rotation. A recent-year Formula 1 race-car
-image is eligible only when it matches the exact circuit. An atmospheric fallback may
+incompatible licence merely to force a rotation. A historical Formula 1 race-car
+image remains eligible only when it matches the exact circuit; age affects ranking
+rather than acting as a hard cutoff. An atmospheric fallback may
 omit the current year or come from an earlier season only when it matches the exact
-circuit; an older event-name-only match and any future-dated source are rejected.
+circuit. If none exists, a motorsport scene must match the exact locality/country.
+An older event-name-only match and any future-dated source are rejected.
 This workflow
 requires no annual input, but a newly revealed car may temporarily retain the
 previous pair until both reusable sources are available.
@@ -704,18 +708,24 @@ If no qualifying reusable image has been published yet, the previous safe pair
 is preserved and the unresolved round retries after cache expiry.
 
 Show backgrounds use a separate race-aware Commons adapter and cache. Discovery
-runs bounded queries derived from the current schedule identity and prioritizes:
+runs bounded text queries plus a two-level traversal of exact event, circuit,
+automobile-race, and Grand Prix Commons categories. Category ancestry is retained
+as location evidence even when an individual filename is sparse. Discovery
+prioritizes:
 
 1. exact-event/circuit, current-season Formula 1 race car;
-2. recent exact-circuit Formula 1 race car; then
-3. current exact-event/circuit track atmosphere; then
-4. historical or year-neutral exact-circuit track atmosphere.
+2. recent exact-circuit Formula 1 race car;
+3. any-year exact-circuit Formula 1 race car, with newer files ranked higher;
+4. current exact-event/circuit track atmosphere;
+5. historical or year-neutral exact-circuit track atmosphere; then
+6. exact-locality motorsport atmosphere.
 
-Race-car candidates require a current year or a recent year plus exact-circuit
-evidence. They are not tied to a hard-coded constructor, so any safely licensed
+Historical race-car candidates require exact-circuit evidence. They are not tied
+to a hard-coded constructor, so any safely licensed
 Formula 1 car from the correct event/circuit may be selected. Atmospheric candidates
-may be older or omit a year, but only with exact
-circuit evidence from the file metadata or Commons categories. The adapter then
+may be older or omit a year with exact-circuit evidence from the file metadata or
+Commons categories. The final locality tier still requires motorsport identity and
+an exact locality/country match. The adapter then
 applies licence, dimensions, aspect-ratio, decoded-pixel, visual-content,
 sharpness, environment-luminance, and perceptual-duplicate checks. Safety and medical cars,
 toys, models, sculptures, simulators, museum/showroom displays, unrelated circuits
@@ -723,7 +733,9 @@ or racing series, portrait media, incompatible licences, corrupt files, and
 undersized images are rejected. TXT and JSON attribution records include subject
 type, match tier, expected environment, race key, and matching evidence. There is
 no API key, annual vehicle list, circuit-specific rule, or user configuration to
-maintain.
+maintain. Candidate rejection totals and bounded per-file reasons are written at
+DEBUG level. Public Domain, CC0, and attribution-only CC BY remain the accepted
+licences; relaxing the date never relaxes licence safety.
 
 Race identity matching is schedule-derived and explainable. It considers the
 official race name, country and demonym, locality, circuit name, and circuit ID,

@@ -1035,8 +1035,10 @@ def _background_candidate_order(candidates, current, trigger_round):
     for tier in (
         "exact_event_circuit_race_car",
         "recent_circuit_race_car",
+        "historical_circuit_race_car",
         "exact_event_atmosphere",
         "exact_circuit_atmosphere",
+        "exact_locality_motorsport_atmosphere",
     ):
         group = [candidate for candidate in candidates if candidate.match_tier == tier]
         if not group:
@@ -1059,9 +1061,8 @@ async def _select_background_source(
     )
     if not candidates:
         raise RuntimeError(
-            "no licensed current/recent circuit-matched Formula 1 race-car or "
-            "exact-circuit atmosphere "
-            "candidate matched"
+            "no safely licensed exact-event, historical exact-circuit Formula 1 "
+            "race-car, exact-circuit atmosphere, or locality motorsport candidate matched"
         )
     current_source = (current or {}).get("source", {})
     previous_hash = current_source.get("background_perceptual_hash")
@@ -1322,7 +1323,7 @@ async def run_show_artwork_rotation(
             poster_reference,
             background_reference,
             current.get("constructor_id") if current else None,
-            f"No safe Wikimedia Commons team-car/race-background pair: {error}",
+            f"No safe Wikimedia Commons race-car/background pair: {error}",
             episode_references=episode_references,
             episode_actions=episode_actions,
             background_vehicle=_current_background_vehicle(current),
