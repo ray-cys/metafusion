@@ -561,8 +561,12 @@ event/series photographs are also rejected. This is separate from the round/seas
 posters described above and also enables the episode cards described above.
 
 The portrait uses a stable black, charcoal, white, and red technical frame, with
-the complete landscape photograph fitted in a highlight-controlled horizontal
-band so the car is not stretched or cut off. The background deliberately uses a
+the complete landscape photograph fitted in an adaptively exposed horizontal
+band so the car is not stretched or cut off. The renderer measures each source's
+luminance, lifts dark team cars within a bounded TV-safe range, retains team
+colour, and rolls off bright signage and trackside highlights. Its restrained
+shade and vignette keep the car prominent without washing out the photograph.
+The background deliberately uses a
 different treatment: its race photograph is cropped to 16:9 around a detected
 visual focal point, gently graded, shadow-lifted, highlight-compressed, and covered
 only by a subtle left readability gradient and vignette. It contains no F1 logo,

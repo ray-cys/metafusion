@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat
 
 from extensions.formula1.artwork import (
     _fit,
@@ -41,7 +41,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 10
+SHOW_RENDERER_VERSION = 11
 EPISODE_RENDERER_VERSION = 1
 
 @dataclass(frozen=True)
@@ -260,6 +260,51 @@ def _grade_photo(photo, size, *, contain=False, centering=(0.5, 0.5), strong=Fal
     return Image.composite(black, image, vignette)
 
 
+def _poster_showcase_grade(photo, size):
+    """Lift a team car for television while retaining bright-scene detail."""
+    source = photo.convert("RGB")
+    sample = source.copy()
+    sample.thumbnail((160, 90), Image.Resampling.BILINEAR)
+    median_luminance = float(ImageStat.Stat(sample.convert("L")).median[0])
+    exposure_gain = max(1.0, min(1.25, 112.0 / max(1.0, median_luminance)))
+
+    image = _photo_band(source, size)
+    image = ImageEnhance.Color(image).enhance(0.98)
+    image = ImageEnhance.Contrast(image).enhance(1.02)
+    shoulder = 0.72
+    highlight_strength = 0.75
+    lookup = []
+    for value in range(256):
+        lifted = (value / 255) ** 0.92
+        exposed = min(1.0, lifted * exposure_gain)
+        compressed = (
+            exposed
+            if exposed <= shoulder
+            else shoulder + (exposed - shoulder) * highlight_strength
+        )
+        lookup.append(round(min(1.0, compressed) * 255))
+    image = image.point(lookup * 3)
+
+    width, height = size
+    shade = Image.new("L", (1, height))
+    shade.putdata(
+        [
+            round(22 + (6 - 22) * y / max(1, height - 1))
+            for y in range(height)
+        ]
+    )
+    black = Image.new("RGB", size, (3, 5, 9))
+    image = Image.composite(black, image, shade.resize(size))
+
+    vignette = Image.new("L", size, 0)
+    border = max(12, round(min(size) * 0.07))
+    ImageDraw.Draw(vignette).rectangle(
+        (0, 0, width - 1, height - 1), outline=18, width=border
+    )
+    vignette = vignette.filter(ImageFilter.GaussianBlur(border * 1.4))
+    return Image.composite(black, image, vignette)
+
+
 def _episode_destination(config, episode):
     return (
         config["paths"]["assets"]
@@ -469,7 +514,7 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     band_height = round(width * 9 / 16)
     band_top = round(height * 0.39)
     with Image.open(photo_path) as source:
-        band = _grade_photo(source, (width, band_height), contain=True)
+        band = _poster_showcase_grade(source, (width, band_height))
     image.paste(band, (0, band_top))
     draw = ImageDraw.Draw(image, "RGBA")
     draw.rectangle(

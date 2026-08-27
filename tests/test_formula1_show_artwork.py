@@ -63,6 +63,7 @@ from extensions.formula1.show_artwork import (
     _grade_photo,
     _managed_episode_action,
     _pair_integrity,
+    _poster_showcase_grade,
     _prune_retained_pairs,
     _prune_source_cache,
     _rounded_flag_badge,
@@ -1189,7 +1190,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 10
+    assert SHOW_RENDERER_VERSION == 11
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -1277,6 +1278,27 @@ def test_photo_grade_compresses_bright_background_and_episode_ownership(
         state, show.episodes[0], destination, "changed"
     ) == "preserve-manual"
     state.close()
+
+
+def test_show_poster_grade_adapts_exposure_without_clipping_team_colours():
+    dark = Image.new("RGB", (1600, 900), (36, 38, 42))
+    ImageDraw.Draw(dark).rectangle((650, 300, 1450, 720), fill=(78, 12, 20))
+    legacy_dark = _grade_photo(dark, (1280, 720), contain=True)
+    showcased_dark = _poster_showcase_grade(dark, (1280, 720))
+    assert sum(showcased_dark.getpixel((900, 450))) > sum(
+        legacy_dark.getpixel((900, 450))
+    ) * 1.35
+    assert showcased_dark.getpixel((900, 450))[0] > (
+        showcased_dark.getpixel((900, 450))[1] * 3
+    )
+
+    bright = Image.new("RGB", (1600, 900), (248, 245, 238))
+    ImageDraw.Draw(bright).rectangle((650, 300, 1450, 720), fill=(225, 24, 44))
+    showcased_bright = _poster_showcase_grade(bright, (1280, 720))
+    assert max(showcased_bright.getpixel((100, 100))) < 240
+    assert showcased_bright.getpixel((900, 450))[0] > (
+        showcased_bright.getpixel((900, 450))[1] * 3
+    )
 
 
 def test_renderer_failure_cleanup_and_dry_attribution(
