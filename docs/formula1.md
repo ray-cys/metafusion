@@ -546,7 +546,9 @@ extension ownership record is treated as manual and is not adopted or overwritte
 from two independently validated, licensed sources. The portrait and episode
 cards rotate Formula 1 team cars. The show background prefers a safety car at the
 exact event and circuit. If that does not exist, it may use a recent exact-circuit
-safety-car photograph, then an exact-event/circuit atmospheric track photograph.
+safety-car photograph, then an exact-circuit atmospheric track photograph. The
+atmospheric source may be current, historical, or year-neutral when its Commons
+metadata or category membership establishes the exact venue.
 It never substitutes a team car, medical car, display vehicle, model, or unrelated
 event/series photograph. This is separate from the round/season posters described
 above and also enables the episode cards described above.
@@ -610,8 +612,10 @@ previous valid pair and retries after the provider cache expires. It will not us
 an older team car, an unrelated circuit, an ambiguous safety car, a scene whose
 pixels conflict with the expected day/night environment, or a photograph with an
 incompatible licence merely to force a rotation. A recent-year safety-car image
-is eligible only when it matches the exact circuit. An atmospheric fallback is
-eligible only when it matches the exact event/circuit. This workflow
+is eligible only when it matches the exact circuit. An atmospheric fallback may
+omit the current year or come from an earlier season only when it matches the exact
+circuit; an older event-name-only match and any future-dated source are rejected.
+This workflow
 requires no annual input, but a newly revealed car may temporarily retain the
 previous pair until both reusable sources are available.
 
@@ -704,10 +708,13 @@ runs bounded queries derived from the current schedule identity and prioritizes:
 
 1. exact-event/circuit, current-season Formula 1 safety car;
 2. recent exact-circuit Formula 1 safety car; then
-3. exact-event/circuit track atmosphere without a safety car.
+3. current exact-event/circuit track atmosphere without a safety car; then
+4. historical or year-neutral exact-circuit track atmosphere.
 
-The adapter requires exact event or circuit evidence and a current/recent year,
-then applies licence, dimensions, aspect-ratio, decoded-pixel, visual-content,
+Safety-car candidates require a current year or a recent year plus exact-circuit
+evidence. Atmospheric candidates may be older or omit a year, but only with exact
+circuit evidence from the file metadata or Commons categories. The adapter then
+applies licence, dimensions, aspect-ratio, decoded-pixel, visual-content,
 sharpness, environment-luminance, and perceptual-duplicate checks. Medical cars,
 toys, models, sculptures, simulators, museum/showroom displays, unrelated circuits
 or racing series, portrait media, incompatible licences, corrupt files, and

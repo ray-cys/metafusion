@@ -35,6 +35,7 @@ from extensions.formula1.metadata import build_show_entry
 from extensions.formula1.provider import RaceData
 from extensions.formula1.safety_car import (
     SafetyCarCandidate,
+    _race_queries,
     _safety_car_category_url,
     _safety_car_search_url,
     _solar_elevation,
@@ -448,7 +449,7 @@ def test_safety_car_selection_rejects_empty_and_invalid_sources(
         return [], "test"
 
     monkeypatch.setattr(show_artwork_module, "search_safety_cars", empty_search)
-    with pytest.raises(RuntimeError, match="no licensed exact-event/circuit"):
+    with pytest.raises(RuntimeError, match="no licensed current/recent safety-car"):
         asyncio.run(
             _select_background_source(
                 None, state, config, RaceData(
@@ -561,6 +562,61 @@ def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
     candidates = parse_safety_car_candidates(atmosphere, singapore, config)
     assert candidates[0].subject_type == "circuit_atmosphere"
     assert candidates[0].match_tier == "exact_event_atmosphere"
+
+    historical_atmosphere = _safety_car_payload(
+        page_id=903,
+        title="File:2018 Marina Bay Street Circuit at night.jpg",
+        description="Floodlit motorsport circuit atmosphere in Singapore",
+    )
+    historical_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Marina Bay Street Circuit"}
+    ]
+    candidates = parse_safety_car_candidates(
+        historical_atmosphere, singapore, config
+    )
+    assert candidates[0].match_tier == "exact_circuit_atmosphere"
+    assert "commons-category" in candidates[0].evidence
+    assert "historical-or-year-neutral-circuit" in candidates[0].evidence
+
+    year_neutral_atmosphere = _safety_car_payload(
+        page_id=904,
+        title="File:Marina Bay Street Circuit floodlights.jpg",
+        description="Night view of the Marina Bay Street Circuit",
+    )
+    year_neutral_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Marina Bay Street Circuit"}
+    ]
+    candidates = parse_safety_car_candidates(
+        year_neutral_atmosphere, singapore, config
+    )
+    assert candidates[0].match_tier == "exact_circuit_atmosphere"
+
+    event_only_historical = _safety_car_payload(
+        page_id=905,
+        title="File:2018 Singapore Grand Prix at night.jpg",
+        description="Formula 1 floodlit atmosphere at the Singapore Grand Prix",
+    )
+    event_only_historical["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2018 Singapore Grand Prix"}
+    ]
+    assert parse_safety_car_candidates(event_only_historical, singapore, config) == []
+
+    future_atmosphere = _safety_car_payload(
+        page_id=906,
+        title="File:2028 Marina Bay Street Circuit at night.jpg",
+        description="Formula 1 floodlit atmosphere at Marina Bay Street Circuit",
+    )
+    assert parse_safety_car_candidates(future_atmosphere, singapore, config) == []
+
+    queries = _race_queries(singapore, environment)
+    assert any(
+        '"Marina Bay Street Circuit" "Formula 1" track' in query
+        for query in queries
+    )
+    assert any(
+        '"Marina Bay Street Circuit" motorsport circuit' in query
+        for query in queries
+    )
     rejected_atmosphere = _safety_car_payload(
         title="File:2027 Singapore Grand Prix driver portrait.jpg",
         description="Formula 1 driver portrait at the 2027 Singapore Grand Prix",

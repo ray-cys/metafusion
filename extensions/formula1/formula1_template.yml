@@ -55,8 +55,9 @@ artwork:
 # race round: the show poster and episode cards use licensed current-season team
 # cars, while the clean 16:9 show background uses a licensed cinematic photograph
 # matched to the current race/circuit and expected day/night environment. It
-# prefers an exact-event/circuit safety car, then a recent exact-circuit safety car, then
-# exact-event track atmosphere. Missing cards are created only for Plex-detected
+# prefers an exact-event/circuit safety car, then a recent exact-circuit safety car,
+# then current, historical, or year-neutral exact-circuit track atmosphere. Missing
+# cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
 show_artwork:

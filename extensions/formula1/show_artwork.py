@@ -1035,6 +1035,7 @@ def _safety_candidate_order(candidates, current, trigger_round):
         "exact_event_safety_car",
         "recent_circuit_safety_car",
         "exact_event_atmosphere",
+        "exact_circuit_atmosphere",
         "season_safety_car",
     ):
         group = [candidate for candidate in candidates if candidate.match_tier == tier]
@@ -1058,7 +1059,8 @@ async def _select_background_source(
     )
     if not candidates:
         raise RuntimeError(
-            "no licensed exact-event/circuit Formula 1 background candidate matched"
+            "no licensed current/recent safety-car or exact-circuit atmosphere "
+            "candidate matched"
         )
     current_source = (current or {}).get("source", {})
     previous_hash = current_source.get("background_perceptual_hash")
