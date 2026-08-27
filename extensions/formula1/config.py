@@ -230,6 +230,28 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         1080,
         4320,
     )
+    show_artwork["fallback_background_source_width"] = _bounded_int(
+        show_artwork.get("fallback_background_source_width", 1600),
+        "show_artwork.fallback_background_source_width",
+        800,
+        7680,
+    )
+    show_artwork["fallback_background_source_height"] = _bounded_int(
+        show_artwork.get("fallback_background_source_height", 900),
+        "show_artwork.fallback_background_source_height",
+        450,
+        4320,
+    )
+    if (
+        show_artwork["fallback_background_source_width"]
+        > show_artwork["minimum_background_source_width"]
+        or show_artwork["fallback_background_source_height"]
+        > show_artwork["minimum_background_source_height"]
+    ):
+        raise Formula1ConfigError(
+            "show artwork fallback background source dimensions cannot exceed "
+            "the preferred background source dimensions"
+        )
     show_artwork["retention_pairs_per_season"] = _bounded_int(
         show_artwork.get("retention_pairs_per_season", 30),
         "show_artwork.retention_pairs_per_season",

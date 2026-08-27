@@ -105,7 +105,8 @@ explicitly says otherwise.
 | `show_artwork.background_width`, `background_height` | `3840`, `2160` | Clean show-background output dimensions; the default is true 4K UHD and must remain exactly 16:9. |
 | `show_artwork.episode_width`, `episode_height` | `1920`, `1080` | Episode-card dimensions, kept at Full HD independently of the show background. |
 | `show_artwork.minimum_source_width`, `minimum_source_height` | `1600`, `900` | Minimum decoded Commons photograph dimensions for portrait and episode artwork. |
-| `show_artwork.minimum_background_source_width`, `minimum_background_source_height` | `3840`, `2160` | Independent minimum decoded photograph dimensions for show backgrounds and the team-car fallback. |
+| `show_artwork.minimum_background_source_width`, `minimum_background_source_height` | `3840`, `2160` | Preferred decoded photograph dimensions for a genuine 4K show-background source. |
+| `show_artwork.fallback_background_source_width`, `fallback_background_source_height` | `1600`, `900` | Last acceptable source floor when no 4K photograph survives the same subject, environment, colour, licence, decoding, and sharpness checks. The final background is still rendered at the configured 3840×2160 output size. |
 | `show_artwork.retention_pairs_per_season` | `30` | Maximum retained versioned managed show pairs per championship. |
 | `show_artwork.source_cache_retention_days` | `120` | Age after which inactive downloaded source photographs may be pruned and later redownloaded. |
 | `show_artwork.asset_reference_root` | `config/assets/formula1/shows` | Kometa-visible reference root corresponding to the mounted show-artwork output. |
@@ -559,10 +560,14 @@ safety and medical cars, testing, launch or display vehicles, models, and unrela
 event/series photographs are rejected. There is no atmosphere-only fallback. If
 no exact-event or exact-circuit race-action source survives validation, MetaFusion
 uses the already selected current-season team-car photograph as the explicit last
-resort. That fallback must still be a decoded, colour, safely licensed 4K landscape
-source; its attribution and `current_season_team_car_fallback` match tier make the
-degraded circuit specificity visible. If even that source is unsuitable, existing
-safe artwork is preserved and the unresolved round is reported for a later retry.
+resort. A decoded, colour, safely licensed 3840×2160 landscape source is preferred.
+If one is unavailable, MetaFusion accepts the previous 1600×900 source floor
+without relaxing subject, environment, licence, colour, decoding, blank-image, or
+sharpness validation. The output remains a clean 3840×2160 background, while
+attribution records `4k-source` or `fallback-resolution-source` and the
+`current_season_team_car_fallback` match tier makes degraded circuit specificity
+visible. If even that source is unsuitable, existing safe artwork is preserved and
+the unresolved round is reported for a later retry.
 This is separate from the round/season posters described above and also enables
 the episode cards described above.
 

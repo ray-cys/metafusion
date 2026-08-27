@@ -23,7 +23,7 @@ from extensions.formula1.commons import (
 )
 
 PROVIDER = "wikimedia-commons-race-background"
-BACKGROUND_CANDIDATE_VERSION = 5
+BACKGROUND_CANDIDATE_VERSION = 6
 CATEGORY_DEPTH_LIMIT = 2
 CATEGORY_FETCH_LIMIT = 28
 ACTION_BACKGROUND_TIERS = (
@@ -438,8 +438,10 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
     year = int(race.year if race else race_or_year)
     environment = derive_race_environment(race) if race else None
     candidates = []
-    minimum_width = config["show_artwork"]["minimum_background_source_width"]
-    minimum_height = config["show_artwork"]["minimum_background_source_height"]
+    minimum_width = config["show_artwork"]["fallback_background_source_width"]
+    minimum_height = config["show_artwork"]["fallback_background_source_height"]
+    preferred_width = config["show_artwork"]["minimum_background_source_width"]
+    preferred_height = config["show_artwork"]["minimum_background_source_height"]
     for page in _candidate_pages(payload):
         image_info = (page.get("imageinfo") or [{}])[0]
         metadata = image_info.get("extmetadata") or {}
@@ -573,6 +575,12 @@ def parse_race_background_candidates(payload, race_or_year, config, diagnostics=
                 ("environment", scene_match),
             )
             if matched
+        )
+        evidence = (
+            *evidence,
+            "4k-source"
+            if width >= preferred_width and height >= preferred_height
+            else "fallback-resolution-source",
         )
         score = tier_score + min(width * height / 1_000_000, 30.0)
         score += max(0.0, 6.0 - abs(width / height - 16 / 9) * 12)

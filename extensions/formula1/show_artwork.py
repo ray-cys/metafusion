@@ -1087,25 +1087,41 @@ def _background_candidate_order(candidates, current, trigger_round):
         group = [candidate for candidate in candidates if candidate.match_tier == tier]
         if not group:
             continue
-        page_ids = [candidate.page_id for candidate in group]
-        if previous in page_ids:
-            start = (page_ids.index(previous) + 1) % len(group)
-        else:
-            start = (int(trigger_round) - 1) % len(group)
-        ordered.extend(group[(start + offset) % len(group)] for offset in range(len(group)))
+        for quality_group in (
+            [candidate for candidate in group if "4k-source" in candidate.evidence],
+            [candidate for candidate in group if "4k-source" not in candidate.evidence],
+        ):
+            if not quality_group:
+                continue
+            quality_group.sort(key=lambda candidate: (-candidate.score, candidate.title.casefold()))
+            page_ids = [candidate.page_id for candidate in quality_group]
+            if previous in page_ids:
+                start = (page_ids.index(previous) + 1) % len(quality_group)
+            else:
+                start = (int(trigger_round) - 1) % len(quality_group)
+            ordered.extend(
+                quality_group[(start + offset) % len(quality_group)]
+                for offset in range(len(quality_group))
+            )
     return ordered
 
 
 def _background_acquisition_config(config):
-    """Apply the independent 4K background-source floor to pixel validation."""
+    """Validate backgrounds against the safe lower-resolution fallback floor."""
     return {
         **config,
         "show_artwork": {
             **config["show_artwork"],
             "minimum_source_width": config["show_artwork"][
-                "minimum_background_source_width"
+                "fallback_background_source_width"
             ],
             "minimum_source_height": config["show_artwork"][
+                "fallback_background_source_height"
+            ],
+            "preferred_source_width": config["show_artwork"][
+                "minimum_background_source_width"
+            ],
+            "preferred_source_height": config["show_artwork"][
                 "minimum_background_source_height"
             ],
         },
@@ -1130,25 +1146,51 @@ async def _acquire_background_image(session, config, candidate):
     )
 
 
+def _background_source_quality(config, candidate, photo_path):
+    """Describe whether the decoded source reached the preferred 4K floor."""
+    width, height = candidate.width, candidate.height
+    if Path(photo_path).is_file():
+        with Image.open(photo_path) as source:
+            width, height = source.size
+    preferred_width = config["show_artwork"]["minimum_background_source_width"]
+    preferred_height = config["show_artwork"]["minimum_background_source_height"]
+    return (
+        "4k-source"
+        if width >= preferred_width and height >= preferred_height
+        else "fallback-resolution-source"
+    )
+
+
+def _with_background_source_quality(config, candidate, photo_path):
+    quality = _background_source_quality(config, candidate, photo_path)
+    evidence = tuple(
+        value
+        for value in candidate.evidence
+        if value not in {"4k-source", "fallback-resolution-source"}
+    )
+    return replace(candidate, evidence=(*evidence, quality)), quality
+
+
 async def _team_car_background_fallback(session, config, race, candidate, diagnostics):
     """Use the selected current-season team car only after race-aware sources fail."""
-    minimum_width = config["show_artwork"]["minimum_background_source_width"]
-    minimum_height = config["show_artwork"]["minimum_background_source_height"]
+    minimum_width = config["show_artwork"]["fallback_background_source_width"]
+    minimum_height = config["show_artwork"]["fallback_background_source_height"]
     if candidate is None:
         raise RuntimeError("no selected current-season team-car fallback was available")
     if candidate.width < minimum_width or candidate.height < minimum_height:
         raise RuntimeError(
             f"selected team-car fallback is {candidate.width}x{candidate.height}; "
-            f"4K source floor is {minimum_width}x{minimum_height}"
+            f"minimum fallback source floor is {minimum_width}x{minimum_height}"
         )
     photo_path, image_source = await _acquire_background_image(
         session, config, candidate
     )
     photo_available = Path(photo_path).is_file()
     if photo_available and not image_has_meaningful_colour(photo_path):
-        raise RuntimeError("selected 4K team-car fallback was monochrome")
+        raise RuntimeError("selected team-car fallback was monochrome")
     if not photo_available and not config["dry_run"]:
-        raise RuntimeError("selected 4K team-car fallback was not cached after validation")
+        raise RuntimeError("selected team-car fallback was not cached after validation")
+    source_quality = _background_source_quality(config, candidate, photo_path)
     environment = derive_race_environment(race)
     observed_environment = (
         classify_image_environment(photo_path) if photo_available else "unknown"
@@ -1171,7 +1213,7 @@ async def _team_car_background_fallback(session, config, race, candidate, diagno
         match_tier=TEAM_CAR_FALLBACK_TIER,
         environment=environment.mode,
         race_key=environment.race_key,
-        evidence=("current-season-team-car", "4k-source", "last-resort-fallback"),
+        evidence=("current-season-team-car", source_quality, "last-resort-fallback"),
         eligibility_version=BACKGROUND_CANDIDATE_VERSION,
     )
     perceptual_hash = (
@@ -1180,7 +1222,8 @@ async def _team_car_background_fallback(session, config, race, candidate, diagno
         else hashlib.sha256(candidate.image_url.encode()).hexdigest()[:16]
     )
     diagnostics.append(
-        f"using 4K current-season team-car fallback: {candidate.title}"
+        f"using {source_quality.replace('-', ' ')} current-season team-car fallback: "
+        f"{candidate.title}"
     )
     return (
         background_candidate,
@@ -1218,7 +1261,7 @@ async def _select_background_source(
         diagnostics.append(f"race-aware search failed: {error}")
     if not candidates:
         diagnostics.append(
-            "no safely licensed 4K colour Formula 1 race-action photograph "
+            "no safely licensed colour Formula 1 race-action photograph "
             "matched the exact event or circuit"
         )
     current_source = (current or {}).get("source", {})
@@ -1232,6 +1275,9 @@ async def _select_background_source(
             if Path(photo_path).is_file() and not image_has_meaningful_colour(photo_path):
                 diagnostics.append(f"{candidate.title}: monochrome image rejected")
                 continue
+            candidate, source_quality = _with_background_source_quality(
+                config, candidate, photo_path
+            )
             actual_environment = (
                 classify_image_environment(photo_path)
                 if Path(photo_path).is_file()
@@ -1259,6 +1305,7 @@ async def _select_background_source(
                     "expected_environment": environment.mode,
                     "observed_environment": actual_environment,
                     "match_tier": candidate.match_tier,
+                    "source_quality": source_quality,
                 },
                 perceptual_hash,
             )

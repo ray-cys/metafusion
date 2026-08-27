@@ -272,6 +272,8 @@ def config(tmp_path, core):
         minimum_source_height=450,
         minimum_background_source_width=800,
         minimum_background_source_height=450,
+        fallback_background_source_width=800,
+        fallback_background_source_height=450,
     )
     return value
 
@@ -679,8 +681,8 @@ def test_background_uses_colour_4k_team_car_as_last_resort(
         )
 
     monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
-    config["show_artwork"]["minimum_background_source_width"] = 4096
-    with pytest.raises(RuntimeError, match="4K source floor"):
+    config["show_artwork"]["fallback_background_source_width"] = 4096
+    with pytest.raises(RuntimeError, match="minimum fallback source floor"):
         asyncio.run(
             _select_background_source(
                 None,
@@ -1061,7 +1063,7 @@ def test_old_background_candidate_records_are_marked_ineligible(config):
     candidate = parse_race_background_candidates(
         _race_background_payload(), 2026, config
     )[0]
-    assert candidate.eligibility_version == 5
+    assert candidate.eligibility_version == 6
     legacy = candidate.as_dict()
     legacy.pop("eligibility_version")
     assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
@@ -1446,12 +1448,126 @@ def test_default_show_background_is_4k_while_episode_cards_remain_full_hd(
     assert config["show_artwork"]["episode_height"] == 1080
     assert config["show_artwork"]["minimum_background_source_width"] == 3840
     assert config["show_artwork"]["minimum_background_source_height"] == 2160
+    assert config["show_artwork"]["fallback_background_source_width"] == 1600
+    assert config["show_artwork"]["fallback_background_source_height"] == 900
     photo = tmp_path / "source-4k.jpg"
     photo.write_bytes(_photo_bytes((3840, 2160)))
     destination = tmp_path / "background-4k.png"
     render_show_background(show, race, photo, config, destination)
     with Image.open(destination) as rendered:
         assert rendered.size == (3840, 2160)
+
+
+def test_background_prefers_4k_but_accepts_previous_source_floor(
+    tmp_path, core, show, race, monkeypatch
+):
+    config = load_formula1_config(core, tmp_path / "fallback-config")
+    state = Formula1State(config["paths"]["database"])
+    source = config["paths"]["show_image_cache"] / "fallback-2560.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_photo_bytes((2560, 1440)))
+    team_candidate = CommonsCandidate(
+        page_id=8001,
+        title="File:2026 Formula One race car.jpg",
+        page_url="https://commons.wikimedia.org/?curid=8001",
+        image_url="https://upload.wikimedia.org/fallback-2560.jpg",
+        width=2560,
+        height=1440,
+        mime="image/jpeg",
+        source_sha1="fallback2560sha1",
+        author="Test author",
+        licence="CC BY 4.0",
+        licence_url="https://creativecommons.org/licenses/by/4.0/",
+        constructor_id="mclaren",
+        constructor_name="McLaren",
+        score=10.0,
+    )
+
+    async def empty_search(*_args, **_kwargs):
+        return [], "test"
+
+    async def fallback_image(*_args, **_kwargs):
+        return source, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
+    selected, selected_path, providers, _image_hash = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            race.round_number,
+            logging.getLogger("fallback-resolution"),
+            team_candidate,
+        )
+    )
+    assert "fallback-resolution-source" in selected.evidence
+    assert "4k-source" not in selected.evidence
+    assert selected_path == source
+    assert providers["match_tier"] == "current_season_team_car_fallback"
+
+    destination = tmp_path / "rendered-fallback-4k.png"
+    render_show_background(show, race, selected_path, config, destination)
+    with Image.open(destination) as rendered:
+        assert rendered.size == (3840, 2160)
+    state.close()
+
+
+def test_background_cache_upgrades_to_4k_when_provider_source_can_supply_it(
+    tmp_path, core
+):
+    config = load_formula1_config(core, tmp_path / "cache-upgrade-config")
+    constructor = ConstructorData("alpine", "Alpine F1 Team")
+    candidate = parse_commons_candidates(
+        _commons_payload(width=3840, height=2160),
+        2026,
+        constructor,
+        [constructor],
+        config,
+    )[0]
+    session = CommonsSession()
+    first_path, first_source = asyncio.run(
+        show_artwork_module._acquire_background_image(session, config, candidate)
+    )
+    assert first_source == "wikimedia-commons"
+    with Image.open(first_path) as first_image:
+        assert first_image.size == (1600, 900)
+
+    session.image = _photo_bytes((3840, 2160))
+    upgraded_path, upgraded_source = asyncio.run(
+        show_artwork_module._acquire_background_image(session, config, candidate)
+    )
+    assert upgraded_path == first_path
+    assert upgraded_source == "wikimedia-commons"
+    with Image.open(upgraded_path) as upgraded_image:
+        assert upgraded_image.size == (3840, 2160)
+    assert asyncio.run(
+        show_artwork_module._acquire_background_image(session, config, candidate)
+    )[1] == "cache"
+
+
+def test_background_candidate_order_prefers_4k_within_the_same_match_tier(config):
+    fallback = parse_race_background_candidates(
+        _race_background_payload(page_id=930, width=1600, height=900),
+        2026,
+        config,
+    )[0]
+    preferred = parse_race_background_candidates(
+        _race_background_payload(page_id=931, width=3840, height=2160),
+        2026,
+        config,
+    )[0]
+    fallback = replace(fallback, score=999.0, evidence=("fallback-resolution-source",))
+    preferred = replace(preferred, score=1.0, evidence=("4k-source",))
+    ordered = _background_candidate_order([fallback, preferred], None, 1)
+    assert ordered == [preferred, fallback]
+    current = {"source": {"background_candidate": {"page_id": fallback.page_id}}}
+    assert _background_candidate_order([fallback, preferred], current, 1) == [
+        preferred,
+        fallback,
+    ]
 
 
 def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
@@ -1913,7 +2029,7 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     assert rerendered.action == "rerendered"
     assert len(state.show_rotation_history()) == 1
     current = state.show_rotation("show:2026")
-    assert current["source"]["background_candidate"]["eligibility_version"] == 5
+    assert current["source"]["background_candidate"]["eligibility_version"] == 6
     assert (
         current["source"]["background_candidate"]["match_tier"]
         == "exact_event_action_race_car"
@@ -2108,6 +2224,10 @@ def test_rotation_missing_dry_run_order_and_metadata(tmp_path, config, show, rac
         ("show_artwork:\n  episode_width: 1281\n", "episode dimensions"),
         ("show_artwork:\n  trigger: weekly\n", "trigger"),
         ("show_artwork:\n  policy: overwrite\n", "policy"),
+        (
+            "show_artwork:\n  fallback_background_source_width: 4000\n",
+            "fallback background source dimensions",
+        ),
         ("providers:\n  commons_url: https://example.com/api\n", "commons_url"),
     ],
 )

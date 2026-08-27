@@ -58,8 +58,10 @@ artwork:
 # prefers the exact event, then recent and historical action at the exact circuit.
 # Empty/aerial track scenes, static cars, monochrome photos, and safety cars are
 # not selected. If that strict pool is empty, the selected current-season team-car
-# photograph is used only when its decoded source is colour, safely licensed, and
-# at least 3840x2160; the clean show background itself renders at 3840x2160.
+# photograph is used only when its decoded source is colour and safely licensed.
+# A genuine 3840x2160 source is preferred; when none survives the same subject,
+# environment, colour, and licence checks, the prior 1600x900 source floor is
+# accepted and rendered through the same clean 3840x2160 background treatment.
 # Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
@@ -77,6 +79,8 @@ show_artwork:
   minimum_source_height: 900
   minimum_background_source_width: 3840
   minimum_background_source_height: 2160
+  fallback_background_source_width: 1600
+  fallback_background_source_height: 900
   retention_pairs_per_season: 30
   source_cache_retention_days: 120
   asset_reference_root: config/assets/formula1/shows

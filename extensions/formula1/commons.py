@@ -434,8 +434,27 @@ async def acquire_candidate_image(session, config, candidate):
     destination = config["paths"]["show_image_cache"] / f"{digest}{extension}"
     if destination.exists():
         try:
-            _validate_image(destination.read_bytes(), config)
-            return destination, "cache"
+            cached_width, cached_height = _validate_image(destination.read_bytes(), config)
+            preferred_width = int(
+                config["show_artwork"].get(
+                    "preferred_source_width",
+                    config["show_artwork"]["minimum_source_width"],
+                )
+            )
+            preferred_height = int(
+                config["show_artwork"].get(
+                    "preferred_source_height",
+                    config["show_artwork"]["minimum_source_height"],
+                )
+            )
+            candidate_can_meet_preference = (
+                candidate.width >= preferred_width and candidate.height >= preferred_height
+            )
+            cache_meets_preference = (
+                cached_width >= preferred_width and cached_height >= preferred_height
+            )
+            if cache_meets_preference or not candidate_can_meet_preference:
+                return destination, "cache"
         except RuntimeError:
             # A stricter source policy or wider Commons thumbnail request may
             # supersede a previously valid lower-resolution cache entry.
