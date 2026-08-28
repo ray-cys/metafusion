@@ -241,40 +241,16 @@ def _rounded_flag_badge(image, country, box):
     return True
 
 
-def _technical_frame(image, *, dense=False):
+def _technical_frame(image):
+    """Render the subtle diagonal texture used only by the show poster."""
     draw = ImageDraw.Draw(image, "RGBA")
     width, height = image.size
-    if dense:
-        spacing = max(50, width // 22)
-        for offset in range(-height, width, spacing):
-            draw.line(
-                (offset, 0, offset + height, height),
-                fill=(235, 20, 40, 14),
-                width=max(1, width // 900),
-            )
-    else:
-        accent = (235, 20, 40, 120)
-        line_width = max(2, width // 800)
+    spacing = max(50, width // 22)
+    for offset in range(-height, width, spacing):
         draw.line(
-            (width * 0.72, height * 0.06, width * 0.95, height * 0.06),
-            fill=accent,
-            width=line_width,
-        )
-        draw.line(
-            (width * 0.04, height * 0.72, width * 0.22, height * 0.72),
-            fill=accent,
-            width=line_width,
-        )
-    if not dense:
-        draw.line(
-            (0, 3, width, 3),
-            fill=(235, 20, 40, 210),
-            width=max(3, width // 450),
-        )
-        draw.line(
-            (0, height - 4, width, height - 4),
-            fill=(235, 20, 40, 210),
-            width=max(3, width // 450),
+            (offset, 0, offset + height, height),
+            fill=(235, 20, 40, 14),
+            width=max(1, width // 900),
         )
 
 
@@ -840,7 +816,7 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     width = config["show_artwork"]["poster_width"]
     height = config["show_artwork"]["poster_height"]
     image = Image.new("RGB", (width, height), (6, 7, 10))
-    _technical_frame(image, dense=True)
+    _technical_frame(image)
     draw = ImageDraw.Draw(image, "RGBA")
     draw.polygon(
         [(0, height), (width, height * 0.81), (width, height), (0, height)],

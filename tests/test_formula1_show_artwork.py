@@ -59,11 +59,13 @@ from extensions.formula1.show_artwork import (
     _background_candidate_order,
     _candidate_order,
     _checksum,
+    _draw_circuit_watermark,
     _draw_speed_accent,
     _episode_date_label,
     _episode_fingerprint,
     _episode_reference,
     _episode_text_side,
+    _episode_title_layout,
     _existing_episode_outputs,
     _grade_photo,
     _managed_episode_action,
@@ -1637,7 +1639,7 @@ def test_post_race_press_conference_episode_card_is_rendered(
     )
 
 
-def test_episode_concept_a_places_copy_opposite_subject_and_formats_date():
+def test_episode_concept_a_places_copy_opposite_subject_and_formats_date(monkeypatch):
     right_subject = show_artwork_module.PosterPhotoProfile(
         100,
         20,
@@ -1657,6 +1659,34 @@ def test_episode_concept_a_places_copy_opposite_subject_and_formats_date():
     assert _episode_text_side(left_subject) == "right"
     assert _episode_date_label("2027-04-03") == "03 APR 2027"
     assert _episode_date_label("provider-date") == "provider-date"
+
+    class FittingFont:
+        size = 40
+
+        @staticmethod
+        def getbbox(_text):
+            return (0, 0, 20, 20)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            show_artwork_module,
+            "fitted_font",
+            lambda *_args, **_kwargs: FittingFont(),
+        )
+        title, font = _episode_title_layout(None, "RACE", 40, 10, 200)
+        assert title == "RACE"
+        assert font.size == 40
+
+    title, font = _episode_title_layout(None, "UNBREAKABLE", 40, 10, 1)
+    assert title == "UNBREAKABLE"
+    assert font is not None
+
+    canvas = Image.new("RGBA", (320, 180), (10, 20, 30, 255))
+    before = canvas.tobytes()
+    _draw_circuit_watermark(
+        ImageDraw.Draw(canvas, "RGBA"), None, (10, 10, 200, 150), 320
+    )
+    assert canvas.tobytes() == before
 
 
 def test_episode_concept_a_renders_right_aligned_copy(
