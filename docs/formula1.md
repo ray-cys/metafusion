@@ -437,7 +437,13 @@ or race-background photographs.
 | --- | --- |
 | ![Example Formula 1 race-season poster](images/formula1/round-poster.png) | ![Example rotating Formula 1 show poster](images/formula1/show-poster.png) |
 
-Episode cards use the race weekend's persistent team-car binding:
+Episode cards use the race weekend's persistent team-car binding and an adaptive
+cinematic layout. MetaFusion detects the car's visual side, places the simplified
+session copy opposite it, protects the car's exposure, and applies only a soft
+local readability gradient. The session is the primary title; the round, Grand
+Prix, and date remain secondary, while the circuit trace is a faint watermark.
+Technical borders and the long circuit/location sentence are deliberately omitted
+so the card remains clear in Plex's smaller episode and Continue Watching tiles:
 
 ![Example Formula 1 episode card](images/formula1/episode-card.png)
 

@@ -60,8 +60,10 @@ from extensions.formula1.show_artwork import (
     _candidate_order,
     _checksum,
     _draw_speed_accent,
+    _episode_date_label,
     _episode_fingerprint,
     _episode_reference,
+    _episode_text_side,
     _existing_episode_outputs,
     _grade_photo,
     _managed_episode_action,
@@ -1438,8 +1440,12 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
+        assert image.info["MetaFusion renderer"] == "episode-poster-v2"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v1"
+        assert image.info["MetaFusion text side"] in {"left", "right"}
+        assert image.getpixel((0, 3))[0] < 180
     assert SHOW_RENDERER_VERSION == 17
-    assert EPISODE_RENDERER_VERSION == 1
+    assert EPISODE_RENDERER_VERSION == 2
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
@@ -1629,6 +1635,54 @@ def test_post_race_press_conference_episode_card_is_rendered(
     ) != _episode_fingerprint(
         show.episodes[0], race, "M0 0 L100 100", "source", config
     )
+
+
+def test_episode_concept_a_places_copy_opposite_subject_and_formats_date():
+    right_subject = show_artwork_module.PosterPhotoProfile(
+        100,
+        20,
+        220,
+        0.74,
+        0.52,
+        (0.58, 0.25, 0.94, 0.86),
+        0.58,
+    )
+    left_subject = replace(
+        right_subject,
+        focal_x=0.24,
+        subject_box=(0.05, 0.25, 0.42, 0.86),
+        composition_x=0.42,
+    )
+    assert _episode_text_side(right_subject) == "left"
+    assert _episode_text_side(left_subject) == "right"
+    assert _episode_date_label("2027-04-03") == "03 APR 2027"
+    assert _episode_date_label("provider-date") == "provider-date"
+
+
+def test_episode_concept_a_renders_right_aligned_copy(
+    tmp_path, config, show, race, monkeypatch
+):
+    left_subject = show_artwork_module.PosterPhotoProfile(
+        100,
+        20,
+        220,
+        0.22,
+        0.52,
+        (0.04, 0.24, 0.42, 0.88),
+        0.42,
+    )
+    monkeypatch.setattr(
+        show_artwork_module, "_poster_photo_profile", lambda _image: left_subject
+    )
+    photo = tmp_path / "left-car.jpg"
+    photo.write_bytes(_photo_bytes())
+    destination = tmp_path / "right-copy.png"
+    render_episode_poster(
+        show.episodes[0], race, "M0 0 L100 100", photo, config, destination
+    )
+    with Image.open(destination) as image:
+        assert image.info["MetaFusion text side"] == "right"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v1"
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(

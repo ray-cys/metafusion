@@ -9,6 +9,7 @@ import re
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 
 from PIL import (
@@ -56,7 +57,7 @@ from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 FILE_MODE = 0o664
 SHOW_RENDERER_VERSION = 17
 SHOW_BACKGROUND_RENDERER_VERSION = 1
-EPISODE_RENDERER_VERSION = 1
+EPISODE_RENDERER_VERSION = 2
 
 @dataclass(frozen=True)
 class ShowArtworkResult:
@@ -149,16 +150,21 @@ def _show_render_fingerprint(config):
     ).hexdigest()
 
 
-def _place_logo(image, logo_path, box, fallback_font):
+def _place_logo(image, logo_path, box, fallback_font, *, align="left"):
     left, top, right, bottom = map(int, box)
     if logo_path.is_file():
         with Image.open(logo_path) as source:
             logo = source.convert("RGBA")
             logo.thumbnail((right - left, bottom - top), Image.Resampling.LANCZOS)
-            image.paste(logo, (left, top), logo)
+            logo_left = right - logo.width if align == "right" else left
+            image.paste(logo, (logo_left, top), logo)
     else:
         ImageDraw.Draw(image).text(
-            (left, top), "FORMULA 1", font=fallback_font, fill=(245, 245, 245, 255)
+            (right if align == "right" else left, top),
+            "FORMULA 1",
+            font=fallback_font,
+            fill=(245, 245, 245, 255),
+            anchor="ra" if align == "right" else "la",
         )
 
 
@@ -278,6 +284,25 @@ def _draw_circuit(draw, path_data, box, width):
         return
     draw.line(points, fill=(0, 0, 0, 180), width=max(12, width // 65), joint="curve")
     draw.line(points, fill=(175, 175, 180, 150), width=max(4, width // 220), joint="curve")
+
+
+def _draw_circuit_watermark(draw, path_data, box, width):
+    """Render a circuit trace as quiet texture rather than a competing icon."""
+    points = _fit(svg_path_points(path_data), box)
+    if not points:
+        return
+    draw.line(
+        points,
+        fill=(0, 0, 0, 46),
+        width=max(8, width // 95),
+        joint="curve",
+    )
+    draw.line(
+        points,
+        fill=(230, 231, 234, 28),
+        width=max(2, width // 330),
+        joint="curve",
+    )
 
 
 def _photo_band(photo, size):
@@ -591,91 +616,205 @@ def _managed_episode_action(state, episode, destination, fingerprint):
     return "update"
 
 
+def _episode_text_side(profile):
+    """Place copy opposite the detected subject while keeping centred shots stable."""
+    subject_centre = (profile.subject_box[0] + profile.subject_box[2]) / 2
+    weighted_centre = profile.focal_x * 0.6 + subject_centre * 0.4
+    return "left" if weighted_centre >= 0.5 else "right"
+
+
+def _episode_text_gradient(image, side):
+    """Add only enough local shading to keep episode copy television-readable."""
+    width, height = image.size
+    region = (
+        (0, 0, round(width * 0.48), height)
+        if side == "left"
+        else (round(width * 0.52), 0, width, height)
+    )
+    luminance = float(
+        ImageStat.Stat(
+            image.crop(region)
+            .resize((32, 18), Image.Resampling.BILINEAR)
+            .convert("L")
+        ).median[0]
+    )
+    maximum_alpha = round(max(158, min(212, 142 + luminance * 0.34)))
+    falloff = max(1, round(width * 0.56))
+    mask = Image.new("L", (width, 1))
+    values = []
+    for x in range(width):
+        distance = x if side == "left" else width - 1 - x
+        strength = max(0.0, 1.0 - distance / falloff) ** 1.7
+        values.append(round(maximum_alpha * strength))
+    mask.putdata(values)
+    shade = Image.new("RGBA", image.size, (3, 5, 9, 255))
+    shade.putalpha(mask.resize(image.size))
+    return Image.alpha_composite(image.convert("RGBA"), shade)
+
+
+def _episode_display_title(episode):
+    concise = {
+        "qualifying": "QUALIFYING",
+        "race": "RACE",
+        "sprint": "SPRINT",
+    }
+    return concise.get(episode.program_kind, episode.program_title.upper())
+
+
+def _episode_title_layout(font_path, title, maximum, minimum, maximum_width):
+    """Keep common sessions large and split only genuinely long programme names."""
+    single_font = fitted_font(font_path, title, maximum, minimum, maximum_width)
+    single_width = single_font.getbbox(title)[2] - single_font.getbbox(title)[0]
+    if single_width <= maximum_width and single_font.size >= maximum * 0.72:
+        return title, single_font
+
+    words = title.split()
+    best = None
+    for index in range(1, len(words)):
+        candidate = " ".join(words[:index]) + "\n" + " ".join(words[index:])
+        font = fitted_font(font_path, candidate, maximum, minimum, maximum_width)
+        widths = [font.getbbox(line)[2] - font.getbbox(line)[0] for line in candidate.splitlines()]
+        score = (font.size, -max(widths), -abs(widths[0] - widths[1]))
+        if best is None or score > best[0]:
+            best = (score, candidate, font)
+    if best is not None:
+        return best[1], best[2]
+    return title, single_font
+
+
+def _draw_episode_lines(draw, position, text, font, fill, *, align, spacing):
+    """Draw predictable left- or right-aligned multiline copy and return its bounds."""
+    x, y = position
+    anchor = "rt" if align == "right" else "lt"
+    line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
+    widths = []
+    for line_index, line in enumerate(text.splitlines()):
+        draw.text(
+            (x, y + line_index * (line_height + spacing)),
+            line,
+            font=font,
+            fill=fill,
+            anchor=anchor,
+        )
+        bounds = font.getbbox(line or " ")
+        widths.append(bounds[2] - bounds[0])
+    bottom = y + len(text.splitlines()) * line_height + max(
+        0, len(text.splitlines()) - 1
+    ) * spacing
+    return max(widths, default=0), bottom
+
+
+def _episode_date_label(value):
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime("%d %b %Y").upper()
+    except ValueError:
+        return str(value)
+
+
 def render_episode_poster(episode, race, path_data, photo_path, config, destination):
-    """Render an immutable 16:9 race/session card for Kometa episode metadata."""
+    """Render an adaptive Concept A race/session card for Kometa metadata."""
     width = config["show_artwork"]["episode_width"]
     height = config["show_artwork"]["episode_height"]
     with Image.open(photo_path) as source:
-        image = _grade_photo(
-            source, (width, height), centering=(0.62, 0.5), strong=True
-        ).convert("RGBA")
-
-    left_mask = Image.new("L", (width, 1))
-    left_mask.putdata(
-        [
-            round(238 * max(0.0, 1 - x / (width * 0.70)) ** 1.45)
-            for x in range(width)
-        ]
-    )
-    black = Image.new("RGBA", image.size, (3, 4, 7, 255))
-    clear = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    overlay = Image.composite(black, clear, left_mask.resize(image.size))
-    image = Image.alpha_composite(image, overlay)
-    _technical_frame(image)
+        image = _poster_showcase_grade(source, (width, height)).convert("RGBA")
+    profile = _poster_photo_profile(image.convert("RGB"))
+    text_side = _episode_text_side(profile)
+    image = _episode_text_gradient(image, text_side)
 
     logo_path, regular_path, bold_path = _branding_paths(config)
     round_font = _font(bold_path, max(24, width // 45))
-    session_font = fitted_font(
+    session_title = _episode_display_title(episode)
+    session_title, session_font = _episode_title_layout(
         bold_path,
-        episode.program_title.upper(),
-        max(42, width // 18),
-        28,
-        width * 0.56,
+        session_title,
+        max(46, width // 15),
+        max(26, width // 54),
+        width * 0.45,
     )
     grand_prix = race.name.upper()
     race_font = fitted_font(
-        bold_path, grand_prix, max(28, width // 29), 22, width * 0.56
+        regular_path, grand_prix, max(28, width // 32), 20, width * 0.45
     )
-    detail = f"{race.circuit}  •  {race.locality}, {race.country}"
-    detail_font = fitted_font(
-        regular_path, detail, max(22, width // 42), 18, width * 0.58
+    date_font = _font(regular_path, max(22, width // 48))
+    text_x = width * (0.045 if text_side == "left" else 0.955)
+    align = "left" if text_side == "left" else "right"
+    logo_box = (
+        (width * 0.045, height * 0.055, width * 0.22, height * 0.15)
+        if text_side == "left"
+        else (width * 0.78, height * 0.055, width * 0.955, height * 0.15)
     )
     _place_logo(
         image,
         logo_path,
-        (width * 0.045, height * 0.07, width * 0.23, height * 0.21),
+        logo_box,
         round_font,
+        align=align,
     )
     draw = ImageDraw.Draw(image, "RGBA")
-    _draw_circuit(
+    circuit_box = (
+        (width * 0.045, height * 0.12, width * 0.39, height * 0.43)
+        if text_side == "left"
+        else (width * 0.61, height * 0.12, width * 0.955, height * 0.43)
+    )
+    _draw_circuit_watermark(
         draw,
         path_data,
-        (width * 0.68, height * 0.08, width * 0.94, height * 0.42),
+        circuit_box,
         width,
     )
     draw.text(
-        (width * 0.045, height * 0.35),
+        (text_x, height * 0.47),
         f"ROUND {race.round_number:02d}  •  {race.year}",
         font=round_font,
         fill=(235, 30, 48, 245),
+        anchor="rt" if text_side == "right" else "lt",
     )
     draw.text(
-        (width * 0.045, height * 0.45),
+        (text_x, height * 0.56),
         grand_prix,
         font=race_font,
-        fill=(245, 245, 247, 235),
+        fill=(245, 245, 247, 230),
+        anchor="rt" if text_side == "right" else "lt",
     )
-    draw.text(
-        (width * 0.045, height * 0.57),
-        episode.program_title.upper(),
+    title_width, title_bottom = _draw_episode_lines(
+        draw,
+        (text_x, height * 0.65),
+        session_title,
         font=session_font,
         fill=(255, 255, 255, 255),
+        align=align,
+        spacing=max(4, round(height * 0.008)),
     )
-    draw.text(
-        (width * 0.045, height * 0.73),
-        detail,
-        font=detail_font,
-        fill=(225, 226, 230, 225),
+    accent_width = max(width * 0.055, min(title_width * 0.28, width * 0.12))
+    accent_top = min(height * 0.855, title_bottom + height * 0.025)
+    accent_left = text_x if text_side == "left" else text_x - accent_width
+    draw.rounded_rectangle(
+        (
+            accent_left,
+            accent_top,
+            accent_left + accent_width,
+            accent_top + max(3, height * 0.006),
+        ),
+        radius=max(2, round(height * 0.003)),
+        fill=(235, 30, 48, 245),
     )
-    date, _session_field = session_date(episode, race, config)
-    if date:
+    episode_date, _session_field = session_date(episode, race, config)
+    if episode_date:
         draw.text(
-            (width * 0.045, height * 0.82),
-            str(date),
-            font=round_font,
-            fill=(225, 226, 230, 190),
+            (text_x, min(height * 0.91, accent_top + height * 0.045)),
+            _episode_date_label(episode_date),
+            font=date_font,
+            fill=(225, 226, 230, 178),
+            anchor="rt" if text_side == "right" else "lt",
         )
-    return _atomic_save(image.convert("RGB"), destination)
+    provenance = PngImagePlugin.PngInfo()
+    provenance.add_text("MetaFusion asset", "Formula 1 episode artwork")
+    provenance.add_text(
+        "MetaFusion renderer", f"episode-poster-v{EPISODE_RENDERER_VERSION}"
+    )
+    provenance.add_text("MetaFusion design", "cinematic-broadcast-minimal-v1")
+    provenance.add_text("MetaFusion text side", text_side)
+    return _atomic_save(image.convert("RGB"), destination, pnginfo=provenance)
 
 
 def _atomic_save(image, destination, *, pnginfo=None):
