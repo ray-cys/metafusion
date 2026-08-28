@@ -59,6 +59,7 @@ from extensions.formula1.show_artwork import (
     _background_candidate_order,
     _candidate_order,
     _checksum,
+    _draw_speed_accent,
     _episode_fingerprint,
     _episode_reference,
     _existing_episode_outputs,
@@ -1405,10 +1406,10 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     ) == 64
     with Image.open(poster) as image:
         assert image.size == (600, 900)
-        assert image.info["MetaFusion renderer"] == "show-poster-v16"
+        assert image.info["MetaFusion renderer"] == "show-poster-v17"
         assert (
             image.info["MetaFusion design"]
-            == "adaptive-concept-a-v4-subject-exposure"
+            == "adaptive-concept-a-v5-speed-accent"
         )
     with Image.open(background) as image:
         assert image.size == (1280, 720)
@@ -1437,7 +1438,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 16
+    assert SHOW_RENDERER_VERSION == 17
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -1698,6 +1699,16 @@ def test_show_poster_grade_adapts_exposure_without_clipping_team_colours():
     showcased_backlit = _poster_showcase_grade(backlit, (1280, 720))
     assert showcased_backlit.getpixel((900, 450))[0] >= 58
     assert max(showcased_backlit.getpixel((100, 100))) < 240
+
+
+def test_show_poster_speed_accent_is_wordless_and_visually_balanced():
+    image = Image.new("RGB", (1000, 1500), (6, 7, 10))
+    _draw_speed_accent(ImageDraw.Draw(image, "RGBA"), 1000, 1500)
+    assert image.getpixel((80, 1395))[0] > 180
+    assert image.getpixel((90, 1420))[0] > image.getpixel((90, 1420))[1] * 2
+    third = image.getpixel((100, 1446))
+    assert max(third) - min(third) < 8 and min(third) > 140
+    assert image.getpixel((300, 1400)) == (6, 7, 10)
 
 
 def test_show_poster_profile_preserves_car_position_and_visual_lead_room():
@@ -2206,16 +2217,16 @@ def test_missing_poster_is_restored_without_background_acquisition(
         )
     )
     assert restored.action == "restored"
-    assert restored.poster_renderer_version == 16
+    assert restored.poster_renderer_version == 17
     assert restored.poster_checksum == _checksum(poster)
     assert background.read_bytes() == background_content
     current = state.show_rotation("show:2026")
     assert current["background_checksum"] == background_checksum
     with Image.open(poster) as image:
-        assert image.info["MetaFusion renderer"] == "show-poster-v16"
+        assert image.info["MetaFusion renderer"] == "show-poster-v17"
         assert (
             image.info["MetaFusion design"]
-            == "adaptive-concept-a-v4-subject-exposure"
+            == "adaptive-concept-a-v5-speed-accent"
         )
     state.close()
 

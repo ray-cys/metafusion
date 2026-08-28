@@ -54,7 +54,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 16
+SHOW_RENDERER_VERSION = 17
 SHOW_BACKGROUND_RENDERER_VERSION = 1
 EPISODE_RENDERER_VERSION = 1
 
@@ -126,7 +126,7 @@ def _show_render_fingerprints(config):
             config["show_artwork"]["poster_width"],
             config["show_artwork"]["poster_height"],
         ],
-        "design": "adaptive-concept-a-v4-subject-exposure",
+        "design": "adaptive-concept-a-v5-speed-accent",
     }
     background_payload = {
         "renderer": SHOW_BACKGROUND_RENDERER_VERSION,
@@ -515,6 +515,24 @@ def _paste_showcase_band(image, band, top):
     image.paste(band, (0, top), mask.resize(band.size))
 
 
+def _draw_speed_accent(draw, width, height):
+    """Balance the lower poster with a restrained, wordless motion motif."""
+    thickness = max(4, round(height * 0.0055))
+    bars = (
+        (0.060, 0.927, 0.125, (235, 30, 48, 235)),
+        (0.073, 0.944, 0.078, (142, 18, 34, 205)),
+        (0.086, 0.961, 0.040, (238, 239, 242, 175)),
+    )
+    for left_ratio, top_ratio, length_ratio, colour in bars:
+        left = round(width * left_ratio)
+        top = round(height * top_ratio)
+        draw.rounded_rectangle(
+            (left, top, left + round(width * length_ratio), top + thickness),
+            radius=max(2, thickness // 2),
+            fill=colour,
+        )
+
+
 def _episode_destination(config, episode):
     return (
         config["paths"]["assets"]
@@ -751,17 +769,12 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
         race.country,
         (width * 0.77, height * 0.835, width * 0.94, height * 0.905),
     )
-    draw.text(
-        (width * 0.06, height * 0.935),
-        "RACE-WEEK ROTATION",
-        font=small_bold,
-        fill=(255, 255, 255, 185),
-    )
+    _draw_speed_accent(draw, width, height)
     provenance = PngImagePlugin.PngInfo()
     provenance.add_text("MetaFusion asset", "Formula 1 rotating show poster")
     provenance.add_text("MetaFusion renderer", f"show-poster-v{SHOW_RENDERER_VERSION}")
     provenance.add_text(
-        "MetaFusion design", "adaptive-concept-a-v4-subject-exposure"
+        "MetaFusion design", "adaptive-concept-a-v5-speed-accent"
     )
     provenance.add_text("MetaFusion championship year", str(show.year))
     provenance.add_text("MetaFusion trigger round", str(race.round_number))

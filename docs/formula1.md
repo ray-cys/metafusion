@@ -583,6 +583,9 @@ For strongly backlit or sunlit photographs, a feathered subject mask protects th
 detected car: its shadows and midtones are lifted independently while bright
 track, sky, barriers, and advertising remain compressed. This avoids darkening a
 car merely because the surrounding daylight scene dominates the exposure reading.
+The lower field contains no operational wording. Three small staggered speed bars
+balance the host-country badge using red, muted red, and soft white, while leaving
+the race title and circuit as the only lower-poster text.
 Edge and colour saliency estimate the car's position; the protected crop retains
 the detected subject and the photograph's existing left/right visual lead room,
 so different car angles remain intentional. It never stretches or mirrors the
