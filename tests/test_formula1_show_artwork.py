@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from extensions.formula1 import commons as commons_module
 from extensions.formula1 import race_background as race_background_module
@@ -61,6 +61,7 @@ from extensions.formula1.show_artwork import (
     _checksum,
     _draw_circuit_watermark,
     _draw_speed_accent,
+    _episode_circuit_box,
     _episode_date_label,
     _episode_fingerprint,
     _episode_reference,
@@ -1442,12 +1443,12 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-        assert image.info["MetaFusion renderer"] == "episode-poster-v2"
-        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v1"
+        assert image.info["MetaFusion renderer"] == "episode-poster-v3"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v2"
         assert image.info["MetaFusion text side"] in {"left", "right"}
         assert image.getpixel((0, 3))[0] < 180
     assert SHOW_RENDERER_VERSION == 17
-    assert EPISODE_RENDERER_VERSION == 2
+    assert EPISODE_RENDERER_VERSION == 3
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
@@ -1683,10 +1684,24 @@ def test_episode_concept_a_places_copy_opposite_subject_and_formats_date(monkeyp
 
     canvas = Image.new("RGBA", (320, 180), (10, 20, 30, 255))
     before = canvas.tobytes()
-    _draw_circuit_watermark(
-        ImageDraw.Draw(canvas, "RGBA"), None, (10, 10, 200, 150), 320
+    unchanged = _draw_circuit_watermark(canvas, None, (10, 10, 200, 150), 320)
+    assert unchanged.tobytes() == before
+
+    watermark = _draw_circuit_watermark(
+        canvas, "M0 0 L100 100", (80, 30, 240, 150), 320
     )
-    assert canvas.tobytes() == before
+    difference = ImageChops.difference(canvas, watermark).convert("RGB")
+    assert difference.getbbox() is not None
+    assert max(channel_max for _minimum, channel_max in difference.getextrema()) < 20
+    assert watermark.getextrema()[3] == (255, 255)
+
+    left_box = _episode_circuit_box(1920, 1080, "left")
+    right_box = _episode_circuit_box(1920, 1080, "right")
+    assert (left_box[0] + left_box[2]) / 2 == pytest.approx(1920 * 0.26)
+    assert (right_box[0] + right_box[2]) / 2 == pytest.approx(1920 * 0.74)
+    assert left_box[2] - left_box[0] == pytest.approx(1920 * 0.20)
+    assert left_box[1] == pytest.approx(1080 * 0.20)
+    assert left_box[3] == pytest.approx(1080 * 0.40)
 
 
 def test_episode_concept_a_renders_right_aligned_copy(
@@ -1712,7 +1727,7 @@ def test_episode_concept_a_renders_right_aligned_copy(
     )
     with Image.open(destination) as image:
         assert image.info["MetaFusion text side"] == "right"
-        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v1"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v2"
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(
