@@ -57,7 +57,7 @@ from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 FILE_MODE = 0o664
 SHOW_RENDERER_VERSION = 17
 SHOW_BACKGROUND_RENDERER_VERSION = 1
-EPISODE_RENDERER_VERSION = 4
+EPISODE_RENDERER_VERSION = 5
 
 @dataclass(frozen=True)
 class ShowArtworkResult:
@@ -262,11 +262,19 @@ def _draw_circuit(draw, path_data, box, width):
     draw.line(points, fill=(175, 175, 180, 150), width=max(4, width // 220), joint="curve")
 
 
-def _draw_circuit_watermark(image, path_data, box, width):
+def _draw_circuit_watermark(image, path_data, box, width, *, align="center"):
     """Composite a TV-legible circuit watermark using local image luminance."""
     points = _fit(svg_path_points(path_data), box)
     if not points:
         return image
+    if align == "left":
+        horizontal_shift = box[0] - min(point[0] for point in points)
+    elif align == "right":
+        horizontal_shift = box[2] - max(point[0] for point in points)
+    else:
+        horizontal_shift = 0
+    if horizontal_shift:
+        points = [(x + horizontal_shift, y) for x, y in points]
     left, top, right, bottom = (round(value) for value in box)
     sample = image.convert("L").crop((left, top, right, bottom))
     statistics = ImageStat.Stat(sample)
@@ -299,15 +307,10 @@ def _draw_circuit_watermark(image, path_data, box, width):
 
 
 def _episode_circuit_box(width, height, text_side):
-    """Keep the circuit centred over the copy and clear of the F1 logo."""
-    centre_x = width * (0.26 if text_side == "left" else 0.74)
-    half_width = width * 0.10
-    return (
-        centre_x - half_width,
-        height * 0.20,
-        centre_x + half_width,
-        height * 0.40,
-    )
+    """Place the circuit at the adaptive outer edge and below the F1 logo."""
+    if text_side == "left":
+        return (width * 0.045, height * 0.20, width * 0.245, height * 0.40)
+    return (width * 0.755, height * 0.20, width * 0.955, height * 0.40)
 
 
 def _photo_band(photo, size):
@@ -760,6 +763,7 @@ def render_episode_poster(episode, race, path_data, photo_path, config, destinat
         path_data,
         _episode_circuit_box(width, height, text_side),
         width,
+        align=text_side,
     )
     draw = ImageDraw.Draw(image, "RGBA")
     draw.text(
@@ -812,7 +816,7 @@ def render_episode_poster(episode, race, path_data, photo_path, config, destinat
     provenance.add_text(
         "MetaFusion renderer", f"episode-poster-v{EPISODE_RENDERER_VERSION}"
     )
-    provenance.add_text("MetaFusion design", "cinematic-broadcast-minimal-v3")
+    provenance.add_text("MetaFusion design", "cinematic-broadcast-minimal-v4")
     provenance.add_text("MetaFusion text side", text_side)
     return _atomic_save(image.convert("RGB"), destination, pnginfo=provenance)
 

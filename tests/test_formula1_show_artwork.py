@@ -1443,12 +1443,12 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-        assert image.info["MetaFusion renderer"] == "episode-poster-v4"
-        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v3"
+        assert image.info["MetaFusion renderer"] == "episode-poster-v5"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v4"
         assert image.info["MetaFusion text side"] in {"left", "right"}
         assert image.getpixel((0, 3))[0] < 180
     assert SHOW_RENDERER_VERSION == 17
-    assert EPISODE_RENDERER_VERSION == 4
+    assert EPISODE_RENDERER_VERSION == 5
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
@@ -1712,11 +1712,26 @@ def test_episode_concept_a_places_copy_opposite_subject_and_formats_date(monkeyp
     assert 30 < light_delta < 110
     assert light_watermark.getextrema()[3] == (255, 255)
 
+    edge_box = (40, 30, 280, 150)
+    left_watermark = _draw_circuit_watermark(
+        canvas, "M0 0 L25 100", edge_box, 320, align="left"
+    )
+    right_watermark = _draw_circuit_watermark(
+        canvas, "M0 0 L25 100", edge_box, 320, align="right"
+    )
+    left_bounds = ImageChops.difference(canvas, left_watermark).convert("RGB").getbbox()
+    right_bounds = (
+        ImageChops.difference(canvas, right_watermark).convert("RGB").getbbox()
+    )
+    assert left_bounds is not None and left_bounds[0] <= edge_box[0]
+    assert right_bounds is not None and right_bounds[2] >= edge_box[2]
+
     left_box = _episode_circuit_box(1920, 1080, "left")
     right_box = _episode_circuit_box(1920, 1080, "right")
-    assert (left_box[0] + left_box[2]) / 2 == pytest.approx(1920 * 0.26)
-    assert (right_box[0] + right_box[2]) / 2 == pytest.approx(1920 * 0.74)
+    assert left_box[0] == pytest.approx(1920 * 0.045)
+    assert right_box[2] == pytest.approx(1920 * 0.955)
     assert left_box[2] - left_box[0] == pytest.approx(1920 * 0.20)
+    assert right_box[2] - right_box[0] == pytest.approx(1920 * 0.20)
     assert left_box[1] == pytest.approx(1080 * 0.20)
     assert left_box[3] == pytest.approx(1080 * 0.40)
 
@@ -1744,7 +1759,7 @@ def test_episode_concept_a_renders_right_aligned_copy(
     )
     with Image.open(destination) as image:
         assert image.info["MetaFusion text side"] == "right"
-        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v3"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v4"
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(
