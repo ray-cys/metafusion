@@ -13,6 +13,7 @@ from pathlib import Path
 
 from PIL import (
     Image,
+    ImageChops,
     ImageDraw,
     ImageEnhance,
     ImageFilter,
@@ -53,7 +54,7 @@ from extensions.formula1.sessions import session_date
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 15
+SHOW_RENDERER_VERSION = 16
 SHOW_BACKGROUND_RENDERER_VERSION = 1
 EPISODE_RENDERER_VERSION = 1
 
@@ -125,7 +126,7 @@ def _show_render_fingerprints(config):
             config["show_artwork"]["poster_width"],
             config["show_artwork"]["poster_height"],
         ],
-        "design": "adaptive-concept-a-v3",
+        "design": "adaptive-concept-a-v4-subject-exposure",
     }
     background_payload = {
         "renderer": SHOW_BACKGROUND_RENDERER_VERSION,
@@ -421,6 +422,34 @@ def _adaptive_showcase_crop(photo, size, profile):
     return source.crop(box).resize(size, Image.Resampling.LANCZOS)
 
 
+def _lift_poster_subject(image, source, profile, daylight):
+    """Lift a dark car without brightening the surrounding daylight scene."""
+    width, height = image.size
+    left = max(0, round((profile.subject_box[0] - 0.055) * width))
+    top = max(0, round((profile.subject_box[1] - 0.085) * height))
+    right = min(width - 1, round((profile.subject_box[2] + 0.055) * width))
+    bottom = min(height - 1, round((profile.subject_box[3] + 0.085) * height))
+
+    region = Image.new("L", image.size, 0)
+    radius = max(8, round(min(width, height) * 0.055))
+    ImageDraw.Draw(region).rounded_rectangle(
+        (left, top, right, bottom),
+        radius=radius,
+        fill=round(190 + daylight * 35),
+    )
+    region = region.filter(ImageFilter.GaussianBlur(radius))
+
+    shadow_lookup = []
+    for value in range(256):
+        shadow_weight = max(0.0, min(1.0, (172 - value) / 112))
+        shadow_lookup.append(round(255 * shadow_weight**1.2))
+    shadows = source.convert("L").point(shadow_lookup)
+    mask = ImageChops.multiply(region, shadows)
+
+    lifted = ImageEnhance.Brightness(image).enhance(1.18 + daylight * 0.12)
+    return Image.composite(lifted, image, mask)
+
+
 def _poster_showcase_grade(photo, size):
     """Adapt daylight or night car photography to a consistent television showcase."""
     source = photo.convert("RGB")
@@ -429,7 +458,9 @@ def _poster_showcase_grade(photo, size):
         0.82, min(1.36, 112.0 / max(1.0, profile.median_luminance))
     )
 
-    image = _adaptive_showcase_crop(source, size, profile)
+    cropped = _adaptive_showcase_crop(source, size, profile)
+    cropped_profile = _poster_photo_profile(cropped)
+    image = cropped
     daylight = max(0.0, min(1.0, (profile.highlight_luminance - 150) / 85))
     image = ImageEnhance.Color(image).enhance(1.02 - daylight * 0.06)
     image = ImageEnhance.Contrast(image).enhance(1.04 - daylight * 0.03)
@@ -446,6 +477,7 @@ def _poster_showcase_grade(photo, size):
         )
         lookup.append(round(min(1.0, compressed) * 255))
     image = image.point(lookup * 3)
+    image = _lift_poster_subject(image, cropped, cropped_profile, daylight)
 
     width, height = size
     shade = Image.new("L", (1, height))
@@ -728,7 +760,9 @@ def render_show_poster(show, race, path_data, photo_path, config, destination):
     provenance = PngImagePlugin.PngInfo()
     provenance.add_text("MetaFusion asset", "Formula 1 rotating show poster")
     provenance.add_text("MetaFusion renderer", f"show-poster-v{SHOW_RENDERER_VERSION}")
-    provenance.add_text("MetaFusion design", "adaptive-concept-a-v3")
+    provenance.add_text(
+        "MetaFusion design", "adaptive-concept-a-v4-subject-exposure"
+    )
     provenance.add_text("MetaFusion championship year", str(show.year))
     provenance.add_text("MetaFusion trigger round", str(race.round_number))
     return _atomic_save(image, destination, pnginfo=provenance)

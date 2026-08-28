@@ -579,6 +579,10 @@ instead of being enclosed by a hard rectangular border. The renderer profiles
 each source rather than assuming that all photographs were shot under the same
 conditions. It safely lifts night or underexposed cars, reduces bright daylight
 and trackside highlights, retains team colour, and adapts the vignette strength.
+For strongly backlit or sunlit photographs, a feathered subject mask protects the
+detected car: its shadows and midtones are lifted independently while bright
+track, sky, barriers, and advertising remain compressed. This avoids darkening a
+car merely because the surrounding daylight scene dominates the exposure reading.
 Edge and colour saliency estimate the car's position; the protected crop retains
 the detected subject and the photograph's existing left/right visual lead room,
 so different car angles remain intentional. It never stretches or mirrors the

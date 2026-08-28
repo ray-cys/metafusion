@@ -1405,8 +1405,11 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     ) == 64
     with Image.open(poster) as image:
         assert image.size == (600, 900)
-        assert image.info["MetaFusion renderer"] == "show-poster-v15"
-        assert image.info["MetaFusion design"] == "adaptive-concept-a-v3"
+        assert image.info["MetaFusion renderer"] == "show-poster-v16"
+        assert (
+            image.info["MetaFusion design"]
+            == "adaptive-concept-a-v4-subject-exposure"
+        )
     with Image.open(background) as image:
         assert image.size == (1280, 720)
         # The source photograph is full bleed; the left is only gently shaded
@@ -1434,7 +1437,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 15
+    assert SHOW_RENDERER_VERSION == 16
     assert EPISODE_RENDERER_VERSION == 1
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
@@ -1687,6 +1690,14 @@ def test_show_poster_grade_adapts_exposure_without_clipping_team_colours():
     assert showcased_bright.getpixel((900, 450))[0] > (
         showcased_bright.getpixel((900, 450))[1] * 3
     )
+
+    backlit = Image.new("RGB", (1600, 900), (248, 245, 238))
+    ImageDraw.Draw(backlit).rounded_rectangle(
+        (650, 300, 1450, 720), 40, fill=(62, 18, 35)
+    )
+    showcased_backlit = _poster_showcase_grade(backlit, (1280, 720))
+    assert showcased_backlit.getpixel((900, 450))[0] >= 58
+    assert max(showcased_backlit.getpixel((100, 100))) < 240
 
 
 def test_show_poster_profile_preserves_car_position_and_visual_lead_room():
@@ -2195,14 +2206,17 @@ def test_missing_poster_is_restored_without_background_acquisition(
         )
     )
     assert restored.action == "restored"
-    assert restored.poster_renderer_version == 15
+    assert restored.poster_renderer_version == 16
     assert restored.poster_checksum == _checksum(poster)
     assert background.read_bytes() == background_content
     current = state.show_rotation("show:2026")
     assert current["background_checksum"] == background_checksum
     with Image.open(poster) as image:
-        assert image.info["MetaFusion renderer"] == "show-poster-v15"
-        assert image.info["MetaFusion design"] == "adaptive-concept-a-v3"
+        assert image.info["MetaFusion renderer"] == "show-poster-v16"
+        assert (
+            image.info["MetaFusion design"]
+            == "adaptive-concept-a-v4-subject-exposure"
+        )
     state.close()
 
 
