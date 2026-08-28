@@ -57,7 +57,7 @@ from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 FILE_MODE = 0o664
 SHOW_RENDERER_VERSION = 17
 SHOW_BACKGROUND_RENDERER_VERSION = 1
-EPISODE_RENDERER_VERSION = 3
+EPISODE_RENDERER_VERSION = 4
 
 @dataclass(frozen=True)
 class ShowArtworkResult:
@@ -263,21 +263,35 @@ def _draw_circuit(draw, path_data, box, width):
 
 
 def _draw_circuit_watermark(image, path_data, box, width):
-    """Composite a faint, aspect-preserving circuit trace onto ``image``."""
+    """Composite a TV-legible circuit watermark using local image luminance."""
     points = _fit(svg_path_points(path_data), box)
     if not points:
         return image
+    left, top, right, bottom = (round(value) for value in box)
+    sample = image.convert("L").crop((left, top, right, bottom))
+    statistics = ImageStat.Stat(sample)
+    luminance = statistics.mean[0]
+    detail = statistics.stddev[0]
+    detail_boost = min(12, max(0, round((detail - 24) * 0.3)))
+    shadow_alpha = min(
+        90,
+        round(48 + max(0, luminance - 90) * 0.25) + detail_boost,
+    )
+    highlight_alpha = min(
+        108,
+        max(58, round(96 - max(0, luminance - 85) * 0.2)) + detail_boost,
+    )
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay, "RGBA")
     draw.line(
         points,
-        fill=(0, 0, 0, 28),
+        fill=(4, 7, 11, shadow_alpha),
         width=max(6, width // 120),
         joint="curve",
     )
     draw.line(
         points,
-        fill=(230, 231, 234, 20),
+        fill=(235, 236, 238, highlight_alpha),
         width=max(2, width // 420),
         joint="curve",
     )
@@ -798,7 +812,7 @@ def render_episode_poster(episode, race, path_data, photo_path, config, destinat
     provenance.add_text(
         "MetaFusion renderer", f"episode-poster-v{EPISODE_RENDERER_VERSION}"
     )
-    provenance.add_text("MetaFusion design", "cinematic-broadcast-minimal-v2")
+    provenance.add_text("MetaFusion design", "cinematic-broadcast-minimal-v3")
     provenance.add_text("MetaFusion text side", text_side)
     return _atomic_save(image.convert("RGB"), destination, pnginfo=provenance)
 

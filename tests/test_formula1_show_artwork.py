@@ -1443,12 +1443,12 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-        assert image.info["MetaFusion renderer"] == "episode-poster-v3"
-        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v2"
+        assert image.info["MetaFusion renderer"] == "episode-poster-v4"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v3"
         assert image.info["MetaFusion text side"] in {"left", "right"}
         assert image.getpixel((0, 3))[0] < 180
     assert SHOW_RENDERER_VERSION == 17
-    assert EPISODE_RENDERER_VERSION == 3
+    assert EPISODE_RENDERER_VERSION == 4
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
@@ -1687,13 +1687,30 @@ def test_episode_concept_a_places_copy_opposite_subject_and_formats_date(monkeyp
     unchanged = _draw_circuit_watermark(canvas, None, (10, 10, 200, 150), 320)
     assert unchanged.tobytes() == before
 
-    watermark = _draw_circuit_watermark(
+    dark_watermark = _draw_circuit_watermark(
         canvas, "M0 0 L100 100", (80, 30, 240, 150), 320
     )
-    difference = ImageChops.difference(canvas, watermark).convert("RGB")
-    assert difference.getbbox() is not None
-    assert max(channel_max for _minimum, channel_max in difference.getextrema()) < 20
-    assert watermark.getextrema()[3] == (255, 255)
+    dark_difference = ImageChops.difference(canvas, dark_watermark).convert("RGB")
+    dark_delta = max(
+        channel_max for _minimum, channel_max in dark_difference.getextrema()
+    )
+    assert dark_difference.getbbox() is not None
+    assert 30 < dark_delta < 110
+    assert dark_watermark.getextrema()[3] == (255, 255)
+
+    light_canvas = Image.new("RGBA", (320, 180), (225, 230, 235, 255))
+    light_watermark = _draw_circuit_watermark(
+        light_canvas, "M0 0 L100 100", (80, 30, 240, 150), 320
+    )
+    light_difference = ImageChops.difference(
+        light_canvas, light_watermark
+    ).convert("RGB")
+    light_delta = max(
+        channel_max for _minimum, channel_max in light_difference.getextrema()
+    )
+    assert light_difference.getbbox() is not None
+    assert 30 < light_delta < 110
+    assert light_watermark.getextrema()[3] == (255, 255)
 
     left_box = _episode_circuit_box(1920, 1080, "left")
     right_box = _episode_circuit_box(1920, 1080, "right")
@@ -1727,7 +1744,7 @@ def test_episode_concept_a_renders_right_aligned_copy(
     )
     with Image.open(destination) as image:
         assert image.info["MetaFusion text side"] == "right"
-        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v2"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v3"
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(

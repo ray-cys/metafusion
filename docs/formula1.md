@@ -441,8 +441,10 @@ Episode cards use the race weekend's persistent team-car binding and an adaptive
 cinematic layout. MetaFusion detects the car's visual side, places the simplified
 session copy opposite it, protects the car's exposure, and applies only a soft
 local readability gradient. The session is the primary title; the round, Grand
-Prix, and date remain secondary. The circuit trace is an aspect-preserving, faint
-watermark centred above the copy column and kept clear of the F1 logo.
+Prix, and date remain secondary. The circuit trace is an aspect-preserving,
+luminance-aware watermark centred above the copy column and kept clear of the F1
+logo. Its light and dark strokes adapt to the underlying photograph so it remains
+subtle but legible at television viewing distance.
 Technical borders and the long circuit/location sentence are deliberately omitted
 so the card remains clear in Plex's smaller episode and Continue Watching tiles:
 
