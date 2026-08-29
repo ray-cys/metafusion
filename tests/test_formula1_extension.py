@@ -95,6 +95,7 @@ from extensions.formula1.runner import (
 from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import ShowArtworkResult
 from extensions.formula1.state import Formula1State, Formula1StateError
+from extensions.formula1.upgrades import Formula1UpgradeResult
 from extensions.formula1.verification import (
     _selected_path,
     _verify_artwork,
@@ -267,6 +268,14 @@ def test_opt_in_is_strict_and_partition_isolated(core):
     sections = [Section("Movies", []), Section("Formula 1", [])]
     assert not formula1_requested(core, {})
     assert not formula1_requested({"settings": {"mode": "plex"}}, {"FORMULA1_ENABLED": "true"})
+    assert formula1_requested(
+        {"settings": {"mode": "kometa"}, "_formula1_upgrade_scope": "current"},
+        {},
+    )
+    assert not formula1_requested(
+        {"settings": {"mode": "plex"}, "_formula1_upgrade_scope": "all"},
+        {},
+    )
     regular, formula = partition_formula1_sections(sections, core, {"FORMULA1_ENABLED": "yes"})
     assert [item.title for item in regular] == ["Movies"]
     assert [item.title for item in formula] == ["Formula 1"]
@@ -1556,6 +1565,67 @@ def test_runner_end_to_end_isolated_outputs(tmp_path, core, schedule_payload):
     )
     assert missing["issues"] == 1
     assert Path(missing["issue_report"]).exists()
+
+
+def test_runner_executes_explicit_formula1_artwork_upgrade(
+    tmp_path, core, schedule_payload, monkeypatch
+):
+    media = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
+    section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
+    core["_formula1_upgrade_scope"] = "current"
+    calls = []
+
+    async def upgrade(*_args):
+        calls.append("upgrade")
+        return Formula1UpgradeResult(
+            (
+                {
+                    "season_year": 2026,
+                    "round_number": 1,
+                    "lane": "episode",
+                    "status": "upgraded",
+                    "old_provider": "commons",
+                    "new_provider": "flickr",
+                    "details": {"reason": "better"},
+                },
+                {
+                    "season_year": 2026,
+                    "round_number": 1,
+                    "lane": "show_background",
+                    "status": "no-better-candidate",
+                    "old_provider": "commons",
+                    "new_provider": None,
+                    "details": {},
+                },
+            ),
+            True,
+            {},
+        )
+
+    async def rotation(*_args):
+        return ShowArtworkResult(
+            "unchanged",
+            1,
+            episode_actions={1: "unchanged"},
+            photo_path="managed-photo",
+            source_identity="managed-source",
+        )
+
+    monkeypatch.setattr("extensions.formula1.runner.upgrade_formula1_artwork", upgrade)
+    monkeypatch.setattr("extensions.formula1.runner.run_show_artwork_rotation", rotation)
+    summary = asyncio.run(
+        run_formula1_extension(
+            [section],
+            core,
+            Session(schedule_payload, '<svg><path d="M0 0 L1 1"/></svg>'),
+            logging.getLogger("formula1-upgrade"),
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    assert calls == ["upgrade"]
+    assert summary["artwork_upgraded"] == 1
+    assert summary["artwork_upgrade_skipped"] == 1
+    assert Path(summary["artwork_upgrade_report"]).is_file()
 
 
 def test_future_championship_rollover_is_end_to_end_and_year_scoped(

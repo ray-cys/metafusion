@@ -27,6 +27,7 @@ from extensions.formula1.show_artwork import (
     write_attribution_reports,
 )
 from extensions.formula1.state import Formula1State
+from extensions.formula1.upgrades import upgrade_formula1_artwork, write_upgrade_report
 from extensions.formula1.verification import (
     queue_application_verification,
     verify_due_applications,
@@ -72,6 +73,9 @@ class Formula1Summary(TypedDict):
     verification_applied: int
     verification_partial: int
     verification_report: str | None
+    artwork_upgraded: int
+    artwork_upgrade_skipped: int
+    artwork_upgrade_report: str | None
     issue_report: str | None
     log: str | None
 
@@ -323,10 +327,14 @@ async def run_formula1_extension(
         "verification_applied": 0,
         "verification_partial": 0,
         "verification_report": None,
+        "artwork_upgraded": 0,
+        "artwork_upgrade_skipped": 0,
+        "artwork_upgrade_report": None,
         "issue_report": None,
         "log": None,
     }
     issues: list[str] = []
+    upgrade_records: list[dict] = []
     current_keys = set()
     state.start_run(run_id)
     try:
@@ -424,6 +432,28 @@ async def run_formula1_extension(
                     trigger_round = detected_rounds[-1]
                     trigger_race = race_by_round.get(trigger_round)
                     if trigger_race is not None:
+                        if config.get("upgrade_scope"):
+                            upgrade = await upgrade_formula1_artwork(
+                                session,
+                                state,
+                                config,
+                                show,
+                                race_by_round,
+                                circuit_paths,
+                                config["upgrade_scope"],
+                                run_id,
+                                detail_logger,
+                            )
+                            upgrade_records.extend(upgrade.records)
+                            summary["artwork_upgraded"] += sum(
+                                record["status"] == "upgraded"
+                                for record in upgrade.records
+                            )
+                            summary["artwork_upgrade_skipped"] += sum(
+                                record["status"] != "upgraded"
+                                for record in upgrade.records
+                            )
+                            artwork_changed |= upgrade.changed
                         rotation = await run_show_artwork_rotation(
                             session,
                             state,
@@ -506,14 +536,21 @@ async def run_formula1_extension(
                                 summary["episode_artwork_preserved"] += 1
                             else:
                                 summary["episode_artwork_unchanged"] += 1
+                            binding = state.episode_round_source(show.year, round_number)
+                            provider = (
+                                binding["source"].get("candidate", {}).get("provider", "commons")
+                                if binding
+                                else "unavailable"
+                            )
                             detail_logger.info(
                                 "[Episode Artwork] %s | Round: %02d | Episode: %02d | "
-                                "Action: %s | Team: %s | Source: Wikimedia Commons",
+                                "Action: %s | Team: %s | Provider: %s",
                                 show.title,
                                 round_number,
                                 episode_number,
                                 action,
                                 episode_teams.get(round_number, "none"),
+                                provider.title(),
                             )
                         artwork_changed |= any(
                             action in {"create", "update"}
@@ -544,12 +581,22 @@ async def run_formula1_extension(
                             "restore-planned",
                             "rerender-planned",
                         }
+                        rotation_state = state.show_rotation(f"show:{show.year}")
+                        rotation_source = (
+                            rotation_state.get("source", {}) if rotation_state else {}
+                        )
+                        poster_provider = rotation_source.get("candidate", {}).get(
+                            "provider", "unavailable"
+                        )
+                        background_provider = rotation_source.get(
+                            "background_candidate", {}
+                        ).get("provider", "unavailable")
                         detail_logger.info(
                             "[Show Artwork] %s | Trigger round: %02d | Action: %s | "
                             "Poster renderer: v%s | Poster checksum: %s | "
                             "Poster reference: %s | "
                             "Poster team: %s | Background vehicle: %s | "
-                            "Source: Wikimedia Commons",
+                            "Poster provider: %s | Background provider: %s",
                             show.title,
                             rotation.trigger_round,
                             rotation.action,
@@ -558,6 +605,8 @@ async def run_formula1_extension(
                             rotation.poster_reference or "unavailable",
                             rotation.constructor or "none",
                             rotation.background_vehicle or "preserved/none",
+                            poster_provider.title(),
+                            background_provider.title(),
                         )
                 for episode in show.episodes:
                     destination = (
@@ -700,6 +749,13 @@ async def run_formula1_extension(
             if not dry_run:
                 state.remove_binding(binding["logical_key"], binding)
         summary["issues"] = len(issues)
+        if config.get("upgrade_scope"):
+            upgrade_report = write_upgrade_report(
+                config, run_id, config["upgrade_scope"], upgrade_records
+            )
+            summary["artwork_upgrade_report"] = (
+                str(upgrade_report) if upgrade_report else None
+            )
         report = _write_issues(config, run_id, issues)
         summary["issue_report"] = str(report) if report else None
         state.finish_run(run_id, "success", summary)
@@ -738,6 +794,15 @@ async def run_formula1_extension(
                 summary["event_identities_learned"],
                 summary["issues"],
             )
+            if config.get("upgrade_scope"):
+                core_logger.info(
+                    "[Formula 1] Artwork upgrade | Scope: %s | Upgraded: %d | "
+                    "Skipped/preserved: %d | Report: %s",
+                    config["upgrade_scope"],
+                    summary["artwork_upgraded"],
+                    summary["artwork_upgrade_skipped"],
+                    summary["artwork_upgrade_report"] or "unavailable",
+                )
         summary["log"] = str(log_path) if log_path else None
         return summary
     except Exception as error:

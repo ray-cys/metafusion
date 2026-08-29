@@ -539,6 +539,10 @@ the same weekend use the same car while different rounds advance through the
 available constructor roster. New episodes added to an existing round inherit
 that stored source; later provider search ordering cannot silently change it.
 
+This stability can be overridden only by the explicit, audited
+`--formula1-upgrade-artwork` command described below. It does not make scheduled
+runs opportunistically repaint existing cards.
+
 The first run after this behavior is introduced performs a one-time historical
 reconciliation. Existing byte-identical extension-managed episode cards are
 regenerated against their new per-round source, while unknown or manually
@@ -889,6 +893,44 @@ Flickr API and attribution guidance:
 <https://www.flickr.com/services/developer/attributions/>.
 This product uses the Flickr API but is not endorsed or certified by SmugMug,
 Inc.
+
+### Explicitly upgrade existing artwork to Flickr
+
+Adding a Flickr key does not silently replace established Commons bindings. Use
+one of these one-shot commands when you intentionally want to evaluate existing
+extension-managed output:
+
+```bash
+# Active race episode cards and the current show poster/background
+python metafusion.py --formula1-upgrade-artwork current
+
+# Every detected race round's episode cards and the current show pair
+python metafusion.py --formula1-upgrade-artwork all
+```
+
+The command requires Kometa mode and a configured Flickr API key. Team-car
+replacement retains the constructor already assigned to that race; it never
+changes a Ferrari round into a McLaren round merely because a different image
+scores higher. The show background is evaluated independently for stronger
+event/circuit specificity. A replacement must provide a meaningful decoded
+resolution and/or sharpness improvement, or a stronger race-specific background
+without an unacceptable quality regression.
+
+Only missing or byte-identical extension-managed files are eligible. Manual or
+modified posters, backgrounds, and episode cards are preserved. `all` does not
+repaint retained historical show-pair versions: the show-level pair represents
+the currently active race, while all detected episode-round bindings are eligible.
+Every upgraded, already-Flickr, no-better-candidate, unchanged, and
+preserved-manual decision is recorded in `formula1.sqlite3` and written to:
+
+```text
+/config/formula1/reports/formula1-artwork-upgrade-<run-id>.txt
+/config/formula1/reports/formula1-artwork-upgrade-<run-id>.json
+```
+
+The same renderer and branding files are used; this changes validated source
+photography, not the established poster/card design. Repeating the command is
+idempotent when no materially better eligible source exists.
 
 The circuit outline attribution is maintained here as required by its licence:
 “F1 circuits SVG”, ROY Jules, CC BY 4.0,

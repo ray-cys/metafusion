@@ -24,7 +24,8 @@ def formula1_requested(config, environ=None):
     environ = os.environ if environ is None else environ
     enabled = str(environ.get("FORMULA1_ENABLED", "")).strip().casefold()
     mode = str(config.get("settings", {}).get("mode", "kometa")).casefold()
-    return mode == "kometa" and enabled in TRUE_VALUES
+    explicit_upgrade = config.get("_formula1_upgrade_scope") in {"current", "all"}
+    return mode == "kometa" and (enabled in TRUE_VALUES or explicit_upgrade)
 
 
 def _merge(base, overrides):
@@ -110,6 +111,7 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     active = root / "formula1.yml"
     overrides = _read_yaml(active) if active.exists() else {}
     config = _merge(defaults, overrides)
+    config["upgrade_scope"] = core_config.get("_formula1_upgrade_scope")
     if not dry_run:
         sync_formula1_template(root)
 

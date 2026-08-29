@@ -147,6 +147,24 @@ class Formula1State:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (season_year, round_number)
                 );
+                CREATE TABLE IF NOT EXISTS artwork_upgrade_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    policy_version INTEGER NOT NULL,
+                    scope TEXT NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    round_number INTEGER NOT NULL,
+                    lane TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    old_provider TEXT,
+                    new_provider TEXT,
+                    old_source TEXT,
+                    new_source TEXT,
+                    details TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_artwork_upgrade_history_run
+                    ON artwork_upgrade_history(run_id, id);
                 CREATE TABLE IF NOT EXISTS application_verification_queue (
                     season_year INTEGER PRIMARY KEY,
                     plex_rating_key TEXT NOT NULL,
@@ -324,6 +342,20 @@ class Formula1State:
                         current,
                     ),
                 )
+            else:
+                self.connection.execute(
+                    """UPDATE show_rotation_history
+                       SET source=?, poster_destination=?, background_destination=?
+                       WHERE logical_key=? AND trigger_round=? AND constructor_id=?""",
+                    (
+                        source_json,
+                        str(poster_destination),
+                        str(background_destination),
+                        logical_key,
+                        int(trigger_round),
+                        constructor_id,
+                    ),
+                )
 
     def show_rotation_history(self):
         rows = self.connection.execute(
@@ -448,6 +480,63 @@ class Formula1State:
                     current,
                 ),
             )
+
+    def record_artwork_upgrade(
+        self,
+        run_id,
+        policy_version,
+        scope,
+        season_year,
+        round_number,
+        lane,
+        status,
+        *,
+        old_provider=None,
+        new_provider=None,
+        old_source=None,
+        new_source=None,
+        details=None,
+        now=None,
+    ):
+        current = (now or utc_now()).isoformat()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO artwork_upgrade_history(
+                       run_id, policy_version, scope, season_year, round_number,
+                       lane, status, old_provider, new_provider, old_source,
+                       new_source, details, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(run_id),
+                    int(policy_version),
+                    str(scope),
+                    int(season_year),
+                    int(round_number),
+                    str(lane),
+                    str(status),
+                    None if old_provider is None else str(old_provider),
+                    None if new_provider is None else str(new_provider),
+                    None if old_source is None else str(old_source),
+                    None if new_source is None else str(new_source),
+                    json.dumps(details or {}, sort_keys=True),
+                    current,
+                ),
+            )
+
+    def artwork_upgrade_history(self, *, run_id=None):
+        query = "SELECT * FROM artwork_upgrade_history"
+        parameters: tuple = ()
+        if run_id is not None:
+            query += " WHERE run_id=?"
+            parameters = (str(run_id),)
+        query += " ORDER BY id"
+        rows = self.connection.execute(query, parameters).fetchall()
+        values = []
+        for row in rows:
+            value = dict(row)
+            value["details"] = json.loads(value["details"])
+            values.append(value)
+        return values
 
     def queue_application_verification(
         self, season_year, rating_key, payload, delay_hours, *, now=None

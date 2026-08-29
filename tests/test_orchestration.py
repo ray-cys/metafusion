@@ -44,6 +44,27 @@ def test_operations_document_every_public_cli_option(capsys):
     assert "`-h`" in operations
 
 
+def test_formula1_artwork_upgrade_cli_enables_one_shot_kometa_run():
+    args = metafusion.parse_cli_args(["--formula1-upgrade-artwork", "all"])
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["settings"]["mode"] = "kometa"
+    config["settings"]["schedule"] = True
+    config["cleanup"]["run_cleanup"] = True
+    assert metafusion._handle_operator_command(args, config) is None
+    assert config["_formula1_upgrade_scope"] == "all"
+    assert config["metafusion_run"] is True
+    assert config["settings"]["schedule"] is False
+    assert config["cleanup"]["run_cleanup"] is False
+
+
+def test_formula1_artwork_upgrade_cli_rejects_plex_mode():
+    args = metafusion.parse_cli_args(["--formula1-upgrade-artwork", "current"])
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["settings"]["mode"] = "plex"
+    with pytest.raises(ValueError, match="RUN_MODE=kometa"):
+        metafusion._handle_operator_command(args, config)
+
+
 def test_diagnostics_guide_covers_commands_reports_and_navigation():
     root = Path(__file__).parents[1]
     guide = (root / "docs" / "diagnostics.md").read_text(encoding="utf-8")

@@ -96,6 +96,7 @@ or `config.yml` values.
 | SQLite reports | `--state-report` | None | Generate human-readable and JSON reports entirely from recorded SQLite state; no provider, Plex, YAML, or artwork access occurs. |
 | SQLite reports | `--dashboard-report` | None | Generate a self-contained offline HTML dashboard plus JSON companion from recorded SQLite state. |
 | SQLite reports | `--upgrade-canary-report` | None | Generate the configured report format from the latest detailed upgrade-canary result stored in SQLite. It does not rerun the canary or contact providers. |
+| Formula 1 artwork | `--formula1-upgrade-artwork` | `current` or `all` | Explicitly evaluate extension-managed Formula 1 artwork against Flickr and apply only a materially better, same-constructor source. Requires Kometa mode and a configured Flickr API key. |
 | SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `provenance`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
 | SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
 | SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
@@ -140,6 +141,25 @@ or `config.yml` values.
 
 `--healthcheck` belongs to the container entrypoint and is reserved for the
 image's Docker health check; it is not a public `metafusion.py` option.
+
+### Explicit Formula 1 artwork upgrade
+
+Formula 1 source bindings remain stable during normal scheduled runs. To
+deliberately evaluate existing extension-managed artwork against Flickr, run:
+
+```bash
+python metafusion.py --formula1-upgrade-artwork current
+python metafusion.py --formula1-upgrade-artwork all
+```
+
+`current` checks the active race's episode cards and current show poster and
+background. `all` checks episode cards for every detected race round, plus the
+current show pair. Both modes keep each round's bound constructor, evaluate the
+background independently, require a material decoded-quality or race-specificity
+gain, and preserve files whose managed checksum no longer matches. Decisions are
+recorded in the private Formula 1 SQLite database and in a paired TXT/JSON report.
+Repeated use is safe: an existing Flickr binding or a candidate without a
+meaningful gain is recorded and left unchanged.
 
 ## Diagnostics
 
