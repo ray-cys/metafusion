@@ -98,6 +98,7 @@ def test_dockerfile_uses_stable_python_minor_without_os_upgrade():
     assert "--require-hashes -r requirements.txt" in dockerfile
     assert "USER 10001:10001" not in dockerfile
     assert 'ENTRYPOINT ["python", "/app/docker_entrypoint.py"]' in dockerfile
+    assert "ln -s /app/docker_entrypoint.py /usr/local/bin/metafusion" in dockerfile
     assert '"--healthcheck"' in dockerfile
     assert "HEALTHCHECK" in dockerfile
 

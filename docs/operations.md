@@ -50,8 +50,14 @@ docker compose run --rm -e METAFUSION_RUN=True metafusion
 From an existing container console:
 
 ```bash
-python metafusion.py --metafusion_run
+metafusion --metafusion_run
 ```
+
+The container-provided `metafusion` command always passes through the image
+entrypoint. If the console was opened as root, it prepares only managed runtime
+paths and drops to `PUID:PGID` before starting Python. Do not invoke
+`python /app/metafusion.py` directly from an Unraid or Docker exec console;
+that deliberately triggers the root-ownership safety guard.
 
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
@@ -148,8 +154,8 @@ Formula 1 source bindings remain stable during normal scheduled runs. To
 deliberately evaluate existing extension-managed artwork against Flickr, run:
 
 ```bash
-python metafusion.py --formula1-upgrade-artwork current
-python metafusion.py --formula1-upgrade-artwork all
+metafusion --formula1-upgrade-artwork current
+metafusion --formula1-upgrade-artwork all
 ```
 
 `current` checks the active race's episode cards and current show poster and
@@ -186,22 +192,22 @@ Target one or more exact Plex libraries and rating keys:
 
 ```bash
 # Metadata only
-python metafusion.py --metafusion_run \
+metafusion --metafusion_run \
   --library Movies --rating-key 12345 --metadata-only
 
 # Enabled artwork only
-python metafusion.py --metafusion_run \
+metafusion --metafusion_run \
   --library "TV Shows" --rating-key 12345 --asset-only
 
 # Target IDs Plex already exposes through TMDb GUIDs
-python metafusion.py --metafusion_run \
+metafusion --metafusion_run \
   --library Movies --tmdb-id 550,551 --metadata-only
 
 # Process every selected movie library but no show library
-python metafusion.py --metafusion_run --media-type movie
+metafusion --metafusion_run --media-type movie
 
 # Explain why an item is or is not due without processing it
-python metafusion.py --library Movies --rating-key 12345 --explain-selection
+metafusion --library Movies --rating-key 12345 --explain-selection
 ```
 
 `--library` and `--rating-key` may be repeated or contain comma-separated
@@ -281,7 +287,7 @@ output writes and never edits Plex, YAML, or artwork.
 The canary stores its detailed checks and samples in `meta_db.sqlite3` without
 creating files during startup or normal processing. A failure stops the job
 before output processing. Generate the latest stored result on demand with
-`python metafusion.py --upgrade-canary-report`. A pass is remembered in SQLite
+`metafusion --upgrade-canary-report`. A pass is remembered in SQLite
 only after the surrounding job also completes successfully, so a later failure
 causes the canary to run again. Development builds, dry runs, and an unchanged
 published commit do not rerun it. Disable this advanced safety gate only with
@@ -303,7 +309,7 @@ or configuration-triggered evaluation can still recheck it.
 
 A changed Plex `updatedAt` marker resets the failure history and gives a parked
 item a fresh attempt. Retry selection works during incremental mode and does
-not enable cleanup. `python metafusion.py --status` shows pending, running, and
+not enable cleanup. `metafusion --status` shows pending, running, and
 parked queue totals. Retry deadlines are evaluated at job start; MetaFusion
 does not wake outside configured schedule times solely for a retry.
 
@@ -311,13 +317,13 @@ To retry a deliberate subset immediately:
 
 ```bash
 # Retry every queued item in the currently selected libraries
-python metafusion.py --retry-failed
+metafusion --retry-failed
 
 # Retry only parked items in one library
-python metafusion.py --retry-failed --retry-status parked --library Movies
+metafusion --retry-failed --retry-status parked --library Movies
 
 # Retry one known queued item
-python metafusion.py --retry-failed --library Movies --rating-key 12345
+metafusion --retry-failed --library Movies --rating-key 12345
 ```
 
 This command still performs the item's normally enabled metadata and artwork
@@ -409,8 +415,8 @@ paths, metadata values, response bodies, tokens, and API keys are not retained.
 Generate the configured report format without contacting Plex or providers:
 
 ```bash
-python metafusion.py --run-history
-python metafusion.py --schedule-advice
+metafusion --run-history
+metafusion --schedule-advice
 ```
 
 The first command includes individual retained jobs. The second is concise and
@@ -510,11 +516,11 @@ maintenance CLI only for diagnosis, a deliberate backup, or an administrator
 maintenance window:
 
 ```bash
-python metafusion.py --sqlite-maintenance check
-python metafusion.py --sqlite-maintenance backup --sqlite-target state
-python metafusion.py --sqlite-maintenance optimize
-python metafusion.py --sqlite-maintenance checkpoint --sqlite-target tmdb
-python metafusion.py --sqlite-maintenance vacuum --sqlite-target tmdb
+metafusion --sqlite-maintenance check
+metafusion --sqlite-maintenance backup --sqlite-target state
+metafusion --sqlite-maintenance optimize
+metafusion --sqlite-maintenance checkpoint --sqlite-target tmdb
+metafusion --sqlite-maintenance vacuum --sqlite-target tmdb
 ```
 
 `check` opens databases read-only and runs SQLite `quick_check`. `optimize`

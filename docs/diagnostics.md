@@ -46,7 +46,7 @@ adoption. Detailed command examples and report limitations are in
 ### Offline HTML dashboard
 
 ```bash
-python metafusion.py --dashboard-report
+metafusion --dashboard-report
 ```
 
 The command always generates both a retained timestamped dashboard and
@@ -81,7 +81,7 @@ identity and policy diagnosis.
 ### Configuration diagnosis
 
 ```bash
-python metafusion.py --doctor
+metafusion --doctor
 ```
 
 `--doctor` and `--check-config` are aliases. They validate the effective
@@ -92,7 +92,7 @@ Plex, TMDb, or Fanart.tv and do not create a report.
 ### Runtime status
 
 ```bash
-python metafusion.py --status
+metafusion --status
 ```
 
 `--status` reads the ephemeral scheduler heartbeat and query-only durable job
@@ -103,7 +103,7 @@ started successfully or `STATUS_FILE` points somewhere else.
 ### Support attachment
 
 ```bash
-python metafusion.py --support-report
+metafusion --support-report
 ```
 
 The support report records the image version and commit, platform details,
@@ -117,7 +117,7 @@ relevant redacted log section and problem-specific report.
 ### Preflight
 
 ```bash
-python metafusion.py --preflight
+metafusion --preflight
 ```
 
 Preflight verifies Plex and TMDb authentication, selected library names,
@@ -130,7 +130,7 @@ directories, probe files, or change ownership.
 ### Release qualification
 
 ```bash
-python metafusion.py --release-check
+metafusion --release-check
 ```
 
 Release qualification adds architecture, storage, durable SQLite state, and
@@ -142,7 +142,7 @@ library soak test.
 ### Compatibility contract
 
 ```bash
-python metafusion.py --compatibility-check
+metafusion --compatibility-check
 ```
 
 This command validates connector, path, and configured-mode requirements for
@@ -156,7 +156,7 @@ capability and the command exits nonzero when a required capability is absent.
 ### Artwork audit
 
 ```bash
-python metafusion.py --asset-audit
+metafusion --asset-audit
 ```
 
 The asset audit performs a full read-only artwork selection pass. It evaluates
@@ -176,7 +176,7 @@ host paths.
 ### Metadata audit
 
 ```bash
-python metafusion.py --metadata-audit
+metafusion --metadata-audit
 ```
 
 The metadata audit uses a full dry-run comparison against TMDb. Kometa mode
@@ -189,7 +189,7 @@ report, and no metadata, cache, ownership, or incremental state is written.
 ### Combined change plan
 
 ```bash
-python metafusion.py --plan
+metafusion --plan
 ```
 
 The change plan applies the same identity, schema, metadata policy, artwork
@@ -202,7 +202,7 @@ cleanup because a partial library or item scope cannot prove an orphan.
 ### Cross-mode library and artwork audit
 
 ```bash
-python metafusion.py --library-audit
+metafusion --library-audit
 ```
 
 The library audit works in Kometa and Plex modes. It lists available and
@@ -225,7 +225,7 @@ Plex metadata maintenance.
 ### TV mapping diagnosis
 
 ```bash
-python metafusion.py --mapping-diagnose --rating-key 12345
+metafusion --mapping-diagnose --rating-key 12345
 ```
 
 Mapping diagnosis compares the complete Plex season/episode inventory with
@@ -238,7 +238,7 @@ is a successful diagnostic outcome.
 ### Identity and binding inspection
 
 ```bash
-python metafusion.py --identity-inspect --rating-key 12345
+metafusion --identity-inspect --rating-key 12345
 ```
 
 Identity inspection reports the Plex rating key, media type, GUIDs and external
@@ -254,7 +254,7 @@ transitions from older versions.
 ### Unified item explanation
 
 ```bash
-python metafusion.py --explain-item --rating-key 12345
+metafusion --explain-item --rating-key 12345
 ```
 
 This is the normal starting point for one-item investigation. It combines
@@ -270,7 +270,7 @@ fallback stages are the question.
 ### Sanitized replay capture
 
 ```bash
-python metafusion.py --capture-replay --rating-key 12345
+metafusion --capture-replay --rating-key 12345
 ```
 
 Replay capture retains the same read-only identity, scheduling, policy,
@@ -290,8 +290,8 @@ safeguards and application verification](runtime-safeguards.md#post-kometa-appli
 Run Kometa first, then use:
 
 ```bash
-python metafusion.py --kometa-application-audit
-python metafusion.py --kometa-application-audit --library Movies --rating-key 12345
+metafusion --kometa-application-audit
+metafusion --kometa-application-audit --library Movies --rating-key 12345
 ```
 
 This Kometa-mode command reads MetaFusion's generated YAML, durable managed

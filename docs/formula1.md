@@ -902,10 +902,10 @@ extension-managed output:
 
 ```bash
 # Active race episode cards and the current show poster/background
-python metafusion.py --formula1-upgrade-artwork current
+metafusion --formula1-upgrade-artwork current
 
 # Every detected race round's episode cards and the current show pair
-python metafusion.py --formula1-upgrade-artwork all
+metafusion --formula1-upgrade-artwork all
 ```
 
 The command requires Kometa mode and a configured Flickr API key. Team-car

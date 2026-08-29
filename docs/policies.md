@@ -212,7 +212,7 @@ Use different physical folders if editions require different local artwork.
 
 ### Read-only asset audit
 
-Run `python metafusion.py --asset-audit` before changing artwork policy or
+Run `metafusion --asset-audit` before changing artwork policy or
 after a large path/library migration. The command forces a full artwork-only
 selection while dry-run protection remains active. It reports:
 
@@ -326,15 +326,15 @@ library-wide operation:
 
 ```bash
 # Preview restoring only values still equal to MetaFusion's last write
-python metafusion.py --plex-metadata-restore \
+metafusion --plex-metadata-restore \
   --library Movies --rating-key 12345 --dry_run
 
 # Restore recorded prior values and lock states
-python metafusion.py --plex-metadata-restore \
+metafusion --plex-metadata-restore \
   --library Movies --rating-key 12345
 
 # Keep values but remove only locks recorded as MetaFusion-created
-python metafusion.py --plex-metadata-unlock \
+metafusion --plex-metadata-unlock \
   --library Movies --rating-key 12345
 ```
 

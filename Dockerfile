@@ -25,7 +25,9 @@ RUN python -m pip install --require-hashes -r requirements.txt
 
 COPY --chown=10001:10001 . /app
 RUN mkdir -p /config /config/logs /config/cache /kometa \
-    && chown -R 10001:10001 /config /kometa
+    && chown -R 10001:10001 /config /kometa \
+    && chmod 0555 /app/docker_entrypoint.py \
+    && ln -s /app/docker_entrypoint.py /usr/local/bin/metafusion
 
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \

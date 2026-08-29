@@ -464,6 +464,8 @@ jobs:
             )
 
             docker run "${runtime[@]}" "${image}" --doctor
+            docker run "${runtime[@]}" \
+              --entrypoint /usr/local/bin/metafusion "${image}" --doctor
             docker run "${runtime[@]}" "${image}" --support-report
             docker run "${runtime[@]}" "${image}" python -c \
               'from helper.config import CACHE_DIR; from helper.state_db import MediaStateStore; store = MediaStateStore(path=CACHE_DIR / "meta_db.sqlite3"); store["movie:ci:1"] = {"server_id": "ci", "library_uuid": "movies", "library_name": "Movies", "rating_key": "1", "media_type": "movie", "tmdb_id": "550", "title": "CI Movie", "year": 1999}; store.flush(); store.close()'

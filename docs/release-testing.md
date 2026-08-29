@@ -188,8 +188,8 @@ Before promoting `develop` to `main`:
    excluded from the runtime aggregate and retain workflow-specific tests;
    the provider-maintenance tool has its own 100% line-and-branch gate. Raise any
    floor only with useful behavioral and failure-path tests.
-3. `python metafusion.py --preflight` passes in the intended deployment.
-4. `python metafusion.py --release-check` passes and its redacted report is retained.
+3. `metafusion --preflight` passes in the intended deployment.
+4. `metafusion --release-check` passes and its redacted report is retained.
 5. A full scan completes with no unexpected item failures and with cleanup
    disabled or dry-run reviewed.
 6. An immediate unchanged incremental run processes only items that are due.
