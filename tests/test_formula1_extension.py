@@ -2425,6 +2425,12 @@ def test_formula1_operator_guide_covers_the_private_runtime_contract():
         "formula1_<year>.yml",
         "formula1.sqlite3",
         "Wikimedia Commons",
+        "## One-time artwork upgrade command",
+        "metafusion --formula1-upgrade-artwork current",
+        "metafusion --formula1-upgrade-artwork all",
+        "metafusion --dry_run --formula1-upgrade-artwork current",
+        "docker exec -it <container-name>",
+        "core cleanup for that invocation",
     ):
         assert required in guide
     expected_images = {
