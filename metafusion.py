@@ -144,6 +144,7 @@ from helper.runtime import (
     JobRunLock,
     RuntimeStatus,
     validate_preflight_paths,
+    validate_runtime_identity,
     validate_runtime_paths,
 )
 from helper.state_db import (
@@ -2438,6 +2439,11 @@ def main(argv=None):
     global _shutdown_timeout
     shutdown_requested.clear()
     shutdown_complete.clear()
+    try:
+        validate_runtime_identity()
+    except RuntimeError as error:
+        print(f"Runtime safety error: {error}", file=sys.stderr)
+        return 77
     args = parse_cli_args(argv)
     new_primary_commands = [
         args.state_report,

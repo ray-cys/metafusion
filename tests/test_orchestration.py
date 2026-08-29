@@ -108,6 +108,34 @@ def test_version_command_reports_runtime_and_database_schema(capsys):
 
 
 @pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--metafusion_run"],
+        ["--support-report"],
+        ["--state-report"],
+        ["--sqlite-maintenance", "vacuum"],
+        ["--recovery-bundle"],
+        ["--formula1-upgrade-artwork", "current"],
+    ],
+)
+def test_every_direct_root_cli_category_is_rejected_before_dispatch(
+    monkeypatch, arguments, capsys
+):
+    def reject_root():
+        raise RuntimeError("root blocked")
+
+    monkeypatch.setattr(metafusion, "validate_runtime_identity", reject_root)
+    monkeypatch.setattr(
+        metafusion,
+        "parse_cli_args",
+        lambda *_args, **_kwargs: pytest.fail("CLI dispatch must not start as root"),
+    )
+
+    assert metafusion.main(arguments) == 77
+    assert "Runtime safety error: root blocked" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     "arguments, expected",
     [
         (["--metadata-only", "--asset-only"], "cannot be combined"),

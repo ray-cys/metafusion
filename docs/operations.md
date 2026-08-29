@@ -62,6 +62,12 @@ that deliberately triggers the root-ownership safety guard.
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
 
+The `metafusion` wrapper applies the configured `PUID`/`PGID` to every command
+below, including read-only reports and SQLite operations. Do not invoke
+`python /app/metafusion.py` directly from a container console; direct root
+execution is rejected before command parsing so no command can create
+root-owned output.
+
 ## Command-line reference
 
 Enter every option with two ordinary ASCII hyphens (`--`). Copy names exactly:
