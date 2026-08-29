@@ -144,7 +144,8 @@ def _background_tier(candidate):
         "current_season_team_car_fallback": 0,
         "historical_circuit_action_race_car": 1,
         "recent_circuit_action_race_car": 2,
-        "exact_event_action_race_car": 3,
+        "composite_event_action_race_car": 3,
+        "exact_event_action_race_car": 4,
     }.get(candidate.match_tier, 0)
 
 

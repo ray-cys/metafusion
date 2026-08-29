@@ -1401,7 +1401,7 @@ def test_old_background_candidate_records_are_marked_ineligible(config):
     candidate = parse_race_background_candidates(
         _race_background_payload(), 2026, config
     )[0]
-    assert candidate.eligibility_version == 7
+    assert candidate.eligibility_version == 8
     legacy = candidate.as_dict()
     legacy.pop("eligibility_version")
     assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
@@ -2627,7 +2627,7 @@ def test_background_renderer_change_remains_an_independent_full_rerender(
     assert rerendered.action == "rerendered"
     assert rerendered.constructor == first.constructor
     current = state.show_rotation("show:2026")
-    assert current["source"]["background_candidate"]["eligibility_version"] == 7
+    assert current["source"]["background_candidate"]["eligibility_version"] == 8
     assert (
         current["source"]["background_candidate"]["match_tier"]
         == "exact_event_action_race_car"

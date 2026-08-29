@@ -65,6 +65,11 @@ artwork:
 # With a Flickr key, strict Flickr results are preferred for backgrounds, then
 # posters/episode sources; Wikimedia Commons remains the next provider. A Flickr
 # result that later fails decoded-image validation does not stop Commons failover.
+# Background-only matching may combine a precise Flickr geotag, provider capture
+# date within seven days of the scheduled race, Formula 1 race-action identity,
+# and locality text when the photo omits the full event or circuit name. No such
+# composite evidence relaxes licence, subject, colour, decoding, or environment
+# validation. Poster and episode constructor matching remains strict.
 # The team-car last resort is retried automatically after provider-cache expiry.
 # Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.

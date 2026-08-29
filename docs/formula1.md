@@ -608,6 +608,16 @@ Commons discovery. Search terms discover candidates but never prove identity;
 accepted results must independently establish the season, Formula 1 subject,
 constructor or exact event/circuit, compatible licence, and author.
 
+For backgrounds only, Flickr may also establish event context from several
+independent weaker signals when a photograph omits the full event or circuit
+name. The photo must still identify Formula 1 race-car action and must have a
+provider capture date in the target season and within seven days of the scheduled
+race. It must additionally have either a city-or-better geotag within 32 km of
+the circuit or an explicit locality match. This is stored as
+`composite_event_action_race_car` with its contributing evidence. Geolocation or
+capture time alone is never sufficient, and this policy does not apply to show-
+poster or episode constructor identity.
+
 Background discovery prioritizes:
 
 1. exact-event/circuit, current-season Formula 1 race action;

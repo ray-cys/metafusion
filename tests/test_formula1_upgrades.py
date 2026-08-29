@@ -186,7 +186,8 @@ def test_record_and_report_outputs(tmp_path):
 
 
 def test_background_tiers_are_ordered():
-    assert upgrades._background_tier(_background(tier="exact_event_action_race_car")) == 3
+    assert upgrades._background_tier(_background(tier="exact_event_action_race_car")) == 4
+    assert upgrades._background_tier(_background(tier="composite_event_action_race_car")) == 3
     assert upgrades._background_tier(_background(tier="recent_circuit_action_race_car")) == 2
     assert upgrades._background_tier(_background(tier="historical_circuit_action_race_car")) == 1
     assert upgrades._background_tier(_background(tier="unknown")) == 0

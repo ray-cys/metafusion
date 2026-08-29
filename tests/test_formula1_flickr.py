@@ -10,7 +10,10 @@ from extensions.formula1.flickr import (
     FlickrError,
     _allowed_licences,
     _background_queries,
+    _background_searches,
     _common_photo_fields,
+    _composite_background_evidence,
+    _distance_km,
     _flickr_json,
     _licences,
     _mime,
@@ -225,7 +228,7 @@ def test_flickr_background_requires_event_or_circuit_and_action(tmp_path):
     assert [candidate.page_id for candidate in candidates] == [54900123456]
     assert candidates[0].provider == "flickr"
     assert {value["reason"] for value in diagnostics} == {
-        "event-circuit-year-mismatch",
+        "insufficient-event-context",
         "rejected-subject-or-series",
     }
 
@@ -250,12 +253,113 @@ def test_flickr_background_accepts_capture_date_as_safe_year_evidence(tmp_path):
     assert "capture-season" in candidates[0].evidence
 
 
+def test_flickr_background_accepts_bounded_geo_race_week_composite_evidence(
+    tmp_path,
+):
+    config = load_formula1_config(_core(tmp_path), tmp_path / "config", dry_run=True)
+    licences = _allowed_licences(_licence_payload())
+    photo = _photo(
+        title="Ferrari Formula 1 cars racing under lights",
+        description={"_content": "F1 race cars wheel to wheel on track during qualifying"},
+        tags="formula1 f1 race car racing action track atmosphere",
+        datetaken="2026-03-07 21:22:10",
+        latitude="-37.8500",
+        longitude="144.9682",
+        accuracy="16",
+    )
+
+    candidates = parse_flickr_background_candidates(
+        {"photos": {"photo": [photo]}}, _race(), config, licences
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].match_tier == "composite_event_action_race_car"
+    assert {
+        "capture-season",
+        "race-week-capture",
+        "geotag-near-circuit",
+        "composite-event-context",
+    }.issubset(candidates[0].evidence)
+
+
+def test_flickr_background_composite_evidence_requires_precise_geo_or_locality(
+    tmp_path,
+):
+    config = load_formula1_config(_core(tmp_path), tmp_path / "config", dry_run=True)
+    licences = _allowed_licences(_licence_payload())
+    base = {
+        "title": "Formula 1 cars racing under lights",
+        "description": {"_content": "F1 race cars racing on track during qualifying"},
+        "tags": "formula1 f1 race car racing action track atmosphere",
+        "datetaken": "2026-03-07 21:22:10",
+    }
+    photos = [
+        _photo(id="41", **base, latitude="-33.86", longitude="151.21", accuracy="16"),
+        _photo(id="42", **base, latitude="-37.85", longitude="144.97", accuracy="6"),
+        _photo(
+            **{
+                **base,
+                "id": "43",
+                "tags": "formula1 f1 race car racing action melbourne",
+            },
+            latitude="",
+            longitude="bad",
+            accuracy="bad",
+        ),
+        _photo(
+            **{
+                **base,
+                "id": "44",
+                "tags": "formula1 f1 race car racing action",
+                "datetaken": "not-a-date",
+            },
+            latitude="-37.85",
+            longitude="144.97",
+            accuracy="16",
+        ),
+    ]
+    diagnostics = []
+
+    candidates = parse_flickr_background_candidates(
+        {"photos": {"photo": photos}}, _race(), config, licences, diagnostics
+    )
+
+    assert [candidate.page_id for candidate in candidates] == [43]
+    assert {item["reason"] for item in diagnostics} == {"insufficient-event-context"}
+    assert "locality" in candidates[0].evidence
+    assert "geotag-near-circuit" not in candidates[0].evidence
+
+
+def test_flickr_composite_helpers_handle_missing_schedule_and_coordinate_edges():
+    race = _race()
+    photo = _photo(datetaken="2026-03-07", latitude="-37.85", longitude="144.97")
+    accepted, evidence, score = _composite_background_evidence(
+        photo, race, "formula 1 race car racing melbourne"
+    )
+    assert accepted and score >= 7
+    assert "race-week-capture" in evidence
+    assert _distance_km(-37.8497, 144.968, -37.8500, 144.9682) < 1
+
+    no_schedule = SimpleNamespace(**{**race.__dict__, "race_date": "invalid"})
+    accepted, evidence, _score = _composite_background_evidence(
+        photo, no_schedule, "formula 1 race car racing melbourne"
+    )
+    assert not accepted and "race-week-capture" not in evidence
+
+
 def test_flickr_queries_are_role_specific_and_extensive():
     race_queries = _background_queries(_race())
+    race_searches = _background_searches(_race())
     team_queries = _team_queries(2026, ConstructorData("ferrari", "Ferrari"))
     assert len(race_queries) >= 8
     assert any("wheel to wheel" in query for query in race_queries)
     assert any("track atmosphere" in query for query in race_queries)
+    geo_searches = [search for search in race_searches if isinstance(search, dict)]
+    assert len(geo_searches) == 2
+    assert all(search["radius"] == "32.0" for search in geo_searches)
+    assert all(search["min_taken_date"].startswith("2026-03-01") for search in geo_searches)
+    no_geo_race = SimpleNamespace(**{**_race().__dict__, "latitude": None})
+    assert _background_searches(no_geo_race) == _background_queries(no_geo_race)
     assert len(team_queries) >= 5
     assert all("Ferrari" in query for query in team_queries)
 
@@ -413,7 +517,10 @@ def test_flickr_search_cache_live_dedupe_and_stale(monkeypatch):
     )
     assert source == "cache" and len(cached) == 3
 
+    live_calls = []
+
     async def live(*_args):
+        live_calls.append(_args)
         return payload
 
     monkeypatch.setattr("extensions.formula1.flickr._flickr_json", live)
@@ -423,6 +530,23 @@ def test_flickr_search_cache_live_dedupe_and_stale(monkeypatch):
     )
     assert source == "flickr" and [item["id"] for item in found] == ["1"]
     assert state.saved is not None
+    geo_state = MemoryState()
+    asyncio.run(
+        _search(
+            None,
+            geo_state,
+            config,
+            "geo-key",
+            ({"text": "Formula 1 racing", "lat": "-37.85"},),
+            {"4": {}},
+            parser,
+            logger,
+        )
+    )
+    parameters = live_calls[-1][-1]
+    assert parameters["lat"] == "-37.85"
+    assert parameters["content_types"] == "0"
+    assert "geo" in parameters["extras"]
 
     refreshed_state = MemoryState(
         current={"photos": {"photo": [{"id": "cached"}]}}

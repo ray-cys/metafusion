@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import re
 from collections import Counter
+from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
 from extensions.formula1.commons import (
@@ -30,9 +32,12 @@ from extensions.formula1.race_background import (
 
 PROVIDER = "flickr"
 LICENSE_PROVIDER = "flickr-licenses"
-SEARCH_VERSION = 2
-MAX_QUERIES = 9
+SEARCH_VERSION = 3
+MAX_QUERIES = 11
 FLICKR_REQUEST_INTERVAL_SECONDS = 0.25
+BACKGROUND_GEO_RADIUS_KM = 32.0
+BACKGROUND_GEO_MINIMUM_ACCURACY = 11
+BACKGROUND_RACE_WINDOW_DAYS = 7
 REJECTED_IDENTITIES = {
     "black and white",
     "diecast",
@@ -257,6 +262,110 @@ def _capture_year(photo):
     return int(match.group(1)) if match else None
 
 
+def _capture_date(photo):
+    """Parse Flickr's provider-supplied taken date without trusting upload time."""
+    raw = str(photo.get("datetaken") or "").strip()
+    try:
+        return datetime.fromisoformat(raw).date()
+    except ValueError:
+        return None
+
+
+def _race_date(race):
+    try:
+        return date.fromisoformat(str(race.race_date))
+    except (TypeError, ValueError):
+        return None
+
+
+def _coordinate(photo, name):
+    try:
+        return float(photo.get(name))
+    except (TypeError, ValueError):
+        return None
+
+
+def _distance_km(first_latitude, first_longitude, second_latitude, second_longitude):
+    """Return great-circle distance for independently supplied provider coordinates."""
+    radius = 6371.0088
+    first_latitude, second_latitude = map(math.radians, (first_latitude, second_latitude))
+    latitude_delta = second_latitude - first_latitude
+    longitude_delta = math.radians(second_longitude - first_longitude)
+    value = (
+        math.sin(latitude_delta / 2) ** 2
+        + math.cos(first_latitude)
+        * math.cos(second_latitude)
+        * math.sin(longitude_delta / 2) ** 2
+    )
+    return radius * 2 * math.asin(min(1.0, math.sqrt(value)))
+
+
+def _identity_match(identity, value):
+    terms = tuple(
+        term for term in _normalize(value).split() if len(term) > 3
+    )
+    return _contains_terms(identity, terms)
+
+
+def _composite_background_evidence(photo, race, identity):
+    """Combine independent weak context without relaxing subject or licence safety."""
+    taken = _capture_date(photo)
+    scheduled = _race_date(race)
+    capture_season = bool(taken and taken.year == int(race.year))
+    race_week = bool(
+        taken
+        and scheduled
+        and abs((taken - scheduled).days) <= BACKGROUND_RACE_WINDOW_DAYS
+    )
+    locality_match = _identity_match(identity, race.locality)
+    country_match = _identity_match(identity, race.country)
+    latitude = _coordinate(photo, "latitude")
+    longitude = _coordinate(photo, "longitude")
+    try:
+        accuracy = int(photo.get("accuracy") or 0)
+    except (TypeError, ValueError):
+        accuracy = 0
+    distance = None
+    if (
+        latitude is not None
+        and longitude is not None
+        and race.latitude is not None
+        and race.longitude is not None
+    ):
+        distance = _distance_km(
+            float(race.latitude),
+            float(race.longitude),
+            latitude,
+            longitude,
+        )
+    geo_near = bool(
+        distance is not None
+        and distance <= BACKGROUND_GEO_RADIUS_KM
+        and accuracy >= BACKGROUND_GEO_MINIMUM_ACCURACY
+    )
+    score = (
+        (2 if capture_season else 0)
+        + (3 if race_week else 0)
+        + (4 if geo_near else 0)
+        + (2 if locality_match else 0)
+        + (1 if country_match else 0)
+    )
+    accepted = capture_season and race_week and (geo_near or locality_match) and score >= 7
+    evidence = tuple(
+        name
+        for name, matched in (
+            ("capture-season", capture_season),
+            ("race-week-capture", race_week),
+            ("geotag-near-circuit", geo_near),
+            ("locality", locality_match),
+            ("country", country_match),
+            ("composite-event-context", accepted),
+        )
+        if matched
+    )
+    return accepted, evidence, score
+
+
 def _common_photo_fields(photo, licences):
     licence = licences.get(str(photo.get("license") or ""))
     image_url, width, height = _photo_dimensions(photo)
@@ -357,6 +466,12 @@ def parse_flickr_background_candidates(payload, race, config, licences, diagnost
             exact_year = int(race.year) in years
             recent_year = any(0 <= int(race.year) - year <= 3 for year in years)
             active = _active_race_match(identity) or _dramatic_score(identity) >= 2
+            composite_match, composite_evidence, composite_score = (
+                _composite_background_evidence(photo, race, identity)
+            )
+            strict_match = (exact_year and (event_match or circuit_match)) or (
+                recent_year and circuit_match
+            )
             if width < minimum_width or height < minimum_height:
                 reason = "undersized"
             elif not 1.45 <= width / max(height, 1) <= 2.30:
@@ -365,14 +480,16 @@ def parse_flickr_background_candidates(payload, race, config, licences, diagnost
                 reason = "not-formula-one-race-action"
             elif any(term in identity for term in REJECTED_IDENTITIES):
                 reason = "rejected-subject-or-series"
-            elif not ((exact_year and (event_match or circuit_match)) or (recent_year and circuit_match)):
-                reason = "event-circuit-year-mismatch"
+            elif not (strict_match or composite_match):
+                reason = "insufficient-event-context"
         if reason:
             if diagnostics is not None:
                 diagnostics.append({"title": str(photo.get("title") or "unknown"), "reason": reason})
             continue
         if exact_year and (event_match or circuit_match):
             tier, tier_score = "exact_event_action_race_car", 540
+        elif composite_match:
+            tier, tier_score = "composite_event_action_race_car", 515
         else:
             tier, tier_score = "recent_circuit_action_race_car", 500
         scene_match = any(term in identity for term in environment.scene_terms)
@@ -390,9 +507,11 @@ def parse_flickr_background_candidates(payload, race, config, licences, diagnost
             )
             if matched
         )
+        evidence = tuple(dict.fromkeys((*evidence, *composite_evidence)))
         evidence = (*evidence, "4k-source" if width >= preferred_width and height >= preferred_height else "fallback-resolution-source")
         score = tier_score + min(width * height / 1_000_000, 35)
         score += _dramatic_score(identity) * 5 + (15 if scene_match else 0)
+        score += composite_score
         candidates.append(
             RaceBackgroundCandidate(
                 page_id=int(photo["id"]),
@@ -451,6 +570,31 @@ def _background_queries(race):
     )[:MAX_QUERIES]
 
 
+def _background_searches(race):
+    """Add bounded race-week geo discovery without making geo a sole identity proof."""
+    searches: list[str | dict[str, str]] = list(_background_queries(race))
+    scheduled = _race_date(race)
+    if scheduled is None or race.latitude is None or race.longitude is None:
+        return tuple(searches)
+    window_start = scheduled - timedelta(days=BACKGROUND_RACE_WINDOW_DAYS)
+    window_end = scheduled + timedelta(days=BACKGROUND_RACE_WINDOW_DAYS)
+    shared = {
+        "lat": str(float(race.latitude)),
+        "lon": str(float(race.longitude)),
+        "radius": str(BACKGROUND_GEO_RADIUS_KM),
+        "radius_units": "km",
+        "min_taken_date": f"{window_start.isoformat()} 00:00:00",
+        "max_taken_date": f"{window_end.isoformat()} 23:59:59",
+    }
+    searches.extend(
+        (
+            {**shared, "text": "Formula 1 race car racing action"},
+            {**shared, "text": "F1 cars qualifying race track"},
+        )
+    )
+    return tuple(searches[:MAX_QUERIES])
+
+
 async def _search(
     session,
     state,
@@ -470,22 +614,25 @@ async def _search(
     seen = set()
     try:
         for query in queries:
+            search_parameters = (
+                {"text": query} if isinstance(query, str) else dict(query)
+            )
             response = await _flickr_json(
                 session,
                 config,
                 "flickr.photos.search",
                 {
-                    "text": query,
+                    **search_parameters,
                     "license": ",".join(sorted(licences)),
                     "sort": "interestingness-desc",
                     "safe_search": "1",
-                    "content_type": "1",
+                    "content_types": "0",
                     "media": "photos",
                     "per_page": "100",
                     "page": "1",
                     "extras": (
                         "description,license,date_taken,owner_name,original_format,"
-                        "o_dims,views,tags,machine_tags,url_o,url_l,url_c"
+                        "o_dims,views,geo,tags,machine_tags,url_o,url_l,url_c"
                     ),
                 },
             )
@@ -537,7 +684,7 @@ async def search_flickr_backgrounds(
         state,
         config,
         key,
-        _background_queries(race),
+        _background_searches(race),
         licences,
         parser,
         logger,

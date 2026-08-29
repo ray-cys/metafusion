@@ -23,11 +23,12 @@ from extensions.formula1.commons import (
 )
 
 PROVIDER = "wikimedia-commons-race-background"
-BACKGROUND_CANDIDATE_VERSION = 7
+BACKGROUND_CANDIDATE_VERSION = 8
 CATEGORY_DEPTH_LIMIT = 2
 CATEGORY_FETCH_LIMIT = 28
 ACTION_BACKGROUND_TIERS = (
     "exact_event_action_race_car",
+    "composite_event_action_race_car",
     "recent_circuit_action_race_car",
     "historical_circuit_action_race_car",
 )
