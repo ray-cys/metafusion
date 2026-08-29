@@ -39,6 +39,10 @@ from extensions.formula1.commons import (
     load_constructors,
     search_commons,
 )
+from extensions.formula1.flickr import (
+    search_flickr_backgrounds,
+    search_flickr_team_photos,
+)
 from extensions.formula1.race_background import (
     ACTION_BACKGROUND_TIERS,
     BACKGROUND_CANDIDATE_VERSION,
@@ -1282,6 +1286,7 @@ def _attribution_reports(config, history, round_sources=()):
         candidate = source["candidate"]
         poster_record = {
             "scope": "show_poster",
+            "provider": candidate.get("provider", "wikimedia-commons"),
             "season_year": item["season_year"],
             "trigger_round": item["trigger_round"],
             "constructor_id": item["constructor_id"],
@@ -1300,6 +1305,7 @@ def _attribution_reports(config, history, round_sources=()):
                 f"Season {poster_record['season_year']} • Round "
                 f"{poster_record['trigger_round']:02d}",
                 "Scope: show poster",
+                f"Provider: {poster_record['provider']}",
                 f"Team: {poster_record['constructor_name']}",
                 f"Source: {poster_record['source_title']}",
                 f"Page: {poster_record['source_page']}",
@@ -1315,6 +1321,9 @@ def _attribution_reports(config, history, round_sources=()):
             background_sources = source.get("background_provider_sources") or {}
             background_record = {
                 "scope": "show_background",
+                "provider": background.get(
+                    "provider", "wikimedia-commons-race-background"
+                ),
                 "season_year": item["season_year"],
                 "trigger_round": item["trigger_round"],
                 "vehicle_name": background["vehicle_name"],
@@ -1342,6 +1351,7 @@ def _attribution_reports(config, history, round_sources=()):
                     f"Season {background_record['season_year']} • Round "
                     f"{background_record['trigger_round']:02d}",
                     "Scope: show background",
+                    f"Provider: {background_record['provider']}",
                     f"Vehicle: {background_record['vehicle_name']}",
                     f"Subject: {background_record['subject_type']}",
                     f"Match tier: {background_record['match_tier']}",
@@ -1365,6 +1375,7 @@ def _attribution_reports(config, history, round_sources=()):
             continue
         record = {
             "scope": "episode_round",
+            "provider": candidate.get("provider", "wikimedia-commons"),
             "season_year": item["season_year"],
             "trigger_round": item["round_number"],
             "constructor_id": item["constructor_id"],
@@ -1382,6 +1393,7 @@ def _attribution_reports(config, history, round_sources=()):
             [
                 f"Season {record['season_year']} • Round {record['trigger_round']:02d}",
                 "Scope: episode cards",
+                f"Provider: {record['provider']}",
                 f"Team: {record['constructor_name']}",
                 f"Source: {record['source_title']}",
                 f"Page: {record['source_page']}",
@@ -1408,25 +1420,32 @@ async def _select_source(session, state, config, year, current, trigger_round, l
     roster, roster_source = await load_constructors(session, state, config, year, logger)
     diagnostics = []
     for constructor in _candidate_order(roster, current, trigger_round):
-        try:
-            candidates, search_source = await search_commons(
-                session, state, config, year, constructor, roster, logger
-            )
-        except RuntimeError as error:
-            diagnostics.append(f"{constructor.name}: {error}")
-            continue
-        for candidate in candidates:
+        searches = (
+            ("Flickr", search_flickr_team_photos),
+            ("Wikimedia Commons", search_commons),
+        )
+        for provider_name, search in searches:
             try:
-                photo_path, image_source = await acquire_candidate_image(
-                    session, config, candidate
+                candidates, search_source = await search(
+                    session, state, config, year, constructor, roster, logger
                 )
-                return candidate, photo_path, {
-                    "roster": roster_source,
-                    "search": search_source,
-                    "image": image_source,
-                }
             except RuntimeError as error:
-                diagnostics.append(f"{constructor.name}/{candidate.title}: {error}")
+                diagnostics.append(f"{provider_name}/{constructor.name}: {error}")
+                continue
+            for candidate in candidates:
+                try:
+                    photo_path, image_source = await acquire_candidate_image(
+                        session, config, candidate
+                    )
+                    return candidate, photo_path, {
+                        "roster": roster_source,
+                        "search": search_source,
+                        "image": image_source,
+                    }
+                except RuntimeError as error:
+                    diagnostics.append(
+                        f"{provider_name}/{constructor.name}/{candidate.title}: {error}"
+                    )
     reason = "; ".join(diagnostics[-4:]) or "no licensed current-season candidate matched"
     raise RuntimeError(reason)
 
@@ -1516,10 +1535,11 @@ def _requested_commons_width(url, width):
 
 async def _acquire_background_image(session, config, candidate):
     width = config["show_artwork"]["minimum_background_source_width"]
-    candidate = replace(
-        candidate,
-        image_url=_requested_commons_width(candidate.image_url, width),
-    )
+    if candidate.provider.startswith("wikimedia-commons"):
+        candidate = replace(
+            candidate,
+            image_url=_requested_commons_width(candidate.image_url, width),
+        )
     return await acquire_candidate_image(
         session,
         _background_acquisition_config(config),
@@ -1580,7 +1600,11 @@ async def _team_car_background_fallback(session, config, race, candidate, diagno
         page_id=candidate.page_id,
         title=candidate.title,
         page_url=candidate.page_url,
-        image_url=_requested_commons_width(candidate.image_url, minimum_width),
+        image_url=(
+            _requested_commons_width(candidate.image_url, minimum_width)
+            if candidate.provider.startswith("wikimedia-commons")
+            else candidate.image_url
+        ),
         width=candidate.width,
         height=candidate.height,
         mime=candidate.mime,
@@ -1596,6 +1620,7 @@ async def _team_car_background_fallback(session, config, race, candidate, diagno
         race_key=environment.race_key,
         evidence=("current-season-team-car", source_quality, "last-resort-fallback"),
         eligibility_version=BACKGROUND_CANDIDATE_VERSION,
+        provider=candidate.provider,
     )
     perceptual_hash = (
         _perceptual_hash(photo_path)
@@ -1633,13 +1658,23 @@ async def _select_background_source(
 ):
     environment = derive_race_environment(race)
     diagnostics = []
-    try:
-        candidates, search_source = await search_race_backgrounds(
-            session, state, config, race, logger
-        )
-    except RuntimeError as error:
-        candidates, search_source = [], "unavailable"
-        diagnostics.append(f"race-aware search failed: {error}")
+    candidates = []
+    search_source = "unavailable"
+    for provider_name, search in (
+        ("Flickr", search_flickr_backgrounds),
+        ("Wikimedia Commons", search_race_backgrounds),
+    ):
+        try:
+            provider_candidates, provider_source = await search(
+                session, state, config, race, logger
+            )
+        except RuntimeError as error:
+            diagnostics.append(f"{provider_name} race-aware search failed: {error}")
+            continue
+        if provider_candidates:
+            candidates = provider_candidates
+            search_source = provider_source
+            break
     if not candidates:
         diagnostics.append(
             "no safely licensed colour Formula 1 race-action photograph "
@@ -2105,7 +2140,7 @@ async def run_show_artwork_rotation(
             (
                 f"No safe cached/current team-car source for poster maintenance: {error}"
                 if poster_only_maintenance
-                else f"No safe Wikimedia Commons race-car/background pair: {error}"
+                else f"No safe licensed race-car/background pair: {error}"
             ),
             episode_references=episode_references,
             episode_actions=episode_actions,

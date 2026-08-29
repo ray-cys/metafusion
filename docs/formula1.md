@@ -104,7 +104,7 @@ explicitly says otherwise.
 | `show_artwork.poster_width`, `poster_height` | `1000`, `1500` | Show poster dimensions; must remain exactly 2:3. |
 | `show_artwork.background_width`, `background_height` | `3840`, `2160` | Clean show-background output dimensions; the default is true 4K UHD and must remain exactly 16:9. |
 | `show_artwork.episode_width`, `episode_height` | `1920`, `1080` | Episode-card dimensions, kept at Full HD independently of the show background. |
-| `show_artwork.minimum_source_width`, `minimum_source_height` | `1600`, `900` | Minimum decoded Commons photograph dimensions for portrait and episode artwork. |
+| `show_artwork.minimum_source_width`, `minimum_source_height` | `1600`, `900` | Minimum decoded Flickr or Commons photograph dimensions for portrait and episode artwork. |
 | `show_artwork.minimum_background_source_width`, `minimum_background_source_height` | `3840`, `2160` | Preferred decoded photograph dimensions for a genuine 4K show-background source. |
 | `show_artwork.fallback_background_source_width`, `fallback_background_source_height` | `1600`, `900` | Last acceptable source floor when no 4K photograph survives the same subject, environment, colour, licence, decoding, and sharpness checks. The final background is still rendered at the configured 3840×2160 output size. |
 | `show_artwork.retention_pairs_per_season` | `30` | Maximum retained versioned managed show pairs per championship. |
@@ -117,6 +117,9 @@ explicitly says otherwise.
 | `providers.*_url` | packaged HTTPS URLs | Jolpica, Formula1.com, circuit SVG/manifest, and Commons endpoints. These are adapter contracts, not normal tuning controls. |
 | `providers.cache_hours` | `24` | Validity of schedule, facts, profile, and circuit-provider cache entries. |
 | `providers.commons_cache_hours` | `24` | Validity of team-car and race-car/background Commons discovery results. |
+| `providers.flickr_api_key` | empty | Optional Flickr public API key. `FORMULA1_FLICKR_API_KEY` overrides this value. The secret and OAuth token are not needed. |
+| `providers.flickr_url` | official Flickr REST URL | Pinned provider contract; not a normal tuning control. |
+| `providers.flickr_cache_hours` | `24` | Flickr search and live licence-registry cache validity. |
 | `providers.retries` | `3` | Bounded provider attempts, from 1 through 5. |
 | `cleanup.enabled` | `false` | Enables reconciliation only for extension-owned state and byte-identical managed artwork. Review a dry run first. |
 | `cleanup.confirmation_scans` | `2` | Consecutive missing inventories required before cleanup eligibility. |
@@ -342,7 +345,7 @@ The corresponding directory layout is:
     │   └── font-bold.ttf            # optional, user supplied
     ├── cache/
     │   ├── formula1.sqlite3         # isolated state, cache, bindings and history
-    │   └── show-artwork/            # validated Commons source cache
+    │   └── show-artwork/            # validated Flickr/Commons source cache
     ├── logs/
     │   └── formula1-<run-id>.log
     └── reports/
@@ -430,7 +433,7 @@ after Kometa changes the Plex display title to `Formula 1 (<year>)`.
 
 These examples were produced by the actual deterministic renderers using generic
 branding and synthetic source-photo placeholders. Runtime output uses your
-supplied logo/fonts and separately validated, licensed Wikimedia Commons team-car
+supplied logo/fonts and separately validated, licensed Flickr or Wikimedia Commons team-car
 or race-background photographs.
 
 | Race-season poster | Rotating show poster |
@@ -530,7 +533,7 @@ detected programmes. Each card has a unique round/episode destination and is
 referenced directly by `file_poster` in that episode's Kometa YAML. Plex episode
 views and Continue Watching can use the card after Kometa applies the file.
 Each race round receives one deterministic current-season constructor and one
-validated Commons source. The binding is stored in the isolated Formula 1
+validated provider source. The binding is stored in the isolated Formula 1
 SQLite database, so practice, qualifying, Sprint, race, and analysis cards from
 the same weekend use the same car while different rounds advance through the
 available constructor roster. New episodes added to an existing round inherit
@@ -754,11 +757,12 @@ Provider responses are validated, cached in the extension database, retried, and
 may use an explicitly logged stale cache during a temporary outage. Missing
 schedule identity prevents that round from being written rather than guessing.
 
-Current-season car photographs come from the Wikimedia Commons API without an
-API key. MetaFusion discovers the live constructor roster from Jolpica and uses
-bounded paginated searches derived from the current constructor name, ID, and
-known renamed-team aliases. It requires the season year plus an unambiguous team
-identity in the Commons file title. It rejects historic cars, models,
+Current-season car photographs prefer Flickr when a public Flickr API key is
+configured, then fall back to Wikimedia Commons. MetaFusion discovers the live
+constructor roster from Jolpica and uses bounded searches derived from the current
+constructor name, ID, and known renamed-team aliases. It requires the season year,
+Formula 1/race-car evidence, and an unambiguous team identity in the source title,
+description, or tags. It rejects historic cars, models,
 sculptures, safety cars, portraits, undersized or portrait images, ambiguous
 teams, non-image responses, corrupt or blank files, and incompatible licences.
 Accepted licences are Public Domain, CC0, and attribution-only CC BY variants;
@@ -768,7 +772,16 @@ visual content, and sharpness before being cached under `/config/formula1/cache`
 If no qualifying reusable image has been published yet, the previous safe pair
 is preserved and the unresolved round retries after cache expiry.
 
-Show backgrounds use a separate race-aware Commons adapter and cache. Discovery
+Show backgrounds prefer a separate race-aware Flickr adapter and then use the
+existing race-aware Commons adapter. Flickr queries cover exact event and circuit
+identities, current/recent seasons, qualifying and race action, wheel-to-wheel
+racing, panning/motion, wet-track spray, dusk, night lighting, and track
+atmosphere. Those words discover candidates; they never prove identity. A result
+must still independently contain Formula 1, race-car/action, year, and exact event
+or circuit evidence before decoded-pixel checks. This rejects dramatic but
+unrelated cars, circuits, support races, and location photographs.
+
+Commons discovery
 uses event/category ancestry only to establish the circuit or location. The image's
 own title, description, and native Commons categories must independently identify
 a visible Formula 1 car actively on track; unrelated people, empty track views,
@@ -794,8 +807,8 @@ toys, models, sculptures, simulators, museum/showroom displays, black-and-white 
 effectively monochrome images, unrelated circuits or racing series, portrait media,
 incompatible licences, corrupt files, and undersized images are rejected. TXT and
 JSON attribution records include subject type, match tier, expected environment,
-race key, and matching evidence. There is no API key, annual vehicle list,
-circuit-specific rule, or user configuration to maintain. Candidate rejection
+race key, and matching evidence. There is no annual vehicle list or circuit-specific
+rule to maintain. Candidate rejection
 totals and bounded per-file reasons are written at DEBUG level. Public Domain,
 CC0, and attribution-only CC BY remain the accepted licences; broadening the
 candidate date never relaxes identity, colour, or licence safety.
@@ -816,6 +829,8 @@ round.
 
 The daily live-provider canary checks Jolpica schedule identity, Formula1.com
 calendar-link markup, a circuit SVG, and current-season Wikimedia Commons search.
+Flickr uses deterministic fixture replays because its public search requires a
+user-owned key; repository workflows never contain or borrow that key.
 Fixture replays cover structured and visible-HTML Formula1.com fact layouts. A
 provider change fails GitHub Actions and uses normal repository notifications;
 it never edits runtime data or opens an automatic compatibility PR.
@@ -825,7 +840,7 @@ new race identity, circuit, country spelling, and session field, then verifies
 independent YAML, artwork, SQLite state, learned identity, and session dating.
 
 For every retained generated show pair and persistent episode-round source, the
-TXT and JSON attribution reports record the asset scope, Commons page, source
+TXT and JSON attribution reports record the asset scope, provider, source page,
 title, author, licence, licence URL, vehicle/team, season, and trigger round. The
 show poster's team-car source and show background's race-matched source are separate
 records. Generated show destinations are also recorded. Old versioned pairs and
@@ -836,6 +851,44 @@ does not regenerate, repaint, or distort the vehicle with AI.
 Wikimedia's reuse and API guidance is available at
 <https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia>
 and <https://commons.wikimedia.org/wiki/Commons:API>.
+
+### Optional Flickr setup and provider order
+
+Create a non-commercial Flickr API key in Flickr's App Garden, then set either:
+
+```yaml
+providers:
+  flickr_api_key: your-public-api-key
+```
+
+or the container variable `FORMULA1_FLICKR_API_KEY`. The environment variable has
+priority. Do not configure or publish the API secret, an OAuth token, or another
+person's project key. With no key, Flickr is disabled and existing Commons-only
+behavior remains unchanged.
+
+MetaFusion applies the provider in this order:
+
+1. show background: strict Flickr event/circuit action, then strict Commons
+   event/circuit action, then the selected licensed team-car photograph;
+2. show poster: strict current-season Flickr team car, then strict Commons team
+   car;
+3. episode cards: the persistent validated team-car source bound to that round,
+   which may be Flickr or Commons.
+
+The Flickr licence registry is resolved dynamically instead of relying on
+hard-coded numeric IDs. Automatic rendering accepts Public Domain, CC0, No Known
+Copyright Restrictions, and attribution-only CC BY media. ShareAlike,
+NonCommercial, NoDerivatives, All Rights Reserved, missing-author, unsafe-host,
+and unknown-licence results are rejected. Each accepted Flickr page, author, and
+licence is written to the normal attribution reports. MetaFusion uses Flickr's
+API and static image hosts; it does not scrape search-result pages.
+
+Flickr API and attribution guidance:
+<https://www.flickr.com/services/api/>,
+<https://www.flickr.com/services/api/flickr.photos.search.html>, and
+<https://www.flickr.com/services/developer/attributions/>.
+This product uses the Flickr API but is not endorsed or certified by SmugMug,
+Inc.
 
 The circuit outline attribution is maintained here as required by its licence:
 “F1 circuits SVG”, ROY Jules, CC BY 4.0,

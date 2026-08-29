@@ -62,6 +62,8 @@ artwork:
 # A genuine 3840x2160 source is preferred; when none survives the same subject,
 # environment, colour, and licence checks, the prior 1600x900 source floor is
 # accepted and rendered through the same clean 3840x2160 background treatment.
+# With a Flickr key, strict Flickr results are preferred for backgrounds, then
+# posters/episode sources; Wikimedia Commons remains the next provider.
 # Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
@@ -100,6 +102,12 @@ providers:
   circuit_manifest_url: https://api.github.com/repos/julesr0y/f1-circuits-svg/contents/circuits/detailed/black-outline
   commons_url: https://commons.wikimedia.org/w/api.php
   commons_cache_hours: 24
+  # Optional. Flickr is preferred for strictly matched Formula 1 backgrounds,
+  # posters, and episode cards when a public API key is supplied here or in
+  # FORMULA1_FLICKR_API_KEY. An API secret and OAuth token are not required.
+  flickr_api_key: ''
+  flickr_url: https://api.flickr.com/services/rest
+  flickr_cache_hours: 24
   cache_hours: 24
   retries: 3
 

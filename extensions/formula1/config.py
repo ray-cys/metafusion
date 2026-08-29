@@ -311,6 +311,27 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         1,
         168,
     )
+    flickr_key = str(
+        os.environ.get("FORMULA1_FLICKR_API_KEY")
+        or providers.get("flickr_api_key")
+        or ""
+    ).strip()
+    providers["flickr_api_key"] = flickr_key
+    providers["flickr_enabled"] = bool(flickr_key)
+    flickr_url = str(
+        providers.get("flickr_url", "https://api.flickr.com/services/rest")
+    ).strip().rstrip("/")
+    if flickr_url != "https://api.flickr.com/services/rest":
+        raise Formula1ConfigError(
+            "providers.flickr_url must use the official Flickr HTTPS REST endpoint"
+        )
+    providers["flickr_url"] = flickr_url
+    providers["flickr_cache_hours"] = _bounded_float(
+        providers.get("flickr_cache_hours", 24),
+        "providers.flickr_cache_hours",
+        1,
+        24,
+    )
 
     cleanup = config.setdefault("cleanup", {})
     cleanup["confirmation_scans"] = _bounded_int(

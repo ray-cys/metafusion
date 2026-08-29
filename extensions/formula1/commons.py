@@ -69,13 +69,16 @@ class CommonsCandidate:
     constructor_id: str
     constructor_name: str
     score: float
+    provider: str = PROVIDER
 
     def as_dict(self):
         return asdict(self)
 
     @classmethod
     def from_dict(cls, value):
-        return cls(**value)
+        payload = dict(value)
+        payload.setdefault("provider", PROVIDER)
+        return cls(**payload)
 
 
 def _normalize(value):
@@ -365,36 +368,38 @@ async def search_commons(session, state, config, year, constructor, roster, logg
         return parse_commons_candidates(stale, year, constructor, roster, config), "stale-cache"
 
 
-def _validate_image(data, config):
+def _validate_image(data, config, provider_name="Commons"):
     if not data or len(data) > MAX_IMAGE_BYTES:
-        raise RuntimeError("Commons image exceeded the size safety limit")
+        raise RuntimeError(f"{provider_name} image exceeded the size safety limit")
     try:
         with Image.open(io.BytesIO(data)) as source:
             source.verify()
         with Image.open(io.BytesIO(data)) as source:
             width, height = source.size
             if width * height > 60_000_000:
-                raise RuntimeError("Commons image exceeded the pixel safety limit")
+                raise RuntimeError(f"{provider_name} image exceeded the pixel safety limit")
             image = source.convert("RGB")
     except (OSError, ValueError) as error:
-        raise RuntimeError("Commons image could not be decoded") from error
+        raise RuntimeError(f"{provider_name} image could not be decoded") from error
     width, height = image.size
     if (
         width < config["show_artwork"]["minimum_source_width"]
         or height < config["show_artwork"]["minimum_source_height"]
         or not 1.45 <= width / max(height, 1) <= 2.30
     ):
-        raise RuntimeError("Commons image failed dimensions or aspect-ratio validation")
+        raise RuntimeError(
+            f"{provider_name} image failed dimensions or aspect-ratio validation"
+        )
     extrema = image.resize((128, 72)).getextrema()
     if max(high - low for low, high in extrema) < 16:
-        raise RuntimeError("Commons image was blank or near-blank")
+        raise RuntimeError(f"{provider_name} image was blank or near-blank")
     edges = image.resize((320, 180)).convert("L").filter(ImageFilter.FIND_EDGES)
     if ImageStat.Stat(edges).stddev[0] < 6:
-        raise RuntimeError("Commons image failed sharpness validation")
+        raise RuntimeError(f"{provider_name} image failed sharpness validation")
     return width, height
 
 
-async def _download_bytes(session, url, retries):
+async def _download_bytes(session, url, retries, provider_name="Commons"):
     last_error = None
     for attempt in range(int(retries)):
         try:
@@ -411,16 +416,20 @@ async def _download_bytes(session, url, retries):
                     raise RuntimeError(f"provider returned HTTP {response.status}")
                 content_length = int(response.headers.get("Content-Length") or 0)
                 if content_length > MAX_IMAGE_BYTES:
-                    raise RuntimeError("Commons image exceeded the size safety limit")
+                    raise RuntimeError(
+                        f"{provider_name} image exceeded the size safety limit"
+                    )
                 data = await response.read()
                 if len(data) > MAX_IMAGE_BYTES:
-                    raise RuntimeError("Commons image exceeded the size safety limit")
+                    raise RuntimeError(
+                        f"{provider_name} image exceeded the size safety limit"
+                    )
                 return data
         except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as error:
             last_error = error
             if attempt + 1 < int(retries):
                 await asyncio.sleep(0)
-    raise RuntimeError(f"Commons image download failed: {last_error}") from last_error
+    raise RuntimeError(f"{provider_name} image download failed: {last_error}") from last_error
 
 
 async def acquire_candidate_image(session, config, candidate):
@@ -432,9 +441,13 @@ async def acquire_candidate_image(session, config, candidate):
         candidate.mime
     ]
     destination = config["paths"]["show_image_cache"] / f"{digest}{extension}"
+    provider = getattr(candidate, "provider", PROVIDER)
+    provider_name = "Flickr" if provider == "flickr" else "Commons"
     if destination.exists():
         try:
-            cached_width, cached_height = _validate_image(destination.read_bytes(), config)
+            cached_width, cached_height = _validate_image(
+                destination.read_bytes(), config, provider_name
+            )
             preferred_width = int(
                 config["show_artwork"].get(
                     "preferred_source_width",
@@ -460,9 +473,12 @@ async def acquire_candidate_image(session, config, candidate):
             # supersede a previously valid lower-resolution cache entry.
             pass
     data = await _download_bytes(
-        session, candidate.image_url, retries=config["providers"]["retries"]
+        session,
+        candidate.image_url,
+        retries=config["providers"]["retries"],
+        provider_name=provider_name,
     )
-    _validate_image(data, config)
+    _validate_image(data, config, provider_name)
     if not config["dry_run"]:
         atomic_write_bytes(destination, data)
-    return destination, PROVIDER
+    return destination, provider

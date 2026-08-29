@@ -187,6 +187,7 @@ class RaceBackgroundCandidate:
     race_key: str = ""
     evidence: tuple[str, ...] = ()
     eligibility_version: int = BACKGROUND_CANDIDATE_VERSION
+    provider: str = PROVIDER
 
     def as_dict(self):
         return asdict(self)
@@ -196,6 +197,7 @@ class RaceBackgroundCandidate:
         payload = dict(value)
         payload["evidence"] = tuple(payload.get("evidence") or ())
         payload.setdefault("eligibility_version", 1)
+        payload.setdefault("provider", PROVIDER)
         return cls(**payload)
 
 
