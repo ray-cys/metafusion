@@ -9,7 +9,7 @@ import re
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from PIL import (
@@ -1572,6 +1572,43 @@ def _with_background_source_quality(config, candidate, photo_path):
     return replace(candidate, evidence=(*evidence, quality)), quality
 
 
+def _background_retry_after(config, candidate, *, now=None):
+    """Schedule another provider search only for the degraded team-car fallback."""
+    if candidate.match_tier != TEAM_CAR_FALLBACK_TIER:
+        return None
+    providers = config["providers"]
+    cache_hours = [float(providers["commons_cache_hours"])]
+    if providers.get("flickr_enabled"):
+        cache_hours.append(float(providers["flickr_cache_hours"]))
+    current = now or datetime.now(timezone.utc)
+    return (current + timedelta(hours=min(cache_hours))).isoformat()
+
+
+def _background_fallback_retry_due(source, config, *, now=None):
+    candidate = source.get("background_candidate") or {}
+    if candidate.get("match_tier") != TEAM_CAR_FALLBACK_TIER:
+        return False
+    raw_deadline = source.get("background_retry_after")
+    if not raw_deadline:
+        return True
+    try:
+        deadline = datetime.fromisoformat(str(raw_deadline))
+    except ValueError:
+        return True
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) >= deadline
+
+
+def _same_background_candidate(left, right):
+    return (
+        int(left.page_id) == int(right.page_id)
+        and left.provider == right.provider
+        and left.match_tier == right.match_tier
+        and (left.source_sha1 or left.image_url) == (right.source_sha1 or right.image_url)
+    )
+
+
 async def _team_car_background_fallback(session, config, race, candidate, diagnostics):
     """Use the selected current-season team car only after race-aware sources fail."""
     minimum_width = config["show_artwork"]["fallback_background_source_width"]
@@ -1658,8 +1695,10 @@ async def _select_background_source(
 ):
     environment = derive_race_environment(race)
     diagnostics = []
-    candidates = []
-    search_source = "unavailable"
+    current_source = (current or {}).get("source", {})
+    previous_hash = current_source.get("background_perceptual_hash")
+    fallback = None
+    provider_counts = []
     for provider_name, search in (
         ("Flickr", search_flickr_backgrounds),
         ("Wikimedia Commons", search_race_backgrounds),
@@ -1671,72 +1710,94 @@ async def _select_background_source(
         except RuntimeError as error:
             diagnostics.append(f"{provider_name} race-aware search failed: {error}")
             continue
-        if provider_candidates:
-            candidates = provider_candidates
-            search_source = provider_source
-            break
-    if not candidates:
+        provider_counts.append(f"{provider_name}={len(provider_candidates)}")
+        if not provider_candidates:
+            diagnostics.append(f"{provider_name} returned no eligible race-action candidates")
+            continue
+        for candidate in _background_candidate_order(
+            provider_candidates, current, trigger_round
+        ):
+            try:
+                photo_path, image_source = await _acquire_background_image(
+                    session, config, candidate
+                )
+                if Path(photo_path).is_file() and not image_has_meaningful_colour(
+                    photo_path
+                ):
+                    diagnostics.append(f"{candidate.title}: monochrome image rejected")
+                    continue
+                candidate, source_quality = _with_background_source_quality(
+                    config, candidate, photo_path
+                )
+                actual_environment = (
+                    classify_image_environment(photo_path)
+                    if Path(photo_path).is_file()
+                    else "unknown"
+                )
+                if actual_environment != "unknown" and not environment_compatible(
+                    environment.mode, actual_environment
+                ):
+                    diagnostics.append(
+                        f"{candidate.title}: expected {environment.mode} scene, "
+                        f"pixels classified as {actual_environment}"
+                    )
+                    continue
+                perceptual_hash = (
+                    _perceptual_hash(photo_path)
+                    if Path(photo_path).is_file()
+                    else hashlib.sha256(candidate.image_url.encode()).hexdigest()[:16]
+                )
+                result = (
+                    candidate,
+                    photo_path,
+                    {
+                        "search": provider_source,
+                        "image": image_source,
+                        "expected_environment": environment.mode,
+                        "observed_environment": actual_environment,
+                        "match_tier": candidate.match_tier,
+                        "source_quality": source_quality,
+                    },
+                    perceptual_hash,
+                )
+                if fallback is None:
+                    fallback = result
+                if _hash_distance(previous_hash, perceptual_hash) > 4:
+                    logger.info(
+                        "[Show Artwork] Background source selected | Provider: %s | "
+                        "Tier: %s | Expected environment: %s | Observed environment: %s | "
+                        "Source quality: %s",
+                        candidate.provider.title(),
+                        candidate.match_tier,
+                        environment.mode,
+                        actual_environment,
+                        source_quality,
+                    )
+                    return result
+            except RuntimeError as error:
+                diagnostics.append(f"{candidate.title}: {error}")
+        diagnostics.append(
+            f"{provider_name} candidates failed decoded-image or environment validation"
+        )
+    if not provider_counts:
         diagnostics.append(
             "no safely licensed colour Formula 1 race-action photograph "
             "matched the exact event or circuit"
         )
-    current_source = (current or {}).get("source", {})
-    previous_hash = current_source.get("background_perceptual_hash")
-    fallback = None
-    for candidate in _background_candidate_order(candidates, current, trigger_round):
-        try:
-            photo_path, image_source = await _acquire_background_image(
-                session, config, candidate
-            )
-            if Path(photo_path).is_file() and not image_has_meaningful_colour(photo_path):
-                diagnostics.append(f"{candidate.title}: monochrome image rejected")
-                continue
-            candidate, source_quality = _with_background_source_quality(
-                config, candidate, photo_path
-            )
-            actual_environment = (
-                classify_image_environment(photo_path)
-                if Path(photo_path).is_file()
-                else "unknown"
-            )
-            if actual_environment != "unknown" and not environment_compatible(
-                environment.mode, actual_environment
-            ):
-                diagnostics.append(
-                    f"{candidate.title}: expected {environment.mode} scene, "
-                    f"pixels classified as {actual_environment}"
-                )
-                continue
-            perceptual_hash = (
-                _perceptual_hash(photo_path)
-                if Path(photo_path).is_file()
-                else hashlib.sha256(candidate.image_url.encode()).hexdigest()[:16]
-            )
-            result = (
-                candidate,
-                photo_path,
-                {
-                    "search": search_source,
-                    "image": image_source,
-                    "expected_environment": environment.mode,
-                    "observed_environment": actual_environment,
-                    "match_tier": candidate.match_tier,
-                    "source_quality": source_quality,
-                },
-                perceptual_hash,
-            )
-            if fallback is None:
-                fallback = result
-            if _hash_distance(previous_hash, perceptual_hash) > 4:
-                return result
-        except RuntimeError as error:
-            diagnostics.append(f"{candidate.title}: {error}")
     if fallback is not None:
         return fallback
     try:
-        return await _team_car_background_fallback(
+        result = await _team_car_background_fallback(
             session, config, race, team_candidate, diagnostics
         )
+        logger.warning(
+            "[Show Artwork] Background degraded fallback | Provider candidates: %s | "
+            "Fallback: current-season poster team car | Retry: after provider-cache expiry | "
+            "Reason: %s",
+            ", ".join(provider_counts) or "none",
+            "; ".join(diagnostics[-4:]),
+        )
+        return result
     except RuntimeError as error:
         diagnostics.append(str(error))
         reason = "; ".join(diagnostics[-4:])
@@ -1862,6 +1923,159 @@ def _rerender_current_poster(
     )
 
 
+async def _retry_current_background_fallback(
+    session,
+    state,
+    config,
+    show,
+    race,
+    current,
+    logger,
+):
+    """Retry a degraded background without rewriting the managed show poster."""
+    source = dict(current["source"])
+    stored = RaceBackgroundCandidate.from_dict(source["background_candidate"])
+    poster = CommonsCandidate.from_dict(source["candidate"])
+    try:
+        candidate, photo_path, provider_sources, image_hash = (
+            await _select_background_source(
+                session,
+                state,
+                config,
+                race,
+                current,
+                int(race.round_number),
+                logger,
+                poster,
+            )
+        )
+    except RuntimeError as error:
+        source["background_retry_after"] = _background_retry_after(config, stored)
+        if not config["dry_run"]:
+            state.save_show_rotation(
+                current["logical_key"],
+                show.year,
+                current["trigger_round"],
+                current["constructor_id"],
+                source,
+                current["poster_destination"],
+                current["poster_checksum"],
+                current["background_destination"],
+                current["background_checksum"],
+            )
+        logger.warning(
+            "[Show Artwork] Background fallback retry deferred | Year: %s | "
+            "Round: %02d | Reason: %s",
+            show.year,
+            race.round_number,
+            error,
+        )
+        return None
+
+    source["background_retry_after"] = _background_retry_after(config, candidate)
+    if _same_background_candidate(stored, candidate):
+        source["background_provider_sources"] = {
+            **dict(source.get("background_provider_sources") or {}),
+            "retry": provider_sources.get("search"),
+            "retry_result": "team-car-fallback-retained",
+        }
+        if not config["dry_run"]:
+            state.save_show_rotation(
+                current["logical_key"],
+                show.year,
+                current["trigger_round"],
+                current["constructor_id"],
+                source,
+                current["poster_destination"],
+                current["poster_checksum"],
+                current["background_destination"],
+                current["background_checksum"],
+            )
+        logger.info(
+            "[Show Artwork] Background fallback rechecked | Year: %s | "
+            "Round: %02d | Result: no eligible atmospheric replacement | "
+            "Next retry: %s",
+            show.year,
+            race.round_number,
+            source["background_retry_after"],
+        )
+        return None
+
+    poster_reference, background_reference = _current_references(current)
+    episode_references, episode_actions = _existing_episode_outputs(
+        state, config, show, race
+    )
+    if config["dry_run"]:
+        return ShowArtworkResult(
+            "rerender-planned",
+            int(race.round_number),
+            poster_reference,
+            background_reference,
+            current["constructor_id"],
+            episode_references=episode_references,
+            episode_actions=episode_actions,
+            background_vehicle=candidate.vehicle_name,
+            poster_renderer_version=SHOW_RENDERER_VERSION,
+            poster_checksum=current["poster_checksum"],
+        )
+
+    background_checksum = render_show_background(
+        show,
+        race,
+        photo_path,
+        config,
+        Path(current["background_destination"]),
+    )
+    source.update(
+        background_candidate=candidate.as_dict(),
+        background_provider_sources={
+            **provider_sources,
+            "retry": "provider-cache-expired",
+        },
+        background_photo_cache=str(photo_path),
+        background_source_identity=(
+            candidate.source_sha1
+            or hashlib.sha256(candidate.image_url.encode()).hexdigest()
+        ),
+        background_perceptual_hash=image_hash,
+    )
+    checksums = dict(source.get("generated_checksums") or {})
+    checksums["background"] = background_checksum
+    source["generated_checksums"] = checksums
+    state.save_show_rotation(
+        current["logical_key"],
+        show.year,
+        current["trigger_round"],
+        current["constructor_id"],
+        source,
+        current["poster_destination"],
+        current["poster_checksum"],
+        current["background_destination"],
+        background_checksum,
+    )
+    write_attribution_reports(state, config)
+    logger.info(
+        "[Show Artwork] Background fallback upgraded | Year: %s | Round: %02d | "
+        "Provider: %s | Tier: %s | Poster: unchanged",
+        show.year,
+        race.round_number,
+        candidate.provider.title(),
+        candidate.match_tier,
+    )
+    return ShowArtworkResult(
+        "rerendered",
+        int(race.round_number),
+        poster_reference,
+        background_reference,
+        current["constructor_id"],
+        episode_references=episode_references,
+        episode_actions=episode_actions,
+        background_vehicle=candidate.vehicle_name,
+        poster_renderer_version=SHOW_RENDERER_VERSION,
+        poster_checksum=current["poster_checksum"],
+    )
+
+
 async def run_show_artwork_rotation(
     session,
     state,
@@ -1969,6 +2183,24 @@ async def run_show_artwork_rotation(
             poster_only_maintenance = (
                 poster_rerendering and not background_rerendering
             )
+            if (
+                not rerendering
+                and background_integrity == "managed"
+                and _background_fallback_retry_due(current_source, config)
+            ):
+                retried = await _retry_current_background_fallback(
+                    session,
+                    state,
+                    config,
+                    show,
+                    race,
+                    current,
+                    logger,
+                )
+                if retried is not None:
+                    return retried
+                current = state.show_rotation(logical_key) or current
+                current_source = current.get("source", {})
             if not rerendering:
                 candidate = CommonsCandidate.from_dict(current["source"]["candidate"])
                 available_photo = None
@@ -2208,6 +2440,9 @@ async def run_show_artwork_rotation(
             or hashlib.sha256(background_candidate.image_url.encode()).hexdigest()
         ),
         "background_perceptual_hash": background_perceptual_hash,
+        "background_retry_after": _background_retry_after(
+            config, background_candidate
+        ),
         "poster_reference": poster_reference,
         "background_reference": background_reference,
         "renderer_version": SHOW_RENDERER_VERSION,

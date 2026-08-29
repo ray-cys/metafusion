@@ -57,6 +57,8 @@ from extensions.formula1.show_artwork import (
     _adaptive_showcase_crop,
     _asset_reference,
     _background_candidate_order,
+    _background_fallback_retry_due,
+    _background_retry_after,
     _candidate_order,
     _checksum,
     _draw_circuit_watermark,
@@ -498,7 +500,7 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
         return [], "test"
 
     monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
-    with pytest.raises(RuntimeError, match="colour Formula 1 race-action"):
+    with pytest.raises(RuntimeError, match="no eligible race-action candidates"):
         asyncio.run(
             _select_background_source(
                 None, state, config, RaceData(
@@ -587,6 +589,65 @@ def test_race_background_selection_rejects_empty_and_invalid_sources(
                 None, state, config, night_race, None, 18, logging.getLogger("mismatch")
             )
         )
+    state.close()
+
+
+def test_background_provider_failover_continues_after_flickr_image_rejection(
+    config, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    commons_candidate = parse_race_background_candidates(
+        _race_background_payload(), race, config
+    )[0]
+    flickr_candidate = replace(
+        commons_candidate,
+        page_id=99001,
+        provider="flickr",
+        title="Flickr candidate with invalid decoded pixels",
+    )
+    source = config["paths"]["show_image_cache"] / "commons-background.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_photo_bytes())
+    calls = []
+
+    async def flickr(*_args, **_kwargs):
+        calls.append("flickr-search")
+        return [flickr_candidate], "flickr"
+
+    async def commons(*_args, **_kwargs):
+        calls.append("commons-search")
+        return [commons_candidate], "commons"
+
+    async def acquire(_session, _config, candidate):
+        calls.append(f"acquire-{candidate.provider}")
+        if candidate.provider == "flickr":
+            raise RuntimeError("decoded image failed validation")
+        return source, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "search_flickr_backgrounds", flickr)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", commons)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", acquire)
+
+    selected, _path, providers, _image_hash = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            race.round_number,
+            logging.getLogger("provider-failover"),
+        )
+    )
+
+    assert selected.provider == "wikimedia-commons-race-background"
+    assert providers["search"] == "commons"
+    assert calls == [
+        "flickr-search",
+        "acquire-flickr",
+        "commons-search",
+        "acquire-wikimedia-commons-race-background",
+    ]
     state.close()
 
 
@@ -735,6 +796,7 @@ def test_rotation_persists_restores_and_reports_team_car_background_fallback(
         current["source"]["background_candidate"]["match_tier"]
         == "current_season_team_car_fallback"
     )
+    assert current["source"]["background_retry_after"]
     background = Path(current["background_destination"])
     assert background.is_file()
     background.unlink()
@@ -792,6 +854,274 @@ def test_rotation_persists_restores_and_reports_team_car_background_fallback(
     )
     assert failed.action == "repair-failed"
     assert "provider offline" in failed.issue
+    state.close()
+
+
+def test_background_fallback_retry_deadline_uses_provider_cache_policy(
+    config, race
+):
+    candidate = RaceBackgroundCandidate(
+        page_id=1,
+        title="Fallback",
+        page_url="https://example.com/page",
+        image_url="https://example.com/image.jpg",
+        width=1600,
+        height=900,
+        mime="image/jpeg",
+        source_sha1="fallback",
+        author="Author",
+        licence="CC BY 4.0",
+        licence_url="https://creativecommons.org/licenses/by/4.0/",
+        vehicle_name="Ferrari",
+        score=1,
+        match_tier="current_season_team_car_fallback",
+    )
+    deadline = _background_retry_after(config, candidate)
+    source = {
+        "background_candidate": candidate.as_dict(),
+        "background_retry_after": deadline,
+    }
+
+    assert deadline is not None
+    assert not _background_fallback_retry_due(source, config)
+    source["background_retry_after"] = "2020-01-01T00:00:00+00:00"
+    assert _background_fallback_retry_due(source, config)
+    source.pop("background_retry_after")
+    assert _background_fallback_retry_due(source, config)
+    action = replace(candidate, match_tier="exact_event_action_race_car")
+    assert _background_retry_after(config, action) is None
+
+    config["providers"]["flickr_enabled"] = True
+    config["providers"]["commons_cache_hours"] = 12
+    config["providers"]["flickr_cache_hours"] = 3
+    flickr_deadline = _background_retry_after(
+        config,
+        candidate,
+        now=show_artwork_module.datetime(2026, 1, 1, tzinfo=show_artwork_module.timezone.utc),
+    )
+    assert flickr_deadline == "2026-01-01T03:00:00+00:00"
+
+    source["background_retry_after"] = "not-a-date"
+    assert _background_fallback_retry_due(source, config)
+    source["background_retry_after"] = "2020-01-01T00:00:00"
+    assert _background_fallback_retry_due(source, config)
+
+
+def test_background_selection_reports_when_all_provider_searches_fail(
+    config, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(show_artwork_module, "search_flickr_backgrounds", unavailable)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", unavailable)
+    with pytest.raises(RuntimeError, match="no safely licensed colour"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                race.round_number,
+                logging.getLogger("all-background-providers-failed"),
+            )
+        )
+    state.close()
+
+
+def test_background_fallback_retry_handles_failure_retention_and_dry_run(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def empty_background_search(*_args, **_kwargs):
+        return [], "empty"
+
+    monkeypatch.setattr(
+        show_artwork_module, "search_race_backgrounds", empty_background_search
+    )
+    asyncio.run(
+        run_show_artwork_rotation(
+            CommonsSession(),
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("retry-branch-setup"),
+        )
+    )
+    current = state.show_rotation("show:2026")
+    stored = RaceBackgroundCandidate.from_dict(
+        current["source"]["background_candidate"]
+    )
+
+    async def failed_selection(*_args, **_kwargs):
+        raise RuntimeError("temporary provider failure")
+
+    monkeypatch.setattr(
+        show_artwork_module, "_select_background_source", failed_selection
+    )
+    assert (
+        asyncio.run(
+            show_artwork_module._retry_current_background_fallback(
+                None,
+                state,
+                config,
+                show,
+                race,
+                current,
+                logging.getLogger("retry-failed"),
+            )
+        )
+        is None
+    )
+    refreshed = state.show_rotation("show:2026")
+    assert refreshed["source"]["background_retry_after"]
+
+    async def retained_selection(*_args, **_kwargs):
+        return stored, Path(current["source"]["background_photo_cache"]), {
+            "search": "retry"
+        }, "same-hash"
+
+    monkeypatch.setattr(
+        show_artwork_module, "_select_background_source", retained_selection
+    )
+    refreshed["source"]["background_retry_after"] = "2020-01-01T00:00:00+00:00"
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(refreshed["source"], sort_keys=True),),
+    )
+    state.connection.commit()
+    unchanged = asyncio.run(
+        run_show_artwork_rotation(
+            None,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("retry-retained"),
+        )
+    )
+    assert unchanged.action == "unchanged"
+    refreshed = state.show_rotation("show:2026")
+    assert (
+        refreshed["source"]["background_provider_sources"]["retry_result"]
+        == "team-car-fallback-retained"
+    )
+
+    replacement = replace(
+        stored,
+        page_id=stored.page_id + 1,
+        provider="flickr",
+        match_tier="exact_event_action_race_car",
+        source_sha1="new-background",
+        vehicle_name="Current-season race car in atmospheric race action",
+    )
+
+    async def replacement_selection(*_args, **_kwargs):
+        return replacement, Path(current["source"]["background_photo_cache"]), {
+            "search": "flickr-live"
+        }, "replacement-hash"
+
+    monkeypatch.setattr(
+        show_artwork_module, "_select_background_source", replacement_selection
+    )
+    config["dry_run"] = True
+    planned = asyncio.run(
+        show_artwork_module._retry_current_background_fallback(
+            None,
+            state,
+            config,
+            show,
+            race,
+            refreshed,
+            logging.getLogger("retry-dry-run"),
+        )
+    )
+    assert planned.action == "rerender-planned"
+    assert planned.background_vehicle == replacement.vehicle_name
+    state.close()
+
+
+def test_same_round_retry_upgrades_only_the_degraded_background(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def empty_background_search(*_args, **_kwargs):
+        return [], "empty"
+
+    monkeypatch.setattr(
+        show_artwork_module, "search_race_backgrounds", empty_background_search
+    )
+    asyncio.run(
+        run_show_artwork_rotation(
+            CommonsSession(),
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("fallback-initial"),
+        )
+    )
+    current = state.show_rotation("show:2026")
+    source = current["source"]
+    source["background_retry_after"] = "2020-01-01T00:00:00+00:00"
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+    poster = Path(current["poster_destination"])
+    poster_bytes = poster.read_bytes()
+    poster_checksum = current["poster_checksum"]
+
+    atmospheric = replace(
+        parse_race_background_candidates(_race_background_payload(), race, config)[0],
+        page_id=88001,
+        provider="flickr",
+        title="Licensed dramatic Australian Grand Prix race action",
+    )
+    atmospheric_path = config["paths"]["show_image_cache"] / "atmospheric.jpg"
+    atmospheric_path.write_bytes(_photo_bytes((1920, 1080)))
+
+    async def flickr(*_args, **_kwargs):
+        return [atmospheric], "flickr-live"
+
+    async def acquire(_session, _config, _candidate):
+        return atmospheric_path, "flickr-live"
+
+    monkeypatch.setattr(show_artwork_module, "search_flickr_backgrounds", flickr)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", acquire)
+
+    result = asyncio.run(
+        run_show_artwork_rotation(
+            None,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("fallback-retry"),
+        )
+    )
+
+    assert result.action == "rerendered"
+    assert poster.read_bytes() == poster_bytes
+    updated = state.show_rotation("show:2026")
+    assert updated["poster_checksum"] == poster_checksum
+    assert updated["source"]["background_candidate"]["provider"] == "flickr"
+    assert (
+        updated["source"]["background_candidate"]["match_tier"]
+        == "exact_event_action_race_car"
+    )
+    assert updated["source"]["background_retry_after"] is None
     state.close()
 
 
@@ -1071,7 +1401,7 @@ def test_old_background_candidate_records_are_marked_ineligible(config):
     candidate = parse_race_background_candidates(
         _race_background_payload(), 2026, config
     )[0]
-    assert candidate.eligibility_version == 6
+    assert candidate.eligibility_version == 7
     legacy = candidate.as_dict()
     legacy.pop("eligibility_version")
     assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
@@ -2297,7 +2627,7 @@ def test_background_renderer_change_remains_an_independent_full_rerender(
     assert rerendered.action == "rerendered"
     assert rerendered.constructor == first.constructor
     current = state.show_rotation("show:2026")
-    assert current["source"]["background_candidate"]["eligibility_version"] == 6
+    assert current["source"]["background_candidate"]["eligibility_version"] == 7
     assert (
         current["source"]["background_candidate"]["match_tier"]
         == "exact_event_action_race_car"

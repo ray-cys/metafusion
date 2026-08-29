@@ -14,6 +14,7 @@ from extensions.formula1.race_background import RaceBackgroundCandidate
 from extensions.formula1.show_artwork import (
     _acquire_background_image,
     _asset_integrity,
+    _background_retry_after,
     _perceptual_hash,
     _save_round_source,
     _show_render_fingerprint,
@@ -62,14 +63,16 @@ def _quality_decision(old_path, new_path, *, specificity_gain=False):
     resolution_ratio = new["pixels"] / max(1, old["pixels"])
     sharpness_ratio = new["sharpness"] / max(0.01, old["sharpness"])
     duplicate = _perceptual_hash(old_path) == _perceptual_hash(new_path)
-    better = (
+    better = not duplicate and (
         (resolution_ratio >= 1.20 and sharpness_ratio >= 0.80)
         or (sharpness_ratio >= 1.15 and resolution_ratio >= 0.90)
         or (resolution_ratio >= 1.05 and sharpness_ratio >= 1.05)
         or (specificity_gain and resolution_ratio >= 0.90 and sharpness_ratio >= 0.85)
     )
     reason = (
-        "higher-resolution source"
+        "perceptual duplicate"
+        if duplicate
+        else "higher-resolution source"
         if resolution_ratio >= 1.20 and sharpness_ratio >= 0.80
         else "sharper source"
         if sharpness_ratio >= 1.15 and resolution_ratio >= 0.90
@@ -146,10 +149,8 @@ def _background_tier(candidate):
 
 
 async def _select_background_upgrade(session, state, config, race, candidate, logger):
-    if candidate.provider == "flickr":
-        return None, "already uses Flickr", {}
     candidates, search_source = await search_flickr_backgrounds(
-        session, state, config, race, logger
+        session, state, config, race, logger, refresh=True
     )
     try:
         old_path, _old_source = await _acquire_background_image(session, config, candidate)
@@ -347,15 +348,11 @@ async def _upgrade_active_show(
                 session, state, config, race, background, logger
             )
             if selected is None:
-                status = (
-                    "already-flickr"
-                    if background.provider == "flickr"
-                    else "no-better-candidate"
-                )
                 records.append(
                     _record(
                         state, run_id, scope, show.year, race.round_number,
-                        "show_background", status, background, None, {"reason": reason},
+                        "show_background", "no-better-candidate", background, None,
+                        {"reason": reason},
                     )
                 )
             else:
@@ -372,6 +369,9 @@ async def _upgrade_active_show(
                     background_photo_cache=str(photo_path),
                     background_source_identity=_source_name(replacement),
                     background_perceptual_hash=_perceptual_hash(photo_path),
+                    background_retry_after=_background_retry_after(
+                        config, replacement
+                    ),
                     background_provider_sources={
                         "search": evidence.get("search_source"),
                         "image": evidence.get("image_source"),

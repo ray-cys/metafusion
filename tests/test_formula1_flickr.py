@@ -230,6 +230,26 @@ def test_flickr_background_requires_event_or_circuit_and_action(tmp_path):
     }
 
 
+def test_flickr_background_accepts_capture_date_as_safe_year_evidence(tmp_path):
+    config = load_formula1_config(_core(tmp_path), tmp_path / "config", dry_run=True)
+    licences = _allowed_licences(_licence_payload())
+    photo = _photo(
+        title="Ferrari Formula 1 race car at the Australian Grand Prix",
+        description={
+            "_content": "F1 car racing on track at Albert Park during qualifying action"
+        },
+        tags="f1 formula1 race car racing action albert park melbourne",
+        datetaken="2026-03-07 15:22:10",
+    )
+
+    candidates = parse_flickr_background_candidates(
+        {"photos": {"photo": [photo]}}, _race(), config, licences
+    )
+
+    assert len(candidates) == 1
+    assert "capture-season" in candidates[0].evidence
+
+
 def test_flickr_queries_are_role_specific_and_extensive():
     race_queries = _background_queries(_race())
     team_queries = _team_queries(2026, ConstructorData("ferrari", "Ferrari"))
@@ -404,6 +424,24 @@ def test_flickr_search_cache_live_dedupe_and_stale(monkeypatch):
     assert source == "flickr" and [item["id"] for item in found] == ["1"]
     assert state.saved is not None
 
+    refreshed_state = MemoryState(
+        current={"photos": {"photo": [{"id": "cached"}]}}
+    )
+    refreshed, source = asyncio.run(
+        _search(
+            None,
+            refreshed_state,
+            config,
+            "key",
+            ("one",),
+            {"4": {}},
+            parser,
+            logger,
+            refresh=True,
+        )
+    )
+    assert source == "flickr" and [item["id"] for item in refreshed] == ["1"]
+
     async def broken(*_args):
         raise FlickrError("offline")
 
@@ -428,7 +466,7 @@ def test_flickr_public_search_wrappers(monkeypatch, tmp_path):
     async def licence_result(*_args):
         return licences, "cache"
 
-    async def search_result(*_args):
+    async def search_result(*_args, **_kwargs):
         parser = _args[-2]
         return parser({"photos": {"photo": [_photo(), _photo(id="99", license="0")]}}), "cache"
 

@@ -63,7 +63,9 @@ artwork:
 # environment, colour, and licence checks, the prior 1600x900 source floor is
 # accepted and rendered through the same clean 3840x2160 background treatment.
 # With a Flickr key, strict Flickr results are preferred for backgrounds, then
-# posters/episode sources; Wikimedia Commons remains the next provider.
+# posters/episode sources; Wikimedia Commons remains the next provider. A Flickr
+# result that later fails decoded-image validation does not stop Commons failover.
+# The team-car last resort is retried automatically after provider-cache expiry.
 # Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.

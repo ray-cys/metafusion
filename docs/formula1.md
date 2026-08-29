@@ -781,9 +781,13 @@ existing race-aware Commons adapter. Flickr queries cover exact event and circui
 identities, current/recent seasons, qualifying and race action, wheel-to-wheel
 racing, panning/motion, wet-track spray, dusk, night lighting, and track
 atmosphere. Those words discover candidates; they never prove identity. A result
-must still independently contain Formula 1, race-car/action, year, and exact event
-or circuit evidence before decoded-pixel checks. This rejects dramatic but
-unrelated cars, circuits, support races, and location photographs.
+must still independently contain Formula 1, race-car/action, and exact event or
+circuit evidence before decoded-pixel checks. Season evidence may come from the
+photo's text metadata or Flickr's provider-supplied capture date. This rejects
+dramatic but unrelated cars, circuits, support races, and location photographs.
+Provider fallback is end to end: when Flickr returns search results but every
+download fails colour, decoding, dimensions, or race-environment validation,
+MetaFusion continues through Commons before considering the poster source.
 
 Commons discovery
 uses event/category ancestry only to establish the circuit or location. The image's
@@ -822,6 +826,13 @@ After this policy changes, a stored atmosphere-only or monochrome candidate from
 an older run is invalidated and the same race round is re-evaluated. A qualifying
 replacement is rendered atomically; otherwise the last safe managed pair remains
 in place and the failure is recorded rather than substituting an unrelated image.
+When the selected background is the last-resort current-season poster photograph,
+the binding is explicitly marked as degraded. MetaFusion rechecks it after the
+shortest configured Flickr/Commons cache interval, even during the same race
+round. A successful retry rewrites only the managed background; the show poster
+is left byte-for-byte unchanged. An explicit `--formula1-upgrade-artwork` command
+bypasses the current Flickr background-search cache and evaluates the fallback by
+its match tier rather than treating every Flickr source as already upgraded.
 
 Race identity matching is schedule-derived and explainable. It considers the
 official race name, country and demonym, locality, circuit name, and circuit ID,

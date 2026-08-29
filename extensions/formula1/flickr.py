@@ -30,7 +30,7 @@ from extensions.formula1.race_background import (
 
 PROVIDER = "flickr"
 LICENSE_PROVIDER = "flickr-licenses"
-SEARCH_VERSION = 1
+SEARCH_VERSION = 2
 MAX_QUERIES = 9
 FLICKR_REQUEST_INTERVAL_SECONDS = 0.25
 REJECTED_IDENTITIES = {
@@ -251,6 +251,12 @@ def _dramatic_score(identity):
     return sum(1 for term in DRAMATIC_TERMS if term in identity)
 
 
+def _capture_year(photo):
+    """Return Flickr's provider-supplied capture year when it is plausible."""
+    match = re.match(r"\s*(19\d{2}|20\d{2}|21\d{2})\b", str(photo.get("datetaken") or ""))
+    return int(match.group(1)) if match else None
+
+
 def _common_photo_fields(photo, licences):
     licence = licences.get(str(photo.get("license") or ""))
     image_url, width, height = _photo_dimensions(photo)
@@ -343,7 +349,9 @@ def parse_flickr_background_candidates(payload, race, config, licences, diagnost
             reason = "unsafe-url-identity-or-licence"
         else:
             width, height = common["width"], common["height"]
-            years = _year_values(identity)
+            identity_years = _year_values(identity)
+            capture_year = _capture_year(photo)
+            years = identity_years | ({capture_year} if capture_year is not None else set())
             event_match = _contains_terms(identity, environment.event_terms)
             circuit_match = _contains_terms(identity, environment.circuit_terms)
             exact_year = int(race.year) in years
@@ -374,7 +382,8 @@ def parse_flickr_background_candidates(payload, race, config, licences, diagnost
                 ("event", event_match),
                 ("circuit", circuit_match),
                 ("active-race", active),
-                ("season", exact_year),
+                ("season", int(race.year) in identity_years),
+                ("capture-season", capture_year == int(race.year)),
                 ("recent-season", recent_year and not exact_year),
                 ("environment", scene_match),
                 ("dramatic-action", _dramatic_score(identity) >= 2),
@@ -442,8 +451,19 @@ def _background_queries(race):
     )[:MAX_QUERIES]
 
 
-async def _search(session, state, config, key, queries, licences, parser, logger):
-    cached = state.cache_get(PROVIDER, key)
+async def _search(
+    session,
+    state,
+    config,
+    key,
+    queries,
+    licences,
+    parser,
+    logger,
+    *,
+    refresh=False,
+):
+    cached = None if refresh else state.cache_get(PROVIDER, key)
     if cached is not None:
         return parser(cached), "cache"
     payload: dict[str, dict[str, list[dict]]] = {"photos": {"photo": []}}
@@ -500,7 +520,9 @@ async def search_flickr_team_photos(
     return candidates, f"{source};licences={licence_source}"
 
 
-async def search_flickr_backgrounds(session, state, config, race, logger):
+async def search_flickr_backgrounds(
+    session, state, config, race, logger, *, refresh=False
+):
     if not config["providers"].get("flickr_enabled"):
         return [], "disabled"
     licences, licence_source = await _licences(session, state, config, logger)
@@ -511,7 +533,15 @@ async def search_flickr_backgrounds(session, state, config, race, logger):
         payload, race, config, licences, diagnostics
     )
     candidates, source = await _search(
-        session, state, config, key, _background_queries(race), licences, parser, logger
+        session,
+        state,
+        config,
+        key,
+        _background_queries(race),
+        licences,
+        parser,
+        logger,
+        refresh=refresh,
     )
     if diagnostics:
         counts = Counter(item["reason"] for item in diagnostics)

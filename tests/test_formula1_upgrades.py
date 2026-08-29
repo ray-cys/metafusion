@@ -111,11 +111,38 @@ def test_quality_decision_policy_branches(tmp_path, monkeypatch, old, new, speci
     new_path = tmp_path / "new"
     old_path.touch()
     monkeypatch.setattr(upgrades, "_image_quality", lambda path: old if Path(path).name == "old" else new)
-    monkeypatch.setattr(upgrades, "_perceptual_hash", lambda _path: "same")
+    monkeypatch.setattr(
+        upgrades,
+        "_perceptual_hash",
+        lambda path: "old" if Path(path).name == "old" else "new",
+    )
     result = upgrades._quality_decision(old_path, new_path, specificity_gain=specific)
     assert result[0] is accepted
     assert result[1] == reason
-    assert result[2]["perceptual_duplicate"] is True
+    assert result[2]["perceptual_duplicate"] is False
+
+
+def test_quality_decision_never_upgrades_a_perceptual_duplicate(
+    tmp_path, monkeypatch
+):
+    old_path = tmp_path / "old"
+    new_path = tmp_path / "new"
+    old_path.touch()
+    monkeypatch.setattr(
+        upgrades,
+        "_image_quality",
+        lambda path: {
+            "pixels": 100 if Path(path).name == "old" else 200,
+            "sharpness": 10 if Path(path).name == "old" else 20,
+        },
+    )
+    monkeypatch.setattr(upgrades, "_perceptual_hash", lambda _path: "same")
+
+    accepted, reason, evidence = upgrades._quality_decision(old_path, new_path)
+
+    assert accepted is False
+    assert reason == "perceptual duplicate"
+    assert evidence["perceptual_duplicate"] is True
 
 
 def test_state_records_upgrade_and_refreshes_rotation_history(tmp_path):
@@ -235,11 +262,10 @@ def test_team_selection_skip_and_failure_paths(monkeypatch):
 
 def test_background_selection_paths(monkeypatch):
     flickr = _background(provider="flickr", tier="exact_event_action_race_car")
-    assert asyncio.run(
-        upgrades._select_background_upgrade(None, None, {}, None, flickr, None)
-    )[1] == "already uses Flickr"
+    refresh_values = []
 
-    async def search(*_args):
+    async def search(*_args, **kwargs):
+        refresh_values.append(kwargs.get("refresh"))
         return [flickr], "search"
 
     calls = 0
@@ -258,6 +284,7 @@ def test_background_selection_paths(monkeypatch):
         upgrades._select_background_upgrade(None, None, {}, None, _background(), None)
     )
     assert selected[0][0].provider == "flickr"
+    assert refresh_values == [True]
 
     calls = 0
 
@@ -276,7 +303,7 @@ def test_background_selection_paths(monkeypatch):
 
 
 def test_background_candidate_without_gain(monkeypatch):
-    async def search(*_args):
+    async def search(*_args, **_kwargs):
         return [_background(provider="flickr")], "search"
 
     async def acquire(_session, _config, candidate):
@@ -381,7 +408,7 @@ def test_upgrade_active_show_no_better_and_without_background(tmp_path, monkeypa
 
 @pytest.mark.parametrize(
     ("provider", "expected"),
-    [("commons", "no-better-candidate"), ("flickr", "already-flickr")],
+    [("commons", "no-better-candidate"), ("flickr", "no-better-candidate")],
 )
 def test_upgrade_active_show_background_no_better(tmp_path, monkeypatch, provider, expected):
     state = Formula1State(":memory:")
