@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -147,6 +149,14 @@ def test_provider_canary_validates_formula1_provider_surface(monkeypatch):
         "f1-circuits-svg",
         "Wikimedia Commons",
     ]
+
+
+def test_live_canary_bootstraps_without_any_site_packages():
+    result = subprocess.run(
+        [sys.executable, "-S", str(REPO_ROOT / ".github/scripts/provider_canary.py"), "--help"],
+        capture_output=True, text=True, timeout=20, check=True,
+    )
+    assert "--require-tmdb" in result.stdout
 
 
 def test_state_recovery_drill_restores_and_survives_interruption(tmp_path):
