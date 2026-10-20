@@ -54,7 +54,8 @@ report-only mode.
 ## Nightly reliability automation
 
 `Dependency maintenance` runs daily at 16:17 UTC (00:17 Asia/Singapore), before
-nightly reliability. It audits both branches, repairs known runtime advisories
+nightly reliability, and also starts automatically after a failed nightly run.
+It audits both branches and repairs known runtime advisories
 with stable fixes in the existing major version, regenerates the runtime and
 development hashes together, and refreshes the digest of the supported Python
 3.13 Bookworm base. This covers indirect packages as well as direct pins.
