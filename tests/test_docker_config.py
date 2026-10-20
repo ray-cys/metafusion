@@ -295,8 +295,11 @@ def test_pull_requests_build_both_architectures_without_publishing():
 
     assert "github.event_name == 'pull_request' ||" in workflow
     assert "platforms: linux/amd64,linux/arm64" in workflow
-    assert "push: ${{ github.event_name != 'pull_request' }}" in workflow
-    assert workflow.count("github.event_name != 'pull_request'") >= 6
+    assert "push: ${{ env.PUBLISH_IMAGE == 'true' }}" in workflow
+    assert workflow.count("if: env.PUBLISH_IMAGE == 'true'") >= 6
+    publishing = next(line for line in workflow.splitlines() if "PUBLISH_IMAGE:" in line)
+    assert "refs/heads/main" in publishing and "refs/heads/develop" in publishing
+    assert "github.event_name != 'pull_request'" in publishing
 
 
 def test_ci_smoke_tests_each_published_platform_in_isolation():
