@@ -562,7 +562,7 @@ part-way through rendering.
 
 The circuit outline attribution is maintained here as required by its licence:
 “F1 circuits SVG”, ROY Jules, CC BY 4.0,
-<https://github.com/julesr0y/f1-circuits-svg>.
+Available through the [F1DB mirror](https://github.com/f1db/f1-circuits-svg).
 
 Bundled national flag renders come from `hampusborgos/country-flags`, which
 documents the flags as public domain:
@@ -661,10 +661,6 @@ does not regenerate, repaint, or distort the vehicle with AI.
 Wikimedia's reuse and API guidance is available at
 <https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia>
 and <https://commons.wikimedia.org/wiki/Commons:API>.
-
-The circuit outline attribution is maintained here as required by its licence:
-“F1 circuits SVG”, ROY Jules, CC BY 4.0,
-Available through the [F1DB mirror](https://github.com/f1db/f1-circuits-svg).
 
 ## Optional Flickr setup and provider order
 
