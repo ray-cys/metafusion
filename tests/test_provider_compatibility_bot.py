@@ -365,6 +365,9 @@ def test_provider_workflows_are_non_publishing_and_blocked_by_default():
     assert "gh pr merge" not in update_workflow
     assert "--auto" not in update_workflow
     assert "gh workflow run docker-latest.yml" in update_workflow
+    assert ':/contract/metadata.yml:ro"' in update_workflow
+    assert ':/contract:ro"' not in update_workflow
+    assert "--tmpfs /contract/logs:rw" in update_workflow
     assert "plex-contract:" in release_workflow
     assert "generate_kometa_contract_corpus.py --check" in release_workflow
     assert "tests/golden/kometa_contract_corpus" in release_workflow
