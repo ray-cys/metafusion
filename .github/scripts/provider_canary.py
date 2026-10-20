@@ -19,7 +19,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from extensions.formula1.provider import circuit_source_urls
 from helper.provider_credentials import fanart_project_api_key
 
 TMDB_API = "https://api.themoviedb.org/3"
@@ -27,9 +26,9 @@ FANART_API = "https://webservice.fanart.tv/v3"
 JOLPICA_API = "https://api.jolpi.ca/ergast/f1"
 FORMULA1_CALENDAR = "https://www.formula1.com/en/racing"
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
-CIRCUIT_MANIFEST = (
-    "https://api.github.com/repos/julesr0y/f1-circuits-svg/"
-    "contents/circuits/detailed/black-outline"
+CIRCUIT_MANIFESTS = tuple(
+    f"https://api.github.com/repos/{repository}/contents/circuits/detailed/black-outline"
+    for repository in ("julesr0y/f1-circuits-svg", "f1db/f1-circuits-svg")
 )
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_HTML_BYTES = 5 * 1024 * 1024
@@ -270,7 +269,7 @@ def run_fanart(project_key):
 def check_circuit_source():
     """Discover an existing SVG, with a bounded fallback to the attributed mirror."""
     failures = []
-    for manifest_url in circuit_source_urls(CIRCUIT_MANIFEST):
+    for manifest_url in CIRCUIT_MANIFESTS:
         try:
             _status, body, _headers, _elapsed = _request("F1 circuit manifest", manifest_url)
             manifest = json.loads(body)
