@@ -591,7 +591,10 @@ identity instead of a fixed 2026 fact table. A removed event is simply absent fr
 the new season; it does not erase historical seasons. Only rounds actually present
 in the Plex inventory request official fact pages, which keeps normal runs small.
 
-Circuit outlines come from the open `julesr0y/f1-circuits-svg` project (CC BY 4.0).
+Circuit outlines come from ROY Jules' open `f1-circuits-svg` project (CC BY 4.0).
+If the original repository is unavailable, MetaFusion automatically tries the
+[F1DB mirror](https://github.com/f1db/f1-circuits-svg) for both SVG shapes and
+new-circuit discovery. Custom provider URLs retain their configured source.
 Known circuit identities use stable mappings. For a new circuit, MetaFusion reads
 and caches the provider's current manifest, accepts only a unique high-confidence
 identity match, and remembers that binding. If the outline project has not yet
@@ -658,6 +661,10 @@ does not regenerate, repaint, or distort the vehicle with AI.
 Wikimedia's reuse and API guidance is available at
 <https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia>
 and <https://commons.wikimedia.org/wiki/Commons:API>.
+
+The circuit outline attribution is maintained here as required by its licence:
+“F1 circuits SVG”, ROY Jules, CC BY 4.0,
+Available through the [F1DB mirror](https://github.com/f1db/f1-circuits-svg).
 
 ## Optional Flickr setup and provider order
 

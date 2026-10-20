@@ -132,7 +132,9 @@ def test_provider_canary_validates_formula1_provider_surface(monkeypatch):
     def fake_request(provider, _path, **_kwargs):
         if provider == "Formula1.com calendar":
             return 200, f'<a href="/en/racing/{year}/example">Race</a>'.encode(), {}, 0.01
-        return 200, b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+        if provider == "F1 circuit manifest":
+            return 200, b'[{"name":"example-1.svg"}]', {}, 0.01
+        return 200, b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>', {
             "Content-Type": "image/svg+xml"
         }, 0.01
 
@@ -157,6 +159,35 @@ def test_state_recovery_drill_restores_and_survives_interruption(tmp_path):
     assert report["bundle"]["secrets_redacted"] is True
     assert report["interrupted_writer"]["committed_items"] >= 1
     assert json.loads(output.read_text(encoding="utf-8"))["status"] == "passed"
+
+
+def test_circuit_canary_discovers_mirror_assets_and_reports_original_failure(monkeypatch):
+    canary = _load_script("provider_canary.py")
+    calls = []
+
+    def request(provider, path, **_kwargs):
+        calls.append(path)
+        if "julesr0y" in path:
+            raise canary.CanaryError("original circuit repository returned HTTP 404")
+        if provider == "F1 circuit manifest":
+            return 200, b'[{"name":"future-2.svg"},{"name":"../unsafe.svg"}]', {}, 0.01
+        return 200, b'<svg><path d="M0 0 L1 1"/></svg>', {}, 0.02
+
+    monkeypatch.setattr(canary, "_request", request)
+    check = canary.check_circuit_source()
+    assert check["fallback_used"] and check["repository"] == "f1db/f1-circuits-svg"
+    assert check["asset"] == "future-2.svg" and "404" in check["source_warnings"][0]
+    assert all("unsafe" not in path for path in calls)
+
+
+def test_circuit_canary_fails_when_every_source_is_invalid(monkeypatch):
+    import pytest
+
+    canary = _load_script("provider_canary.py")
+    for body in (b"invalid JSON", b"{}", b"[]", b'[{"name":"sample.svg"}]'):
+        monkeypatch.setattr(canary, "_request", lambda *_a, _body=body, **_kw: (200, _body, {}, 0.01))
+        with pytest.raises(canary.CanaryError, match="all circuit sources failed"):
+            canary.check_circuit_source()
 
 
 def test_published_architectures_run_operational_acceptance():

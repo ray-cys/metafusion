@@ -15,7 +15,8 @@ not publish container images.
 | Release-candidate tag | Yes | Exact RC tag and `sha-<commit>`; never `latest` |
 | Stable `vX.Y.Z` tag | Yes | Semantic-version tags, `latest`, and `sha-<commit>` from one manifest |
 
-Dependencies and GitHub Actions are opened against `develop`. Python 3.10 and
+Routine package PRs are opened daily against `main` and `develop`; GitHub
+Actions updates remain on `develop`. Python 3.10 and
 3.13 remain the supported test matrix for the first stable release; a base
 Python upgrade is a separate compatibility change, not an automatic merge.
 
@@ -50,6 +51,27 @@ report-only mode.
 
 ## Nightly reliability automation
 
+`Dependency maintenance` runs daily at 16:17 UTC (00:17 Asia/Singapore), before
+nightly reliability. It audits both branches, repairs known runtime advisories
+with stable fixes in the existing major version, regenerates the runtime and
+development hashes together, and refreshes the digest of the supported Python
+3.13 Bookworm base. This covers indirect packages as well as direct pins.
+It opens or refreshes one maintenance PR per branch, dispatches the complete
+Docker qualification on its exact commit, and merges only after qualification
+passes and normal branch protection permits it. It then explicitly dispatches
+publication for that branch. It never promotes features from `develop` to
+`main`, changes the Python minor, or creates stable tags or moves `latest`.
+
+The repository must enable **Settings → Actions → General → Workflow
+permissions → Allow GitHub Actions to create and approve pull requests**.
+GitHub combines creation and review capability in that setting; these workflows
+do not approve PR reviews. Default token permissions remain read-only, and
+maintenance receives write permissions only in its repair job. Automated
+qualification of `automation/**` branches builds both architectures without
+publishing images. A major-only fix, unavailable provider, failing test or
+security scan, or protected-branch conflict remains visible for investigation;
+arbitrary future code errors cannot safely be repaired by dependency automation.
+
 The read-only `Nightly reliability` workflow is defined on `main`, which is the
 default branch required by GitHub's scheduled-workflow service. Every day at
 18:17 UTC (02:17 Asia/Singapore), it explicitly checks out and qualifies both
@@ -82,7 +104,8 @@ It never uses Kometa nightly builds and never accesses a private Plex server.
 For a new Kometa release, the workflow resolves the release-specific image
 digest, verifies and compares the old and candidate JSON schemas, regenerates
 the movie/edition/show/Specials/season/episode corpus, runs the candidate's own
-`--validate-file` command for every document, and opens a draft PR against
+`--validate-file` command for every document with a separate temporary writable
+log directory while keeping the corpus read-only, and opens a draft PR against
 `develop`. It never auto-merges. The PR keeps MetaFusion's existing output
 profile unless a reviewed code change deliberately adopts new schema features.
 A failed candidate remains visible for diagnosis instead of silently changing
@@ -90,7 +113,7 @@ production output. The bot explicitly dispatches the normal qualification
 workflow because GitHub suppresses recursive workflow events created with its
 built-in token.
 
-PlexAPI package and lockfile updates remain owned by weekly Dependabot PRs
+PlexAPI package and lockfile updates remain owned by daily Dependabot PRs
 against `develop`. Every such PR must pass the named `plex-contract` job, which
 runs the sanitized provider replays, Plex metadata writer and locking policies,
 path discovery, identity inspection, provider mappings, pagination, and
@@ -133,7 +156,8 @@ hosted runners never contact a private Plex server. A relevant `develop` push
 runs the canary immediately; its daily schedule becomes active when the
 workflow reaches the default `main` branch and still checks out `develop`.
 The same bounded job also validates the current Jolpica Formula 1 schedule,
-Formula1.com calendar-link markup, one circuit SVG, and a current-season
+Formula1.com calendar-link markup, a manifest-discovered circuit SVG with an
+attributed mirror fallback, and a current-season
 Wikimedia Commons search. These keyless checks detect extension provider drift
 without requiring another repository secret.
 
