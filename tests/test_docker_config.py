@@ -279,6 +279,7 @@ def test_registry_publication_is_serialized_and_verified():
     )
 
     assert "'metafusion-registry-publish'" in workflow
+    assert "format('metafusion-qualification-{0}', github.ref)" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "Verify published aliases, signature, SBOM, and provenance" in workflow
     assert "resolved_digest" in workflow
