@@ -315,7 +315,12 @@ jobs:
     needs: [release-guard, test, kometa-contract, plex-contract, performance-regression, security]
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && format('metafusion-pr-build-{0}', github.event.pull_request.number) || 'metafusion-registry-publish' }}
+      group: >-
+        ${{ github.event_name == 'pull_request' &&
+        format('metafusion-pr-build-{0}', github.event.pull_request.number) ||
+        ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' ||
+        startsWith(github.ref, 'refs/tags/v')) && 'metafusion-registry-publish') ||
+        format('metafusion-qualification-{0}', github.ref) }}
       cancel-in-progress: false
     permissions:
       contents: read

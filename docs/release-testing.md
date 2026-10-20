@@ -71,7 +71,8 @@ GitHub combines creation and review capability in that setting; these workflows
 do not approve PR reviews. Default token permissions remain read-only, and
 maintenance receives write permissions only in its repair job. Automated
 qualification of `automation/**` branches builds both architectures without
-publishing images. A major-only fix, unavailable provider, failing test or
+publishing images and uses a separate queue, so these checks cannot displace a
+pending branch-image publication. A major-only fix, unavailable provider, failing test or
 security scan, or protected-branch conflict remains visible for investigation;
 arbitrary future code errors cannot safely be repaired by dependency automation.
 
