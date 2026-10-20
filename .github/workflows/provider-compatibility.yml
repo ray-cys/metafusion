@@ -125,13 +125,12 @@ jobs:
         run: |
           set -euo pipefail
           for contract in tests/golden/kometa_contract_corpus/*.yml; do
-            filename="$(basename "${contract}")"
             docker run --rm \
-              --volume "${PWD}/tests/golden/kometa_contract_corpus:/contract:ro" \
+              --volume "${PWD}/${contract}:/contract/metadata.yml:ro" \
               --tmpfs /contract/logs:rw,nosuid,nodev,size=32m \
               "${CANDIDATE_IMAGE}" \
-              --config "/contract/${filename}" \
-              --validate-file "/contract/${filename}"
+              --config /contract/metadata.yml \
+              --validate-file /contract/metadata.yml
           done
 
       - name: Run Plex provider replay contract
