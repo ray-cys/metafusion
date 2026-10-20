@@ -2,6 +2,7 @@ import copy
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -23,14 +24,16 @@ def test_committed_provider_contract_is_reproducible_and_complete():
     )
 
     assert values["kometa_baseline_release"] == "v2.4.5"
-    assert values["kometa_current_release"] == "v2.4.8"
+    current_release = committed_manifest()["kometa"]["current"]["release"]
+    assert re.fullmatch(r"v\d+\.\d+\.\d+", current_release)
+    assert values["kometa_current_release"] == current_release
     assert values["kometa_baseline_image"].startswith("kometateam/kometa@sha256:")
     assert values["kometa_current_image"].startswith("kometateam/kometa@sha256:")
     assert values["kometa_current_schema_url"].endswith(
-        "/v2.4.8/json-schema/metadata-schema.json"
+        f"/{current_release}/json-schema/metadata-schema.json"
     )
     assert values["kometa_release"] == values["kometa_current_release"]
-    assert values["plexapi_version"] == "4.18.2"
+    assert values["plexapi_version"] == provider_compatibility.plexapi_pin(REQUIREMENTS_PATH)
     replay_tests = values["plex_replay_tests"].split()
     assert "tests/test_phase23_post_release.py" in replay_tests
     assert "tests/test_plex_metadata.py" in replay_tests
@@ -252,7 +255,8 @@ def test_cli_commands_cover_machine_and_operator_interfaces(tmp_path, monkeypatc
     )
     output_text = github_output.read_text(encoding="utf-8")
     assert "kometa_baseline_release=v2.4.5" in output_text
-    assert "kometa_current_release=v2.4.8" in output_text
+    expected_release = committed_manifest()["kometa"]["current"]["release"]
+    assert f"kometa_current_release={expected_release}" in output_text
 
     monkeypatch.setattr(
         provider_compatibility,
