@@ -15,7 +15,9 @@ not publish container images.
 | Release-candidate tag | Yes | Exact RC tag and `sha-<commit>`; never `latest` |
 | Stable `vX.Y.Z` tag | Yes | Semantic-version tags, `latest`, and `sha-<commit>` from one manifest |
 
-Routine package PRs are opened daily against `main` and `develop`; GitHub
+Routine package updates are checked daily against `main` and `develop` with a
+seven-day cooldown for new releases. The security-repair job does not wait for
+this cooldown when an installed runtime dependency has a published fix. GitHub
 Actions updates remain on `develop`. Python 3.10 and
 3.13 remain the supported test matrix for the first stable release; a base
 Python upgrade is a separate compatibility change, not an automatic merge.
