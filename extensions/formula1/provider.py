@@ -10,6 +10,16 @@ from dataclasses import dataclass, field
 PROVIDER = "jolpica"
 SHAPE_PROVIDER = "f1-circuits-svg"
 
+
+def circuit_source_urls(url):
+    """Fail over only the known CC BY circuit repository; preserve custom providers."""
+    primary = str(url)
+    for host in ("https://raw.githubusercontent.com/", "https://api.github.com/repos/"):
+        prefix = f"{host}julesr0y/f1-circuits-svg/"
+        if primary.startswith(prefix):
+            return (primary, primary.replace(prefix, f"{host}f1db/f1-circuits-svg/", 1))
+    return (primary,)
+
 CIRCUIT_SLUGS = {
     "albert_park": "melbourne-2",
     "americas": "austin-1",
@@ -192,22 +202,24 @@ async def _load_shape_manifest(session, state, config):
     last_error = None
     for attempt in range(retries):
         try:
-            async with session.get(
-                config["providers"]["circuit_manifest_url"],
-                headers={"User-Agent": "MetaFusion-Formula1/1.1"},
-            ) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"provider returned HTTP {response.status}")
-                names = _manifest_names(await response.json(content_type=None))
-                if not names:
-                    raise RuntimeError("circuit manifest contained no SVG files")
-                state.cache_put(
-                    SHAPE_PROVIDER,
-                    "manifest",
-                    {"names": names},
-                    config["providers"]["cache_hours"],
-                )
-                return names
+            for url in circuit_source_urls(config["providers"]["circuit_manifest_url"]):
+                try:
+                    async with session.get(
+                        url, headers={"User-Agent": "MetaFusion-Formula1/1.1"},
+                    ) as response:
+                        if response.status != 200:
+                            raise RuntimeError(f"provider returned HTTP {response.status}")
+                        names = _manifest_names(await response.json(content_type=None))
+                        if not names:
+                            raise RuntimeError("circuit manifest contained no SVG files")
+                        state.cache_put(
+                            SHAPE_PROVIDER, "manifest", {"names": names},
+                            config["providers"]["cache_hours"],
+                        )
+                        return names
+                except (OSError, asyncio.TimeoutError, RuntimeError) as error:
+                    last_error = error
+            raise RuntimeError(f"all circuit manifests failed: {last_error}")
         except (OSError, asyncio.TimeoutError, RuntimeError) as error:
             last_error = error
             if attempt + 1 < retries:
@@ -259,10 +271,20 @@ async def load_circuit_path(session, state, config, race, logger):
         return cached.get("path"), "cache"
     url = f"{config['providers']['circuit_svg_url']}/{slug}.svg"
     try:
-        svg = await _get(session, url, retries=config["providers"]["retries"], json_response=False)
-        path = _extract_path(svg)
+        path = None
+        for candidate_url in circuit_source_urls(url):
+            try:
+                svg = await _get(
+                    session, candidate_url, retries=config["providers"]["retries"],
+                    json_response=False,
+                )
+                path = _extract_path(svg)
+                if path:
+                    break
+            except RuntimeError:
+                continue
         if not path:
-            raise RuntimeError("circuit SVG contained no usable path")
+            raise RuntimeError("circuit sources contained no usable path")
         state.cache_put(
             SHAPE_PROVIDER,
             key,

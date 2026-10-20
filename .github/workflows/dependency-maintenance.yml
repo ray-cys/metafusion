@@ -1,0 +1,148 @@
+name: Dependency maintenance
+
+on:
+  schedule:
+    # 00:17 Singapore time; allow time for qualification before nightly checks.
+    - cron: "17 16 * * *"
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Nightly reliability"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-maintenance
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    name: Repair ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+      checks: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        branch: [main, develop]
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install locked maintenance tools
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Prepare security repairs and current base digest
+        id: repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          audit="${RUNNER_TEMP}/runtime-audit.json"
+          pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps \
+            --format json --output "${audit}" || test -s "${audit}"
+          manifest="$(docker buildx imagetools inspect python:3.13-slim-bookworm --format '{{json .Manifest}}')"
+          digest="$(jq -r '.digest' <<<"${manifest}")"
+          python tools/refresh_runtime_dependencies.py --audit "${audit}" --base-image-digest "${digest}"
+          pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
+          if git diff --quiet -- requirements.in requirements.txt requirements-dev.txt Dockerfile; then
+            echo 'changed=false' >>"${GITHUB_OUTPUT}"
+            echo 'No runtime security or base-image repairs needed.' >>"${GITHUB_STEP_SUMMARY}"
+          else
+            echo 'changed=true' >>"${GITHUB_OUTPUT}"
+          fi
+
+      - name: Create or update maintenance PR
+        if: steps.repair.outputs.changed == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ matrix.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="automation/runtime-maintenance-${BASE_BRANCH}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "${branch}"
+          git add requirements.in requirements.txt requirements-dev.txt Dockerfile
+          git commit -m 'Repair runtime security dependencies and refresh Python base'
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null; then
+            git fetch origin "${branch}:refs/remotes/origin/${branch}"
+          fi
+          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+          body="${RUNNER_TEMP}/maintenance-pr.md"
+          {
+            echo 'Refresh the supported Python base-image digest and repair runtime advisories with stable same-major fixes.'
+            echo
+            echo 'Both hash locks are regenerated together. Merging requires the complete Docker qualification workflow, including Python 3.10/3.13 coverage, provider contracts, critical-image scanning and both image architectures. No feature promotion or stable tag is performed.'
+          } >"${body}"
+          number="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base "${BASE_BRANCH}" \
+            --head "${branch}" --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "${number}" ]]; then
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base "${BASE_BRANCH}" --head "${branch}" \
+              --title "Repair runtime security and base image (${BASE_BRANCH})" --body-file "${body}"
+            number="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base "${BASE_BRANCH}" \
+              --head "${branch}" --state open --json number --jq '.[0].number')"
+          fi
+          {
+            echo "number=${number}"
+            echo "branch=${branch}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Qualify the exact maintenance commit
+        if: steps.repair.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPAIR_BRANCH: ${{ steps.pr.outputs.branch }}
+          REPAIR_SHA: ${{ steps.pr.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run docker-latest.yml --repo "${GITHUB_REPOSITORY}" --ref "${REPAIR_BRANCH}"
+          run_id=""
+          for _attempt in $(seq 1 20); do
+            run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow docker-latest.yml \
+              --branch "${REPAIR_BRANCH}" --commit "${REPAIR_SHA}" --event workflow_dispatch \
+              --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [[ -z "${run_id}" ]] || break
+            sleep 6
+          done
+          [[ -n "${run_id}" ]]
+          gh run watch "${run_id}" --repo "${GITHUB_REPOSITORY}" --interval 20 --exit-status
+
+      - name: Merge qualified repair and publish branch image
+        if: steps.repair.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REPAIR_SHA: ${{ steps.pr.outputs.sha }}
+          BASE_BRANCH: ${{ matrix.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --squash --match-head-commit "${REPAIR_SHA}"
+          # Token-created merges do not trigger push workflows. Publish explicitly.
+          gh workflow run docker-latest.yml --repo "${GITHUB_REPOSITORY}" --ref "${BASE_BRANCH}"
+          echo "Qualified repair PR #${PR_NUMBER} merged into ${BASE_BRANCH}; branch-image publication dispatched." >>"${GITHUB_STEP_SUMMARY}"

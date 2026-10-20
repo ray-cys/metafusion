@@ -128,6 +128,7 @@ jobs:
             filename="$(basename "${contract}")"
             docker run --rm \
               --volume "${PWD}/tests/golden/kometa_contract_corpus:/contract:ro" \
+              --tmpfs /contract/logs:rw,nosuid,nodev,size=32m \
               "${CANDIDATE_IMAGE}" \
               --config "/contract/${filename}" \
               --validate-file "/contract/${filename}"
