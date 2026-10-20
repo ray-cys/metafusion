@@ -81,6 +81,7 @@ from extensions.formula1.provider import (
     _number,
     _response_json,
     _select_shape_slug,
+    circuit_source_urls,
     load_circuit_path,
     load_schedule,
     parse_schedule,
@@ -1044,6 +1045,28 @@ def test_future_shape_manifest_failure_and_stale_fallback(tmp_path, core, schedu
             logging.getLogger("manifest-failed"),
         )
     ) == (None, "unmapped")
+    state.close()
+
+
+def test_circuit_sources_fail_over_for_shapes_and_future_manifest(tmp_path, core, schedule_payload):
+    assert circuit_source_urls("https://custom.example/shapes") == ("https://custom.example/shapes",)
+    config = load_formula1_config(core, tmp_path / "config")
+    state = Formula1State(config["paths"]["database"])
+
+    class MirrorSession(Session):
+        def get(self, url, **kwargs):
+            if "julesr0y/f1-circuits-svg/" in url:
+                self.urls.append(url)
+                return Response(404)
+            return super().get(url, **kwargs)
+
+    session = MirrorSession(schedule_payload, '<svg><path d="M0 0 L2 2"/></svg>')
+    assert asyncio.run(_load_shape_manifest(session, state, config)) == ["madring-1.svg"]
+    path, source = asyncio.run(load_circuit_path(
+        session, state, config, "albert_park", logging.getLogger("mirror")
+    ))
+    assert path == "M0 0 L2 2" and source == "f1-circuits-svg"
+    assert any("f1db/f1-circuits-svg/" in url and url.endswith(".svg") for url in session.urls)
     state.close()
 
 

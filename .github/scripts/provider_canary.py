@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from extensions.formula1.provider import circuit_source_urls
 from helper.provider_credentials import fanart_project_api_key
 
 TMDB_API = "https://api.themoviedb.org/3"
@@ -26,9 +27,9 @@ FANART_API = "https://webservice.fanart.tv/v3"
 JOLPICA_API = "https://api.jolpi.ca/ergast/f1"
 FORMULA1_CALENDAR = "https://www.formula1.com/en/racing"
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
-CIRCUIT_SAMPLE = (
-    "https://raw.githubusercontent.com/julesr0y/f1-circuits-svg/"
-    "main/circuits/detailed/black-outline/silverstone-8.svg"
+CIRCUIT_MANIFEST = (
+    "https://api.github.com/repos/julesr0y/f1-circuits-svg/"
+    "contents/circuits/detailed/black-outline"
 )
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_HTML_BYTES = 5 * 1024 * 1024
@@ -266,6 +267,44 @@ def run_fanart(project_key):
     ]
 
 
+def check_circuit_source():
+    """Discover an existing SVG, with a bounded fallback to the attributed mirror."""
+    failures = []
+    for manifest_url in circuit_source_urls(CIRCUIT_MANIFEST):
+        try:
+            _status, body, _headers, _elapsed = _request("F1 circuit manifest", manifest_url)
+            manifest = json.loads(body)
+            if not isinstance(manifest, list):
+                raise CanaryError("circuit manifest is not a list")
+            names = sorted(
+                str(item["name"]) for item in manifest
+                if isinstance(item, dict)
+                and re.fullmatch(r"[a-z0-9-]+\.svg", str(item.get("name", "")))
+            )
+            if not names:
+                raise CanaryError("circuit manifest contains no SVG files")
+            repository = manifest_url.split("/repos/", 1)[1].split("/contents/", 1)[0]
+            root = f"https://raw.githubusercontent.com/{repository}/main/circuits/detailed/black-outline"
+            for name in names[:3]:
+                try:
+                    status, body, _headers, elapsed = _request(
+                        "F1 circuit SVG", f"{root}/{name}", headers={"Accept": "image/svg+xml"}
+                    )
+                    if b"<svg" not in body[:1000].lower() or b"<path" not in body.lower():
+                        raise CanaryError("circuit provider returned no usable SVG path")
+                    return {
+                        "provider": "f1-circuits-svg", "check": "circuit-shape",
+                        "status": status, "duration_ms": round(elapsed * 1000, 1),
+                        "repository": repository, "asset": name,
+                        "fallback_used": bool(failures), "source_warnings": failures,
+                    }
+                except CanaryError as error:
+                    failures.append(str(error))
+        except (CanaryError, ValueError) as error:
+            failures.append(str(error))
+    raise CanaryError(f"all circuit sources failed: {'; '.join(failures)}")
+
+
 def run_formula1():
     """Exercise every live, keyless provider used by the private F1 extension."""
     year = datetime.now(timezone.utc).year
@@ -309,20 +348,7 @@ def run_formula1():
         }
     )
 
-    status, body, headers, elapsed = _request(
-        "F1 circuit SVG", CIRCUIT_SAMPLE, headers={"Accept": "image/svg+xml"}
-    )
-    content_type = str(headers.get("Content-Type", "")).casefold()
-    if b"<svg" not in body[:1000].lower() or "svg" not in content_type:
-        raise CanaryError("circuit provider returned no usable SVG")
-    checks.append(
-        {
-            "provider": "f1-circuits-svg",
-            "check": "circuit-shape",
-            "status": status,
-            "duration_ms": round(elapsed * 1000, 1),
-        }
-    )
+    checks.append(check_circuit_source())
 
     status, commons, _headers, elapsed = _request_json(
         "Wikimedia Commons Formula 1",
