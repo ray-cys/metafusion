@@ -63,7 +63,8 @@ jobs:
             --format json --output "${audit}" || test -s "${audit}"
           manifest="$(docker buildx imagetools inspect python:3.13-slim-bookworm --format '{{json .Manifest}}')"
           digest="$(jq -r '.digest' <<<"${manifest}")"
-          python tools/refresh_runtime_dependencies.py --audit "${audit}" --base-image-digest "${digest}"
+          python tools/refresh_runtime_dependencies.py --audit "${audit}" \
+            --base-image-digest "${digest}" --github-summary "${GITHUB_STEP_SUMMARY}"
           pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
           if git diff --quiet -- requirements.in requirements.txt requirements-dev.txt Dockerfile; then
             echo 'changed=false' >>"${GITHUB_OUTPUT}"
@@ -95,7 +96,7 @@ jobs:
           {
             echo 'Refresh the supported Python base-image digest and repair runtime advisories with stable same-major fixes.'
             echo
-            echo 'Both hash locks are regenerated together. Merging requires the complete Docker qualification workflow, including Python 3.10/3.13 coverage, provider contracts, critical-image scanning and both image architectures. No feature promotion or stable tag is performed.'
+            echo 'Both hash locks are regenerated together. Merging requires the complete Docker qualification workflow, including Python 3.11/3.13 coverage, provider contracts, critical-image scanning and both image architectures. No feature promotion or stable tag is performed.'
           } >"${body}"
           number="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base "${BASE_BRANCH}" \
             --head "${branch}" --state open --json number --jq '.[0].number // empty')"
@@ -146,3 +147,12 @@ jobs:
           # Token-created merges do not trigger push workflows. Publish explicitly.
           gh workflow run docker-latest.yml --repo "${GITHUB_REPOSITORY}" --ref "${BASE_BRANCH}"
           echo "Qualified repair PR #${PR_NUMBER} merged into ${BASE_BRANCH}; branch-image publication dispatched." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Preserve maintenance audit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: maintenance-${{ matrix.branch }}-audit
+          path: ${{ runner.temp }}/runtime-audit.json
+          if-no-files-found: warn
+          retention-days: 14

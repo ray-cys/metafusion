@@ -18,9 +18,12 @@ not publish container images.
 Routine package updates are checked daily against `main` and `develop` with a
 seven-day cooldown for new releases. The security-repair job does not wait for
 this cooldown when an installed runtime dependency has a published fix. GitHub
-Actions updates remain on `develop`. Python 3.10 and
-3.13 remain the supported test matrix for the first stable release; a base
-Python upgrade is a separate compatibility change, not an automatic merge.
+Actions updates remain on `develop`. Python 3.11 and 3.13 are the supported
+test matrix. Python 3.10 is end-of-life and cannot install Pillow 13's security
+fixes; local source installations now require Python 3.11 or newer. Docker
+continues to use Python 3.13, so Unraid users need no configuration change.
+A base Python upgrade remains a separate compatibility change, not an
+automatic merge.
 
 CI regenerates a representative Kometa contract corpus through MetaFusion's
 real merge and serialization code, then validates every document with both the
@@ -72,9 +75,13 @@ do not approve PR reviews. Default token permissions remain read-only, and
 maintenance receives write permissions only in its repair job. Automated
 qualification of `automation/**` branches builds both architectures without
 publishing images and uses a separate queue, so these checks cannot displace a
-pending branch-image publication. A major-only fix, unavailable provider, failing test or
-security scan, or protected-branch conflict remains visible for investigation;
-arbitrary future code errors cannot safely be repaired by dependency automation.
+pending branch-image publication. A major-only fix remains a failed run with
+the installed and published fix versions in its summary; no partial repair is
+applied. The original dependency audit is retained for 14 days as a branch-named
+workflow artifact. Review upstream compatibility and Python requirements before
+manually upgrading. An unavailable provider, failing test or security scan, or
+protected-branch conflict also remains visible for investigation; arbitrary
+future code errors cannot safely be repaired by dependency automation.
 
 The read-only `Nightly reliability` workflow is defined on `main`, which is the
 default branch required by GitHub's scheduled-workflow service. Every day at
@@ -82,7 +89,7 @@ default branch required by GitHub's scheduled-workflow service. Every day at
 `main` and `develop`. The non-zero minute avoids the busiest top-of-hour
 scheduling window.
 
-For both branches it runs Python 3.10/3.13 tests, coverage and targeted floors,
+For both branches it runs Python 3.11/3.13 tests, coverage and targeted floors,
 static analysis, generated configuration checks, provider contracts, Kometa
 corpus generation, dependency audit, the representative performance workload,
 Docker builds, CLI smoke tests, and fixable-critical vulnerability scans. It
@@ -194,16 +201,19 @@ manifest in an isolated dependency-graph workspace.
 Regenerate both manifests after changing either input:
 
 ```bash
-uv pip compile --universal --python-version 3.10 --generate-hashes \
+uv pip compile --universal --python-version 3.11 --generate-hashes \
   requirements.in -o requirements.txt
-uv pip compile --universal --python-version 3.10 --generate-hashes \
-  requirements-dev.in -o requirements-dev.txt
+uv pip compile --universal --python-version 3.11 --generate-hashes \
+  requirements-dev.in -c requirements.txt -o requirements-dev.txt
 ```
 
 The repository test suite verifies that both generated files are
 self-contained, every declared direct pin is represented, development includes
 the runtime graph, and every resolved package retains SHA-256 hashes. Docker
-continues to install only `requirements.txt` with `--require-hashes`.
+continues to install only `requirements.txt` with `--require-hashes`, then removes
+the build-only pip installer and its vendored libraries from the runtime image.
+This does not affect MetaFusion's CLI; install dependency changes by rebuilding
+the image, not by running pip inside an existing container.
 
 ## Required release gate
 
@@ -238,7 +248,7 @@ wall-clock sections, throughput, peak traced memory, and database size in a
 exceeded. It is a deterministic regression signal, not a replacement for the
 Unraid soak test against a real Plex server.
 
-The nightly reliability matrix checks both `main` and `develop` on Python 3.10
+The nightly reliability matrix checks both `main` and `develop` on Python 3.11
 and 3.13 and retains their branch-aware coverage reports for 14 days. A stable
 branch that predates `.coveragerc-provider-tools` keeps its prior 85% line gate
 while the newer policy is qualified on `develop`; as soon as the policy is
