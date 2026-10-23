@@ -59,7 +59,34 @@ def test_maintenance_updates_both_hash_locks_and_constrains_development(tmp_path
     assert "aiohttp==3.14.4" in Path("requirements.in").read_text()
     assert len(calls) == 2 and all(call[1]["check"] for call in calls)
     assert "--upgrade-package" in calls[0][0]
+    assert calls[0][0][calls[0][0].index("--python-version") + 1] == "3.11"
     assert calls[1][0][-4:] == ["-c", "requirements.txt", "-o", "requirements-dev.txt"]
+
+
+def test_major_only_fix_produces_actionable_summary_without_partial_repairs(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    Path("requirements.in").write_text("pillow==12.3.0\n", encoding="utf-8")
+    audit = tmp_path / "audit.json"
+    audit.write_text(json.dumps({"dependencies": [
+        _advisory(name="certifi", version="2026.7.22", fixes=["2026.10.19"]),
+        _advisory(name="pillow", version="12.3.0", fixes=["13.0.0"]),
+    ]}), encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    summary.write_text("Existing summary\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(maintenance.subprocess, "run", lambda *args, **kw: calls.append(args))
+    arguments = ["--audit", str(audit), "--base-image-digest", "sha256:" + "b" * 64]
+    for extra in (["--github-summary", str(summary)], []):
+        with pytest.raises(SystemExit) as error:
+            maintenance.main([*arguments, *extra])
+        assert error.value.code == 1
+    message = summary.read_text()
+    assert message.startswith("Existing summary\n")
+    assert "pillow" in message and "13.0.0" in message and "No repairs were applied" in message
+    assert "requires review" in capsys.readouterr().err
+    assert not calls and Path("requirements.in").read_text() == "pillow==12.3.0\n"
 
 
 def test_daily_repair_requires_complete_qualification_before_protected_merge():
@@ -72,3 +99,17 @@ def test_daily_repair_requires_complete_qualification_before_protected_merge():
     assert "--event workflow_dispatch" in text and '--commit "${REPAIR_SHA}"' in text
     assert "--force-with-lease" in text
     assert "refs/tags" not in text
+    assert '--github-summary "${GITHUB_STEP_SUMMARY}"' in text
+    assert 'name: maintenance-${{ matrix.branch }}-audit' in text
+    assert "if: always()" in text
+
+
+def test_supported_python_floor_is_consistent_across_tools_and_qualification():
+    root = Path(__file__).resolve().parents[1]
+    project = (root / "pyproject.toml").read_text()
+    assert 'target-version = "py311"' in project
+    assert 'python_version = "3.11"' in project
+    for workflow in ("docker-latest.yml", "nightly-reliability.yml"):
+        assert 'python-version: ["3.11", "3.13"]' in (
+            root / ".github/workflows" / workflow
+        ).read_text()
