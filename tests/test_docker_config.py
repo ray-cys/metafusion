@@ -96,6 +96,7 @@ def test_dockerfile_uses_stable_python_minor_without_os_upgrade():
     assert "apt-get upgrade" not in dockerfile
     assert "PIP_NO_CACHE_DIR=1" in dockerfile
     assert "--require-hashes -r requirements.txt" in dockerfile
+    assert "&& python -m pip uninstall --yes pip" in dockerfile
     assert "USER 10001:10001" not in dockerfile
     assert 'ENTRYPOINT ["python", "/app/docker_entrypoint.py"]' in dockerfile
     assert '"--healthcheck"' in dockerfile
@@ -405,7 +406,7 @@ def test_nightly_reliability_qualifies_main_and_develop_without_publishing():
 
     assert 'cron: "17 18 * * *"' in workflow
     assert "branch: [main, develop]" in workflow
-    assert 'python-version: ["3.10", "3.13"]' in workflow
+    assert 'python-version: ["3.11", "3.13"]' in workflow
     assert "ref: ${{ matrix.branch }}" in workflow
     assert "--cov-fail-under=85" in workflow
     assert "--cov-fail-under=100" in workflow

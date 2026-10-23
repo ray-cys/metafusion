@@ -42,7 +42,11 @@ def security_repairs(report):
                 ):
                     candidates.append(version)
             if not candidates:
-                raise ValueError(f"{name}: no stable same-major fix; manual review required")
+                published = ", ".join(map(str, vulnerability.get("fix_versions", []))) or "none"
+                raise ValueError(
+                    f"{name}: no stable same-major fix; manual review required "
+                    f"(installed {current}; published fixes: {published})"
+                )
             fixes.append(min(candidates))
         repairs[name] = str(max(fixes))
     return repairs
@@ -73,8 +77,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit", type=Path, required=True)
     parser.add_argument("--base-image-digest", required=True)
+    parser.add_argument("--github-summary", type=Path)
     args = parser.parse_args(argv)
-    repairs = security_repairs(json.loads(args.audit.read_text(encoding="utf-8")))
+    try:
+        repairs = security_repairs(json.loads(args.audit.read_text(encoding="utf-8")))
+    except ValueError as error:
+        if args.github_summary:
+            with args.github_summary.open("a", encoding="utf-8") as summary:
+                summary.write(
+                    "## Dependency maintenance requires review\n\n"
+                    f"{error}\n\n"
+                    "No repairs were applied. Review upstream compatibility and Python "
+                    "support before upgrading; security checks have not been bypassed. "
+                    "The full audit is retained in the workflow artifacts.\n"
+                )
+        parser.exit(1, f"Dependency maintenance requires review: {error}\n")
     requirements = Path("requirements.in")
     dockerfile = Path("Dockerfile")
     updated_requirements = repair_requirements(requirements.read_text(encoding="utf-8"), repairs)
@@ -85,7 +102,7 @@ def main(argv=None):
     dockerfile.write_text(updated_dockerfile, encoding="utf-8")
     common = [
         sys.executable, "-m", "uv", "pip", "compile", "--universal",
-        "--python-version", "3.10", "--generate-hashes", "--quiet",
+        "--python-version", "3.11", "--generate-hashes", "--quiet",
     ]
     upgrades = [argument for name in sorted(repairs) for argument in ("--upgrade-package", name)]
     subprocess.run([*common, *upgrades, "requirements.in", "-o", "requirements.txt"], check=True)
