@@ -760,9 +760,9 @@ pillow==13.0.0 \
     --hash=sha256:ff3fe9eb621fbb9db4c4be33ab946f6bac5f98ab50ca8d3260503653656c961b \
     --hash=sha256:ffea6b2986a797c84b6d1d27d4f43e0b83c73fc16281a930891cd237cf0d08fe
     # via -r requirements.in
-plexapi==4.18.2 \
-    --hash=sha256:7ff9f30db57af08407500b2d59e5e57d674d2aa6082dce418086019abb5b8f78 \
-    --hash=sha256:865a90cf44193e750605dec35fc6e1038a15b6f0bda5b3e1779bbe286f7e1da1
+plexapi==4.18.3 \
+    --hash=sha256:6c34977ccf7057b204aa5d904f15ff41ea8831df05fedf51432adaa3124d7551 \
+    --hash=sha256:d59948f1f4b345a58a46e189bfccc7dadd86a6266ec2c97cd072a113a2d3c81d
     # via -r requirements.in
 propcache==0.5.2 \
     --hash=sha256:01c4fc7480cd0598bb4b57022df55b9ca296da7fc5a8760bd8451a7e63a7d427 \
@@ -997,12 +997,6 @@ schedule==1.2.2 \
     --hash=sha256:15fe9c75fe5fd9b9627f3f19cc0ef1420508f9f9a46f45cd0769ef75ede5f0b7 \
     --hash=sha256:5bef4a2a0183abf44046ae0d164cadcac21b1db011bdd8102e4a0c1e91e06a7d
     # via -r requirements.in
-typing-extensions==4.16.0 ; python_full_version < '3.13' \
-    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 \
-    --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
-    # via
-    #   aiohttp
-    #   aiosignal
 urllib3==2.8.0 \
     --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
     --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
