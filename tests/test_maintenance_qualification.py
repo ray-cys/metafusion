@@ -341,13 +341,18 @@ def test_workflow_reports_verified_statuses_before_normal_protected_merge():
     assert workflow.count('--created ">=${requested_at}"') == 2
     assert 'timeout 35m gh run watch "${publish_id}"' in workflow
     assert "maintenance-qualification.json" in workflow
-    for name in ("docker-latest.yml", "nightly-reliability.yml"):
+    for name in ("docker-latest.yml", "nightly-branch-reliability.yml"):
         content = (root / ".github/workflows" / name).read_text()
         assert "--cov=tools.maintenance_qualification" in content
         assert "--cov-branch --cov-report=term-missing --cov-fail-under=100" in content
-    nightly = (root / ".github/workflows/nightly-reliability.yml").read_text()
+    nightly = (root / ".github/workflows/nightly-branch-reliability.yml").read_text()
     assert "cache: pip" not in nightly
     assert nightly.count("persist-credentials: false") == 2
+    assert "matrix.branch" not in nightly and "ref:" not in nightly
+    scheduler = (root / ".github/workflows/nightly-reliability.yml").read_text()
+    assert "actions/checkout" not in scheduler
+    assert "gh workflow run nightly-branch-reliability.yml" in scheduler
+    assert "--exit-status" in scheduler and '--created ">=${requested_at}"' in scheduler
 
 
 @pytest.mark.parametrize("existing,base_moved,content_changed", [
