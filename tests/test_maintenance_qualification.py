@@ -340,6 +340,8 @@ def test_workflow_reports_verified_statuses_before_normal_protected_merge():
     assert "Reusing unchanged repair commit" in workflow
     assert workflow.count('--created ">=${requested_at}"') == 2
     assert 'timeout 35m gh run watch "${publish_id}"' in workflow
+    assert "--required --watch --interval 5 --fail-fast" in workflow
+    assert "--json mergeStateStatus" not in workflow
     assert "maintenance-qualification.json" in workflow
     for name in ("docker-latest.yml", "nightly-branch-reliability.yml"):
         content = (root / ".github/workflows" / name).read_text()
@@ -422,3 +424,64 @@ def test_real_git_repairs_reuse_only_identical_up_to_date_commits(
         assert repair_sha == previous_sha and "Reusing unchanged" in summary.read_text()
     else:
         assert repair_sha != previous_sha and not git("status", "--porcelain")
+
+
+@pytest.mark.parametrize("required_passes,publish_passes,expected", [
+    (True, True, 0), (False, True, 1), (True, False, 1),
+])
+def test_real_merge_shell_uses_required_checks_and_propagates_publication_failures(
+    tmp_path, required_passes, publish_passes, expected,
+):
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/dependency-maintenance.yml").read_text())
+    merge = next(
+        step["run"] for step in workflow["jobs"]["repair"]["steps"]
+        if step["name"] == "Merge qualified repair and publish branch image"
+    )
+    fake_commands = r'''
+    gh() {
+      printf '%s\n' "$*" >>"${FLOW_CALLS}"
+      case "$1 $2" in
+        'pr checks') test "${REQUIRED_PASSES}" = true ;;
+        'pr merge'|'workflow run') return 0 ;;
+        'pr view')
+          if [[ "$*" == *mergeStateStatus* ]]; then
+            printf 'UNSTABLE\n'
+          else
+            printf '%040d\n' 1
+          fi ;;
+        'run list') printf '999\n' ;;
+        'run watch') test "${PUBLISH_PASSES}" = true ;;
+        *) return 1 ;;
+      esac
+    }
+    python() { return 0; }
+    timeout() { shift; "$@"; }
+    sleep() { return 0; }
+    '''
+    calls = tmp_path / "calls.log"
+    summary = tmp_path / "summary.md"
+    environment = os.environ.copy()
+    environment.update(
+        FLOW_CALLS=str(calls), REQUIRED_PASSES=str(required_passes).lower(),
+        PUBLISH_PASSES=str(publish_passes).lower(), PR_NUMBER="120", REPAIR_SHA=SHA,
+        BASE_BRANCH="main", QUALIFICATION_RUN=str(RUN_ID), RUNNER_TEMP=str(tmp_path),
+        GITHUB_REPOSITORY=REPOSITORY, GITHUB_STEP_SUMMARY=str(summary),
+    )
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", fake_commands + merge],
+        env=environment, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == expected
+    actions = calls.read_text()
+    assert "--required --watch" in actions and "mergeStateStatus" not in actions
+    if required_passes:
+        assert "pr merge 120" in actions and "run watch 999" in actions
+        assert "--match-head-commit " + SHA in actions
+    else:
+        assert actions.count("pr checks") == 3
+        assert "pr merge" not in actions and "workflow run" not in actions
+    if required_passes and publish_passes:
+        assert "publication verified in run 999" in summary.read_text()
+    else:
+        assert not summary.exists()
