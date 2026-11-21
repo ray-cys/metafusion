@@ -167,21 +167,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Optional approval-waiting workflows can label a fully qualified PR
+          # UNSTABLE. Ask GitHub for its actual required checks, not that label.
+          required_ready=false
+          for _attempt in $(seq 1 3); do
+            if timeout 90s gh pr checks "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --required --watch --interval 5 --fail-fast; then
+              required_ready=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "${required_ready}" != true ]]; then
+            echo "::error::Repair PR #${PR_NUMBER} has unsuccessful or unavailable required checks. Nothing was bypassed."
+            exit 1
+          fi
           python tools/maintenance_qualification.py \
             --repository "${GITHUB_REPOSITORY}" --pr "${PR_NUMBER}" \
             --branch "${BASE_BRANCH}" --sha "${REPAIR_SHA}" --run-id "${QUALIFICATION_RUN}" \
             --evidence "${RUNNER_TEMP}/maintenance-qualification.json" --verify-only
-          # Give GitHub a bounded window to reconcile the verified commit statuses.
-          for _attempt in $(seq 1 12); do
-            state="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-              --json mergeStateStatus --jq '.mergeStateStatus')"
-            [[ "${state}" == 'CLEAN' ]] && break
-            sleep 5
-          done
-          if [[ "${state}" != 'CLEAN' ]]; then
-            echo "::error::Repair PR #${PR_NUMBER} is still ${state}; review its required checks or protection rules. Nothing was bypassed."
-            exit 1
-          fi
           gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --squash --match-head-commit "${REPAIR_SHA}"
           # Token-created merges do not trigger push workflows. Publish explicitly.
           merged_sha="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
