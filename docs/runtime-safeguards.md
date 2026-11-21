@@ -12,7 +12,7 @@ separately scheduled Kometa job has finished.
 | --- | --- | --- | --- |
 | TMDb change-aware rechecks | `TMDB_CHANGE_RECHECKS=True` | Eligible non-targeted, non-dry-run incremental jobs | Refreshed TMDb cache rows and a successful-job checkpoint in `meta_db.sqlite3` |
 | Upgrade canary | `UPGRADE_CANARY=True` | Once per published commit, Plex server, mode, and compatibility profile | Detailed qualification state in `meta_db.sqlite3`; a report only when `--upgrade-canary-report` is requested |
-| Post-Kometa application verification | `python metafusion.py --kometa-application-audit` | Manually, after Kometa processes MetaFusion output | A text/JSON report only |
+| Post-Kometa application verification | `metafusion --kometa-application-audit` | Manually, after Kometa processes MetaFusion output | A text/JSON report only |
 
 Neither automatic safeguard changes the configured metadata or artwork policy.
 They decide when an existing policy must be reevaluated and whether a newly
@@ -77,7 +77,7 @@ create a report during container startup, after an image update, or during a
 normal scheduled job. Generate the latest stored result explicitly:
 
 ```bash
-python metafusion.py --upgrade-canary-report
+metafusion --upgrade-canary-report
 ```
 
 This SQLite-only command does not contact Plex, TMDb, or Fanart.tv and writes
@@ -101,14 +101,14 @@ MetaFusion cannot verify that final state during generation because Kometa may
 run on a different schedule. After Kometa completes, run:
 
 ```bash
-python metafusion.py --kometa-application-audit
+metafusion --kometa-application-audit
 ```
 
 Limit the audit when investigating a particular library or item:
 
 ```bash
-python metafusion.py --kometa-application-audit --library Movies
-python metafusion.py --kometa-application-audit --library Movies --rating-key 12345
+metafusion --kometa-application-audit --library Movies
+metafusion --kometa-application-audit --library Movies --rating-key 12345
 ```
 
 The command requires `RUN_MODE=kometa` and a working Plex connection. It does

@@ -18,6 +18,7 @@ DEFAULT_DATE_FIELDS = {
     "pre_qualifying": "Qualifying",
     "qualifying": "Qualifying",
     "post_qualifying": "Qualifying",
+    "post_race_press_conference": "Race",
 }
 
 

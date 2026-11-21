@@ -14,6 +14,20 @@ from helper.plex_paths import parse_path_mappings
 from helper.state_db import StateDatabaseError, record_job_run
 from helper.storage import storage_pressure_threshold
 
+ROOT_EXECUTION_MESSAGE = (
+    "MetaFusion refuses to run as root because generated files would become "
+    "root-owned. Run commands through the Docker entrypoint or the `metafusion` "
+    "command and set PUID/PGID to the host owner (99:100 on standard Unraid "
+    "installations)."
+)
+
+
+def validate_runtime_identity():
+    """Reject every direct root CLI invocation before any command can write."""
+    get_effective_uid = getattr(os, "geteuid", None)
+    if get_effective_uid is not None and get_effective_uid() == 0:
+        raise RuntimeError(ROOT_EXECUTION_MESSAGE)
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -82,13 +96,7 @@ def ensure_storage_available(
 
 def validate_runtime_paths(config, config_dir):
     """Create and verify only the writable paths required by a real run."""
-    get_effective_uid = getattr(os, "geteuid", None)
-    if get_effective_uid is not None and get_effective_uid() == 0:
-        raise RuntimeError(
-            "MetaFusion refuses to run as root because generated files would become "
-            "root-owned. Keep the Docker entrypoint enabled and set PUID/PGID to the "
-            "host owner (99:100 on standard Unraid installations)."
-        )
+    validate_runtime_identity()
     if config.get("settings", {}).get("dry_run", False):
         return
 

@@ -50,11 +50,23 @@ docker compose run --rm -e METAFUSION_RUN=True metafusion
 From an existing container console:
 
 ```bash
-python metafusion.py --metafusion_run
+metafusion --metafusion_run
 ```
+
+The container-provided `metafusion` command always passes through the image
+entrypoint. If the console was opened as root, it prepares only managed runtime
+paths and drops to `PUID:PGID` before starting Python. Do not invoke
+`python /app/metafusion.py` directly from an Unraid or Docker exec console;
+that deliberately triggers the root-ownership safety guard.
 
 Do not leave `METAFUSION_RUN=True` on the long-running service unless a new
 one-shot run after every container restart is intentional.
+
+The `metafusion` wrapper applies the configured `PUID`/`PGID` to every command
+below, including read-only reports and SQLite operations. Do not invoke
+`python /app/metafusion.py` directly from a container console; direct root
+execution is rejected before command parsing so no command can create
+root-owned output.
 
 ## Command-line reference
 
@@ -96,6 +108,7 @@ or `config.yml` values.
 | SQLite reports | `--state-report` | None | Generate human-readable and JSON reports entirely from recorded SQLite state; no provider, Plex, YAML, or artwork access occurs. |
 | SQLite reports | `--dashboard-report` | None | Generate a self-contained offline HTML dashboard plus JSON companion from recorded SQLite state. |
 | SQLite reports | `--upgrade-canary-report` | None | Generate the configured report format from the latest detailed upgrade-canary result stored in SQLite. It does not rerun the canary or contact providers. |
+| Formula 1 artwork | `--formula1-upgrade-artwork` | `current` or `all` | Explicitly evaluate extension-managed Formula 1 artwork against Flickr and apply only a materially better, same-constructor source. Requires Kometa mode and a configured Flickr API key. |
 | SQLite reports | `--state-section` | `all`, `database`, `libraries`, `jobs`, `ownership`, `provenance`, `problems`, or `items` | Limit `--state-report`; defaults to `all`. |
 | SQLite reports | `--include-state-items` | None | Include item-level rows in `--state-report`; otherwise items appear only when targeted or when the `items` section is selected. |
 | SQLite reports | `--cleanup-history-report` | None | Report pending cleanup confirmations and completed/cancelled automated or manual cleanup actions. |
@@ -141,6 +154,25 @@ or `config.yml` values.
 `--healthcheck` belongs to the container entrypoint and is reserved for the
 image's Docker health check; it is not a public `metafusion.py` option.
 
+### Explicit Formula 1 artwork upgrade
+
+Formula 1 source bindings remain stable during normal scheduled runs. To
+deliberately evaluate existing extension-managed artwork against Flickr, run:
+
+```bash
+metafusion --formula1-upgrade-artwork current
+metafusion --formula1-upgrade-artwork all
+```
+
+`current` checks the active race's episode cards and current show poster and
+background. `all` checks episode cards for every detected race round, plus the
+current show pair. Both modes keep each round's bound constructor, evaluate the
+background independently, require a material decoded-quality or race-specificity
+gain, and preserve files whose managed checksum no longer matches. Decisions are
+recorded in the private Formula 1 SQLite database and in a paired TXT/JSON report.
+Repeated use is safe: an existing Flickr binding or a candidate without a
+meaningful gain is recorded and left unchanged.
+
 ## Diagnostics
 
 Use the [diagnostics and support reports guide](diagnostics.md) to choose a
@@ -166,22 +198,22 @@ Target one or more exact Plex libraries and rating keys:
 
 ```bash
 # Metadata only
-python metafusion.py --metafusion_run \
+metafusion --metafusion_run \
   --library Movies --rating-key 12345 --metadata-only
 
 # Enabled artwork only
-python metafusion.py --metafusion_run \
+metafusion --metafusion_run \
   --library "TV Shows" --rating-key 12345 --asset-only
 
 # Target IDs Plex already exposes through TMDb GUIDs
-python metafusion.py --metafusion_run \
+metafusion --metafusion_run \
   --library Movies --tmdb-id 550,551 --metadata-only
 
 # Process every selected movie library but no show library
-python metafusion.py --metafusion_run --media-type movie
+metafusion --metafusion_run --media-type movie
 
 # Explain why an item is or is not due without processing it
-python metafusion.py --library Movies --rating-key 12345 --explain-selection
+metafusion --library Movies --rating-key 12345 --explain-selection
 ```
 
 `--library` and `--rating-key` may be repeated or contain comma-separated
@@ -261,7 +293,7 @@ output writes and never edits Plex, YAML, or artwork.
 The canary stores its detailed checks and samples in `meta_db.sqlite3` without
 creating files during startup or normal processing. A failure stops the job
 before output processing. Generate the latest stored result on demand with
-`python metafusion.py --upgrade-canary-report`. A pass is remembered in SQLite
+`metafusion --upgrade-canary-report`. A pass is remembered in SQLite
 only after the surrounding job also completes successfully, so a later failure
 causes the canary to run again. Development builds, dry runs, and an unchanged
 published commit do not rerun it. Disable this advanced safety gate only with
@@ -283,7 +315,7 @@ or configuration-triggered evaluation can still recheck it.
 
 A changed Plex `updatedAt` marker resets the failure history and gives a parked
 item a fresh attempt. Retry selection works during incremental mode and does
-not enable cleanup. `python metafusion.py --status` shows pending, running, and
+not enable cleanup. `metafusion --status` shows pending, running, and
 parked queue totals. Retry deadlines are evaluated at job start; MetaFusion
 does not wake outside configured schedule times solely for a retry.
 
@@ -291,13 +323,13 @@ To retry a deliberate subset immediately:
 
 ```bash
 # Retry every queued item in the currently selected libraries
-python metafusion.py --retry-failed
+metafusion --retry-failed
 
 # Retry only parked items in one library
-python metafusion.py --retry-failed --retry-status parked --library Movies
+metafusion --retry-failed --retry-status parked --library Movies
 
 # Retry one known queued item
-python metafusion.py --retry-failed --library Movies --rating-key 12345
+metafusion --retry-failed --library Movies --rating-key 12345
 ```
 
 This command still performs the item's normally enabled metadata and artwork
@@ -389,8 +421,8 @@ paths, metadata values, response bodies, tokens, and API keys are not retained.
 Generate the configured report format without contacting Plex or providers:
 
 ```bash
-python metafusion.py --run-history
-python metafusion.py --schedule-advice
+metafusion --run-history
+metafusion --schedule-advice
 ```
 
 The first command includes individual retained jobs. The second is concise and
@@ -490,11 +522,11 @@ maintenance CLI only for diagnosis, a deliberate backup, or an administrator
 maintenance window:
 
 ```bash
-python metafusion.py --sqlite-maintenance check
-python metafusion.py --sqlite-maintenance backup --sqlite-target state
-python metafusion.py --sqlite-maintenance optimize
-python metafusion.py --sqlite-maintenance checkpoint --sqlite-target tmdb
-python metafusion.py --sqlite-maintenance vacuum --sqlite-target tmdb
+metafusion --sqlite-maintenance check
+metafusion --sqlite-maintenance backup --sqlite-target state
+metafusion --sqlite-maintenance optimize
+metafusion --sqlite-maintenance checkpoint --sqlite-target tmdb
+metafusion --sqlite-maintenance vacuum --sqlite-target tmdb
 ```
 
 `check` opens databases read-only and runs SQLite `quick_check`. `optimize`

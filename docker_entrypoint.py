@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Prepare bind mounts and run MetaFusion as the requested numeric identity."""
 
 import os

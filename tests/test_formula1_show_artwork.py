@@ -8,9 +8,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from extensions.formula1 import commons as commons_module
+from extensions.formula1 import race_background as race_background_module
 from extensions.formula1 import show_artwork as show_artwork_module
 from extensions.formula1.commons import (
     CommonsCandidate,
@@ -33,29 +34,51 @@ from extensions.formula1.config import Formula1ConfigError, load_formula1_config
 from extensions.formula1.inventory import Formula1Episode, Formula1Show
 from extensions.formula1.metadata import build_show_entry
 from extensions.formula1.provider import RaceData
-from extensions.formula1.safety_car import (
-    SafetyCarCandidate,
-    _safety_car_category_url,
-    _safety_car_search_url,
-    parse_safety_car_candidates,
-    search_safety_cars,
+from extensions.formula1.race_background import (
+    RaceBackgroundCandidate,
+    _candidate_rejection_reason,
+    _category_pages,
+    _category_priority,
+    _race_background_category_url,
+    _race_background_search_url,
+    _race_queries,
+    _solar_elevation,
+    classify_image_environment,
+    derive_race_environment,
+    environment_compatible,
+    image_has_meaningful_colour,
+    parse_race_background_candidates,
+    search_race_backgrounds,
 )
+from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import (
     EPISODE_RENDERER_VERSION,
     SHOW_RENDERER_VERSION,
+    _adaptive_showcase_crop,
     _asset_reference,
+    _background_candidate_order,
+    _background_fallback_retry_due,
+    _background_retry_after,
     _candidate_order,
     _checksum,
+    _draw_circuit_watermark,
+    _draw_speed_accent,
+    _episode_circuit_box,
+    _episode_date_label,
     _episode_fingerprint,
     _episode_reference,
+    _episode_text_side,
+    _episode_title_layout,
     _existing_episode_outputs,
     _grade_photo,
     _managed_episode_action,
     _pair_integrity,
+    _poster_photo_profile,
+    _poster_showcase_grade,
     _prune_retained_pairs,
     _prune_source_cache,
     _rounded_flag_badge,
-    _safety_candidate_order,
+    _saliency_focal_point,
     _select_background_source,
     reconcile_episode_posters,
     reconcile_episode_round_artwork,
@@ -128,22 +151,23 @@ def _commons_payload(team="Alpine F1 Team", constructor_id="alpine", **overrides
     }
 
 
-def _safety_car_payload(*, page_id=901, title=None, **overrides):
+def _race_background_payload(*, page_id=901, title=None, **overrides):
     info = {
-        "url": f"https://upload.wikimedia.org/safety-{page_id}.jpg",
-        "thumburl": f"https://upload.wikimedia.org/safety-thumb-{page_id}.jpg",
+        "url": f"https://upload.wikimedia.org/race-{page_id}.jpg",
+        "thumburl": f"https://upload.wikimedia.org/race-thumb-{page_id}.jpg",
         "width": overrides.pop("width", 3200),
         "height": overrides.pop("height", 1800),
         "mime": overrides.pop("mime", "image/jpeg"),
-        "sha1": overrides.pop("sha1", f"safety-sha1-{page_id}"),
+        "sha1": overrides.pop("sha1", f"race-sha1-{page_id}"),
         "extmetadata": {
             "ImageDescription": {
                 "value": overrides.pop(
                     "description",
-                    "Official FIA Formula 1 safety car on track during the 2026 season",
+                    "McLaren Formula 1 race car on track at the 2026 "
+                    "Australian Grand Prix at Albert Park Grand Prix Circuit",
                 )
             },
-            "Artist": {"value": overrides.pop("author", "Safety Photographer")},
+            "Artist": {"value": overrides.pop("author", "Race Photographer")},
             "LicenseShortName": {"value": overrides.pop("licence", "CC BY 4.0")},
             "LicenseUrl": {
                 "value": overrides.pop(
@@ -159,8 +183,8 @@ def _safety_car_payload(*, page_id=901, title=None, **overrides):
                 {
                     "pageid": page_id,
                     "title": title
-                    or f"File:2026 Formula 1 Safety Car track view {page_id}.jpg",
-                    "categories": [{"title": "Category:Formula One safety car"}],
+                    or f"File:2026 McLaren Formula 1 race car {page_id}.jpg",
+                    "categories": [{"title": "Category:2026 Formula One cars"}],
                     "imageinfo": [info],
                 }
             ]
@@ -209,14 +233,15 @@ class CommonsSession:
                 return Response(payload={"query": {"pages": []}})
             if (
                 parameters.get("generator") == ["categorymembers"]
-                or "safety car" in query
+                or "race car" in query
+                or "formula one cars" in query
             ):
                 page_id = (
                     901
                     if parameters.get("generator") == ["categorymembers"]
                     else 902
                 )
-                return Response(payload=_safety_car_payload(page_id=page_id))
+                return Response(payload=_race_background_payload(page_id=page_id))
             for constructor_id, team in (
                 ("alpine", "Alpine F1 Team"),
                 ("ferrari", "Ferrari"),
@@ -251,8 +276,14 @@ def config(tmp_path, core):
         poster_height=900,
         background_width=1280,
         background_height=720,
+        episode_width=1280,
+        episode_height=720,
         minimum_source_width=800,
         minimum_source_height=450,
+        minimum_background_source_width=800,
+        minimum_background_source_height=450,
+        fallback_background_source_width=800,
+        fallback_background_source_height=450,
     )
     return value
 
@@ -345,69 +376,97 @@ def test_commons_identity_licence_and_payload_filtering(config):
     assert parse_commons_candidates({"query": {"pages": "bad"}}, 2026, roster[0], roster, config) == []
 
 
-def test_safety_car_identity_licence_and_season_filtering(config):
-    candidates = parse_safety_car_candidates(_safety_car_payload(), 2026, config)
+def test_race_background_identity_licence_and_season_filtering(config):
+    candidates = parse_race_background_candidates(_race_background_payload(), 2026, config)
     assert len(candidates) == 1
-    assert candidates[0].vehicle_name.startswith("2026 Formula 1 Safety Car")
-    assert SafetyCarCandidate.from_dict(candidates[0].as_dict()) == candidates[0]
-    assert parse_safety_car_candidates(_safety_car_payload(), 2027, config) == []
-    assert parse_safety_car_candidates(
-        _safety_car_payload(title="File:2026 Formula 1 Medical Car.jpg"), 2026, config
+    assert candidates[0].vehicle_name.startswith("2026 McLaren Formula 1 race car")
+    assert RaceBackgroundCandidate.from_dict(candidates[0].as_dict()) == candidates[0]
+    assert parse_race_background_candidates(_race_background_payload(), 2027, config) == []
+    assert parse_race_background_candidates(
+        _race_background_payload(title="File:2026 Formula 1 Medical Car.jpg"), 2026, config
     ) == []
-    assert parse_safety_car_candidates(
-        _safety_car_payload(
-            title="File:Aston Martin Vantage F1 Safety Car - Museum 2026.jpg"
+    assert parse_race_background_candidates(
+        _race_background_payload(
+            title="File:Aston Martin Formula 1 race car - Museum 2026.jpg"
         ),
         2026,
         config,
     ) == []
-    plural = _safety_car_payload(
+    assert parse_race_background_candidates(
+        _race_background_payload(
+            title="File:2026 Formula 1 Safety Car.jpg",
+            description="Formula 1 safety car at the 2026 Australian Grand Prix",
+        ),
+        2026,
+        config,
+    ) == []
+    showcar = _race_background_payload(
+        title="File:2026 Red Bull Formula 1 race car.jpg",
+        description=(
+            "Red Bull Formula 1 race car static display at the 2026 Australian Grand Prix"
+        ),
+    )
+    showcar["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2026 Singapore Grand Prix"},
+        {"title": "Category:Red Bull Formula One showcars"},
+    ]
+    assert parse_race_background_candidates(showcar, 2026, config) == []
+    plural = _race_background_payload(
         title="File:F1 season vehicle at Suzuka 2026.jpg",
         description="F1 vehicle on track at the 2026 Japanese Grand Prix",
     )
     plural["query"]["pages"][0]["categories"] = [
-        {"title": "Category:Safety cars"},
+        {"title": "Category:2026 Formula One cars"},
         {"title": "Category:2026 Japanese Grand Prix"},
     ]
-    assert parse_safety_car_candidates(plural, 2026, config)
-    assert parse_safety_car_candidates(
-        _safety_car_payload(licence="CC BY-SA 4.0"), 2026, config
+    assert parse_race_background_candidates(plural, 2026, config)
+    localized_formula = _race_background_payload(
+        title="File:2026 Motorsport Formel 1 Großer Preis der Niederlande.jpg",
+        description="Motorsport, Formel 1, on track during the 2026 Dutch Grand Prix race",
+    )
+    localized_formula["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Formula One cars at the 2026 Dutch Grand Prix"}
+    ]
+    assert parse_race_background_candidates(localized_formula, 2026, config)
+    assert parse_race_background_candidates(
+        _race_background_payload(licence="CC BY-SA 4.0"), 2026, config
     ) == []
-    assert parse_safety_car_candidates(
-        _safety_car_payload(width=640), 2026, config
+    assert parse_race_background_candidates(
+        _race_background_payload(width=640), 2026, config
     ) == []
-    unsafe_url = _safety_car_payload()
+    unsafe_url = _race_background_payload()
     unsafe_url["query"]["pages"][0]["imageinfo"][0]["thumburl"] = (
-        "https://example.com/safety-car.jpg"
+        "https://example.com/race-car.jpg"
     )
     unsafe_url["query"]["pages"][0]["imageinfo"][0]["url"] = ""
-    assert parse_safety_car_candidates(unsafe_url, 2026, config) == []
-    assert "safety+car" in _safety_car_search_url(
-        config, 'intitle:2026 intitle:"safety car" F1'
+    assert parse_race_background_candidates(unsafe_url, 2026, config) == []
+    assert "race+car" in _race_background_search_url(
+        config, 'intitle:2026 "Formula 1" "race car"'
     )
-    assert "gsroffset=30" in _safety_car_search_url(config, "F1", offset=30)
-    assert "generator=categorymembers" in _safety_car_category_url(config)
-    assert "gcmcontinue=next" in _safety_car_category_url(
+    assert "iiurlwidth=3840" in _race_background_search_url(config, "F1")
+    assert "gsroffset=30" in _race_background_search_url(config, "F1", offset=30)
+    assert "generator=categorymembers" in _race_background_category_url(config)
+    assert "gcmcontinue=next" in _race_background_category_url(
         config, continuation="next"
     )
 
 
-def test_safety_car_search_cache_and_stale_fallback(config):
+def test_race_background_search_cache_and_stale_fallback(config):
     state = Formula1State(config["paths"]["database"])
     session = CommonsSession()
     candidates, source = asyncio.run(
-        search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
+        search_race_backgrounds(session, state, config, 2026, logging.getLogger("safety"))
     )
-    assert candidates and source == "wikimedia-commons-safety-car"
+    assert candidates and source == "wikimedia-commons-race-background"
     assert asyncio.run(
-        search_safety_cars(session, state, config, 2026, logging.getLogger("safety"))
+        search_race_backgrounds(session, state, config, 2026, logging.getLogger("safety"))
     )[1] == "cache"
     state.connection.execute(
         "UPDATE provider_cache SET expires_at='2020-01-01T00:00:00+00:00'"
     )
     state.connection.commit()
     stale, source = asyncio.run(
-        search_safety_cars(
+        search_race_backgrounds(
             CommonsSession(fail=True),
             state,
             config,
@@ -420,7 +479,7 @@ def test_safety_car_search_cache_and_stale_fallback(config):
     state.connection.commit()
     with pytest.raises(RuntimeError, match="Commons API request failed"):
         asyncio.run(
-            search_safety_cars(
+            search_race_backgrounds(
                 CommonsSession(fail=True),
                 state,
                 config,
@@ -431,40 +490,1023 @@ def test_safety_car_search_cache_and_stale_fallback(config):
     state.close()
 
 
-def test_safety_car_selection_rejects_empty_and_invalid_sources(
+def test_race_background_selection_rejects_empty_and_invalid_sources(
     config, monkeypatch
 ):
     state = Formula1State(config["paths"]["database"])
-    assert _safety_candidate_order([], None, 1) == []
+    assert _background_candidate_order([], None, 1) == []
 
     async def empty_search(*_args, **_kwargs):
         return [], "test"
 
-    monkeypatch.setattr(show_artwork_module, "search_safety_cars", empty_search)
-    with pytest.raises(RuntimeError, match="no licensed current-season"):
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
+    with pytest.raises(RuntimeError, match="no eligible race-action candidates"):
         asyncio.run(
             _select_background_source(
-                None, state, config, 2026, None, 1, logging.getLogger("empty")
+                None, state, config, RaceData(
+                    2026, 1, "Australian Grand Prix", "albert_park",
+                    "Albert Park Grand Prix Circuit", "Melbourne", "Australia",
+                    "2026-03-08", None, -37.8, 144.9,
+                ), None, 1, logging.getLogger("empty")
             )
         )
 
-    candidate = parse_safety_car_candidates(_safety_car_payload(), 2026, config)[0]
+    candidate = parse_race_background_candidates(_race_background_payload(), 2026, config)[0]
 
     async def candidate_search(*_args, **_kwargs):
         return [candidate], "test"
 
     async def invalid_image(*_args, **_kwargs):
-        raise RuntimeError("invalid safety image")
+        raise RuntimeError("invalid race image")
 
-    monkeypatch.setattr(show_artwork_module, "search_safety_cars", candidate_search)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", candidate_search)
     monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", invalid_image)
-    with pytest.raises(RuntimeError, match="invalid safety image"):
+    with pytest.raises(RuntimeError, match="invalid race image"):
         asyncio.run(
             _select_background_source(
-                None, state, config, 2026, None, 1, logging.getLogger("invalid")
+                None, state, config, RaceData(
+                    2026, 1, "Australian Grand Prix", "albert_park",
+                    "Albert Park Grand Prix Circuit", "Melbourne", "Australia",
+                    "2026-03-08", None, -37.8, 144.9,
+                ), None, 1, logging.getLogger("invalid")
+            )
+        )
+
+    night_race = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+        circuit_profile="floodlit urban street circuit",
+        race_time_utc="12:00:00Z",
+    )
+    night_candidate = parse_race_background_candidates(
+        _race_background_payload(
+            title="File:2027 Singapore Grand Prix McLaren Formula 1 race car at night.jpg",
+            description=(
+                "McLaren Formula 1 race car on track at the floodlit 2027 Singapore "
+                "Grand Prix on the Marina Bay Street Circuit"
+            ),
+        ),
+        night_race,
+        config,
+    )[0]
+    monochrome = config["paths"]["show_image_cache"] / "monochrome.jpg"
+    monochrome.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1600, 900), (35, 35, 35)).save(monochrome)
+    bright = config["paths"]["show_image_cache"] / "daytime.jpg"
+    bright.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1600, 900), (220, 205, 185)).save(bright)
+
+    async def night_search(*_args, **_kwargs):
+        return [night_candidate], "test"
+
+    async def bright_image(*_args, **_kwargs):
+        return bright, "test"
+
+    async def monochrome_image(*_args, **_kwargs):
+        return monochrome, "test"
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", night_search)
+    monkeypatch.setattr(
+        show_artwork_module, "acquire_candidate_image", monochrome_image
+    )
+    with pytest.raises(RuntimeError, match="monochrome image rejected"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                night_race,
+                None,
+                18,
+                logging.getLogger("monochrome"),
+            )
+        )
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", bright_image)
+    with pytest.raises(RuntimeError, match="expected night scene"):
+        asyncio.run(
+            _select_background_source(
+                None, state, config, night_race, None, 18, logging.getLogger("mismatch")
             )
         )
     state.close()
+
+
+def test_background_provider_failover_continues_after_flickr_image_rejection(
+    config, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    commons_candidate = parse_race_background_candidates(
+        _race_background_payload(), race, config
+    )[0]
+    flickr_candidate = replace(
+        commons_candidate,
+        page_id=99001,
+        provider="flickr",
+        title="Flickr candidate with invalid decoded pixels",
+    )
+    source = config["paths"]["show_image_cache"] / "commons-background.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_photo_bytes())
+    calls = []
+
+    async def flickr(*_args, **_kwargs):
+        calls.append("flickr-search")
+        return [flickr_candidate], "flickr"
+
+    async def commons(*_args, **_kwargs):
+        calls.append("commons-search")
+        return [commons_candidate], "commons"
+
+    async def acquire(_session, _config, candidate):
+        calls.append(f"acquire-{candidate.provider}")
+        if candidate.provider == "flickr":
+            raise RuntimeError("decoded image failed validation")
+        return source, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "search_flickr_backgrounds", flickr)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", commons)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", acquire)
+
+    selected, _path, providers, _image_hash = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            race.round_number,
+            logging.getLogger("provider-failover"),
+        )
+    )
+
+    assert selected.provider == "wikimedia-commons-race-background"
+    assert providers["search"] == "commons"
+    assert calls == [
+        "flickr-search",
+        "acquire-flickr",
+        "commons-search",
+        "acquire-wikimedia-commons-race-background",
+    ]
+    state.close()
+
+
+def test_background_uses_colour_4k_team_car_as_last_resort(
+    config, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    roster = parse_constructor_payload(_constructor_payload())
+    team_candidate = parse_commons_candidates(
+        _commons_payload(width=3840, height=2160),
+        2026,
+        roster[0],
+        roster,
+        config,
+    )[0]
+    source = config["paths"]["show_image_cache"] / "fallback-4k.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_photo_bytes((3840, 2160)))
+
+    async def empty_search(*_args, **_kwargs):
+        return [], "test"
+
+    async def fallback_image(*_args, **_kwargs):
+        return source, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
+    selected, path, providers, _image_hash = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            1,
+            logging.getLogger("4k-fallback"),
+            team_candidate,
+        )
+    )
+    assert selected.match_tier == "current_season_team_car_fallback"
+    assert "4k-source" in selected.evidence
+    assert path == source
+    assert providers["search"] == "show-poster-source"
+
+    async def failed_search(*_args, **_kwargs):
+        raise RuntimeError("Commons temporarily unavailable")
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", failed_search)
+    recovered = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            1,
+            logging.getLogger("fallback-after-search-failure"),
+            team_candidate,
+        )
+    )
+    assert recovered[0].match_tier == "current_season_team_car_fallback"
+
+    monochrome = config["paths"]["show_image_cache"] / "fallback-monochrome.jpg"
+    Image.new("RGB", (1600, 900), (45, 45, 45)).save(monochrome)
+
+    async def monochrome_image(*_args, **_kwargs):
+        return monochrome, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", monochrome_image)
+    with pytest.raises(RuntimeError, match="fallback was monochrome"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                1,
+                logging.getLogger("monochrome-fallback"),
+                team_candidate,
+            )
+        )
+
+    async def missing_image(*_args, **_kwargs):
+        return config["paths"]["show_image_cache"] / "does-not-exist.jpg", "test"
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", missing_image)
+    with pytest.raises(RuntimeError, match="not cached after validation"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                1,
+                logging.getLogger("missing-fallback"),
+                team_candidate,
+            )
+        )
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
+    config["show_artwork"]["fallback_background_source_width"] = 4096
+    with pytest.raises(RuntimeError, match="minimum fallback source floor"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                1,
+                logging.getLogger("undersized-fallback"),
+                team_candidate,
+            )
+        )
+    state.close()
+
+
+def test_rotation_persists_restores_and_reports_team_car_background_fallback(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def empty_background_search(*_args, **_kwargs):
+        return [], "test"
+
+    monkeypatch.setattr(
+        show_artwork_module, "search_race_backgrounds", empty_background_search
+    )
+    session = CommonsSession()
+    rotated = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("fallback-rotation"),
+        )
+    )
+    assert rotated.action == "rotated"
+    current = state.show_rotation("show:2026")
+    assert (
+        current["source"]["background_candidate"]["match_tier"]
+        == "current_season_team_car_fallback"
+    )
+    assert current["source"]["background_retry_after"]
+    background = Path(current["background_destination"])
+    assert background.is_file()
+    background.unlink()
+    restored = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            None,
+            logging.getLogger("fallback-restore"),
+        )
+    )
+    assert restored.action == "restored"
+    assert background.is_file()
+
+    background.unlink()
+    cached_source = Path(current["source"]["background_photo_cache"])
+    grayscale = Image.new("RGB", (1600, 900), (55, 55, 55))
+    grayscale_draw = ImageDraw.Draw(grayscale)
+    grayscale_draw.line((0, 0, 1599, 899), fill=(235, 235, 235), width=18)
+    grayscale_draw.rectangle((300, 250, 1350, 700), outline=(5, 5, 5), width=20)
+    grayscale.save(cached_source)
+    monochrome = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            None,
+            logging.getLogger("saved-monochrome-rejected"),
+        )
+    )
+    assert monochrome.action == "repair-failed"
+    assert "saved background source was monochrome" in monochrome.issue
+
+    cached_source.write_bytes(_photo_bytes())
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("provider offline")
+
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", unavailable)
+    failed = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            None,
+            logging.getLogger("fallback-repair-failed"),
+        )
+    )
+    assert failed.action == "repair-failed"
+    assert "provider offline" in failed.issue
+    state.close()
+
+
+def test_background_fallback_retry_deadline_uses_provider_cache_policy(
+    config, race
+):
+    candidate = RaceBackgroundCandidate(
+        page_id=1,
+        title="Fallback",
+        page_url="https://example.com/page",
+        image_url="https://example.com/image.jpg",
+        width=1600,
+        height=900,
+        mime="image/jpeg",
+        source_sha1="fallback",
+        author="Author",
+        licence="CC BY 4.0",
+        licence_url="https://creativecommons.org/licenses/by/4.0/",
+        vehicle_name="Ferrari",
+        score=1,
+        match_tier="current_season_team_car_fallback",
+    )
+    deadline = _background_retry_after(config, candidate)
+    source = {
+        "background_candidate": candidate.as_dict(),
+        "background_retry_after": deadline,
+    }
+
+    assert deadline is not None
+    assert not _background_fallback_retry_due(source, config)
+    source["background_retry_after"] = "2020-01-01T00:00:00+00:00"
+    assert _background_fallback_retry_due(source, config)
+    source.pop("background_retry_after")
+    assert _background_fallback_retry_due(source, config)
+    action = replace(candidate, match_tier="exact_event_action_race_car")
+    assert _background_retry_after(config, action) is None
+
+    config["providers"]["flickr_enabled"] = True
+    config["providers"]["commons_cache_hours"] = 12
+    config["providers"]["flickr_cache_hours"] = 3
+    flickr_deadline = _background_retry_after(
+        config,
+        candidate,
+        now=show_artwork_module.datetime(2026, 1, 1, tzinfo=show_artwork_module.timezone.utc),
+    )
+    assert flickr_deadline == "2026-01-01T03:00:00+00:00"
+
+    source["background_retry_after"] = "not-a-date"
+    assert _background_fallback_retry_due(source, config)
+    source["background_retry_after"] = "2020-01-01T00:00:00"
+    assert _background_fallback_retry_due(source, config)
+
+
+def test_background_selection_reports_when_all_provider_searches_fail(
+    config, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(show_artwork_module, "search_flickr_backgrounds", unavailable)
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", unavailable)
+    with pytest.raises(RuntimeError, match="no safely licensed colour"):
+        asyncio.run(
+            _select_background_source(
+                None,
+                state,
+                config,
+                race,
+                None,
+                race.round_number,
+                logging.getLogger("all-background-providers-failed"),
+            )
+        )
+    state.close()
+
+
+def test_background_fallback_retry_handles_failure_retention_and_dry_run(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def empty_background_search(*_args, **_kwargs):
+        return [], "empty"
+
+    monkeypatch.setattr(
+        show_artwork_module, "search_race_backgrounds", empty_background_search
+    )
+    asyncio.run(
+        run_show_artwork_rotation(
+            CommonsSession(),
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("retry-branch-setup"),
+        )
+    )
+    current = state.show_rotation("show:2026")
+    stored = RaceBackgroundCandidate.from_dict(
+        current["source"]["background_candidate"]
+    )
+
+    async def failed_selection(*_args, **_kwargs):
+        raise RuntimeError("temporary provider failure")
+
+    monkeypatch.setattr(
+        show_artwork_module, "_select_background_source", failed_selection
+    )
+    assert (
+        asyncio.run(
+            show_artwork_module._retry_current_background_fallback(
+                None,
+                state,
+                config,
+                show,
+                race,
+                current,
+                logging.getLogger("retry-failed"),
+            )
+        )
+        is None
+    )
+    refreshed = state.show_rotation("show:2026")
+    assert refreshed["source"]["background_retry_after"]
+
+    async def retained_selection(*_args, **_kwargs):
+        return stored, Path(current["source"]["background_photo_cache"]), {
+            "search": "retry"
+        }, "same-hash"
+
+    monkeypatch.setattr(
+        show_artwork_module, "_select_background_source", retained_selection
+    )
+    refreshed["source"]["background_retry_after"] = "2020-01-01T00:00:00+00:00"
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(refreshed["source"], sort_keys=True),),
+    )
+    state.connection.commit()
+    unchanged = asyncio.run(
+        run_show_artwork_rotation(
+            None,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("retry-retained"),
+        )
+    )
+    assert unchanged.action == "unchanged"
+    refreshed = state.show_rotation("show:2026")
+    assert (
+        refreshed["source"]["background_provider_sources"]["retry_result"]
+        == "team-car-fallback-retained"
+    )
+
+    replacement = replace(
+        stored,
+        page_id=stored.page_id + 1,
+        provider="flickr",
+        match_tier="exact_event_action_race_car",
+        source_sha1="new-background",
+        vehicle_name="Current-season race car in atmospheric race action",
+    )
+
+    async def replacement_selection(*_args, **_kwargs):
+        return replacement, Path(current["source"]["background_photo_cache"]), {
+            "search": "flickr-live"
+        }, "replacement-hash"
+
+    monkeypatch.setattr(
+        show_artwork_module, "_select_background_source", replacement_selection
+    )
+    config["dry_run"] = True
+    planned = asyncio.run(
+        show_artwork_module._retry_current_background_fallback(
+            None,
+            state,
+            config,
+            show,
+            race,
+            refreshed,
+            logging.getLogger("retry-dry-run"),
+        )
+    )
+    assert planned.action == "rerender-planned"
+    assert planned.background_vehicle == replacement.vehicle_name
+    state.close()
+
+
+def test_same_round_retry_upgrades_only_the_degraded_background(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+
+    async def empty_background_search(*_args, **_kwargs):
+        return [], "empty"
+
+    monkeypatch.setattr(
+        show_artwork_module, "search_race_backgrounds", empty_background_search
+    )
+    asyncio.run(
+        run_show_artwork_rotation(
+            CommonsSession(),
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("fallback-initial"),
+        )
+    )
+    current = state.show_rotation("show:2026")
+    source = current["source"]
+    source["background_retry_after"] = "2020-01-01T00:00:00+00:00"
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+    poster = Path(current["poster_destination"])
+    poster_bytes = poster.read_bytes()
+    poster_checksum = current["poster_checksum"]
+
+    atmospheric = replace(
+        parse_race_background_candidates(_race_background_payload(), race, config)[0],
+        page_id=88001,
+        provider="flickr",
+        title="Licensed dramatic Australian Grand Prix race action",
+    )
+    atmospheric_path = config["paths"]["show_image_cache"] / "atmospheric.jpg"
+    atmospheric_path.write_bytes(_photo_bytes((1920, 1080)))
+
+    async def flickr(*_args, **_kwargs):
+        return [atmospheric], "flickr-live"
+
+    async def acquire(_session, _config, _candidate):
+        return atmospheric_path, "flickr-live"
+
+    monkeypatch.setattr(show_artwork_module, "search_flickr_backgrounds", flickr)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", acquire)
+
+    result = asyncio.run(
+        run_show_artwork_rotation(
+            None,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("fallback-retry"),
+        )
+    )
+
+    assert result.action == "rerendered"
+    assert poster.read_bytes() == poster_bytes
+    updated = state.show_rotation("show:2026")
+    assert updated["poster_checksum"] == poster_checksum
+    assert updated["source"]["background_candidate"]["provider"] == "flickr"
+    assert (
+        updated["source"]["background_candidate"]["match_tier"]
+        == "exact_event_action_race_car"
+    )
+    assert updated["source"]["background_retry_after"] is None
+    state.close()
+
+
+def test_race_environment_and_exact_circuit_candidate_ranking(tmp_path, config):
+    singapore = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+        circuit_profile="A floodlit urban street circuit beside the harbour.",
+        race_time_utc="12:00:00Z",
+    )
+    environment = derive_race_environment(singapore)
+    assert environment.mode == "night"
+    assert "floodlit" in environment.scene_terms
+    assert _solar_elevation(replace(singapore, latitude=None)) is None
+    assert _solar_elevation(replace(singapore, race_time_utc="not-a-time")) is None
+
+    exact = _race_background_payload(
+        title="File:2027 Singapore Grand Prix McLaren Formula 1 race car at night.jpg",
+        description=(
+            "McLaren Formula 1 race car at the floodlit 2027 Singapore Grand Prix "
+            "on track at the Marina Bay Street Circuit"
+        ),
+    )
+    candidates = parse_race_background_candidates(exact, singapore, config)
+    assert candidates[0].match_tier == "exact_event_action_race_car"
+    assert candidates[0].race_key == environment.race_key
+    assert "environment" in candidates[0].evidence
+
+    unrelated = _race_background_payload(
+        title="File:2027 British Grand Prix McLaren Formula 1 race car.jpg",
+        description="McLaren Formula 1 race car at Silverstone during the 2027 British Grand Prix",
+    )
+    assert parse_race_background_candidates(unrelated, singapore, config) == []
+
+    aerial_track = _race_background_payload(
+        title="File:2027 Singapore Grand Prix aerial circuit view.jpg",
+        description=(
+            "Aerial view of the empty Formula 1 circuit at the 2027 Singapore Grand Prix"
+        ),
+    )
+    aerial_track["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2027 Singapore Grand Prix"}
+    ]
+    assert parse_race_background_candidates(aerial_track, singapore, config) == []
+
+    historical_atmosphere = _race_background_payload(
+        page_id=903,
+        title="File:2018 Marina Bay Street Circuit at night.jpg",
+        description="Floodlit motorsport circuit atmosphere in Singapore",
+    )
+    historical_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Marina Bay Street Circuit"}
+    ]
+    assert parse_race_background_candidates(
+        historical_atmosphere, singapore, config
+    ) == []
+
+    historical_car = _race_background_payload(
+        page_id=907,
+        title="File:2014 McLaren Formula 1 race car at Marina Bay.jpg",
+        description=(
+            "McLaren Formula 1 race car on track during the race at "
+            "Marina Bay Street Circuit"
+        ),
+    )
+    historical_car["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Marina Bay Street Circuit"}
+    ]
+    candidates = parse_race_background_candidates(historical_car, singapore, config)
+    assert candidates[0].match_tier == "historical_circuit_action_race_car"
+    assert "historical-exact-circuit-race-car" in candidates[0].evidence
+
+    commons_named_car = _race_background_payload(
+        page_id=909,
+        title="File:2012 Singapore GP - Ferrari.jpg",
+        description="Singapore GP Final Race 1",
+    )
+    commons_page = commons_named_car["query"]["pages"][0]
+    commons_page["categories"] = [
+        {"title": "Category:2012 Singapore Grand Prix"},
+        {"title": "Category:Ferrari F2012 of Felipe Massa"},
+    ]
+    commons_page["_metafusion_category_context"] = [
+        "Category:Marina Bay Street Circuit",
+        "Category:2012 Singapore Grand Prix",
+    ]
+    candidates = parse_race_background_candidates(
+        commons_named_car, singapore, config
+    )
+    assert candidates[0].match_tier == "historical_circuit_action_race_car"
+    assert "formula-one-event-category" in candidates[0].evidence
+    assert "formula-one-chassis-category" in candidates[0].evidence
+    assert "active-race" in candidates[0].evidence
+
+    exact_static = _race_background_payload(
+        page_id=910,
+        title="File:2027 McLaren Formula 1 race car at Marina Bay.jpg",
+        description="McLaren Formula 1 race car at the Marina Bay Street Circuit",
+    )
+    exact_static_candidates = parse_race_background_candidates(
+        exact_static, singapore, config
+    )
+    assert exact_static_candidates == []
+    ordered = _background_candidate_order(
+        candidates, None, singapore.round_number
+    )
+    assert ordered[0].match_tier == "historical_circuit_action_race_car"
+
+    year_neutral_atmosphere = _race_background_payload(
+        page_id=904,
+        title="File:Marina Bay Street Circuit floodlights.jpg",
+        description="Night view of the Marina Bay Street Circuit",
+    )
+    year_neutral_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Marina Bay Street Circuit"}
+    ]
+    assert parse_race_background_candidates(
+        year_neutral_atmosphere, singapore, config
+    ) == []
+
+    event_only_historical = _race_background_payload(
+        page_id=905,
+        title="File:2018 Singapore Grand Prix at night.jpg",
+        description="Formula 1 floodlit atmosphere at the Singapore Grand Prix",
+    )
+    event_only_historical["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2018 Singapore Grand Prix"}
+    ]
+    assert parse_race_background_candidates(
+        event_only_historical, singapore, config
+    ) == []
+
+    future_atmosphere = _race_background_payload(
+        page_id=906,
+        title="File:2028 Marina Bay Street Circuit at night.jpg",
+        description="Formula 1 floodlit atmosphere at Marina Bay Street Circuit",
+    )
+    assert parse_race_background_candidates(future_atmosphere, singapore, config) == []
+
+    locality_atmosphere = _race_background_payload(
+        page_id=908,
+        title="File:Singapore motorsport atmosphere at night.jpg",
+        description="Floodlit motorsport atmosphere at Marina Bay, Singapore",
+    )
+    locality_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:Motorsport in Singapore"}
+    ]
+    assert parse_race_background_candidates(
+        locality_atmosphere, singapore, config
+    ) == []
+
+    queries = _race_queries(singapore, environment)
+    assert any(
+        '"Marina Bay Street Circuit" F1 "track action"' in query
+        for query in queries
+    )
+    assert not any("atmosphere" in query for query in queries)
+    rejected_atmosphere = _race_background_payload(
+        title="File:2027 Singapore Grand Prix driver portrait.jpg",
+        description="Formula 1 driver portrait at the 2027 Singapore Grand Prix",
+    )
+    rejected_atmosphere["query"]["pages"][0]["categories"] = [
+        {"title": "Category:2027 Singapore Grand Prix"}
+    ]
+    assert parse_race_background_candidates(rejected_atmosphere, singapore, config) == []
+
+    dark = tmp_path / "night.jpg"
+    twilight = tmp_path / "twilight.jpg"
+    bright = tmp_path / "day.jpg"
+    colour = tmp_path / "colour.jpg"
+    Image.new("RGB", (1600, 900), (24, 30, 42)).save(dark)
+    Image.new("RGB", (1600, 900), (110, 115, 120)).save(twilight)
+    Image.new("RGB", (1600, 900), (205, 210, 215)).save(bright)
+    colour_image = Image.new("RGB", (1600, 900), (42, 42, 42))
+    ImageDraw.Draw(colour_image).rectangle((500, 250, 1400, 750), fill=(220, 25, 45))
+    colour_image.save(colour)
+    assert classify_image_environment(dark) == "night"
+    assert classify_image_environment(twilight) == "twilight"
+    assert classify_image_environment(bright) == "day"
+    assert not image_has_meaningful_colour(bright)
+    assert image_has_meaningful_colour(colour)
+    assert environment_compatible("night", "night")
+    assert not environment_compatible("night", "day")
+    assert environment_compatible("day", "twilight")
+    assert not environment_compatible("day", "night")
+
+
+def test_race_background_category_traversal_preserves_circuit_evidence(config):
+    race = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+        circuit_profile="A floodlit urban street circuit beside the harbour.",
+        race_time_utc="12:00:00Z",
+    )
+
+    class CategorySession:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            parameters = parse_qs(urlparse(url).query)
+            if parameters.get("generator") != ["categorymembers"]:
+                return Response(payload={"query": {"pages": []}})
+            category = parameters.get("gcmtitle", [""])[0]
+            if category == "Category:Marina Bay Street Circuit":
+                return Response(
+                    payload={
+                        "query": {
+                            "pages": [
+                                {
+                                    "pageid": 1401,
+                                    "ns": 14,
+                                    "title": "Category:2014 at Marina Bay Street Circuit",
+                                }
+                            ]
+                        }
+                    }
+                )
+            if category == "Category:2014 at Marina Bay Street Circuit":
+                payload = _race_background_payload(
+                    page_id=1402,
+                    title="File:2014 Formula 1 race car on track.jpg",
+                    description="Formula 1 race car during a night race",
+                )
+                payload["query"]["pages"][0]["ns"] = 6
+                payload["query"]["pages"][0]["categories"] = []
+                return Response(payload=payload)
+            return Response(payload={"query": {"pages": []}})
+
+    session = CategorySession()
+    pages = asyncio.run(_category_pages(session, config, race))
+    assert len(pages) == 1
+    assert pages[0]["categories"] == []
+    assert pages[0]["_metafusion_category_context"] == [
+        "Category:Marina Bay Street Circuit",
+        "Category:2014 at Marina Bay Street Circuit",
+    ]
+    candidates = parse_race_background_candidates(
+        {"query": {"pages": pages}}, race, config
+    )
+    assert candidates[0].match_tier == "historical_circuit_action_race_car"
+    assert "commons-category" in candidates[0].evidence
+    assert any("gcmnamespace=6%7C14" in url for url in session.urls)
+
+
+def test_category_ancestry_does_not_turn_unrelated_people_into_atmosphere(config):
+    race = RaceData(
+        2027, 12, "Dutch Grand Prix", "zandvoort",
+        "Circuit Zandvoort", "Zandvoort", "Netherlands",
+        "2027-08-29", None, 52.3888, 4.5409,
+    )
+    payload = _race_background_payload(
+        page_id=1501,
+        title="File:Cyclist wearing Pelforth Sauvage Lejeune jersey.jpg",
+        description="A person at a cycling event in Zandvoort",
+    )
+    page = payload["query"]["pages"][0]
+    page["categories"] = [{"title": "Category:Cycling in the Netherlands"}]
+    page["_metafusion_category_context"] = [
+        "Category:Circuit Zandvoort",
+        "Category:Events at Circuit Zandvoort",
+    ]
+    diagnostics = []
+    assert parse_race_background_candidates(payload, race, config, diagnostics) == []
+    assert diagnostics == [
+        {
+            "title": "File:Cyclist wearing Pelforth Sauvage Lejeune jersey.jpg",
+            "reason": "event-circuit-location-mismatch",
+        }
+    ]
+
+
+def test_old_background_candidate_records_are_marked_ineligible(config):
+    candidate = parse_race_background_candidates(
+        _race_background_payload(), 2026, config
+    )[0]
+    assert candidate.eligibility_version == 8
+    legacy = candidate.as_dict()
+    legacy.pop("eligibility_version")
+    assert RaceBackgroundCandidate.from_dict(legacy).eligibility_version == 1
+
+
+def test_race_background_diagnostics_explain_rejections(config):
+    diagnostics = []
+    assert parse_race_background_candidates(
+        _race_background_payload(licence="CC BY-SA 4.0"),
+        2026,
+        config,
+        diagnostics,
+    ) == []
+    assert diagnostics == [
+        {
+            "title": "File:2026 McLaren Formula 1 race car 901.jpg",
+            "reason": "incompatible-or-unknown-licence",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    (
+        ({"mime": "text/html"}, "unsupported-media-type"),
+        ({"page_id": 0}, "missing-page-identity"),
+        ({"width": 1600, "height": 1600}, "incompatible-aspect-ratio"),
+        ({"provider_identity": False}, "not-formula-one-race-action"),
+        (
+            {"identity": "black and white formula 1 race car on track"},
+            "rejected-subject-or-series",
+        ),
+        ({"author": ""}, "missing-required-author"),
+        ({"licence_url": "http://example.test/licence"}, "missing-required-licence-url"),
+    ),
+)
+def test_race_background_rejection_reason_contract(overrides, expected):
+    values = {
+        "mime": "image/jpeg",
+        "page_id": 1,
+        "width": 3200,
+        "height": 1800,
+        "identity_allowed": True,
+        "provider_identity": True,
+        "identity": "formula 1 race car",
+        "licence": "CC BY 4.0",
+        "attribution_required": True,
+        "author": "Photographer",
+        "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+        "image_url": "https://upload.wikimedia.org/example.jpg",
+        "minimum_width": 1600,
+        "minimum_height": 900,
+    }
+    values.update(overrides)
+    assert _candidate_rejection_reason(**values) == expected
+
+
+def test_race_background_category_priority_and_rejected_seed(config, monkeypatch):
+    assert _category_priority("Category:2027 Singapore Grand Prix", 2027) == 0
+    assert _category_priority("Category:2028 Singapore Grand Prix", 2027) == 101
+    assert _category_priority("Category:Singapore Grand Prix", 2027) == 60
+    monkeypatch.setattr(
+        race_background_module,
+        "_race_category_seeds",
+        lambda _race: ("Category:Formula 2",),
+    )
+    session = CommonsSession(candidates=False)
+    race = RaceData(
+        2027, 18, "Singapore Grand Prix", "marina_bay",
+        "Marina Bay Street Circuit", "Marina Bay", "Singapore",
+        "2027-10-03", None, 1.2914, 103.864,
+    )
+    assert asyncio.run(_category_pages(session, config, race)) == []
+    assert session.urls == []
+
+
+def test_race_background_search_logs_rejection_reasons(config, caplog):
+    class RejectedSession(CommonsSession):
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            payload = _race_background_payload(licence="CC BY-SA 4.0")
+            missing_page = _race_background_payload(page_id=0)["query"]["pages"][0]
+            payload["query"]["pages"].append(missing_page)
+            return Response(payload=payload)
+
+    state = Formula1State(config["paths"]["database"])
+    with caplog.at_level(logging.DEBUG):
+        candidates, source = asyncio.run(
+            search_race_backgrounds(
+                RejectedSession(),
+                state,
+                config,
+                2026,
+                logging.getLogger("rejection-reasons"),
+            )
+        )
+    assert candidates == []
+    assert source == "wikimedia-commons-race-background"
+    assert "incompatible-or-unknown-licence=1" in caplog.text
+    assert "Wikimedia race-background rejected" in caplog.text
+    state.close()
+    assert _saliency_focal_point(Image.new("RGB", (1600, 900), (0, 0, 0))) == (
+        0.62,
+        0.5,
+    )
 
 
 def test_future_constructor_identity_requires_no_hard_coded_alias(config):
@@ -502,6 +1544,7 @@ def test_commons_provider_cache_stale_and_url(config):
         )
     )[1] == "cache"
     assert "gsrsearch" in _commons_search_url(config, 2026, roster[0])
+    assert "iiurlwidth=3840" in _commons_search_url(config, 2026, roster[0])
     assert "intitle%3AGP" not in _commons_search_url(config, 2026, roster[0], broad=True)
     assert "gsroffset=30" in _commons_search_url(
         config, 2026, roster[0], broad=True, offset=30
@@ -573,6 +1616,11 @@ def test_image_acquisition_validation_and_cache(config, monkeypatch):
         acquire_candidate_image(session, config, replace(candidate, source_sha1=""))
     )
     assert len(no_hash_destination.stem) == 64
+    destination.write_bytes(b"obsolete lower-resolution cache")
+    refreshed, source = asyncio.run(acquire_candidate_image(session, config, candidate))
+    assert refreshed == destination and source == "wikimedia-commons"
+    with Image.open(refreshed) as refreshed_image:
+        assert refreshed_image.size == (1600, 900)
     with pytest.raises(RuntimeError, match="blank"):
         _validate_image(_photo_bytes(blank=True), config)
     with pytest.raises(RuntimeError, match="dimensions"):
@@ -693,10 +1741,15 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     ) == 64
     with Image.open(poster) as image:
         assert image.size == (600, 900)
+        assert image.info["MetaFusion renderer"] == "show-poster-v17"
+        assert (
+            image.info["MetaFusion design"]
+            == "adaptive-concept-a-v5-speed-accent"
+        )
     with Image.open(background) as image:
         assert image.size == (1280, 720)
-        # The safety-car source is a restrained right-side accent. The stable
-        # black information area must continue to dominate Plex's background.
+        # The source photograph is full bleed; the left is only gently shaded
+        # for Plex title legibility and no red technical border is rendered.
         left_luminance = sum(
             image.resize((16, 9))
             .crop((0, 0, 7, 9))
@@ -706,16 +1759,162 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         full_luminance = sum(
             image.resize((16, 9)).convert("L").get_flattened_data()
         )
-        assert left_luminance / (7 * 9) < 55
-        assert full_luminance / (16 * 9) < 95
+        right_luminance = sum(
+            image.resize((16, 9))
+            .crop((9, 0, 16, 9))
+            .convert("L")
+            .get_flattened_data()
+        )
+        left_average = left_luminance / (7 * 9)
+        right_average = right_luminance / (7 * 9)
+        assert left_average > 35
+        assert right_average > left_average
+        assert 45 < full_luminance / (16 * 9) < 170
+        assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-    assert SHOW_RENDERER_VERSION == 6
-    assert EPISODE_RENDERER_VERSION == 1
+        assert image.info["MetaFusion renderer"] == "episode-poster-v5"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v4"
+        assert image.info["MetaFusion text side"] in {"left", "right"}
+        assert image.getpixel((0, 3))[0] < 180
+    assert SHOW_RENDERER_VERSION == 17
+    assert EPISODE_RENDERER_VERSION == 5
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
     )
+
+
+def test_default_show_background_is_4k_while_episode_cards_remain_full_hd(
+    tmp_path, core, show, race
+):
+    config = load_formula1_config(core, tmp_path / "default-config")
+    assert config["show_artwork"]["background_width"] == 3840
+    assert config["show_artwork"]["background_height"] == 2160
+    assert config["show_artwork"]["episode_width"] == 1920
+    assert config["show_artwork"]["episode_height"] == 1080
+    assert config["show_artwork"]["minimum_background_source_width"] == 3840
+    assert config["show_artwork"]["minimum_background_source_height"] == 2160
+    assert config["show_artwork"]["fallback_background_source_width"] == 1600
+    assert config["show_artwork"]["fallback_background_source_height"] == 900
+    photo = tmp_path / "source-4k.jpg"
+    photo.write_bytes(_photo_bytes((3840, 2160)))
+    destination = tmp_path / "background-4k.png"
+    render_show_background(show, race, photo, config, destination)
+    with Image.open(destination) as rendered:
+        assert rendered.size == (3840, 2160)
+
+
+def test_background_prefers_4k_but_accepts_previous_source_floor(
+    tmp_path, core, show, race, monkeypatch
+):
+    config = load_formula1_config(core, tmp_path / "fallback-config")
+    state = Formula1State(config["paths"]["database"])
+    source = config["paths"]["show_image_cache"] / "fallback-2560.jpg"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_photo_bytes((2560, 1440)))
+    team_candidate = CommonsCandidate(
+        page_id=8001,
+        title="File:2026 Formula One race car.jpg",
+        page_url="https://commons.wikimedia.org/?curid=8001",
+        image_url="https://upload.wikimedia.org/fallback-2560.jpg",
+        width=2560,
+        height=1440,
+        mime="image/jpeg",
+        source_sha1="fallback2560sha1",
+        author="Test author",
+        licence="CC BY 4.0",
+        licence_url="https://creativecommons.org/licenses/by/4.0/",
+        constructor_id="mclaren",
+        constructor_name="McLaren",
+        score=10.0,
+    )
+
+    async def empty_search(*_args, **_kwargs):
+        return [], "test"
+
+    async def fallback_image(*_args, **_kwargs):
+        return source, "cache"
+
+    monkeypatch.setattr(show_artwork_module, "search_race_backgrounds", empty_search)
+    monkeypatch.setattr(show_artwork_module, "acquire_candidate_image", fallback_image)
+    selected, selected_path, providers, _image_hash = asyncio.run(
+        _select_background_source(
+            None,
+            state,
+            config,
+            race,
+            None,
+            race.round_number,
+            logging.getLogger("fallback-resolution"),
+            team_candidate,
+        )
+    )
+    assert "fallback-resolution-source" in selected.evidence
+    assert "4k-source" not in selected.evidence
+    assert selected_path == source
+    assert providers["match_tier"] == "current_season_team_car_fallback"
+
+    destination = tmp_path / "rendered-fallback-4k.png"
+    render_show_background(show, race, selected_path, config, destination)
+    with Image.open(destination) as rendered:
+        assert rendered.size == (3840, 2160)
+    state.close()
+
+
+def test_background_cache_upgrades_to_4k_when_provider_source_can_supply_it(
+    tmp_path, core
+):
+    config = load_formula1_config(core, tmp_path / "cache-upgrade-config")
+    constructor = ConstructorData("alpine", "Alpine F1 Team")
+    candidate = parse_commons_candidates(
+        _commons_payload(width=3840, height=2160),
+        2026,
+        constructor,
+        [constructor],
+        config,
+    )[0]
+    session = CommonsSession()
+    first_path, first_source = asyncio.run(
+        show_artwork_module._acquire_background_image(session, config, candidate)
+    )
+    assert first_source == "wikimedia-commons"
+    with Image.open(first_path) as first_image:
+        assert first_image.size == (1600, 900)
+
+    session.image = _photo_bytes((3840, 2160))
+    upgraded_path, upgraded_source = asyncio.run(
+        show_artwork_module._acquire_background_image(session, config, candidate)
+    )
+    assert upgraded_path == first_path
+    assert upgraded_source == "wikimedia-commons"
+    with Image.open(upgraded_path) as upgraded_image:
+        assert upgraded_image.size == (3840, 2160)
+    assert asyncio.run(
+        show_artwork_module._acquire_background_image(session, config, candidate)
+    )[1] == "cache"
+
+
+def test_background_candidate_order_prefers_4k_within_the_same_match_tier(config):
+    fallback = parse_race_background_candidates(
+        _race_background_payload(page_id=930, width=1600, height=900),
+        2026,
+        config,
+    )[0]
+    preferred = parse_race_background_candidates(
+        _race_background_payload(page_id=931, width=3840, height=2160),
+        2026,
+        config,
+    )[0]
+    fallback = replace(fallback, score=999.0, evidence=("fallback-resolution-source",))
+    preferred = replace(preferred, score=1.0, evidence=("4k-source",))
+    ordered = _background_candidate_order([fallback, preferred], None, 1)
+    assert ordered == [preferred, fallback]
+    current = {"source": {"background_candidate": {"page_id": fallback.page_id}}}
+    assert _background_candidate_order([fallback, preferred], current, 1) == [
+        preferred,
+        fallback,
+    ]
 
 
 def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
@@ -725,7 +1924,172 @@ def test_show_poster_flag_badge_is_rounded_and_undistorted(config, race):
     )
     assert image.getpixel((790, 1282)) == (6, 7, 10)
     assert image.getpixel((865, 1323)) != (6, 7, 10)
+    assert max(image.getpixel((865, 1282))) < 230
     assert not _rounded_flag_badge(image, "Unknown", (790, 1282, 940, 1365))
+
+
+def test_show_poster_flag_uses_dark_adaptive_keyline_on_light_background(race):
+    image = Image.new("RGB", (1000, 1500), (245, 245, 245))
+    assert _rounded_flag_badge(
+        image,
+        replace(race, country="Japan").country,
+        (790, 1282, 940, 1365),
+    )
+    assert image.getpixel((790, 1282)) == (245, 245, 245)
+    assert max(image.getpixel((865, 1282))) < 220
+
+
+def test_post_race_press_conference_episode_card_is_rendered(
+    tmp_path, config, show, race
+):
+    episode = replace(
+        show.episodes[0],
+        episode_number=15,
+        program_title="Post-Race Press Conference",
+        program_kind="post_race_press_conference",
+    )
+    photo = tmp_path / "car.jpg"
+    photo.write_bytes(_photo_bytes())
+    destination = tmp_path / "press-conference.png"
+    checksum = render_episode_poster(
+        episode,
+        race,
+        "M0 0 L100 100",
+        photo,
+        config,
+        destination,
+    )
+    assert len(checksum) == 64
+    with Image.open(destination) as image:
+        assert image.size == (1280, 720)
+    assert session_date(episode, race, config)[0] == race.race_date
+    assert _episode_fingerprint(
+        episode, race, "M0 0 L100 100", "source", config
+    ) != _episode_fingerprint(
+        show.episodes[0], race, "M0 0 L100 100", "source", config
+    )
+
+
+def test_episode_concept_a_places_copy_opposite_subject_and_formats_date(monkeypatch):
+    right_subject = show_artwork_module.PosterPhotoProfile(
+        100,
+        20,
+        220,
+        0.74,
+        0.52,
+        (0.58, 0.25, 0.94, 0.86),
+        0.58,
+    )
+    left_subject = replace(
+        right_subject,
+        focal_x=0.24,
+        subject_box=(0.05, 0.25, 0.42, 0.86),
+        composition_x=0.42,
+    )
+    assert _episode_text_side(right_subject) == "left"
+    assert _episode_text_side(left_subject) == "right"
+    assert _episode_date_label("2027-04-03") == "03 APR 2027"
+    assert _episode_date_label("provider-date") == "provider-date"
+
+    class FittingFont:
+        size = 40
+
+        @staticmethod
+        def getbbox(_text):
+            return (0, 0, 20, 20)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            show_artwork_module,
+            "fitted_font",
+            lambda *_args, **_kwargs: FittingFont(),
+        )
+        title, font = _episode_title_layout(None, "RACE", 40, 10, 200)
+        assert title == "RACE"
+        assert font.size == 40
+
+    title, font = _episode_title_layout(None, "UNBREAKABLE", 40, 10, 1)
+    assert title == "UNBREAKABLE"
+    assert font is not None
+
+    canvas = Image.new("RGBA", (320, 180), (10, 20, 30, 255))
+    before = canvas.tobytes()
+    unchanged = _draw_circuit_watermark(canvas, None, (10, 10, 200, 150), 320)
+    assert unchanged.tobytes() == before
+
+    dark_watermark = _draw_circuit_watermark(
+        canvas, "M0 0 L100 100", (80, 30, 240, 150), 320
+    )
+    dark_difference = ImageChops.difference(canvas, dark_watermark).convert("RGB")
+    dark_delta = max(
+        channel_max for _minimum, channel_max in dark_difference.getextrema()
+    )
+    assert dark_difference.getbbox() is not None
+    assert 30 < dark_delta < 110
+    assert dark_watermark.getextrema()[3] == (255, 255)
+
+    light_canvas = Image.new("RGBA", (320, 180), (225, 230, 235, 255))
+    light_watermark = _draw_circuit_watermark(
+        light_canvas, "M0 0 L100 100", (80, 30, 240, 150), 320
+    )
+    light_difference = ImageChops.difference(
+        light_canvas, light_watermark
+    ).convert("RGB")
+    light_delta = max(
+        channel_max for _minimum, channel_max in light_difference.getextrema()
+    )
+    assert light_difference.getbbox() is not None
+    assert 30 < light_delta < 110
+    assert light_watermark.getextrema()[3] == (255, 255)
+
+    edge_box = (40, 30, 280, 150)
+    left_watermark = _draw_circuit_watermark(
+        canvas, "M0 0 L25 100", edge_box, 320, align="left"
+    )
+    right_watermark = _draw_circuit_watermark(
+        canvas, "M0 0 L25 100", edge_box, 320, align="right"
+    )
+    left_bounds = ImageChops.difference(canvas, left_watermark).convert("RGB").getbbox()
+    right_bounds = (
+        ImageChops.difference(canvas, right_watermark).convert("RGB").getbbox()
+    )
+    assert left_bounds is not None and left_bounds[0] <= edge_box[0]
+    assert right_bounds is not None and right_bounds[2] >= edge_box[2]
+
+    left_box = _episode_circuit_box(1920, 1080, "left")
+    right_box = _episode_circuit_box(1920, 1080, "right")
+    assert left_box[0] == pytest.approx(1920 * 0.045)
+    assert right_box[2] == pytest.approx(1920 * 0.955)
+    assert left_box[2] - left_box[0] == pytest.approx(1920 * 0.20)
+    assert right_box[2] - right_box[0] == pytest.approx(1920 * 0.20)
+    assert left_box[1] == pytest.approx(1080 * 0.20)
+    assert left_box[3] == pytest.approx(1080 * 0.40)
+
+
+def test_episode_concept_a_renders_right_aligned_copy(
+    tmp_path, config, show, race, monkeypatch
+):
+    left_subject = show_artwork_module.PosterPhotoProfile(
+        100,
+        20,
+        220,
+        0.22,
+        0.52,
+        (0.04, 0.24, 0.42, 0.88),
+        0.42,
+    )
+    monkeypatch.setattr(
+        show_artwork_module, "_poster_photo_profile", lambda _image: left_subject
+    )
+    photo = tmp_path / "left-car.jpg"
+    photo.write_bytes(_photo_bytes())
+    destination = tmp_path / "right-copy.png"
+    render_episode_poster(
+        show.episodes[0], race, "M0 0 L100 100", photo, config, destination
+    )
+    with Image.open(destination) as image:
+        assert image.info["MetaFusion text side"] == "right"
+        assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v4"
 
 
 def test_photo_grade_compresses_bright_background_and_episode_ownership(
@@ -767,6 +2131,92 @@ def test_photo_grade_compresses_bright_background_and_episode_ownership(
         state, show.episodes[0], destination, "changed"
     ) == "preserve-manual"
     state.close()
+
+
+def test_show_poster_grade_adapts_exposure_without_clipping_team_colours():
+    dark = Image.new("RGB", (1600, 900), (36, 38, 42))
+    ImageDraw.Draw(dark).rectangle((650, 300, 1450, 720), fill=(78, 12, 20))
+    legacy_dark = _grade_photo(dark, (1280, 720), contain=True)
+    showcased_dark = _poster_showcase_grade(dark, (1280, 720))
+    assert sum(showcased_dark.getpixel((900, 450))) > sum(
+        legacy_dark.getpixel((900, 450))
+    ) * 1.35
+    assert showcased_dark.getpixel((900, 450))[0] > (
+        showcased_dark.getpixel((900, 450))[1] * 3
+    )
+
+    bright = Image.new("RGB", (1600, 900), (248, 245, 238))
+    ImageDraw.Draw(bright).rectangle((650, 300, 1450, 720), fill=(225, 24, 44))
+    showcased_bright = _poster_showcase_grade(bright, (1280, 720))
+    assert max(showcased_bright.getpixel((100, 100))) < 240
+    assert showcased_bright.getpixel((900, 450))[0] > (
+        showcased_bright.getpixel((900, 450))[1] * 3
+    )
+
+    backlit = Image.new("RGB", (1600, 900), (248, 245, 238))
+    ImageDraw.Draw(backlit).rounded_rectangle(
+        (650, 300, 1450, 720), 40, fill=(62, 18, 35)
+    )
+    showcased_backlit = _poster_showcase_grade(backlit, (1280, 720))
+    assert showcased_backlit.getpixel((900, 450))[0] >= 58
+    assert max(showcased_backlit.getpixel((100, 100))) < 240
+
+
+def test_show_poster_speed_accent_is_wordless_and_visually_balanced():
+    image = Image.new("RGB", (1000, 1500), (6, 7, 10))
+    _draw_speed_accent(ImageDraw.Draw(image, "RGBA"), 1000, 1500)
+    assert image.getpixel((80, 1395))[0] > 180
+    assert image.getpixel((90, 1420))[0] > image.getpixel((90, 1420))[1] * 2
+    third = image.getpixel((100, 1446))
+    assert max(third) - min(third) < 8 and min(third) > 140
+    assert image.getpixel((300, 1400)) == (6, 7, 10)
+
+
+def test_show_poster_profile_preserves_car_position_and_visual_lead_room():
+    left = Image.new("RGB", (1600, 900), (195, 200, 205))
+    right = left.copy()
+    ImageDraw.Draw(left).rounded_rectangle(
+        (120, 300, 760, 680), 30, fill=(220, 20, 40), outline=(5, 5, 5), width=16
+    )
+    ImageDraw.Draw(right).rounded_rectangle(
+        (840, 300, 1480, 680), 30, fill=(220, 20, 40), outline=(5, 5, 5), width=16
+    )
+
+    left_profile = _poster_photo_profile(left)
+    right_profile = _poster_photo_profile(right)
+    assert left_profile.focal_x < 0.4
+    assert left_profile.composition_x == 0.38
+    assert right_profile.focal_x > 0.6
+    assert right_profile.composition_x == 0.62
+    assert left_profile.shadow_luminance < left_profile.median_luminance
+
+    left_crop = _adaptive_showcase_crop(left, (600, 350), left_profile)
+    right_crop = _adaptive_showcase_crop(right, (600, 350), right_profile)
+    assert left_crop.size == right_crop.size == (600, 350)
+    assert left_crop.getpixel((100, 200))[0] > 180
+    assert right_crop.getpixel((500, 200))[0] > 180
+
+
+def test_show_poster_profile_and_crop_have_safe_blank_and_portrait_fallbacks():
+    blank = Image.new("RGB", (1600, 900), (20, 20, 20))
+    profile = _poster_photo_profile(blank)
+    assert profile.focal_x == 0.5
+    assert profile.subject_box == (0.08, 0.12, 0.92, 0.92)
+    assert _adaptive_showcase_crop(blank, (600, 350), profile).size == (600, 350)
+    assert _adaptive_showcase_crop(blank, (600, 750), profile).size == (600, 750)
+    portrait_blank = Image.new("RGB", (700, 1200), (20, 20, 20))
+    assert _adaptive_showcase_crop(
+        portrait_blank, (600, 350), _poster_photo_profile(portrait_blank)
+    ).size == (600, 350)
+
+    portrait = Image.new("RGB", (700, 1200), (185, 185, 185))
+    ImageDraw.Draw(portrait).rectangle(
+        (80, 500, 620, 680), fill=(30, 90, 220), outline=(4, 4, 4), width=12
+    )
+    portrait_profile = _poster_photo_profile(portrait)
+    cropped = _adaptive_showcase_crop(portrait, (600, 350), portrait_profile)
+    assert cropped.size == (600, 350)
+    assert cropped.getpixel((300, 175))[2] > cropped.getpixel((300, 175))[0] * 2
 
 
 def test_renderer_failure_cleanup_and_dry_attribution(
@@ -868,11 +2318,22 @@ def test_race_triggered_rotation_state_restore_manual_and_attribution(
     current = state.show_rotation("show:2026")
     assert _pair_integrity(current) == "managed"
     assert current["source"]["candidate"]["constructor_id"] == "alpine"
-    assert "Safety Car" in current["source"]["background_candidate"]["title"]
-    assert first.background_vehicle and "Safety Car" in first.background_vehicle
+    assert "race car" in current["source"]["background_candidate"]["title"]
+    assert first.background_vehicle and "race car" in first.background_vehicle
     assert len(state.show_rotation_history()) == 1
     assert state.episode_round_source(2026, 1)["constructor_id"] == "alpine"
-    assert (config["paths"]["reports"] / "formula1-show-artwork-attribution.json").exists()
+    attribution_path = (
+        config["paths"]["reports"] / "formula1-show-artwork-attribution.json"
+    )
+    assert attribution_path.exists()
+    background_record = next(
+        record
+        for record in json.loads(attribution_path.read_text())["records"]
+        if record["scope"] == "show_background"
+    )
+    assert background_record["match_tier"] == "exact_event_action_race_car"
+    assert background_record["race_key"].startswith("2026:01:albert-park")
+    assert background_record["observed_environment"] in {"day", "twilight", "night"}
     assert "Liauzh" in (
         config["paths"]["reports"] / "formula1-show-artwork-attribution.txt"
     ).read_text()
@@ -1085,6 +2546,58 @@ def test_missing_only_episode_backfill_preserves_existing_and_creates_missing(
 
 
 def test_same_round_renderer_change_rerenders_without_team_rotation(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    first = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("first")
+        )
+    )
+    current = state.show_rotation("show:2026")
+    background = Path(current["background_destination"])
+    background_content = background.read_bytes()
+    background_checksum = current["background_checksum"]
+    source = current["source"]
+    source.pop("poster_render_fingerprint")
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+
+    async def background_must_not_be_acquired(*_args, **_kwargs):
+        raise AssertionError("poster-only maintenance acquired a background")
+
+    monkeypatch.setattr(
+        show_artwork_module, "_acquire_background_image", background_must_not_be_acquired
+    )
+    config["dry_run"] = True
+    planned = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("plan")
+        )
+    )
+    assert planned.action == "rerender-planned"
+    config["dry_run"] = False
+    rerendered = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
+        )
+    )
+    assert first.constructor == rerendered.constructor
+    assert rerendered.action == "rerendered"
+    assert len(state.show_rotation_history()) == 1
+    current = state.show_rotation("show:2026")
+    assert current["source"]["poster_render_fingerprint"]
+    assert current["source"]["background_render_fingerprint"]
+    assert current["background_checksum"] == background_checksum
+    assert background.read_bytes() == background_content
+    state.close()
+
+
+def test_background_renderer_change_remains_an_independent_full_rerender(
     config, show, race
 ):
     state = Formula1State(config["paths"]["database"])
@@ -1096,21 +2609,118 @@ def test_same_round_renderer_change_rerenders_without_team_rotation(
     )
     current = state.show_rotation("show:2026")
     source = current["source"]
-    source.pop("render_fingerprint")
-    source.pop("background_candidate")
+    source["background_render_fingerprint"] = "older-background-renderer"
+    source["background_candidate"]["eligibility_version"] = 3
+    source["background_candidate"]["subject_type"] = "circuit_atmosphere"
+    source["background_candidate"]["match_tier"] = "exact_event_atmosphere"
     state.connection.execute(
         "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
         (json.dumps(source, sort_keys=True),),
     )
     state.connection.commit()
+
     rerendered = asyncio.run(
         run_show_artwork_rotation(
             session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
         )
     )
-    assert first.constructor == rerendered.constructor
     assert rerendered.action == "rerendered"
-    assert len(state.show_rotation_history()) == 1
+    assert rerendered.constructor == first.constructor
+    current = state.show_rotation("show:2026")
+    assert current["source"]["background_candidate"]["eligibility_version"] == 8
+    assert (
+        current["source"]["background_candidate"]["match_tier"]
+        == "exact_event_action_race_car"
+    )
+    state.close()
+
+
+def test_missing_poster_is_restored_without_background_acquisition(
+    config, show, race, monkeypatch
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("first"),
+        )
+    )
+    current = state.show_rotation("show:2026")
+    poster = Path(current["poster_destination"])
+    background = Path(current["background_destination"])
+    background_content = background.read_bytes()
+    background_checksum = current["background_checksum"]
+    poster.unlink()
+
+    async def background_must_not_be_acquired(*_args, **_kwargs):
+        raise AssertionError("missing-poster repair acquired a background")
+
+    monkeypatch.setattr(
+        show_artwork_module,
+        "_acquire_background_image",
+        background_must_not_be_acquired,
+    )
+    restored = asyncio.run(
+        run_show_artwork_rotation(
+            session,
+            state,
+            config,
+            show,
+            race,
+            "M0 0 L10 10",
+            logging.getLogger("restore"),
+        )
+    )
+    assert restored.action == "restored"
+    assert restored.poster_renderer_version == 17
+    assert restored.poster_checksum == _checksum(poster)
+    assert background.read_bytes() == background_content
+    current = state.show_rotation("show:2026")
+    assert current["background_checksum"] == background_checksum
+    with Image.open(poster) as image:
+        assert image.info["MetaFusion renderer"] == "show-poster-v17"
+        assert (
+            image.info["MetaFusion design"]
+            == "adaptive-concept-a-v5-speed-accent"
+        )
+    state.close()
+
+
+def test_manual_background_does_not_block_managed_poster_renderer_update(
+    config, show, race
+):
+    state = Formula1State(config["paths"]["database"])
+    session = CommonsSession()
+    asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("first")
+        )
+    )
+    current = state.show_rotation("show:2026")
+    background = Path(current["background_destination"])
+    background.write_bytes(b"manual background")
+    source = current["source"]
+    source.pop("poster_render_fingerprint")
+    state.connection.execute(
+        "UPDATE show_rotation_state SET source=? WHERE logical_key='show:2026'",
+        (json.dumps(source, sort_keys=True),),
+    )
+    state.connection.commit()
+
+    result = asyncio.run(
+        run_show_artwork_rotation(
+            session, state, config, show, race, "M0 0 L10 10", logging.getLogger("rerender")
+        )
+    )
+    assert result.action == "rerendered"
+    assert "manually modified" in result.issue
+    assert background.read_bytes() == b"manual background"
     state.close()
 
 
@@ -1298,8 +2908,13 @@ def test_rotation_missing_dry_run_order_and_metadata(tmp_path, config, show, rac
     [
         ("show_artwork:\n  poster_width: 601\n", "2:3"),
         ("show_artwork:\n  background_width: 1281\n", "16:9"),
+        ("show_artwork:\n  episode_width: 1281\n", "episode dimensions"),
         ("show_artwork:\n  trigger: weekly\n", "trigger"),
         ("show_artwork:\n  policy: overwrite\n", "policy"),
+        (
+            "show_artwork:\n  fallback_background_source_width: 4000\n",
+            "fallback background source dimensions",
+        ),
         ("providers:\n  commons_url: https://example.com/api\n", "commons_url"),
     ],
 )

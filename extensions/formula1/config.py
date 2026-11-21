@@ -24,7 +24,8 @@ def formula1_requested(config, environ=None):
     environ = os.environ if environ is None else environ
     enabled = str(environ.get("FORMULA1_ENABLED", "")).strip().casefold()
     mode = str(config.get("settings", {}).get("mode", "kometa")).casefold()
-    return mode == "kometa" and enabled in TRUE_VALUES
+    explicit_upgrade = config.get("_formula1_upgrade_scope") in {"current", "all"}
+    return mode == "kometa" and (enabled in TRUE_VALUES or explicit_upgrade)
 
 
 def _merge(base, overrides):
@@ -110,6 +111,7 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     active = root / "formula1.yml"
     overrides = _read_yaml(active) if active.exists() else {}
     config = _merge(defaults, overrides)
+    config["upgrade_scope"] = core_config.get("_formula1_upgrade_scope")
     if not dry_run:
         sync_formula1_template(root)
 
@@ -173,19 +175,33 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     if show_artwork["poster_height"] * 2 != show_artwork["poster_width"] * 3:
         raise Formula1ConfigError("show artwork poster dimensions must use a 2:3 aspect ratio")
     show_artwork["background_width"] = _bounded_int(
-        show_artwork.get("background_width", 1920),
+        show_artwork.get("background_width", 3840),
         "show_artwork.background_width",
         1280,
         3840,
     )
     show_artwork["background_height"] = _bounded_int(
-        show_artwork.get("background_height", 1080),
+        show_artwork.get("background_height", 2160),
         "show_artwork.background_height",
         720,
         2160,
     )
     if show_artwork["background_width"] * 9 != show_artwork["background_height"] * 16:
         raise Formula1ConfigError("show artwork background dimensions must use a 16:9 aspect ratio")
+    show_artwork["episode_width"] = _bounded_int(
+        show_artwork.get("episode_width", 1920),
+        "show_artwork.episode_width",
+        1280,
+        3840,
+    )
+    show_artwork["episode_height"] = _bounded_int(
+        show_artwork.get("episode_height", 1080),
+        "show_artwork.episode_height",
+        720,
+        2160,
+    )
+    if show_artwork["episode_width"] * 9 != show_artwork["episode_height"] * 16:
+        raise Formula1ConfigError("show artwork episode dimensions must use a 16:9 aspect ratio")
     if str(show_artwork.get("trigger", "plex_new_race")).casefold() != "plex_new_race":
         raise Formula1ConfigError("show_artwork.trigger currently supports only plex_new_race")
     show_artwork["trigger"] = "plex_new_race"
@@ -204,6 +220,40 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         450,
         3000,
     )
+    show_artwork["minimum_background_source_width"] = _bounded_int(
+        show_artwork.get("minimum_background_source_width", 3840),
+        "show_artwork.minimum_background_source_width",
+        1920,
+        7680,
+    )
+    show_artwork["minimum_background_source_height"] = _bounded_int(
+        show_artwork.get("minimum_background_source_height", 2160),
+        "show_artwork.minimum_background_source_height",
+        1080,
+        4320,
+    )
+    show_artwork["fallback_background_source_width"] = _bounded_int(
+        show_artwork.get("fallback_background_source_width", 1600),
+        "show_artwork.fallback_background_source_width",
+        800,
+        7680,
+    )
+    show_artwork["fallback_background_source_height"] = _bounded_int(
+        show_artwork.get("fallback_background_source_height", 900),
+        "show_artwork.fallback_background_source_height",
+        450,
+        4320,
+    )
+    if (
+        show_artwork["fallback_background_source_width"]
+        > show_artwork["minimum_background_source_width"]
+        or show_artwork["fallback_background_source_height"]
+        > show_artwork["minimum_background_source_height"]
+    ):
+        raise Formula1ConfigError(
+            "show artwork fallback background source dimensions cannot exceed "
+            "the preferred background source dimensions"
+        )
     show_artwork["retention_pairs_per_season"] = _bounded_int(
         show_artwork.get("retention_pairs_per_season", 30),
         "show_artwork.retention_pairs_per_season",
@@ -262,6 +312,27 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
         "providers.commons_cache_hours",
         1,
         168,
+    )
+    flickr_key = str(
+        os.environ.get("FORMULA1_FLICKR_API_KEY")
+        or providers.get("flickr_api_key")
+        or ""
+    ).strip()
+    providers["flickr_api_key"] = flickr_key
+    providers["flickr_enabled"] = bool(flickr_key)
+    flickr_url = str(
+        providers.get("flickr_url", "https://api.flickr.com/services/rest")
+    ).strip().rstrip("/")
+    if flickr_url != "https://api.flickr.com/services/rest":
+        raise Formula1ConfigError(
+            "providers.flickr_url must use the official Flickr HTTPS REST endpoint"
+        )
+    providers["flickr_url"] = flickr_url
+    providers["flickr_cache_hours"] = _bounded_float(
+        providers.get("flickr_cache_hours", 24),
+        "providers.flickr_cache_hours",
+        1,
+        24,
     )
 
     cleanup = config.setdefault("cleanup", {})

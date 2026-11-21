@@ -148,7 +148,7 @@ variable translates Plex paths but cannot expose host files to the container.
 Resolved directories must already exist and be writable; MetaFusion refuses to
 create missing media roots that may indicate a bad mapping.
 
-Run `python metafusion.py --preflight` in the container console after adding
+Run `metafusion --preflight` in the container console after adding
 the mounts. It samples a bounded number of Plex paths and may print a suggested
 mapping when one visible container root matches unambiguously. Review that
 suggestion; MetaFusion never creates or edits the Unraid path mapping itself.
@@ -273,15 +273,21 @@ To force a one-time run without permanently changing the container, open the
 MetaFusion console and run:
 
 ```bash
-python metafusion.py --metafusion_run
+metafusion --metafusion_run
 ```
+
+Use the `metafusion` command for every console operation. The Unraid WebUI may
+open the console as root; this command passes through MetaFusion's entrypoint
+and drops to `PUID:PGID` (`99:100` by default) before the application starts.
+Running `python /app/metafusion.py` directly bypasses that protection and is
+refused before any output is written.
 
 Useful console checks are:
 
 ```bash
-python metafusion.py --doctor
-python metafusion.py --status
-python metafusion.py --support-report
+metafusion --doctor
+metafusion --status
+metafusion --support-report
 ```
 
 See [Operations](operations.md) for targeted repairs and diagnostics.

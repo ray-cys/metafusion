@@ -254,6 +254,32 @@ the build-only pip installer and its vendored libraries from the runtime image.
 This does not affect MetaFusion's CLI; install dependency changes by rebuilding
 the image, not by running pip inside an existing container.
 
+### Qualifying dependency updates
+
+Use the latest stable version compatible with the supported Python versions and
+the complete dependency graph, not an unconstrained `pip install --upgrade`
+inside a running container. Review upstream changes before widening a major
+version bound. Regenerate **both** hash locks together, using the runtime lock
+as a constraint for development; updating only one lock can make a Dependabot
+PR fail the synchronization check even when the package itself is compatible.
+Runtime packages and development tools remain separately installed so tools do
+not enlarge the daily-use image.
+
+The October 2026 refresh qualifies PlexAPI 4.18.3, aiolimiter 1.3.0 and multidict
+7.1.0, alongside current compatible indirect dependencies. aiohttp 3.14.5 permits
+multidict 7; MetaFusion uses supported header-access methods rather than relying
+on the older duplicate-key iteration behavior. Local-only HTTP tests exercise
+the real PlexAPI/Requests XML path, aiohttp duplicate request/response headers,
+rate-limit responses, Pillow image decoding and limiter cancellation. They run
+in the normal test suite without a private Plex server or provider credentials.
+
+Kometa validation retains the 2.4.5 baseline and qualifies the current 2.5.3
+release by immutable image digest and schema checksum. The `kometa-2.4` output
+profile remains backward-compatible; validating against a newer Kometa does
+not silently introduce new YAML fields or alter user configuration. CI actions,
+Trivy and signing tools are also pinned to reviewed stable releases, while
+Docker retains the supported Python 3.13 Bookworm runtime.
+
 ## Required release gate
 
 Before promoting `develop` to `main`:
@@ -265,8 +291,8 @@ Before promoting `develop` to `main`:
    excluded from the runtime aggregate and retain workflow-specific tests;
    the provider-maintenance tool has its own 100% line-and-branch gate. Raise any
    floor only with useful behavioral and failure-path tests.
-3. `python metafusion.py --preflight` passes in the intended deployment.
-4. `python metafusion.py --release-check` passes and its redacted report is retained.
+3. `metafusion --preflight` passes in the intended deployment.
+4. `metafusion --release-check` passes and its redacted report is retained.
 5. A full scan completes with no unexpected item failures and with cleanup
    disabled or dry-run reviewed.
 6. An immediate unchanged incremental run processes only items that are due.

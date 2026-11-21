@@ -63,7 +63,7 @@ active YAML and provide any desired values through the container environment.
 `CONFIG_PATH` is the Compose host directory mounted at `/config`; it is not the
 name or path of an active YAML file.
 
-Run `python metafusion.py --doctor` inside the container to validate the
+Run `metafusion --doctor` inside the container to validate the
 effective configuration without contacting Plex or TMDb. Normal jobs also log
 one redacted source line under **Effective run configuration**, including the
 selected filename and counts of YAML, environment, secret-file, and CLI values.

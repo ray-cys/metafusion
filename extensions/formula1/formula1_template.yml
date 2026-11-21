@@ -23,6 +23,7 @@ sessions:
     pre_qualifying: Qualifying
     qualifying: Qualifying
     post_qualifying: Qualifying
+    post_race_press_conference: Race
 
 metadata:
   enabled: true
@@ -52,8 +53,25 @@ artwork:
 # The supplied logo and fonts above are also used for the show artwork frame and
 # 16:9 episode session cards. Rotation is triggered by a newly discovered Plex
 # race round: the show poster and episode cards use licensed current-season team
-# cars, while the stable black show background rotates a restrained right-side
-# current-season safety-car panel. Missing cards are created only for Plex-detected
+# cars, while the clean 16:9 show background uses a licensed colour photograph
+# of visible Formula 1 race action matched to the current event or circuit. It
+# prefers the exact event, then recent and historical action at the exact circuit.
+# Empty/aerial track scenes, static cars, monochrome photos, and safety cars are
+# not selected. If that strict pool is empty, the selected current-season team-car
+# photograph is used only when its decoded source is colour and safely licensed.
+# A genuine 3840x2160 source is preferred; when none survives the same subject,
+# environment, colour, and licence checks, the prior 1600x900 source floor is
+# accepted and rendered through the same clean 3840x2160 background treatment.
+# With a Flickr key, strict Flickr results are preferred for backgrounds, then
+# posters/episode sources; Wikimedia Commons remains the next provider. A Flickr
+# result that later fails decoded-image validation does not stop Commons failover.
+# Background-only matching may combine a precise Flickr geotag, provider capture
+# date within seven days of the scheduled race, Formula 1 race-action identity,
+# and locality text when the photo omits the full event or circuit name. No such
+# composite evidence relaxes licence, subject, colour, decoding, or environment
+# validation. Poster and episode constructor matching remains strict.
+# The team-car last resort is retried automatically after provider-cache expiry.
+# Missing cards are created only for Plex-detected
 # episodes, never from container uptime or an event that exists only in a calendar.
 # No separate vehicle-source or rotation setting is required.
 show_artwork:
@@ -62,10 +80,16 @@ show_artwork:
   policy: managed
   poster_width: 1000
   poster_height: 1500
-  background_width: 1920
-  background_height: 1080
+  background_width: 3840
+  background_height: 2160
+  episode_width: 1920
+  episode_height: 1080
   minimum_source_width: 1600
   minimum_source_height: 900
+  minimum_background_source_width: 3840
+  minimum_background_source_height: 2160
+  fallback_background_source_width: 1600
+  fallback_background_source_height: 900
   retention_pairs_per_season: 30
   source_cache_retention_days: 120
   asset_reference_root: config/assets/formula1/shows
@@ -85,6 +109,12 @@ providers:
   circuit_manifest_url: https://api.github.com/repos/julesr0y/f1-circuits-svg/contents/circuits/detailed/black-outline
   commons_url: https://commons.wikimedia.org/w/api.php
   commons_cache_hours: 24
+  # Optional. Flickr is preferred for strictly matched Formula 1 backgrounds,
+  # posters, and episode cards when a public API key is supplied here or in
+  # FORMULA1_FLICKR_API_KEY. An API secret and OAuth token are not required.
+  flickr_api_key: ''
+  flickr_url: https://api.flickr.com/services/rest
+  flickr_cache_hours: 24
   cache_hours: 24
   retries: 3
 

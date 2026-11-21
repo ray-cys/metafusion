@@ -108,10 +108,10 @@ see the [release lanes and qualification process](docs/release-testing.md).
 Run these inside the container before opening an issue:
 
 ```bash
-python metafusion.py --doctor
-python metafusion.py --preflight
-python metafusion.py --support-report
-python metafusion.py --dashboard-report
+metafusion --doctor
+metafusion --preflight
+metafusion --support-report
+metafusion --dashboard-report
 ```
 
 Automatic dashboard refresh is disabled by default. Enable it with

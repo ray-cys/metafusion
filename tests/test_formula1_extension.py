@@ -96,6 +96,7 @@ from extensions.formula1.runner import (
 from extensions.formula1.sessions import session_date
 from extensions.formula1.show_artwork import ShowArtworkResult
 from extensions.formula1.state import Formula1State, Formula1StateError
+from extensions.formula1.upgrades import Formula1UpgradeResult
 from extensions.formula1.verification import (
     _selected_path,
     _verify_artwork,
@@ -243,6 +244,7 @@ def schedule_payload():
                         "round": "1",
                         "raceName": "Australian Grand Prix",
                         "date": "2026-03-08",
+                        "time": "04:00:00Z",
                         "Sprint": {"date": "2026-03-07"},
                         "FirstPractice": {"date": "2026-03-06"},
                         "Qualifying": {"date": "2026-03-07"},
@@ -267,6 +269,14 @@ def test_opt_in_is_strict_and_partition_isolated(core):
     sections = [Section("Movies", []), Section("Formula 1", [])]
     assert not formula1_requested(core, {})
     assert not formula1_requested({"settings": {"mode": "plex"}}, {"FORMULA1_ENABLED": "true"})
+    assert formula1_requested(
+        {"settings": {"mode": "kometa"}, "_formula1_upgrade_scope": "current"},
+        {},
+    )
+    assert not formula1_requested(
+        {"settings": {"mode": "plex"}, "_formula1_upgrade_scope": "all"},
+        {},
+    )
     regular, formula = partition_formula1_sections(sections, core, {"FORMULA1_ENABLED": "yes"})
     assert [item.title for item in regular] == ["Movies"]
     assert [item.title for item in formula] == ["Formula 1"]
@@ -500,6 +510,20 @@ def test_formula1_provider_replay_corpus():
             "British Grand Prix",
             "post_qualifying",
         ),
+        (
+            "S01E15 - Australia Grand Prix - Post-Race.Press.Conference.mkv",
+            15,
+            "current",
+            "Australian Grand Prix",
+            "post_race_press_conference",
+        ),
+        (
+            "01x11 - Australian GP - Post-Race Press Conference.mkv",
+            11,
+            "kometa",
+            "Australian Grand Prix",
+            "post_race_press_conference",
+        ),
     ],
 )
 def test_dual_filename_parser(filename, episode, profile, event, kind):
@@ -519,6 +543,45 @@ def test_parser_rejects_mismatch_and_normalizes_unknown():
     with pytest.raises(ValueError, match="episode"):
         parse_episode_filename("S01E02 - Japan GP - Race.mkv", expected_episode=1)
     assert parse_episode_filename("S01E01 - Japan GP - Race.mkv", profile="current")["season"] == 1
+
+
+def test_post_race_press_conference_metadata_and_artwork_reference(
+    tmp_path, core, schedule_payload
+):
+    config = load_formula1_config(core, tmp_path / "config")
+    race = parse_schedule(schedule_payload, 2026)[0]
+    parsed = parse_episode_filename(
+        "S01E15 - Australia Grand Prix - Post-Race.Press.Conference.mkv",
+        expected_season=1,
+        expected_episode=15,
+    )
+    inventory = __import__(
+        "extensions.formula1.inventory", fromlist=["Formula1Episode", "Formula1Show"]
+    )
+    episode = inventory.Formula1Episode(
+        2026,
+        1,
+        15,
+        parsed["event"],
+        parsed["program_title"],
+        parsed["program_kind"],
+        tmp_path / "press-conference.mkv",
+        "15",
+        parsed["profile"],
+    )
+    show = inventory.Formula1Show(2026, "F1 2026", "show", [episode])
+    generated = build_show_entry(
+        show,
+        [race],
+        {1: "/config/round.png"},
+        config,
+        episode_poster_references={(1, 15): "/config/press-conference.png"},
+    )[0]
+    entry = generated["seasons"][1]["episodes"][15]
+    assert entry["title"] == "Post-Race Press Conference"
+    assert entry["originally_available"] == race.race_date
+    assert entry["file_poster"] == "/config/press-conference.png"
+    assert "Post-Race Press Conference" in entry["summary"]
 
 
 def test_inventory_ignores_non_race_season_and_all_ambiguous_duplicates(tmp_path):
@@ -672,6 +735,7 @@ def test_provider_validates_caches_and_falls_back(tmp_path, core, schedule_paylo
         load_schedule(session, state, config, 2026, logging.getLogger("provider"))
     )
     assert source == "jolpica" and races[0].sprint
+    assert races[0].race_time_utc == "04:00:00Z"
     assert (
         asyncio.run(load_schedule(session, state, config, 2026, logging.getLogger("provider")))[1]
         == "cache"
@@ -1526,6 +1590,67 @@ def test_runner_end_to_end_isolated_outputs(tmp_path, core, schedule_payload):
     assert Path(missing["issue_report"]).exists()
 
 
+def test_runner_executes_explicit_formula1_artwork_upgrade(
+    tmp_path, core, schedule_payload, monkeypatch
+):
+    media = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
+    section = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
+    core["_formula1_upgrade_scope"] = "current"
+    calls = []
+
+    async def upgrade(*_args):
+        calls.append("upgrade")
+        return Formula1UpgradeResult(
+            (
+                {
+                    "season_year": 2026,
+                    "round_number": 1,
+                    "lane": "episode",
+                    "status": "upgraded",
+                    "old_provider": "commons",
+                    "new_provider": "flickr",
+                    "details": {"reason": "better"},
+                },
+                {
+                    "season_year": 2026,
+                    "round_number": 1,
+                    "lane": "show_background",
+                    "status": "no-better-candidate",
+                    "old_provider": "commons",
+                    "new_provider": None,
+                    "details": {},
+                },
+            ),
+            True,
+            {},
+        )
+
+    async def rotation(*_args):
+        return ShowArtworkResult(
+            "unchanged",
+            1,
+            episode_actions={1: "unchanged"},
+            photo_path="managed-photo",
+            source_identity="managed-source",
+        )
+
+    monkeypatch.setattr("extensions.formula1.runner.upgrade_formula1_artwork", upgrade)
+    monkeypatch.setattr("extensions.formula1.runner.run_show_artwork_rotation", rotation)
+    summary = asyncio.run(
+        run_formula1_extension(
+            [section],
+            core,
+            Session(schedule_payload, '<svg><path d="M0 0 L1 1"/></svg>'),
+            logging.getLogger("formula1-upgrade"),
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    assert calls == ["upgrade"]
+    assert summary["artwork_upgraded"] == 1
+    assert summary["artwork_upgrade_skipped"] == 1
+    assert Path(summary["artwork_upgrade_report"]).is_file()
+
+
 def test_future_championship_rollover_is_end_to_end_and_year_scoped(
     tmp_path, core, schedule_payload
 ):
@@ -2146,6 +2271,7 @@ def test_authoritative_child_parser_ignores_unrelated_and_malformed_keys():
         ("unchanged", "show_artwork_unchanged", True),
         ("preserved", "show_artwork_preserved", True),
         ("missing", "show_artwork_missing", False),
+        ("repair-failed", "show_artwork_missing", False),
     ],
 )
 def test_runner_maps_each_show_artwork_outcome(
@@ -2322,6 +2448,12 @@ def test_formula1_operator_guide_covers_the_private_runtime_contract():
         "formula1_<year>.yml",
         "formula1.sqlite3",
         "Wikimedia Commons",
+        "## One-time artwork upgrade command",
+        "metafusion --formula1-upgrade-artwork current",
+        "metafusion --formula1-upgrade-artwork all",
+        "metafusion --dry_run --formula1-upgrade-artwork current",
+        "docker exec -it <container-name>",
+        "core cleanup for that invocation",
     ):
         assert required in guide
     expected_images = {

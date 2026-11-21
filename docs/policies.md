@@ -212,7 +212,7 @@ Use different physical folders if editions require different local artwork.
 
 ### Read-only asset audit
 
-Run `python metafusion.py --asset-audit` before changing artwork policy or
+Run `metafusion --asset-audit` before changing artwork policy or
 after a large path/library migration. The command forces a full artwork-only
 selection while dry-run protection remains active. It reports:
 
@@ -326,15 +326,15 @@ library-wide operation:
 
 ```bash
 # Preview restoring only values still equal to MetaFusion's last write
-python metafusion.py --plex-metadata-restore \
+metafusion --plex-metadata-restore \
   --library Movies --rating-key 12345 --dry_run
 
 # Restore recorded prior values and lock states
-python metafusion.py --plex-metadata-restore \
+metafusion --plex-metadata-restore \
   --library Movies --rating-key 12345
 
 # Keep values but remove only locks recorded as MetaFusion-created
-python metafusion.py --plex-metadata-unlock \
+metafusion --plex-metadata-unlock \
   --library Movies --rating-key 12345
 ```
 
@@ -442,6 +442,12 @@ the TMDb release year and the result came from a Plex external ID. Title-search
 results do not receive this exception, and ordinary unexplained year mismatches
 remain rejected. Trusted external-ID aliases are recorded at `INFO`; ambiguous
 or rejected identities remain `WARNING` or `ERROR`.
+
+For TV shows, Kometa metadata generation needs a TVDB or IMDb match ID.
+MetaFusion checks Plex first and then TMDb's external IDs. If neither supplies
+one, MetaFusion preserves existing YAML and continues enabled show poster,
+background, and season poster processing. In Plex mode, a validated TMDb show
+can still supply metadata through the Plex API under your configured update policy.
 
 High-confidence Plex-to-TMDb resolutions are learned in durable state. The
 binding key uses the Plex server, library UUID, rating key, media type, and

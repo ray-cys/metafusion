@@ -142,13 +142,13 @@ docker compose logs -f metafusion
 Validate the effective configuration without contacting Plex or TMDb:
 
 ```bash
-docker compose run --rm metafusion python metafusion.py --doctor
+docker compose run --rm metafusion --doctor
 ```
 
 Show scheduler state and recent jobs:
 
 ```bash
-docker compose exec metafusion python metafusion.py --status
+docker compose exec metafusion metafusion --status
 ```
 
 The long-running service normally uses `METAFUSION_RUN=False` and
@@ -182,7 +182,7 @@ cp config/examples/kometa.yml config/kometa.yml
 cp config/examples/plex.yml config/plex.yml
 
 # Validate the selected profile. The scheduler reloads it between jobs.
-docker compose run --rm metafusion python metafusion.py --doctor
+docker compose run --rm metafusion --doctor
 ```
 
 The conventional alternative remains available:
@@ -224,7 +224,7 @@ Apply an update:
 ```bash
 docker compose pull metafusion
 docker compose up -d metafusion
-docker compose exec metafusion python metafusion.py --status
+docker compose exec metafusion metafusion --status
 ```
 
 To roll back, change only `METAFUSION_IMAGE` to the previous exact release or

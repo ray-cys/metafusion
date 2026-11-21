@@ -12,7 +12,7 @@ Select exactly one recorded item with `--library` and `--rating-key`. Preview
 first:
 
 ```bash
-python metafusion.py --output-action preview \
+metafusion --output-action preview \
   --library Movies --rating-key 12345 --output-type all
 ```
 
@@ -29,9 +29,9 @@ maintained fields, so `remove` or `rebuild` requires
 YAML entry and is refused. Plex mode never owns Kometa YAML.
 
 ```bash
-python metafusion.py --output-action remove --output-type poster \
+metafusion --output-action remove --output-type poster \
   --library Movies --rating-key 12345
-python metafusion.py --output-action rebuild --output-type season \
+metafusion --output-action rebuild --output-type season \
   --season-number 2 --library "TV Shows" --rating-key 67890
 ```
 
@@ -61,9 +61,9 @@ removes Plex database records or media files.
 Generate a human and JSON audit trail without contacting Plex or disk outputs:
 
 ```bash
-python metafusion.py --cleanup-history-report
-python metafusion.py --cleanup-history-report --history-source automated
-python metafusion.py --cleanup-history-report --history-source manual \
+metafusion --cleanup-history-report
+metafusion --cleanup-history-report --history-source automated
+metafusion --cleanup-history-report --history-source manual \
   --library Movies --rating-key 12345
 ```
 
@@ -84,13 +84,13 @@ Active files are retained for `CLEANUP_QUARANTINE_DAYS` (14 by default).
 Generate the paired text/JSON inventory without contacting Plex:
 
 ```bash
-python metafusion.py --cleanup-quarantine-report
+metafusion --cleanup-quarantine-report
 ```
 
 Restore one active record using the cleanup history ID shown in the report:
 
 ```bash
-python metafusion.py --cleanup-restore 123
+metafusion --cleanup-restore 123
 ```
 
 Restoration refuses to overwrite any existing destination, requires the stored
@@ -105,7 +105,7 @@ Expired records are purged automatically during a later real cleanup. They can
 also be purged explicitly:
 
 ```bash
-python metafusion.py --cleanup-purge
+metafusion --cleanup-purge
 ```
 
 Purge removes only expired regular files whose path remains below the
@@ -121,14 +121,14 @@ Exceptions skip one output lane for one durable Plex identity across future
 runs. They do not delete current output or change global configuration.
 
 ```bash
-python metafusion.py --exception-action add --exception-output poster \
+metafusion --exception-action add --exception-output poster \
   --library Movies --rating-key 12345 --reason "Keep commissioned poster"
-python metafusion.py --exception-action add --exception-output season \
+metafusion --exception-action add --exception-output season \
   --season-number 0 --library "TV Shows" --rating-key 67890
-python metafusion.py --exception-action add --exception-output cleanup \
+metafusion --exception-action add --exception-output cleanup \
   --library Movies --rating-key 12345 --reason "Retain during migration"
-python metafusion.py --exception-action list --library Movies
-python metafusion.py --exception-action remove --exception-output poster \
+metafusion --exception-action list --library Movies
+metafusion --exception-action remove --exception-output poster \
   --library Movies --rating-key 12345
 ```
 
@@ -143,17 +143,17 @@ identities are persisted in a review queue and can be reported without provider
 access:
 
 ```bash
-python metafusion.py --identity-review-queue
+metafusion --identity-review-queue
 ```
 
 After independently confirming the correct TMDb media type and ID, bind one
 recorded Plex item explicitly:
 
 ```bash
-python metafusion.py --identity-override-action set --tmdb-id 550 \
+metafusion --identity-override-action set --tmdb-id 550 \
   --library Movies --rating-key 12345 --reason "Verified against TMDb page"
-python metafusion.py --identity-override-action list --library Movies
-python metafusion.py --identity-override-action remove \
+metafusion --identity-override-action list --library Movies
+metafusion --identity-override-action remove \
   --library Movies --rating-key 12345
 ```
 
@@ -168,9 +168,9 @@ Use rebinding after Plex creates new library/rating-key identities for the same
 media. Disable cleanup, scan the destination library once, and create a plan:
 
 ```bash
-python metafusion.py --library-rebind plan \
+metafusion --library-rebind plan \
   --from-library "Old Movies" --to-library "Movies"
-python metafusion.py --library-rebind apply \
+metafusion --library-rebind apply \
   --from-library "Old Movies" --to-library "Movies"
 ```
 
@@ -187,8 +187,8 @@ Create a consistent online SQLite backup plus redacted configuration, template,
 Kometa YAML, ownership manifest, hashes, build data, and a manifest:
 
 ```bash
-python metafusion.py --recovery-bundle
-python metafusion.py --verify-recovery \
+metafusion --recovery-bundle
+metafusion --verify-recovery \
   /config/backups/metafusion-recovery-YYYYMMDD-HHMMSSffffff.tar.gz
 ```
 
@@ -205,11 +205,11 @@ The report opens SQLite query-only and does not initialize or migrate it, touch
 timestamps, contact Plex/providers, or inspect artwork/YAML:
 
 ```bash
-python metafusion.py --state-report
-python metafusion.py --state-report --state-section problems
-python metafusion.py --state-report --state-section provenance
-python metafusion.py --state-report --include-state-items --library Movies
-python metafusion.py --state-report --rating-key 12345
+metafusion --state-report
+metafusion --state-report --state-section problems
+metafusion --state-report --state-section provenance
+metafusion --state-report --include-state-items --library Movies
+metafusion --state-report --rating-key 12345
 ```
 
 It covers database health and size, table counts, library/full-scan state,
@@ -221,7 +221,7 @@ Plex or a file currently matches it.
 For the same bounded evidence in a browser-friendly offline view:
 
 ```bash
-python metafusion.py --dashboard-report
+metafusion --dashboard-report
 ```
 
 Set `output.dashboard_enabled: true` in YAML or `DASHBOARD_ENABLED=True` to
@@ -239,8 +239,8 @@ image with the checksum-proven local managed image using an exact content hash
 or a narrow perceptual threshold:
 
 ```bash
-python metafusion.py --plex-artwork-verify --library Movies
-python metafusion.py --plex-artwork-verify \
+metafusion --plex-artwork-verify --library Movies
+metafusion --plex-artwork-verify \
   --library "TV Shows" --rating-key 67890
 ```
 
@@ -254,7 +254,7 @@ Compare the current effective configuration with a proposed YAML file before
 changing the deployment:
 
 ```bash
-python metafusion.py --config-impact /config/proposed-config.yml
+metafusion --config-impact /config/proposed-config.yml
 ```
 
 The proposed file is evaluated over MetaFusion defaults without importing the

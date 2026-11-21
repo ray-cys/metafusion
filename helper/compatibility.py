@@ -8,7 +8,7 @@ PROFILES = {
             "metadata YAML generation",
             "movie/show/season artwork trees",
             "season 0 and episode metadata",
-            "pinned Kometa 2.4.8 CI validation",
+            "pinned baseline/current Kometa CI validation",
         ),
     },
     "plex-api-v1": {

@@ -144,6 +144,7 @@ from helper.runtime import (
     JobRunLock,
     RuntimeStatus,
     validate_preflight_paths,
+    validate_runtime_identity,
     validate_runtime_paths,
 )
 from helper.state_db import (
@@ -533,6 +534,14 @@ def parse_cli_args(argv=None):
         "--upgrade-canary-report",
         action="store_true",
         help="Generate a report from the latest upgrade canary result in SQLite",
+    )
+    parser.add_argument(
+        "--formula1-upgrade-artwork",
+        choices=["current", "all"],
+        help=(
+            "Upgrade managed Formula 1 artwork to materially better Flickr sources; "
+            "current limits work to the active race"
+        ),
     )
     return parser.parse_args(argv)
 
@@ -2185,6 +2194,14 @@ def _handle_sqlite_only_command(args):
 
 def _handle_operator_command(args, config):
     retention = report_retention(config)
+    if args.formula1_upgrade_artwork:
+        if not mode_check(config, "kometa"):
+            raise ValueError("Formula 1 artwork upgrading requires RUN_MODE=kometa")
+        config["_formula1_upgrade_scope"] = args.formula1_upgrade_artwork
+        config["metafusion_run"] = True
+        config["settings"]["schedule"] = False
+        config["cleanup"]["run_cleanup"] = False
+        return None
     if args.run_history or args.schedule_advice:
         report = write_run_history_report(
             config,
@@ -2422,6 +2439,11 @@ def main(argv=None):
     global _shutdown_timeout
     shutdown_requested.clear()
     shutdown_complete.clear()
+    try:
+        validate_runtime_identity()
+    except RuntimeError as error:
+        print(f"Runtime safety error: {error}", file=sys.stderr)
+        return 77
     args = parse_cli_args(argv)
     new_primary_commands = [
         args.state_report,
@@ -2443,6 +2465,7 @@ def main(argv=None):
         args.plex_artwork_verify,
         args.kometa_application_audit,
         args.upgrade_canary_report,
+        args.formula1_upgrade_artwork,
     ]
     if sum(bool(value) for value in new_primary_commands) > 1:
         print(
