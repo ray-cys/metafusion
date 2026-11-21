@@ -400,14 +400,21 @@ def test_docker_build_embeds_version_and_commit():
 
 
 def test_nightly_reliability_qualifies_main_and_develop_without_publishing():
-    workflow = (REPO_ROOT / ".github/workflows/nightly-reliability.yml").read_text(
+    scheduler = (REPO_ROOT / ".github/workflows/nightly-reliability.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = (REPO_ROOT / ".github/workflows/nightly-branch-reliability.yml").read_text(
         encoding="utf-8"
     )
 
-    assert 'cron: "17 18 * * *"' in workflow
-    assert "branch: [main, develop]" in workflow
+    assert 'cron: "17 18 * * *"' in scheduler
+    assert "branch: [main, develop]" in scheduler
+    assert "gh workflow run nightly-branch-reliability.yml" in scheduler
+    assert '--ref "${TARGET_BRANCH}"' in scheduler and "--exit-status" in scheduler
+    assert "actions/checkout" not in scheduler
     assert 'python-version: ["3.11", "3.13"]' in workflow
-    assert "ref: ${{ matrix.branch }}" in workflow
+    assert "matrix.branch" not in workflow and "ref:" not in workflow
+    assert "github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'" in workflow
     assert "--cov-fail-under=85" in workflow
     assert "--cov-fail-under=100" in workflow
     assert "provider_compatibility.py verify" in workflow

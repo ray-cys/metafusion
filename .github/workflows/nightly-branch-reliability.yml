@@ -1,0 +1,167 @@
+name: Nightly branch reliability
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-branch-reliability-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  code-reliability:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    name: ${{ github.ref_name }} / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Checkout ${{ github.ref_name }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          # Keep the qualification worker free of dependency-cache writes.
+
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Run static and generated-surface checks
+        run: |
+          ruff check .
+          mypy
+          python tools/generate_config_surfaces.py --check
+
+      - name: Enforce complete line and 95% branch coverage
+        shell: bash
+        run: |
+          pytest -q --cov=. --cov-branch --cov-report=term-missing \
+            --cov-report=json:coverage.json --cov-fail-under=0
+          if test -f .coveragerc-provider-tools; then
+            python tools/check_targeted_coverage.py coverage.json
+          else
+            # A stable branch may predate the current coverage-policy files
+            # while develop is being qualified. Preserve its previous honest
+            # application line floor until the policy is promoted unchanged.
+            python - <<'PY'
+          import json
+
+          totals = json.load(open("coverage.json", encoding="utf-8"))["totals"]
+          line_coverage = 100.0 * totals["covered_lines"] / totals["num_statements"]
+          print(f"Legacy application line coverage: {line_coverage:.2f}% (minimum 85.00%)")
+          raise SystemExit(0 if line_coverage >= 85.0 else 1)
+          PY
+          fi
+
+      - name: Enforce complete Phase 25 safeguard coverage when present
+        shell: bash
+        run: |
+          if test -f tests/test_phase25_change_canary_kometa.py; then
+            pytest -q tests/test_phase25_change_canary_kometa.py \
+              --cov=helper.tmdb_changes \
+              --cov=helper.upgrade_canary \
+              --cov=helper.kometa_application_verification \
+              --cov-branch --cov-report=term-missing \
+              --cov-fail-under=100
+          fi
+
+      - name: Kill representative safety mutations
+        if: github.ref_name == 'develop' && matrix.python-version == '3.13'
+        run: python tools/run_mutation_gate.py
+
+      - name: Enforce provider-maintenance tool coverage
+        shell: bash
+        run: |
+          if test -f .coveragerc-provider-tools; then
+            pytest -q tests/test_provider_compatibility_bot.py \
+              tests/test_phase27_provider_coverage.py \
+              --cov=tools.provider_compatibility \
+              --cov-config=.coveragerc-provider-tools --cov-branch \
+              --cov-report=term-missing --cov-report=json:provider-coverage.json \
+              --cov-fail-under=0
+            python tools/check_provider_coverage.py provider-coverage.json
+          else
+            pytest -q tests/test_provider_compatibility_bot.py \
+              --cov=tools.provider_compatibility --cov-config=/dev/null \
+              --cov-branch --cov-report=term-missing --cov-fail-under=85
+          fi
+
+      - name: Validate provider contracts and generated Kometa corpus
+        if: matrix.python-version == '3.13'
+        run: |
+          python tools/provider_compatibility.py verify
+          python tools/generate_kometa_contract_corpus.py --check
+
+      - name: Enforce complete maintenance-qualification coverage when present
+        shell: bash
+        run: |
+          if test -f tests/test_maintenance_qualification.py; then
+            pytest -q tests/test_maintenance_qualification.py \
+              --cov=tools.maintenance_qualification --cov-config=.coveragerc-provider-tools \
+              --cov-branch --cov-report=term-missing --cov-fail-under=100
+          fi
+
+      - name: Audit locked runtime dependencies
+        if: matrix.python-version == '3.13'
+        run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
+
+      - name: Measure the representative workload
+        if: matrix.python-version == '3.13'
+        run: |
+          python tools/performance_regression.py \
+            --output performance-report.json \
+            --github-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Preserve nightly reports
+        if: always() && matrix.python-version == '3.13'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-${{ github.ref_name }}-reports
+          path: |
+            coverage.json
+            performance-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  docker-reliability:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    name: ${{ github.ref_name }} / Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout ${{ github.ref_name }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the local qualification image
+        shell: bash
+        run: |
+          commit="$(git rev-parse HEAD)"
+          docker build \
+            --build-arg "METAFUSION_VERSION=nightly-${{ github.ref_name }}" \
+            --build-arg "METAFUSION_COMMIT=${commit}" \
+            --tag "metafusion-nightly:${{ github.ref_name }}" .
+
+      - name: Smoke-test the container CLI
+        run: |
+          docker run --rm "metafusion-nightly:${{ github.ref_name }}" --version
+          docker run --rm "metafusion-nightly:${{ github.ref_name }}" --help
+
+      - name: Scan for fixable critical vulnerabilities
+        run: |
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.65.0@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 image \
+            --exit-code 1 --ignore-unfixed --severity CRITICAL \
+            "metafusion-nightly:${{ github.ref_name }}"
