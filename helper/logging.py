@@ -644,7 +644,7 @@ def log_builder_event(event, logger=None, **kwargs):
     messages = {
         "builder_missing_tmdb_and_imdb_id": "[Identity] {media_type} | {full_title} | Missing required external ID | Expected: TMDb or IMDb",
         "builder_missing_tvdb_id_and_tmdb_id": "[Identity] {media_type} | {full_title} | Missing required external ID | Expected: TVDb or TMDb",
-        "builder_missing_tvdb_id_and_imdb_id": "[Identity] {media_type} | {full_title} | Missing required external ID | Expected: TVDb or IMDb",
+        "builder_missing_tvdb_id_and_imdb_id": "[Identity] {media_type} | {full_title} | Kometa metadata skipped | No TVDb or IMDb match ID | Enabled artwork checks continue",
         "builder_no_tmdb_id": "[Identity] {media_type} | {full_title} | TMDb identity unresolved | Action: Skipped",
         "builder_invalid_tmdb_id": "[Identity] {media_type} | {full_title} | TMDb resource unavailable | Action: Skipped",
         "builder_tmdb_id_recovered": "[Identity] {media_type} | {full_title} | Recovered stale TMDb identity | Old: {old_id} | New: {new_id}",

@@ -987,3 +987,36 @@ def test_download_failover_and_tmdb_details_recovery_matrix(monkeypatch, tmp_pat
     assert asyncio.run(
         builder.tmdb_details_with_recovery({}, "movie", "old", authoritative=True)
     ) == ("old", None, None)
+
+
+@pytest.mark.parametrize("mode", ["kometa", "plex"])
+def test_tmdb_only_show_processes_artwork_in_both_modes(monkeypatch, tmp_path, mode):
+    _patch_identity(monkeypatch)
+    details = _show_details()
+    details["external_ids"] = {"tvdb_id": None, "imdb_id": None}
+
+    async def show_details(*args, **kwargs):
+        return "200", details, None
+
+    async def select(config, meta, images, *, tmdb_id, **kwargs):
+        assert tmdb_id == "200"
+        return {"file_path": "/show.jpg", "provider": "tmdb"}
+
+    monkeypatch.setattr(builder, "tmdb_details_with_recovery", show_details)
+    monkeypatch.setattr(builder, "_select_artwork_with_fallback", select)
+    document = {"metadata": {}}
+    result = asyncio.run(builder.build_tv(
+        _config(tmp_path, mode=mode), document,
+        feature_flags=_flags(metadata_basic=True, dry_run=True),
+        meta=_show_meta(tvdb_id=None, imdb_id=None),
+        session=object(),
+    ))
+    assert result["artwork_providers"] == {"poster": "tmdb", "background": "tmdb"}
+    assert result["season_artwork_providers"] == {0: "tmdb", 1: "tmdb"}
+    if mode == "kometa":
+        assert document == {"metadata": {}}
+        assert result["metadata_action"] == "failed"
+        assert result["percent"] == 0
+    else:
+        assert result["plex_candidate"]
+        assert result["metadata_action"] == "downloaded"
