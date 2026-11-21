@@ -88,8 +88,11 @@ contracts, performance, security and the multi-architecture build. Failed,
 skipped, missing, duplicate, stale or unrelated evidence is rejected. The same
 evidence is revalidated immediately before a normal, exact-head protected merge.
 Branch protection is not disabled, administrator bypasses are not used, and PR
-reviews are not approved automatically. A bounded reconciliation wait handles
-GitHub's status propagation; a remaining policy block is an actionable failure,
+reviews are not approved automatically. A bounded reconciliation wait checks
+GitHub's actual required statuses, not the aggregate PR label: `UNSTABLE` can
+also describe optional bot-triggered workflows awaiting approval even when all
+required checks pass. Normal protected merging still enforces every applicable
+rule. A remaining policy block is an actionable failure,
 not an endlessly queued or falsely successful repair.
 
 The repository must enable **Settings → Actions → General → Workflow
