@@ -122,6 +122,9 @@ static analysis, generated configuration checks, provider contracts, Kometa
 corpus generation, dependency audit, the representative performance workload,
 Docker builds, CLI smoke tests, and fixable-critical vulnerability scans. It
 uses no live Plex or provider credentials and never publishes a container.
+Cross-branch checkouts do not retain Git credentials, and nightly Python setup
+does not save a shared pip cache in the default-branch context after executing
+`develop` code. Locked packages are still installed with hash verification.
 `workflow_dispatch` remains available for an immediate manual run.
 
 GitHub sends scheduled-run notifications to the account associated with the
