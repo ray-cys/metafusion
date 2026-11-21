@@ -30,6 +30,7 @@ jobs:
       contents: write
       pull-requests: write
       checks: read
+      statuses: write
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -85,13 +86,24 @@ jobs:
           branch="automation/runtime-maintenance-${BASE_BRANCH}"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -C "${branch}"
-          git add requirements.in requirements.txt requirements-dev.txt Dockerfile
-          git commit -m 'Repair runtime security dependencies and refresh Python base'
+          base_sha="$(git rev-parse HEAD)"
           if git ls-remote --exit-code --heads origin "${branch}" >/dev/null; then
             git fetch origin "${branch}:refs/remotes/origin/${branch}"
           fi
-          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+          remote="refs/remotes/origin/${branch}"
+          if git rev-parse --verify "${remote}" >/dev/null 2>&1 && \
+             git merge-base --is-ancestor "${base_sha}" "${remote}" && \
+             git diff --quiet "${remote}" -- \
+               requirements.in requirements.txt requirements-dev.txt Dockerfile; then
+            repair_sha="$(git rev-parse "${remote}")"
+            echo 'Reusing unchanged repair commit; existing checks are retained.' >>"${GITHUB_STEP_SUMMARY}"
+          else
+            git switch -C "${branch}"
+            git add requirements.in requirements.txt requirements-dev.txt Dockerfile
+            git commit -m 'Repair runtime security dependencies and refresh Python base'
+            git push --force-with-lease origin "HEAD:refs/heads/${branch}"
+            repair_sha="$(git rev-parse HEAD)"
+          fi
           body="${RUNNER_TEMP}/maintenance-pr.md"
           {
             echo 'Refresh the supported Python base-image digest and repair runtime advisories with stable same-major fixes.'
@@ -109,29 +121,40 @@ jobs:
           {
             echo "number=${number}"
             echo "branch=${branch}"
-            echo "sha=$(git rev-parse HEAD)"
+            echo "sha=${repair_sha}"
           } >>"${GITHUB_OUTPUT}"
 
       - name: Qualify the exact maintenance commit
         if: steps.repair.outputs.changed == 'true'
+        id: qualification
         env:
           GH_TOKEN: ${{ github.token }}
           REPAIR_BRANCH: ${{ steps.pr.outputs.branch }}
           REPAIR_SHA: ${{ steps.pr.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          BASE_BRANCH: ${{ matrix.branch }}
         shell: bash
         run: |
           set -euo pipefail
+          requested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run docker-latest.yml --repo "${GITHUB_REPOSITORY}" --ref "${REPAIR_BRANCH}"
           run_id=""
           for _attempt in $(seq 1 20); do
             run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow docker-latest.yml \
               --branch "${REPAIR_BRANCH}" --commit "${REPAIR_SHA}" --event workflow_dispatch \
+              --created ">=${requested_at}" \
               --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
             [[ -z "${run_id}" ]] || break
             sleep 6
           done
           [[ -n "${run_id}" ]]
-          gh run watch "${run_id}" --repo "${GITHUB_REPOSITORY}" --interval 20 --exit-status
+          timeout 35m gh run watch "${run_id}" --repo "${GITHUB_REPOSITORY}" --interval 20 --exit-status
+          python tools/maintenance_qualification.py \
+            --repository "${GITHUB_REPOSITORY}" --pr "${PR_NUMBER}" \
+            --branch "${BASE_BRANCH}" --sha "${REPAIR_SHA}" --run-id "${run_id}" \
+            --evidence "${RUNNER_TEMP}/maintenance-qualification.json" \
+            --github-summary "${GITHUB_STEP_SUMMARY}"
+          echo "run_id=${run_id}" >>"${GITHUB_OUTPUT}"
 
       - name: Merge qualified repair and publish branch image
         if: steps.repair.outputs.changed == 'true'
@@ -140,19 +163,50 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           REPAIR_SHA: ${{ steps.pr.outputs.sha }}
           BASE_BRANCH: ${{ matrix.branch }}
+          QUALIFICATION_RUN: ${{ steps.qualification.outputs.run_id }}
         shell: bash
         run: |
           set -euo pipefail
+          python tools/maintenance_qualification.py \
+            --repository "${GITHUB_REPOSITORY}" --pr "${PR_NUMBER}" \
+            --branch "${BASE_BRANCH}" --sha "${REPAIR_SHA}" --run-id "${QUALIFICATION_RUN}" \
+            --evidence "${RUNNER_TEMP}/maintenance-qualification.json" --verify-only
+          # Give GitHub a bounded window to reconcile the verified commit statuses.
+          for _attempt in $(seq 1 12); do
+            state="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --json mergeStateStatus --jq '.mergeStateStatus')"
+            [[ "${state}" == 'CLEAN' ]] && break
+            sleep 5
+          done
+          if [[ "${state}" != 'CLEAN' ]]; then
+            echo "::error::Repair PR #${PR_NUMBER} is still ${state}; review its required checks or protection rules. Nothing was bypassed."
+            exit 1
+          fi
           gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --squash --match-head-commit "${REPAIR_SHA}"
           # Token-created merges do not trigger push workflows. Publish explicitly.
+          merged_sha="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json mergeCommit --jq '.mergeCommit.oid')"
+          requested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run docker-latest.yml --repo "${GITHUB_REPOSITORY}" --ref "${BASE_BRANCH}"
-          echo "Qualified repair PR #${PR_NUMBER} merged into ${BASE_BRANCH}; branch-image publication dispatched." >>"${GITHUB_STEP_SUMMARY}"
+          publish_id=""
+          for _attempt in $(seq 1 20); do
+            publish_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow docker-latest.yml \
+              --branch "${BASE_BRANCH}" --commit "${merged_sha}" --event workflow_dispatch \
+              --created ">=${requested_at}" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [[ -z "${publish_id}" ]] || break
+            sleep 6
+          done
+          [[ -n "${publish_id}" ]]
+          timeout 35m gh run watch "${publish_id}" --repo "${GITHUB_REPOSITORY}" --interval 20 --exit-status
+          echo "Qualified repair PR #${PR_NUMBER} merged into ${BASE_BRANCH}; branch-image publication verified in run ${publish_id}." >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Preserve maintenance audit evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: maintenance-${{ matrix.branch }}-audit
-          path: ${{ runner.temp }}/runtime-audit.json
+          path: |
+            ${{ runner.temp }}/runtime-audit.json
+            ${{ runner.temp }}/maintenance-qualification.json
           if-no-files-found: warn
           retention-days: 14

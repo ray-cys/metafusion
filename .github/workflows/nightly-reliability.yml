@@ -106,6 +106,15 @@ jobs:
           python tools/provider_compatibility.py verify
           python tools/generate_kometa_contract_corpus.py --check
 
+      - name: Enforce complete maintenance-qualification coverage when present
+        shell: bash
+        run: |
+          if test -f tests/test_maintenance_qualification.py; then
+            pytest -q tests/test_maintenance_qualification.py \
+              --cov=tools.maintenance_qualification --cov-config=.coveragerc-provider-tools \
+              --cov-branch --cov-report=term-missing --cov-fail-under=100
+          fi
+
       - name: Audit locked runtime dependencies
         if: matrix.python-version == '3.13'
         run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
