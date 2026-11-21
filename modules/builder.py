@@ -2878,7 +2878,7 @@ async def _build_tv(
         mapping_id = int(tvdb_id)
     elif imdb_id:
         mapping_id = imdb_id
-    else:
+    elif run_metadata and mode_check(config, "kometa"):
         external_ids = details.get("external_ids") or await tmdb_api_request(
             config,
             f"tv/{tmdb_id}/external_ids",
@@ -2892,20 +2892,10 @@ async def _build_tv(
             elif imdb_id_from_tmdb:
                 mapping_id = imdb_id_from_tmdb
 
-    if run_metadata and not mapping_id:
+    if run_metadata and mode_check(config, "kometa") and not mapping_id:
         log_builder_event("builder_missing_tvdb_id_and_imdb_id", media_type="TV Show", full_title=full_title)
         metadata_action = "failed"
-        return {
-            "percent": 0,
-            "incomplete_percent": 100,
-            "is_complete": False,
-            "metadata_action": metadata_action,
-            "poster_action": poster_action,
-            "background_action": background_action,
-            "seasons": {},
-            "season_poster_actions": season_poster_actions,
-            **result,
-        }
+        run_metadata = False
 
     content_ratings = get_meta_field(details, "results", [], path=["content_ratings"])
     content_rating = regional_tv_certification(
@@ -3023,8 +3013,8 @@ async def _build_tv(
 
     seasons_data = {}
     plex_seasons = {}
-    grand_percent = 100
-    is_complete = True
+    is_complete = metadata_action != "failed"
+    grand_percent = 100 if is_complete else 0
     metadata_fetch_failed = False
     metadata_pending_count = 0
     changes = []

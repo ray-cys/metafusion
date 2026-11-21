@@ -443,6 +443,12 @@ results do not receive this exception, and ordinary unexplained year mismatches
 remain rejected. Trusted external-ID aliases are recorded at `INFO`; ambiguous
 or rejected identities remain `WARNING` or `ERROR`.
 
+For TV shows, Kometa metadata generation needs a TVDB or IMDb match ID.
+MetaFusion checks Plex first and then TMDb's external IDs. If neither supplies
+one, MetaFusion preserves existing YAML and continues enabled show poster,
+background, and season poster processing. In Plex mode, a validated TMDb show
+can still supply metadata through the Plex API under your configured update policy.
+
 High-confidence Plex-to-TMDb resolutions are learned in durable state. The
 binding key uses the Plex server, library UUID, rating key, media type, and
 provider-ID fingerprint, so harmless localized title changes do not repeat
