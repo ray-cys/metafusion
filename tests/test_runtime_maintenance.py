@@ -109,7 +109,7 @@ def test_supported_python_floor_is_consistent_across_tools_and_qualification():
     project = (root / "pyproject.toml").read_text()
     assert 'target-version = "py311"' in project
     assert 'python_version = "3.11"' in project
-    for workflow in ("docker-latest.yml", "nightly-reliability.yml"):
+    for workflow in ("docker-latest.yml", "nightly-branch-reliability.yml"):
         assert 'python-version: ["3.11", "3.13"]' in (
             root / ".github/workflows" / workflow
         ).read_text()

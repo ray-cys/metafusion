@@ -64,29 +64,61 @@ development hashes together, and refreshes the digest of the supported Python
 3.13 Bookworm base. This covers indirect packages as well as direct pins.
 It opens or refreshes one maintenance PR per branch, dispatches the complete
 Docker qualification on its exact commit, and merges only after qualification
-passes and normal branch protection permits it. It then explicitly dispatches
-publication for that branch. It never promotes features from `develop` to
+passes and normal branch protection permits it. Unchanged repairs reuse their
+existing commit rather than replacing the PR head every night. Run discovery
+requires both the exact commit and the dispatch time, so an older successful
+build cannot accidentally stand in for a new one. It then explicitly dispatches
+publication for that branch and waits for the published-image verification to
+pass. It never promotes features from `develop` to
 `main`, changes the Python minor, or creates stable tags or moves `latest`.
+
+GitHub does not evaluate `workflow_dispatch` job checks as required PR checks
+([GitHub's required-check rules](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated)).
+Bot-created PR workflows can also wait for a human's approval. To avoid a repair
+passing all tests but failing at merge every night, maintenance explicitly
+reports the successful Docker jobs as commit statuses on the repair PR. Each
+status links to its actual test or build job; no test result is invented or
+marked successful merely because a workflow was dispatched.
+
+Before reporting statuses, `tools/maintenance_qualification.py` verifies the
+repository, bot author, permitted repair branch, full commit SHA, current base
+ancestry, and changed-file allowlist. All eight Docker qualification jobs must
+have completed successfully, including both Python versions, both provider
+contracts, performance, security and the multi-architecture build. Failed,
+skipped, missing, duplicate, stale or unrelated evidence is rejected. The same
+evidence is revalidated immediately before a normal, exact-head protected merge.
+Branch protection is not disabled, administrator bypasses are not used, and PR
+reviews are not approved automatically. A bounded reconciliation wait handles
+GitHub's status propagation; a remaining policy block is an actionable failure,
+not an endlessly queued or falsely successful repair.
 
 The repository must enable **Settings → Actions → General → Workflow
 permissions → Allow GitHub Actions to create and approve pull requests**.
 GitHub combines creation and review capability in that setting; these workflows
 do not approve PR reviews. Default token permissions remain read-only, and
 maintenance receives write permissions only in its repair job. Automated
+commit-status reporting needs `statuses: write` in that job; no personal access
+token or additional repository secret is required. The qualification evidence
+and original audit are retained for 14 days with links to the actual jobs.
+The evidence-verification tool has its own enforced 100% line-and-branch test
+gate in pull-request CI and nightly reliability. Automated
 qualification of `automation/**` branches builds both architectures without
 publishing images and uses a separate queue, so these checks cannot displace a
 pending branch-image publication. A major-only fix remains a failed run with
 the installed and published fix versions in its summary; no partial repair is
-applied. The original dependency audit is retained for 14 days as a branch-named
-workflow artifact. Review upstream compatibility and Python requirements before
+applied. Review upstream compatibility and Python requirements before
 manually upgrading. An unavailable provider, failing test or security scan, or
 protected-branch conflict also remains visible for investigation; arbitrary
 future code errors cannot safely be repaired by dependency automation.
 
-The read-only `Nightly reliability` workflow is defined on `main`, which is the
+The `Nightly reliability` scheduler is defined on `main`, which is the
 default branch required by GitHub's scheduled-workflow service. Every day at
-18:17 UTC (02:17 Asia/Singapore), it explicitly checks out and qualifies both
-`main` and `develop`. The non-zero minute avoids the busiest top-of-hour
+18:17 UTC (02:17 Asia/Singapore), it dispatches and waits for
+`nightly-branch-reliability.yml` separately on `main` and `develop`. Its own jobs
+never check out or execute repository code. Each read-only worker checks out
+its own immutable event revision and uses its own branch's cache/security
+context, so `develop` code never executes in the default branch's context.
+The non-zero minute avoids the busiest top-of-hour
 scheduling window.
 
 For both branches it runs Python 3.11/3.13 tests, coverage and targeted floors,
@@ -94,6 +126,10 @@ static analysis, generated configuration checks, provider contracts, Kometa
 corpus generation, dependency audit, the representative performance workload,
 Docker builds, CLI smoke tests, and fixable-critical vulnerability scans. It
 uses no live Plex or provider credentials and never publishes a container.
+Worker checkouts do not retain Git credentials, and nightly Python setup does
+not save a shared pip cache. Locked packages are still installed with hash
+verification. The scheduler links to each branch run and propagates its real
+result; a worker failure still triggers the existing maintenance follow-up.
 `workflow_dispatch` remains available for an immediate manual run.
 
 GitHub sends scheduled-run notifications to the account associated with the

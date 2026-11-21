@@ -3,7 +3,6 @@ name: Nightly reliability
 on:
   schedule:
     # GitHub cron is UTC. 18:17 UTC is 02:17 Asia/Singapore the next day.
-    # The non-zero minute avoids GitHub's busiest top-of-hour scheduling window.
     - cron: "17 18 * * *"
   workflow_dispatch:
 
@@ -15,152 +14,39 @@ permissions:
   contents: read
 
 jobs:
-  code-reliability:
-    name: ${{ matrix.branch }} / Python ${{ matrix.python-version }}
+  qualify-branch:
+    name: Qualify ${{ matrix.branch }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         branch: [main, develop]
-        python-version: ["3.11", "3.13"]
-
     steps:
-      - name: Checkout ${{ matrix.branch }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.branch }}
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install locked dependencies
-        run: python -m pip install --require-hashes -r requirements-dev.txt
-
-      - name: Run static and generated-surface checks
-        run: |
-          ruff check .
-          mypy
-          python tools/generate_config_surfaces.py --check
-
-      - name: Enforce complete line and 95% branch coverage
+      # No repository checkout or branch code executes in this default-branch job.
+      - name: Dispatch and verify branch-scoped reliability
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ matrix.branch }}
         shell: bash
         run: |
-          pytest -q --cov=. --cov-branch --cov-report=term-missing \
-            --cov-report=json:coverage.json --cov-fail-under=0
-          if test -f .coveragerc-provider-tools; then
-            python tools/check_targeted_coverage.py coverage.json
-          else
-            # A stable branch may predate the current coverage-policy files
-            # while develop is being qualified. Preserve its previous honest
-            # application line floor until the policy is promoted unchanged.
-            python - <<'PY'
-          import json
-
-          totals = json.load(open("coverage.json", encoding="utf-8"))["totals"]
-          line_coverage = 100.0 * totals["covered_lines"] / totals["num_statements"]
-          print(f"Legacy application line coverage: {line_coverage:.2f}% (minimum 85.00%)")
-          raise SystemExit(0 if line_coverage >= 85.0 else 1)
-          PY
-          fi
-
-      - name: Enforce complete Phase 25 safeguard coverage when present
-        shell: bash
-        run: |
-          if test -f tests/test_phase25_change_canary_kometa.py; then
-            pytest -q tests/test_phase25_change_canary_kometa.py \
-              --cov=helper.tmdb_changes \
-              --cov=helper.upgrade_canary \
-              --cov=helper.kometa_application_verification \
-              --cov-branch --cov-report=term-missing \
-              --cov-fail-under=100
-          fi
-
-      - name: Kill representative safety mutations
-        if: matrix.branch == 'develop' && matrix.python-version == '3.13'
-        run: python tools/run_mutation_gate.py
-
-      - name: Enforce provider-maintenance tool coverage
-        shell: bash
-        run: |
-          if test -f .coveragerc-provider-tools; then
-            pytest -q tests/test_provider_compatibility_bot.py \
-              tests/test_phase27_provider_coverage.py \
-              --cov=tools.provider_compatibility \
-              --cov-config=.coveragerc-provider-tools --cov-branch \
-              --cov-report=term-missing --cov-report=json:provider-coverage.json \
-              --cov-fail-under=0
-            python tools/check_provider_coverage.py provider-coverage.json
-          else
-            pytest -q tests/test_provider_compatibility_bot.py \
-              --cov=tools.provider_compatibility --cov-config=/dev/null \
-              --cov-branch --cov-report=term-missing --cov-fail-under=85
-          fi
-
-      - name: Validate provider contracts and generated Kometa corpus
-        if: matrix.python-version == '3.13'
-        run: |
-          python tools/provider_compatibility.py verify
-          python tools/generate_kometa_contract_corpus.py --check
-
-      - name: Audit locked runtime dependencies
-        if: matrix.python-version == '3.13'
-        run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
-
-      - name: Measure the representative workload
-        if: matrix.python-version == '3.13'
-        run: |
-          python tools/performance_regression.py \
-            --output performance-report.json \
-            --github-summary "${GITHUB_STEP_SUMMARY}"
-
-      - name: Preserve nightly reports
-        if: always() && matrix.python-version == '3.13'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: nightly-${{ matrix.branch }}-reports
-          path: |
-            coverage.json
-            performance-report.json
-          if-no-files-found: warn
-          retention-days: 14
-
-  docker-reliability:
-    name: ${{ matrix.branch }} / Docker
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        branch: [main, develop]
-
-    steps:
-      - name: Checkout ${{ matrix.branch }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.branch }}
-
-      - name: Build the local qualification image
-        shell: bash
-        run: |
-          commit="$(git rev-parse HEAD)"
-          docker build \
-            --build-arg "METAFUSION_VERSION=nightly-${{ matrix.branch }}" \
-            --build-arg "METAFUSION_COMMIT=${commit}" \
-            --tag "metafusion-nightly:${{ matrix.branch }}" .
-
-      - name: Smoke-test the container CLI
-        run: |
-          docker run --rm "metafusion-nightly:${{ matrix.branch }}" --version
-          docker run --rm "metafusion-nightly:${{ matrix.branch }}" --help
-
-      - name: Scan for fixable critical vulnerabilities
-        run: |
-          docker run --rm \
-            --volume /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c image \
-            --exit-code 1 --ignore-unfixed --severity CRITICAL \
-            "metafusion-nightly:${{ matrix.branch }}"
+          set -euo pipefail
+          requested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run nightly-branch-reliability.yml \
+            --repo "${GITHUB_REPOSITORY}" --ref "${TARGET_BRANCH}"
+          run_id=""
+          for _attempt in $(seq 1 20); do
+            run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" \
+              --workflow nightly-branch-reliability.yml --branch "${TARGET_BRANCH}" \
+              --event workflow_dispatch --created ">=${requested_at}" \
+              --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [[ -z "${run_id}" ]] || break
+            sleep 6
+          done
+          [[ -n "${run_id}" ]]
+          echo "Branch-scoped ${TARGET_BRANCH} checks: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}" >>"${GITHUB_STEP_SUMMARY}"
+          timeout 40m gh run watch "${run_id}" --repo "${GITHUB_REPOSITORY}" \
+            --interval 20 --exit-status
