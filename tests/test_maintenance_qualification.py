@@ -345,6 +345,9 @@ def test_workflow_reports_verified_statuses_before_normal_protected_merge():
         content = (root / ".github/workflows" / name).read_text()
         assert "--cov=tools.maintenance_qualification" in content
         assert "--cov-branch --cov-report=term-missing --cov-fail-under=100" in content
+    nightly = (root / ".github/workflows/nightly-reliability.yml").read_text()
+    assert "cache: pip" not in nightly
+    assert nightly.count("persist-credentials: false") == 2
 
 
 @pytest.mark.parametrize("existing,base_moved,content_changed", [
