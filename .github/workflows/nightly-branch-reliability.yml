@@ -138,6 +138,8 @@ jobs:
     name: ${{ github.ref_name }} / Docker
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TARGET_BRANCH: ${{ github.ref_name }}
     steps:
       - name: Checkout ${{ github.ref_name }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,14 +151,14 @@ jobs:
         run: |
           commit="$(git rev-parse HEAD)"
           docker build \
-            --build-arg "METAFUSION_VERSION=nightly-${{ github.ref_name }}" \
+            --build-arg "METAFUSION_VERSION=nightly-${TARGET_BRANCH}" \
             --build-arg "METAFUSION_COMMIT=${commit}" \
-            --tag "metafusion-nightly:${{ github.ref_name }}" .
+            --tag "metafusion-nightly:${TARGET_BRANCH}" .
 
       - name: Smoke-test the container CLI
         run: |
-          docker run --rm "metafusion-nightly:${{ github.ref_name }}" --version
-          docker run --rm "metafusion-nightly:${{ github.ref_name }}" --help
+          docker run --rm "metafusion-nightly:${TARGET_BRANCH}" --version
+          docker run --rm "metafusion-nightly:${TARGET_BRANCH}" --help
 
       - name: Scan for fixable critical vulnerabilities
         run: |
@@ -164,4 +166,4 @@ jobs:
             --volume /var/run/docker.sock:/var/run/docker.sock \
             aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c image \
             --exit-code 1 --ignore-unfixed --severity CRITICAL \
-            "metafusion-nightly:${{ github.ref_name }}"
+            "metafusion-nightly:${TARGET_BRANCH}"

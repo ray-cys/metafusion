@@ -349,6 +349,10 @@ def test_workflow_reports_verified_statuses_before_normal_protected_merge():
     assert "cache: pip" not in nightly
     assert nightly.count("persist-credentials: false") == 2
     assert "matrix.branch" not in nightly and "ref:" not in nightly
+    worker = yaml.safe_load(nightly)["jobs"]["docker-reliability"]
+    assert worker["env"]["TARGET_BRANCH"] == "${{ github.ref_name }}"
+    for step in worker["steps"]:
+        assert "${{ github.ref_name }}" not in step.get("run", "")
     scheduler = (root / ".github/workflows/nightly-reliability.yml").read_text()
     assert "actions/checkout" not in scheduler
     assert "gh workflow run nightly-branch-reliability.yml" in scheduler
