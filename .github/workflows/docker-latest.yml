@@ -118,6 +118,12 @@ jobs:
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt --require-hashes --disable-pip --no-deps
 
+      - name: Enforce complete maintenance-qualification coverage
+        run: |
+          pytest -q tests/test_maintenance_qualification.py \
+            --cov=tools.maintenance_qualification --cov-config=.coveragerc-provider-tools \
+            --cov-branch --cov-report=term-missing --cov-fail-under=100
+
   kometa-contract:
     runs-on: ubuntu-latest
     permissions:
