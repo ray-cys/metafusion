@@ -114,7 +114,7 @@ def test_corrupt_state_and_legacy_fail_closed(tmp_path):
     legacy = tmp_path / ".preflight/movie_metadata.yml.deferred.yml"
     legacy.parent.mkdir()
     legacy.write_text("- invalid")
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         module.reconcile_kometa_metadata(config, records, complete=True)
 
 
@@ -156,3 +156,39 @@ def test_fresh_alias_wins_legacy_and_unknown_identity_is_preserved(tmp_path):
     # A malformed/generated document never authorizes deletion of a manual file.
     path.unlink()
     assert module.reconcile_kometa_metadata(config, records, complete=True)["status"] == "ok"
+
+
+def test_permission_denied_retries_without_blocking_native_reconciliation(tmp_path, monkeypatch, caplog):
+    from pathlib import Path
+
+    config, path, _, records = setup(tmp_path)
+    legacy = tmp_path / ".preflight/movie_metadata.yml.deferred.yml"
+    legacy.parent.mkdir()
+    legacy.write_text("Legacy:\n  match:\n    mapping_id: 2\n")
+    state = tmp_path / ".metafusion/metadata-reconciliation.json"
+    records[0]["tmdb_id"] = "2"
+    original = Path.read_bytes
+
+    def denied(target):
+        if target == legacy:
+            raise PermissionError(13, "Permission denied", str(target))
+        return original(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", denied)
+        result = module.reconcile_kometa_metadata(config, records, complete=True)
+    assert result["deferred"] == 1 and "Owned" not in read(path)
+    assert "movie" not in json.loads(state.read_text())["legacy_imports"]
+    assert "Legacy import pending" in caplog.text and str(legacy) in caplog.text
+    assert module.reconcile_kometa_metadata(config, records, complete=True)["restored"] == 1
+    assert "Legacy" in read(path)
+
+    def forbid_legacy(operation):
+        def checked(target, *args, **kwargs):
+            assert legacy.parent not in target.parents, "Completed import accessed .preflight"
+            return operation(target, *args, **kwargs)
+        return checked
+
+    for method in ("stat", "open"):
+        monkeypatch.setattr(Path, method, forbid_legacy(getattr(Path, method)))
+    assert module.reconcile_kometa_metadata(config, records, complete=True)["imported"] == 0

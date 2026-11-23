@@ -3,11 +3,12 @@
 import copy
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import yaml
 
-from helper.io import atomic_write_json, sha256_file
+from helper.io import atomic_write_json
 from modules.kometa import validate_metadata_document, write_kometa_metadata
 
 CAPABILITY_VERSION = 1
@@ -51,6 +52,34 @@ def _present(match, kind, records):
     return False
 
 
+def _import_legacy_catalogue(root, kind, markers, entries, pending):
+    if kind in markers:
+        return 0
+    path = root / ".preflight" / f"{kind}_metadata.yml.deferred.yml"
+    try:
+        source = path.read_bytes()
+    except FileNotFoundError:
+        return 0
+    except OSError as error:
+        logging.getLogger(__name__).warning(
+            "[Kometa] Legacy import pending | %s | %s | Native reconciliation continues; "
+            "will retry on the next eligible run.", path, error,
+        )
+        return 0
+
+    imported = yaml.safe_load(source) or {}
+    if not isinstance(imported, dict):
+        raise TypeError("Invalid legacy deferred catalogue; originals preserved")
+    additions = {}
+    for name, entry in imported.items():
+        if name not in entries and name not in pending and isinstance(entry, dict):
+            validate_metadata_document({"metadata": {name: entry}})
+            additions[name] = entry
+    pending.update(additions)
+    markers[kind] = hashlib.sha256(source).hexdigest()
+    return len(additions)
+
+
 def reconcile_kometa_metadata(config, inventories, *, complete):
     """Run even on incremental jobs, but never infer absence from partial scans.
 
@@ -74,11 +103,10 @@ def reconcile_kometa_metadata(config, inventories, *, complete):
         return result
     root = Path(config.get("settings", {}).get("path", "."))
     state_path = root / ".metafusion" / "metadata-reconciliation.json"
-    state = (
-        json.loads(state_path.read_text())
-        if state_path.exists()
-        else {"schema": 1, "owned": {}, "deferred": {}}
-    )
+    try:
+        state = json.loads(state_path.read_text())
+    except FileNotFoundError:
+        state = {"schema": 1, "owned": {}, "deferred": {}}
     if state.get("schema") != 1 or not all(
         isinstance(state.get(k), dict) for k in ("owned", "deferred")
     ):
@@ -96,26 +124,21 @@ def reconcile_kometa_metadata(config, inventories, *, complete):
     for kind in ("movie", "tv"):
         records = [r for r in inventories if r.get("media_type") == kind]
         path = root / "metadata" / f"{kind}_metadata.yml"
-        if not path.exists() or not records:
+        if not records:
             continue
-        document = yaml.safe_load(path.read_text()) or {}
+        try:
+            source = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        document = yaml.safe_load(source) or {}
         validate_metadata_document(document)
-        snapshot = (True, sha256_file(path))
+        snapshot = (True, hashlib.sha256(source).hexdigest())
         entries = document.get("metadata") or {}
         owned = state["owned"].setdefault(kind, {})
         pending = state["deferred"].setdefault(kind, {})
-        # Import only the old deferred catalogue. It remains an untouched backup.
-        legacy = root / ".preflight" / f"{kind}_metadata.yml.deferred.yml"
-        if legacy.exists() and kind not in state["legacy_imports"]:
-            imported = yaml.safe_load(legacy.read_text()) or {}
-            if not isinstance(imported, dict):
-                raise ValueError("Invalid legacy deferred catalogue; originals preserved")
-            for name, entry in imported.items():
-                if name not in entries and name not in pending and isinstance(entry, dict):
-                    validate_metadata_document({"metadata": {name: entry}})
-                    pending[name] = copy.deepcopy(entry)
-                    result["imported"] += 1
-            state["legacy_imports"][kind] = sha256_file(legacy)
+        result["imported"] += _import_legacy_catalogue(
+            root, kind, state["legacy_imports"], entries, pending
+        )
         for name, claim in config.get("_kometa_generated_definitions", {}).get(kind, {}).items():
             if name in entries and entries[name].get("match") == claim["match"]:
                 owned[name] = copy.deepcopy(claim)
