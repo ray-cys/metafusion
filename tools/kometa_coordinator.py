@@ -62,10 +62,19 @@ def run_once(args):
     parent = root.stat()
     if os.geteuid() == 0:
         os.chown(directory, parent.st_uid, parent.st_gid)
-    with (directory / "output.lock").open("a+") as lock:
-        os.chmod(lock.name, 0o664)
-        if os.geteuid() == 0:
-            os.chown(lock.name, parent.st_uid, parent.st_gid)
+    path = directory / "output.lock"
+    try:
+        handle = path.open("x+")
+    except FileExistsError:
+        handle = path.open("r+")
+        created = False
+    else:
+        created = True
+    with handle as lock:
+        if created:
+            os.fchmod(lock.fileno(), 0o664)
+            if os.geteuid() == 0:
+                os.fchown(lock.fileno(), parent.st_uid, parent.st_gid)
         deadline = time.monotonic() + args.wait_seconds
         while not STOP:
             try:

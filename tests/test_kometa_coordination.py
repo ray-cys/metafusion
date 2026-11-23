@@ -135,3 +135,39 @@ def test_existing_runtime_status_is_preserved_before_history_fallback(tmp_path):
     original = {"last_run_status": "success", "last_success": "2026-11-23T04:00:00+00:00"}
     path.write_text(json.dumps(original))
     assert RuntimeStatus(path, state_database=tmp_path / "missing.sqlite3")._data == original
+
+
+def test_existing_lock_mode_and_inode_survive_both_writers(tmp_path, monkeypatch):
+    config = {"settings": {"path": str(tmp_path)}}
+    path = tmp_path / ".metafusion/output.lock"
+    path.parent.mkdir()
+    path.touch()
+    path.chmod(0o660)
+    before = path.stat()
+    acquire_kometa_output_lock(config).release()
+    child = tmp_path / "child.py"
+    child.write_text("pass")
+    monkeypatch.setattr(coordinator.time, "sleep", lambda _: None)
+    args = argparse.Namespace(root=tmp_path, script=str(child), python=sys.executable,
+                              wait_seconds=0, kometa_args=[])
+    assert coordinator.run_once(args) == 0
+    after = path.stat()
+    assert (after.st_ino, after.st_mode, after.st_uid, after.st_gid) == (
+        before.st_ino, before.st_mode, before.st_uid, before.st_gid,
+    )
+
+
+def test_lock_io_failure_returns_failed_job_and_releases_first_lock(tmp_path, monkeypatch, caplog):
+    import logging
+
+    import metafusion
+    from helper.runtime import JobRunLock
+
+    monkeypatch.setattr(metafusion, "BASE_CONFIG_DIR", tmp_path)
+    blocked_root = tmp_path / "blocked"
+    blocked_root.write_text("fixture")
+    config = {"settings": {"path": str(blocked_root)}}
+    assert metafusion.run_metafusion_job(config, logging.getLogger("scheduler")) is False
+    assert "[Lock] Job could not start" in caplog.text
+    with JobRunLock(tmp_path / ".metafusion-run.lock"):
+        pass

@@ -200,6 +200,13 @@ The launcher below is an optional tool, not installed or invoked automatically.
 It requires separate explicit permission to change the consumer's startup.
 If authorized, both applications must use the same physical Kometa-root bind
 mount. MetaFusion holds `.metafusion/output.lock` during real Kometa-mode jobs.
+MetaFusion creates new lock files with mode `0664`. On reuse it preserves the
+owner, group and permissions. A shared lock can belong to a different user
+if the MetaFusion container user has read/write access. If a scheduled run
+cannot open or write the lock, the job fails before processing and the scheduler
+remains available for the next slot. Check the path and bind-mount permissions
+in the lock error. Keep the lock file in place while either process is running.
+
 For an explicitly opted-in consumer,
 run `tools/kometa_coordinator.py` using Kometa's Python runtime **instead of** its
 internal scheduler. It runs one `kometa.py --run` child at each local four-hour
