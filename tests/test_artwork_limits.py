@@ -85,3 +85,24 @@ def test_save_poster_keeps_existing_file_when_limit_cannot_be_met(tmp_path, monk
     )
     assert result is False and "byte limit" in error
     assert target.read_bytes() == b"existing artwork"
+
+
+def test_provider_dimensions_validate_before_intentional_downsize(tmp_path, monkeypatch):
+    import asyncio
+
+    from modules import utils
+
+    original_fit = fit_artwork_bytes
+    monkeypatch.setattr(
+        utils,
+        "fit_artwork_bytes",
+        lambda data, **kwargs: original_fit(data, max_bytes=8000, **kwargs),
+    )
+    target = tmp_path / "poster.png"
+    success, error = asyncio.run(
+        utils.save_poster(noise(), target, config={}, expected_image={"width": 180, "height": 180})
+    )
+    assert success is True and error is None
+    assert target.stat().st_size <= 8000
+    with Image.open(target) as image:
+        assert image.width < 153

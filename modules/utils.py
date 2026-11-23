@@ -1389,19 +1389,22 @@ async def save_poster(
         image_settings = (config or {}).get({
             "poster": "poster_set", "season": "season_set", "background": "background_set",
         }.get(asset_type, "poster_set"), {})
-        image_content = await asyncio.to_thread(
+        # Validate provider-declared dimensions against original bytes first.
+        # Intentional normalization must not look like a mismatched download.
+        analysis = await asyncio.to_thread(
+            analyze_image_content, image_content,
+            asset_type=asset_type, expected_image=expected_image,
+        )
+        normalized = await asyncio.to_thread(
             fit_artwork_bytes, image_content,
             minimum=(max(1, int(image_settings.get("min_width") or 1)),
                      max(1, int(image_settings.get("min_height") or 1))),
         )
-        analysis = await loop.run_in_executor(
-            None,
-            lambda: analyze_image_content(
-                image_content,
-                asset_type=asset_type,
-                expected_image=expected_image,
-            ),
-        )
+        if normalized is not image_content:
+            image_content = normalized
+            analysis = await asyncio.to_thread(
+                analyze_image_content, image_content, asset_type=asset_type,
+            )
         if (
             config
             and provider
