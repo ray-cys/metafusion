@@ -96,7 +96,8 @@ or `config.yml` values.
 | Diagnostics | `--asset-audit` | None | Perform a read-only full artwork selection and ownership/quality audit through TMDb, Fanart.tv, and Plex fallback stages, then write a report. |
 | Diagnostics | `--metadata-audit` | None | Perform a read-only full metadata comparison against TMDb and write field-level proposed actions. Artwork and cleanup are disabled. |
 | Diagnostics | `--plan` | None | Produce one read-only full-scan plan for metadata, provider-aware artwork, and eligible cleanup reconciliation. The report is the only deliberate output. |
-| Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork, provider attempts, ownership, quality, and rejected candidates in either output mode. |
+| Recovery | `--accept-inventory-drop` | TOKEN (standalone) | Run a full scan accepting the exact disappearance reviewed in the library audit. |
+| Diagnostics | `--library-audit` | None | Inventory selected and available Plex libraries and audit enabled artwork, provider attempts, ownership, quality, and rejected candidates in either output mode. Includes held disappearances and TV episode ordering. For each show, up to three episodes are compared by title and air date after configured split and episode mappings. Unknown means evidence was unavailable. A difference can also reflect a localized title. |
 | Diagnostics | `--mapping-diagnose` | None | Run a standalone comparison of Plex TV inventory with TMDb ordering, overrides, split-series mappings, and episode groups. Requires `--rating-key`; writes guidance only. |
 | Diagnostics | `--identity-inspect` | None | Run a standalone explanation of Plex-to-TMDb identity, learned binding/history, warnings, edition, and destinations. Requires `--rating-key`; writes only a report. |
 | Diagnostics | `--explain-item` | None | Run a standalone unified item explanation covering identity, scheduled selection, policies, TV mapping, retries, cached artwork source, and destinations. Requires `--rating-key`; writes only a report. |
@@ -491,7 +492,10 @@ At the normal INFO level, each affected title receives one consolidated
 `[Cleanup] Inventory | title | outcome | reason` record. The final report
 separates stale title/season/episode scope, cache and Kometa YAML entries,
 managed artwork quarantined, protected artwork preserved, unchanged valid artwork,
-and failures. Dry-run state/YAML removals are listed as `Would remove`, while
+and failures. On full runs, the scope lines identify excluded libraries and
+show the pending record count for each media type. A retained ownership record
+allows checksum verification after disabled artwork is enabled again. Use
+`metafusion --cleanup-history-report` to inspect the pending reason. Dry-run state/YAML removals are listed as `Would remove`, while
 managed artwork is listed as `Would quarantine`.
 Enable DEBUG only when exact cache keys, YAML season/episode entries, asset
 paths, or preserved unmanaged files are needed. In Plex mode the report labels

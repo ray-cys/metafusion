@@ -10,10 +10,11 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+from helper.artwork_limits import fit_artwork_bytes
 from helper.io import atomic_replace_file
 
 FILE_MODE = 0o664
-RENDERER_VERSION = 6
+RENDERER_VERSION = 7
 TOKENS = re.compile(r"[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
 FLAG_ASSET_ROOT = Path(__file__).with_name("assets") / "flags"
 FLAG_ALPHA = round(255 * 0.78)
@@ -424,6 +425,7 @@ def render_round_poster(race, path_data, config, destination):
         os.close(descriptor)
         temporary = Path(name)
         image.save(temporary, format="PNG", optimize=True)
+        temporary.write_bytes(fit_artwork_bytes(temporary.read_bytes()))
         checksum = hashlib.sha256(temporary.read_bytes()).hexdigest()
         atomic_replace_file(temporary, destination, new_file_mode=FILE_MODE)
         temporary = None

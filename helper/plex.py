@@ -599,6 +599,8 @@ def plex_inventory_record(item):
         "edition": getattr(item, "editionTitle", None)
         or getattr(item, "edition", None),
         "tmdb_id": ids.get("tmdb"),
+        "tvdb_id": ids.get("tvdb"),
+        "imdb_id": ids.get("imdb"),
     }
 
 

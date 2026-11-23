@@ -765,3 +765,55 @@ def test_metafusion_change_feed_canary_and_performance_success(
         "plex_inventory",
         "library_processing",
     }
+
+
+def test_output_lock_released_after_cache_initialization_failure(monkeypatch, tmp_path):
+    from helper.kometa_coordination import acquire_kometa_output_lock
+    _patch_job_services(monkeypatch, tmp_path)
+    config = {"settings": {"mode": "kometa", "path": str(tmp_path / "output")}, "plex": {}, "tmdb": {}}
+    monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: (_ for _ in ()).throw(RuntimeError("cache init")))
+    with pytest.raises(RuntimeError, match="cache init"):
+        metafusion.run_metafusion_job(config, logging.getLogger("output-lock-init"))
+    # The output lock must be reusable even though no normal run finalized.
+    lock = acquire_kometa_output_lock(config)
+    lock.release()
+
+
+def test_tv_library_audit_integrates_order_and_inventory_guard(monkeypatch, tmp_path):
+    show = _Section("Shows", "show", [_item("20", "show")])
+    _patch_runtime(monkeypatch, [show], ["Shows"], [{"title": "Shows", "type": "show"}],
+                   inventory={"Shows": [_record("20", "tv")]})
+    async def process(**kwargs):
+        kwargs["metadata_summaries"]["Shows"] = {}
+    monkeypatch.setattr(metafusion, "process_library", process)
+    config = _config(tmp_path, library_audit=True, asset_audit=True, full_scan=True)
+    config["settings"]["dry_run"] = True
+    asyncio.run(metafusion.metafusion_main(config, logging.getLogger("audit-shows")))
+    record = config["_library_audit_records"][0]
+    assert record["episode_order"]["shows"][0]["effective"] == "unknown"
+    assert record["inventory_guard"]["status"] == "initializing"
+
+
+def test_large_inventory_loss_processes_visible_but_excludes_cleanup(monkeypatch, tmp_path):
+    from helper import inventory_guard
+
+    monkeypatch.setattr("helper.state_db.STATE_DATABASE", tmp_path / "meta_db")
+    section = _Section(items=[_item()])
+    _patch_runtime(monkeypatch, [section], ["Movies"], [{"title": "Movies", "type": "movie"}],
+                   inventory={"Movies": [_record()]})
+    scope = {"server_id": "server", "library_uuid": section.uuid}
+    inventory_guard.inspect_inventory(scope, [_record(str(i)) for i in range(100)],
+                                      full=True, writable=True)
+    processed = []
+    async def process(**kw):
+        processed.extend(i.ratingKey for i in kw["all_items"])
+    async def cleanup(**kw):
+        assert not kw["safe_library_types"] and not kw["partial_scopes"]
+        return metafusion.CleanupResult()
+    monkeypatch.setattr(metafusion, "process_library", process)
+    monkeypatch.setattr(metafusion, "cleanup_title_orphans", cleanup)
+    config = _config(tmp_path, full_scan=True)
+    asyncio.run(metafusion.metafusion_main(config, logging.getLogger("inventory-hold")))
+    assert processed == ["10"]
+    assert config["_held_inventory_scopes"] == {"server|uuid-Movies"}
+    assert "Deferred" in config["_cleanup_scopes"]["movie"]

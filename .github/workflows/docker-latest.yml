@@ -258,6 +258,17 @@ jobs:
             "metafusion-ci:${GITHUB_SHA}" \
             python -c 'import os; from pathlib import Path; assert (os.getuid(), os.getgid()) == (99, 100); reports = Path("/config/reports"); assert reports.is_dir(); assert (reports.stat().st_uid, reports.stat().st_gid) == (99, 100); target = Path("/config/.ci-write-test"); target.write_text("ok", encoding="utf-8"); status = target.stat(); assert (status.st_uid, status.st_gid) == (99, 100)'
 
+      - name: Verify cross-owner Kometa output locking
+        run: |
+          root="$(mktemp -d)"
+          chmod 755 "$root"
+          sudo install -d -m 0775 -o 0 -g 100 "$root/.metafusion"
+          sudo install -m 0664 -o 0 -g 100 /dev/null "$root/.metafusion/output.lock"
+          docker run --rm --user 99:100 --entrypoint python \
+            --volume "${root}:/kometa" "metafusion-ci:${GITHUB_SHA}" \
+            -c 'from helper.kometa_coordination import acquire_kometa_output_lock; acquire_kometa_output_lock({"settings": {"mode": "kometa", "path": "/kometa"}}).release()'
+          test "$(stat -c '%u:%g:%a' "$root/.metafusion/output.lock")" = "0:100:664"
+
       - name: Exercise environment-only read-only scheduler lifecycle
         run: |
           config_dir="$(mktemp -d)"

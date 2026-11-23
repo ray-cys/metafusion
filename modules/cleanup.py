@@ -1,6 +1,6 @@
 import asyncio
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -40,6 +40,8 @@ class CleanupResult:
     assets_preserved: int = 0
     assets_skipped: int = 0
     candidates_pending: int = 0
+    pending_by_type: dict = field(default_factory=dict)
+    ownership_deferred: int = 0
     failures: int = 0
     dry_run: bool = False
     skipped_reason: Optional[str] = None
@@ -93,6 +95,7 @@ async def cleanup_title_orphans(
     existing_assets=None,
     preloaded_plex_metadata=None,
     safe_library_types=None,
+    partial_scopes=None,
 ):
     mode = config.get("settings", {}).get("mode", "kometa")
     dry_run = feature_flags.get("dry_run", False)
@@ -102,6 +105,8 @@ async def cleanup_title_orphans(
         normalize_library_type(value) for value in (safe_library_types or set())
     }
     safe_library_types &= {"movie", "tv"}
+    partial_scopes = partial_scopes or {}
+    safe_library_types.update(partial_scopes)
     log_cleanup_event(
         "cleanup_start",
         mode=mode.title(),
@@ -127,7 +132,7 @@ async def cleanup_title_orphans(
         1, int(cleanup_config.get("confirmation_scans", 2))
     )
     grace_hours = max(0.0, float(cleanup_config.get("grace_hours", 48.0)))
-    if not dry_run:
+    if not dry_run and not config.get("_held_inventory_scopes"):
         try:
             purged = purge_expired_quarantine(config, source="automated")
             purge_count = sum(
@@ -202,6 +207,7 @@ async def cleanup_title_orphans(
                         "cache_key": key,
                         "checksum": raw_entry.get(f"{asset_type}_checksum"),
                         "identity": identity,
+                        "asset_type": asset_type,
                         "season": None,
                     }
                 )
@@ -215,6 +221,7 @@ async def cleanup_title_orphans(
                     "cache_key": key,
                     "checksum": season_entry.get("season_checksum"),
                     "identity": identity,
+                    "asset_type": "season",
                     "season": str(season_number),
                 }
             )
@@ -270,6 +277,13 @@ async def cleanup_title_orphans(
             log_confirmed_outcomes()
         return CleanupError(message, result=result)
 
+    def cached_rating_key(key, entry):
+        stored = entry.get("rating_key")
+        prefix, separator, rating_key = str(key).partition(":plex:")
+        if not stored and separator and prefix in {"movie", "tv"}:
+            stored = rating_key
+        return str(stored) if stored is not None else None
+
     def candidate_record(key, entry=None, meta=None, reason=None):
         entry = entry if isinstance(entry, dict) else {}
         meta = meta if isinstance(meta, dict) else {}
@@ -278,10 +292,10 @@ async def cleanup_title_orphans(
             "server_id": meta.get("server_id") or entry.get("server_id"),
             "library_uuid": meta.get("library_uuid") or entry.get("library_uuid"),
             "library_name": meta.get("library_name") or entry.get("library_name"),
-            "rating_key": meta.get("ratingKey") or entry.get("rating_key"),
+            "rating_key": meta.get("ratingKey") or cached_rating_key(key, entry),
             "cache_key": key,
             "media_type": normalize_library_type(
-                meta.get("library_type") or entry.get("media_type")
+                meta.get("library_type") or cached_media_type(key, entry)
             ),
             "title": meta.get("title") or entry.get("title") or (identity or (None,))[0],
             "year": meta.get("year") or entry.get("year") or ((identity or (None, None))[1]),
@@ -306,6 +320,8 @@ async def cleanup_title_orphans(
         )
         if not decision.get("eligible"):
             result.candidates_pending += 1
+            kind = record.get("media_type")
+            result.pending_by_type[kind] = result.pending_by_type.get(kind, 0) + 1
         return decision
 
     if not dry_run:
@@ -340,25 +356,48 @@ async def cleanup_title_orphans(
     eligible_title_keys = set()
     eligible_season_keys = set()
     title_candidate_records = {}
+
+    def authorized(key, entry):
+        scope = partial_scopes.get(cached_media_type(key, entry))
+        if not scope:
+            return True
+        return (
+            isinstance(entry, dict)
+            and (entry.get("server_id"), entry.get("library_uuid")) in scope.owners
+            and cached_rating_key(key, entry) not in scope.protected_keys
+            and _cache_identity(key, entry) not in scope.protected_titles
+        )
+
+    disabled_outputs = {}
+    enabled_outputs = {"poster": run_poster, "background": run_background, "season": run_season}
+    if mode != "plex" or cleanup_config.get("plex_remove_managed_artwork", False):
+        for records in managed_assets.values():
+            for owner in records:
+                output = owner["asset_type"]
+                if owner["checksum"] and not enabled_outputs[output]:
+                    key = owner["cache_key"]
+                    disabled_outputs.setdefault((key, None), set()).add(output)
+                    disabled_outputs.setdefault((key, owner["season"]), set()).add(output)
+
+    held_titles = set()
     for key in list(cache):
         entry = cache.get(key)
-        if cached_media_type(key, entry) not in safe_library_types or key in valid_cache_keys:
+        if cached_media_type(key, entry) not in safe_library_types or key in valid_cache_keys or not authorized(key, entry):
             continue
         record = candidate_record(key, entry, reason="media is absent from the authoritative Plex inventory")
         if str(record.get("rating_key")) in cleanup_exceptions:
             continue
+        disabled = disabled_outputs.get((key, None))
+        if disabled:
+            record["reason"] += "; ownership retained for disabled " + ", ".join(sorted(disabled))
         decision = observe(f"title:{key}", record, "title")
         if decision.get("eligible"):
             cache_keys_to_remove.append(key)
             eligible_title_keys.add(key)
             title_candidate_records[key] = record
-    for key in cache_keys_to_remove:
-        identity = _cache_identity(key, cache.get(key))
-        if dry_run:
-            record_title(identity, removal_type="cache", title_removed=True)
-            result.cache_entries += 1
-            log_cleanup_event("cleanup_dry_run", description="cache entry", path=key)
-
+            if disabled:
+                held_titles.add(key)
+                result.ownership_deferred += 1
     for meta in safe_metadata:
         if normalize_library_type(meta.get("library_type")) != "tv":
             continue
@@ -366,7 +405,7 @@ async def cleanup_title_orphans(
             continue
         cache_key = cache_key_for_meta(meta)
         cache_entry = cache.get(cache_key)
-        if not isinstance(cache_entry, dict):
+        if not isinstance(cache_entry, dict) or not authorized(cache_key, cache_entry):
             continue
         valid_seasons = {
             str(number) for number in (meta.get("seasons_episodes") or {})
@@ -390,12 +429,18 @@ async def cleanup_title_orphans(
             candidate_key = f"season:{cache_key}:{season_number}"
             if str(record.get("rating_key")) in cleanup_exceptions:
                 continue
+            disabled = disabled_outputs.get((cache_key, str(season_number)))
+            if disabled:
+                record["reason"] += "; ownership retained for disabled season artwork"
             decision = observe(
                 candidate_key, record, "season", season=season_number
             )
             if not decision.get("eligible"):
                 continue
             eligible_season_keys.add((cache_key, str(season_number)))
+            if disabled:
+                result.ownership_deferred += 1
+                continue
             if dry_run:
                 if identity:
                     removed_seasons.add((*identity, season_number))
@@ -421,10 +466,14 @@ async def cleanup_title_orphans(
 
     def _apply_cache_changes():
         if dry_run:
+            for key in set(cache_keys_to_remove) - held_titles:
+                record_title(_cache_identity(key, cache.get(key)), removal_type="cache", title_removed=True)
+                result.cache_entries += 1
+                log_cleanup_event("cleanup_dry_run", description="cache entry", path=key)
             return
         changed = False
         for key in cache_keys_to_remove:
-            if key in cache:
+            if key in cache and key not in held_titles:
                 identity = _cache_identity(key, cache.get(key))
                 del cache[key]
                 result.cache_entries += 1
@@ -502,9 +551,14 @@ async def cleanup_title_orphans(
                         in eligible_season_keys
                     )
                 ]
-                if not eligible_records or not path.exists():
+                if len(eligible_records) != len(records) or not path.exists():
                     continue
                 resolved_path = path.resolve(strict=False)
+                primary_key = eligible_records[0]["cache_key"]
+                scope = partial_scopes.get(cached_media_type(primary_key, cache[primary_key]))
+                if scope and any(resolved_path.is_relative_to(root.resolve(strict=False)) for root in scope.protected_dirs):
+                    result.assets_preserved += 1
+                    continue
                 if not plex_roots or not any(
                     resolved_path.is_relative_to(root) for root in plex_roots
                 ):
@@ -579,6 +633,9 @@ async def cleanup_title_orphans(
         return orphan_title, None
 
     if run_metadata and mode != "plex":
+        owners_by_identity = {}
+        for key, entry in cache.items():
+            owners_by_identity.setdefault((cached_media_type(key, entry), _cache_identity(key, entry)), []).append(key)
         metadata_documents = []
         for metadata_file in metadata_dir.glob("*.yml"):
             if metadata_file.name not in preferred_filenames:
@@ -635,14 +692,14 @@ async def cleanup_title_orphans(
                 confirmed_orphaned_titles = set()
                 for yaml_key in orphaned_titles:
                     identity = extract_title_year(yaml_key)
-                    matching_key = next(
-                        (
-                            key for key, entry in cache.items()
-                            if cached_media_type(key, entry) == file_media_type
-                            and _cache_identity(key, entry) == identity
-                        ),
-                        f"{file_media_type}:{yaml_key}",
-                    )
+                    scope = partial_scopes.get(file_media_type)
+                    owners = owners_by_identity.get((file_media_type, identity), [])
+                    if scope and (
+                        len(owners) != 1 or owners[0] in valid_cache_keys
+                        or not authorized(owners[0], cache[owners[0]])
+                    ):
+                        continue
+                    matching_key = owners[0] if owners else f"{file_media_type}:{yaml_key}"
                     record = candidate_record(
                         matching_key,
                         cache.get(matching_key),
@@ -652,6 +709,8 @@ async def cleanup_title_orphans(
                         continue
                     candidate_key = f"yaml-title:{file_media_type}:{yaml_key}"
                     if not observe(candidate_key, record, "metadata").get("eligible"):
+                        if scope:
+                            held_titles.add(matching_key)
                         continue
                     confirmed_orphaned_titles.add(yaml_key)
                     cleaned_metadata.pop(yaml_key, None)
@@ -679,6 +738,10 @@ async def cleanup_title_orphans(
                     plex_meta = metadata_by_yaml_key.get(
                         (file_media_type, yaml_key)
                     )
+                    if plex_meta and file_media_type in partial_scopes:
+                        key = cache_key_for_meta(plex_meta)
+                        if not authorized(key, cache.get(key)):
+                            continue
                     if not plex_meta or normalize_library_type(
                         plex_meta.get("library_type")
                     ) != "tv":
@@ -915,13 +978,17 @@ async def cleanup_title_orphans(
                     in eligible_season_keys
                 )
             ]
-            if not eligible_records:
+            if len(eligible_records) != len(records):
                 result.assets_skipped += 1
                 return
             if (
                 path.parent.name in valid_asset_dirs.get(asset_library_type, set())
                 and not allow_valid_title
             ):
+                result.assets_skipped += 1
+                return
+            scope = partial_scopes.get(asset_library_type)
+            if scope and any(root.name == path.parent.name for root in scope.protected_dirs):
                 result.assets_skipped += 1
                 return
             if path.is_symlink():

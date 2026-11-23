@@ -448,6 +448,25 @@ def write_library_asset_audit_report(
             f"type={record.get('type') or 'unknown'} | items={record.get('items', 0)} | "
             f"selected={bool(record.get('selected'))} | status={record.get('status') or 'unknown'}"
         )
+        guard = record.get("inventory_guard", {})
+        if guard:
+            lines.append(f"  Inventory: {guard['status']} {guard.get('reason', '')}".rstrip())
+        if guard.get("status") == "held":
+            lines.append(f"  Trusted: {guard['baseline']} | Observed: {guard['observed']} | "
+                         f"Confirm after review: --accept-inventory-drop {guard['token']}")
+            lines.extend(f"    Missing: {r['title']} (Plex {r['rating_key']})" for r in guard["missing"])
+        order = record.get("episode_order")
+        if order:
+            lines.append(f"  Library episode order: {order['library_default']}")
+            for show in order["shows"]:
+                lines.append(f"    {show['title']} (Plex {show['rating_key']}) | "
+                             f"Override: {show.get('override', 'unknown')} | Effective: {show.get('effective', 'unknown')} | "
+                             f"Split mapping: {show.get('split_mapping') or 'none'} | "
+                             f"Samples: {len(show['samples'])} | Unavailable: {show.get('unavailable', '—')}")
+                for sample in show["samples"]:
+                    lines.append(f"      {sample['status']} | Plex {sample['plex_number']}: "
+                                 f"{sample['plex_title']} ({sample['plex_date']}) | TMDb {sample['tmdb_id']} "
+                                 f"{sample['tmdb_number']}: {sample['tmdb_title']} ({sample['tmdb_date']})")
     lines.extend(("", "Artwork decision summary"))
     if not action_counts:
         lines.append("- none")

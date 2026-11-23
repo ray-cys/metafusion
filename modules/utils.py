@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from helper.artwork_limits import fit_artwork_bytes
 from helper.cache import load_cache
 from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.config import mode_check
@@ -1385,14 +1386,25 @@ async def save_poster(
 ):
     try:
         loop = asyncio.get_running_loop()
-        analysis = await loop.run_in_executor(
-            None,
-            lambda: analyze_image_content(
-                image_content,
-                asset_type=asset_type,
-                expected_image=expected_image,
-            ),
+        image_settings = (config or {}).get({
+            "poster": "poster_set", "season": "season_set", "background": "background_set",
+        }.get(asset_type, "poster_set"), {})
+        # Validate provider-declared dimensions against original bytes first.
+        # Intentional normalization must not look like a mismatched download.
+        analysis = await asyncio.to_thread(
+            analyze_image_content, image_content,
+            asset_type=asset_type, expected_image=expected_image,
         )
+        normalized = await asyncio.to_thread(
+            fit_artwork_bytes, image_content,
+            minimum=(max(1, int(image_settings.get("min_width") or 1)),
+                     max(1, int(image_settings.get("min_height") or 1))),
+        )
+        if normalized is not image_content:
+            image_content = normalized
+            analysis = await asyncio.to_thread(
+                analyze_image_content, image_content, asset_type=asset_type,
+            )
         if (
             config
             and provider

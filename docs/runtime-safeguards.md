@@ -150,3 +150,102 @@ titles before attaching a report to a public issue.
 Use the [diagnostics guide](diagnostics.md) for all report commands and the
 [operations guide](operations.md) for incremental scheduling and checkpoint
 behavior.
+
+## Native Kometa metadata reconciliation (develop)
+
+Develop builds advertise `kometa_metadata_reconciliation: 1`,
+`kometa_output_lock: 1` and `kometa_artwork_max_bytes: 10000000` in the runtime
+status `capabilities`. The existing `develop` version plus full source commit
+continues to identify builds; this change does not create a stable release tag.
+
+After a successful, untargeted inventory run (including incremental runs),
+MetaFusion reconciles definitions it generated against exact Plex external IDs.
+Movie IDs are TMDb, series IDs TVDB, and explicit IMDb matches remain supported.
+Edition constraints are honoured. Manual/unclaimed entries, changed identities,
+missing identifier evidence and unavailable/unselected library scopes are
+protected. Dry runs and incomplete/failed inventories do not reconcile.
+
+Absent owned definitions are preserved in
+`<Kometa root>/.metafusion/metadata-reconciliation.json`; exact returning targets
+can be restored without overwriting newer active aliases. The old
+`.preflight/*.deferred.yml` catalogues are imported non-destructively and retained
+as migration evidence. After a successful import, MetaFusion never probes that
+legacy file again while its import marker remains in the native catalogue. An
+unreadable legacy file logs a warning and stays pending for the next eligible
+run. Native reconciliation continues. Errors reading an existing native
+catalogue or active metadata file still stop reconciliation. A durable catalogue superset precedes YAML removal;
+restored YAML precedes catalogue compaction. The existing validated writer,
+backups, permissions and concurrent-change checks are reused. Unchanged catalogue
+state is not rewritten. Per-run counts/actions are included in logs, job metrics
+and runtime status; no second notification sender is introduced.
+
+## Artwork upload ceiling
+
+All newly published provider artwork and Formula 1 renders must be at most
+10,000,000 bytes, below Kometa's observed 10,480,000-byte upload ceiling. Compliant
+payloads remain byte-for-byte unchanged. Oversized images are recompressed and,
+if required, reduced in dimensions while preserving format, PNG transparency and
+PNG provenance text. Provider minimum dimensions are enforced; an image that
+cannot fit is rejected before replacing existing artwork. Normalization logs the
+old/new byte sizes and dimensions. Download-size limits remain independent.
+Formula 1 renderer revisions are advanced so managed renders can refresh through
+normal ownership policy; manual artwork is not forcibly rewritten.
+
+## Optional consumer coordination: explicit authorization required
+
+The Hubble installation keeps stock Kometa's original image, entrypoint and
+internal scheduler. Third-party container startup changes are outside its
+ownership boundary. `kometa_output_lock: 1` advertises a MetaFusion writer lock;
+it does not establish that an unmodified consumer participates. Preflight v2.1
+uses native activity observations and this writer lock, with schedule-based
+coordination rather than guaranteed consumer mutual exclusion.
+
+The launcher below is an optional tool, not installed or invoked automatically.
+It requires separate explicit permission to change the consumer's startup.
+If authorized, both applications must use the same physical Kometa-root bind
+mount. MetaFusion holds `.metafusion/output.lock` during real Kometa-mode jobs.
+MetaFusion creates new lock files with mode `0664`. On reuse it preserves the
+owner, group and permissions. A shared lock can belong to a different user
+if the MetaFusion container user has read/write access. If a scheduled run
+cannot open or write the lock, the job fails before processing and the scheduler
+remains available for the next slot. Check the path and bind-mount permissions
+in the lock error. Keep the lock file in place while either process is running.
+
+For an explicitly opted-in consumer,
+run `tools/kometa_coordinator.py` using Kometa's Python runtime **instead of** its
+internal scheduler. It runs one `kometa.py --run` child at each local four-hour
+boundary, waits up to two hours for the shared lock, forwards termination signals,
+and stays resident between runs. A second scheduler is refused. MetaFusion also
+waits up to two hours for the consumer; no YAML/artwork writes start before its
+lock is acquired. Read-only and Plex-mode jobs do not require this output lock.
+
+Example container entrypoint/command (adapt paths to the Kometa image):
+
+```text
+entrypoint: /tini
+command: -s -- /.venv/bin/python3 /config/.metafusion/kometa_coordinator.py --python /.venv/bin/python3 --script /kometa.py
+```
+
+The `--` separator after `-s` is required: it prevents Tini from parsing the
+launcher's `--python`/`--script` arguments as its own options.
+
+Copy the launcher from this repository to that mounted path. Preserve `TZ` and
+all existing container mounts/environment. This replaces the native scheduler;
+do not also invoke scheduled `--run` commands elsewhere. The host's preflight v2.1 requires native MetaFusion capabilities and its writer
+lock before editing personal overlay/collection templates. It observes stock
+Kometa's run logs without installing a consumer launcher and does not rewrite
+generated metadata. Unraid backup/maintenance locks remain a host responsibility.
+
+When the RAM-backed heartbeat is absent after container recreation, runtime
+status recovers completed outcomes from the existing SQLite job history. Latest
+failure and last successful completion remain distinct. PID/heartbeat liveness
+is always newly established; interrupted jobs are never fabricated as successful.
+Unavailable history falls back to unknown outcomes without preventing startup.
+
+### Large inventory drops and Docker stops
+
+Each successful, untargeted, writable full scan records the Plex rating keys and titles for each library in SQLite. If at least 20 previously present titles disappear and they represent at least 25% of that baseline, MetaFusion holds absence-based cleanup and Kometa deferrals for that library. Newly added titles cannot offset disappearances. Visible items still process normally. Automatic expiry of shared quarantine files pauses while any library is held. The first full scan establishes the baseline. Restoring the library automatically clears the hold on the next verified scan.
+
+Run `metafusion --library-audit` to see the missing titles and their Plex IDs. If the removal was intentional, run `metafusion --accept-inventory-drop TOKEN` with the token from that audit. This starts a full run and accepts only that exact change in that library. Normal cleanup ownership and grace rules still apply.
+
+During a wait for the shared Kometa output lock, runtime status shows `waiting_for_kometa_output_lock`. A Docker stop interrupts the wait, releases the local job lock and records an interrupted run before processing.

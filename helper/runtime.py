@@ -11,7 +11,7 @@ from helper.build_info import build_info
 from helper.io import atomic_write_json
 from helper.logging import format_fields
 from helper.plex_paths import parse_path_mappings
-from helper.state_db import StateDatabaseError, record_job_run
+from helper.state_db import StateDatabaseError, recent_job_runs, record_job_run
 from helper.storage import storage_pressure_threshold
 
 ROOT_EXECUTION_MESSAGE = (
@@ -210,20 +210,30 @@ class JobRunLock:
 
     def acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.path.open("a+", encoding="utf-8")
         try:
-            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            self._handle.close()
-            self._handle = None
-            raise JobAlreadyRunningError(
-                "Another MetaFusion job is already using the configured output"
-            ) from error
-        self._handle.seek(0)
-        self._handle.truncate()
-        self._handle.write(f"{os.getpid()}\n")
-        self._handle.flush()
-        os.chmod(self.path, 0o664)
+            handle = self.path.open("x+", encoding="utf-8")
+        except FileExistsError:
+            handle = self.path.open("r+", encoding="utf-8")
+            created = False
+        else:
+            created = True
+        try:
+            if created:
+                os.fchmod(handle.fileno(), 0o664)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise JobAlreadyRunningError(
+                    "Another MetaFusion job is already using the configured output"
+                ) from error
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{os.getpid()}\n")
+            handle.flush()
+        except BaseException:
+            handle.close()
+            raise
+        self._handle = handle
         return self
 
     def release(self):
@@ -263,9 +273,30 @@ class RuntimeStatus:
     def _load_existing(self):
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict):
+                return data
         except (OSError, ValueError):
-            return {}
+            pass
+        # /tmp is intentionally ephemeral. Recover completed outcomes, never an
+        # old PID/heartbeat or a claim that a previously running job succeeded.
+        if self.state_database is not None:
+            try:
+                history = recent_job_runs(limit=self.history_limit, path=self.state_database)
+                if history:
+                    latest = history[-1]
+                    successes = [run for run in history if run.get("status") == "success"]
+                    return {
+                        "last_run_started": latest.get("started_at"),
+                        "last_run_finished": latest.get("finished_at"),
+                        "last_run_status": latest.get("status"),
+                        "last_error": latest.get("error"),
+                        "last_success": successes[-1].get("finished_at") if successes else None,
+                        "library_results": latest.get("library_results", {}),
+                        "metrics": latest.get("metrics", {}),
+                    }
+            except (OSError, StateDatabaseError, ValueError) as error:
+                logging.getLogger().warning("[Runtime] Completed job history unavailable: %s", type(error).__name__)
+        return {}
 
     def _update(self, **values):
         with self._lock:
@@ -281,6 +312,7 @@ class RuntimeStatus:
             last_error=None,
             version=self._build["version"],
             commit=self._build["commit"],
+            capabilities={"kometa_metadata_reconciliation": 1, "kometa_artwork_max_bytes": 10_000_000, "kometa_output_lock": 1},
         )
         self._thread = threading.Thread(
             target=self._heartbeat_loop,
@@ -306,6 +338,9 @@ class RuntimeStatus:
     def idle(self):
         self._update(state="idle")
 
+    def waiting_for_kometa(self):
+        self._update(state="waiting_for_kometa_output_lock", last_run_started=utc_now())
+
     def run_started(self):
         self._update(state="running", last_run_started=utc_now(), last_error=None)
 
@@ -315,18 +350,21 @@ class RuntimeStatus:
         error=None,
         library_results=None,
         metrics=None,
+        interrupted=False,
     ):
         now = utc_now()
         values = {
             "state": "idle",
             "last_run_finished": now,
-            "last_run_status": "success" if success else "failed",
+            "last_run_status": "interrupted" if interrupted else ("success" if success else "failed"),
             "last_error": None if success else str(error or "Unknown run failure"),
         }
         if success:
             values["last_success"] = now
         if library_results is not None:
             values["library_results"] = library_results
+        if metrics is not None:
+            values["metrics"] = metrics
         if self.state_database is not None:
             try:
                 record_job_run(

@@ -12,7 +12,7 @@ class CaptureLogger:
         self.lines.append(message)
 
 
-def render_summary(result, *, cleanup_enabled=True, dry_run=False):
+def render_summary(result, *, cleanup_enabled=True, dry_run=False, scopes=None):
     logger = CaptureLogger()
     log_final_summary(
         logger,
@@ -23,7 +23,7 @@ def render_summary(result, *, cleanup_enabled=True, dry_run=False):
         None,
         [],
         [],
-        {"settings": {"dry_run": dry_run}},
+        {"settings": {"dry_run": dry_run}, "_cleanup_scopes": scopes or {}},
         {"cleanup": cleanup_enabled},
     )
     return "\n".join(logger.lines)
@@ -173,3 +173,12 @@ def test_final_summary_reports_season_failures_without_other_season_actions():
         in report
     )
     assert "Failed: 1" in report
+
+
+def test_scope_and_deferred_ownership_in_final_summary():
+    report = render_summary(
+        CleanupResult(pending_by_type={"tv": 3}, ownership_deferred=2),
+        scopes={"tv": "Library-owned outputs only | Excluded: Formula 1"},
+    )
+    assert "Excluded: Formula 1 | Pending records: 3" in report
+    assert "Cleanup ownership retained | Disabled artwork: 2" in report

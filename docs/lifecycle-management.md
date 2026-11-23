@@ -263,3 +263,23 @@ current environment variables. Secrets are redacted. The report classifies
 destination, cleanup, and replacement changes as high risk, estimates whether
 saved items may be selected again, and directs cleanup-scope changes to a live
 `--plan`. It never applies the proposed file.
+
+### When another library of the same type is excluded
+
+During an otherwise successful full scan, the final summary reports cleanup
+scope for each detected media type and its pending record count. If a library
+is excluded, MetaFusion reads its Plex title inventory and media locations to
+protect shared outputs. It does not process the excluded shows or movies.
+Cleanup of the selected library requires a matching stored Plex server and
+library identity. Ambiguous YAML keys, shared destinations and unowned legacy
+records are preserved. If the excluded inventory cannot be verified, the
+affected type is deferred. Targeted, incremental and failed scans retain their
+existing safeguards.
+
+When a poster, background or season poster is disabled, its stored ownership
+path and checksum survive title or season cleanup. The summary counts retained
+ownership records. Re-enabling that output lets the next eligible full scan
+verify the file before quarantine. Plex mode still defaults to state-only
+cleanup. Files that lost ownership information in an older release remain
+protected. Use `metafusion --cleanup-history-report` for confirmation counts
+and eligibility dates.

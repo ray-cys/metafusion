@@ -373,7 +373,7 @@ def write_cleanup_history_report(
         lines.append(
             f"- {candidate.get('library_name')} | {candidate.get('title')} "
             f"| {candidate.get('scope')} | confirmations={candidate.get('confirmations')} "
-            f"| eligible after={candidate.get('eligible_after')}"
+            f"| eligible after={candidate.get('eligible_after')} | reason={candidate.get('reason')}"
         )
     lines.extend(("", "Completed and cancelled actions"))
     if not history:

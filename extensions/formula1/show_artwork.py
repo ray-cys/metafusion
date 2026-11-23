@@ -56,12 +56,13 @@ from extensions.formula1.race_background import (
     search_race_backgrounds,
 )
 from extensions.formula1.sessions import session_date
+from helper.artwork_limits import fit_artwork_bytes
 from helper.io import atomic_replace_file, atomic_write_json, atomic_write_text
 
 FILE_MODE = 0o664
-SHOW_RENDERER_VERSION = 17
-SHOW_BACKGROUND_RENDERER_VERSION = 1
-EPISODE_RENDERER_VERSION = 5
+SHOW_RENDERER_VERSION = 18
+SHOW_BACKGROUND_RENDERER_VERSION = 2
+EPISODE_RENDERER_VERSION = 6
 
 @dataclass(frozen=True)
 class ShowArtworkResult:
@@ -834,6 +835,7 @@ def _atomic_save(image, destination, *, pnginfo=None):
         os.close(descriptor)
         temporary = Path(name)
         image.save(temporary, format="PNG", optimize=True, pnginfo=pnginfo)
+        temporary.write_bytes(fit_artwork_bytes(temporary.read_bytes()))
         checksum = _checksum(temporary)
         atomic_replace_file(temporary, destination, new_file_mode=FILE_MODE)
         temporary = None
