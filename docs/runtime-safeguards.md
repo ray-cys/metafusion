@@ -202,8 +202,11 @@ Example container entrypoint/command (adapt paths to the Kometa image):
 
 ```text
 entrypoint: /tini
-command: -s /.venv/bin/python3 /config/.metafusion/kometa_coordinator.py --python /.venv/bin/python3 --script /kometa.py
+command: -s -- /.venv/bin/python3 /config/.metafusion/kometa_coordinator.py --python /.venv/bin/python3 --script /kometa.py
 ```
+
+The `--` separator after `-s` is required: it prevents Tini from parsing the
+launcher's `--python`/`--script` arguments as its own options.
 
 Copy the launcher from this repository to that mounted path. Preserve `TZ` and
 all existing container mounts/environment. This replaces the native scheduler;
@@ -211,3 +214,9 @@ do not also invoke scheduled `--run` commands elsewhere. The host's preflight v2
 requires native capabilities, a fresh coordinator receipt and the same exclusive
 lock before editing personal overlay/collection templates. It does not rewrite
 generated metadata. Unraid backup/maintenance locks remain a host responsibility.
+
+When the RAM-backed heartbeat is absent after container recreation, runtime
+status recovers completed outcomes from the existing SQLite job history. Latest
+failure and last successful completion remain distinct. PID/heartbeat liveness
+is always newly established; interrupted jobs are never fabricated as successful.
+Unavailable history falls back to unknown outcomes without preventing startup.

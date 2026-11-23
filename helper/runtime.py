@@ -11,7 +11,7 @@ from helper.build_info import build_info
 from helper.io import atomic_write_json
 from helper.logging import format_fields
 from helper.plex_paths import parse_path_mappings
-from helper.state_db import StateDatabaseError, record_job_run
+from helper.state_db import StateDatabaseError, recent_job_runs, record_job_run
 from helper.storage import storage_pressure_threshold
 
 ROOT_EXECUTION_MESSAGE = (
@@ -263,9 +263,30 @@ class RuntimeStatus:
     def _load_existing(self):
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict):
+                return data
         except (OSError, ValueError):
-            return {}
+            pass
+        # /tmp is intentionally ephemeral. Recover completed outcomes, never an
+        # old PID/heartbeat or a claim that a previously running job succeeded.
+        if self.state_database is not None:
+            try:
+                history = recent_job_runs(limit=self.history_limit, path=self.state_database)
+                if history:
+                    latest = history[-1]
+                    successes = [run for run in history if run.get("status") == "success"]
+                    return {
+                        "last_run_started": latest.get("started_at"),
+                        "last_run_finished": latest.get("finished_at"),
+                        "last_run_status": latest.get("status"),
+                        "last_error": latest.get("error"),
+                        "last_success": successes[-1].get("finished_at") if successes else None,
+                        "library_results": latest.get("library_results", {}),
+                        "metrics": latest.get("metrics", {}),
+                    }
+            except (OSError, StateDatabaseError, ValueError) as error:
+                logging.getLogger().warning("[Runtime] Completed job history unavailable: %s", type(error).__name__)
+        return {}
 
     def _update(self, **values):
         with self._lock:

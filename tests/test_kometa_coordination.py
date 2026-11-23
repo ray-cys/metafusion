@@ -76,3 +76,62 @@ def test_runtime_status_exposes_native_reconciliation_metrics(tmp_path):
     status = RuntimeStatus(tmp_path / "status.json")
     status.run_finished(True, metrics={"kometa_reconciliation": {"deferred": 1, "restored": 0}})
     assert json.loads(status.path.read_text())["metrics"]["kometa_reconciliation"]["deferred"] == 1
+
+
+def test_ephemeral_status_recovers_completed_history_not_liveness(tmp_path):
+    from helper.runtime import RuntimeStatus
+    from helper.state_db import record_job_run
+
+    database = tmp_path / "state.sqlite3"
+    record_job_run(
+        mode="scheduler",
+        started_at="2026-11-23T00:00:00+00:00",
+        finished_at="2026-11-23T00:10:00+00:00",
+        status="success",
+        path=database,
+    )
+    record_job_run(
+        mode="scheduler",
+        started_at="2026-11-23T04:00:00+00:00",
+        finished_at="2026-11-23T04:10:00+00:00",
+        status="failed",
+        error="provider failed",
+        metrics={"kometa_reconciliation": {"status": "deferred"}},
+        path=database,
+    )
+    restored = RuntimeStatus(tmp_path / "missing-status.json", state_database=database)
+    assert restored._data["last_run_status"] == "failed"
+    assert restored._data["last_error"] == "provider failed"
+    assert restored._data["last_success"] == "2026-11-23T00:10:00+00:00"
+    assert "pid" not in restored._data and "heartbeat_at" not in restored._data
+    assert restored._data["metrics"]["kometa_reconciliation"]["status"] == "deferred"
+
+
+def test_ephemeral_status_missing_failed_only_and_broken_history(tmp_path, monkeypatch):
+    from helper import runtime
+    from helper.state_db import StateDatabaseError
+
+    database = tmp_path / "state.sqlite3"
+    assert runtime.RuntimeStatus(tmp_path / "missing", state_database=database)._data == {}
+    monkeypatch.setattr(
+        runtime, "recent_job_runs", lambda **kwargs: [{"status": "failed", "error": "failed"}]
+    )
+    assert (
+        runtime.RuntimeStatus(tmp_path / "missing", state_database=database)._data["last_success"]
+        is None
+    )
+    monkeypatch.setattr(
+        runtime,
+        "recent_job_runs",
+        lambda **kwargs: (_ for _ in ()).throw(StateDatabaseError("fixture")),
+    )
+    assert runtime.RuntimeStatus(tmp_path / "missing", state_database=database)._data == {}
+
+
+def test_existing_runtime_status_is_preserved_before_history_fallback(tmp_path):
+    from helper.runtime import RuntimeStatus
+
+    path = tmp_path / "status.json"
+    original = {"last_run_status": "success", "last_success": "2026-11-23T04:00:00+00:00"}
+    path.write_text(json.dumps(original))
+    assert RuntimeStatus(path, state_database=tmp_path / "missing.sqlite3")._data == original
