@@ -491,7 +491,10 @@ At the normal INFO level, each affected title receives one consolidated
 `[Cleanup] Inventory | title | outcome | reason` record. The final report
 separates stale title/season/episode scope, cache and Kometa YAML entries,
 managed artwork quarantined, protected artwork preserved, unchanged valid artwork,
-and failures. Dry-run state/YAML removals are listed as `Would remove`, while
+and failures. On full runs, the scope lines identify excluded libraries and
+show the pending record count for each media type. A retained ownership record
+allows checksum verification after disabled artwork is enabled again. Use
+`metafusion --cleanup-history-report` to inspect the pending reason. Dry-run state/YAML removals are listed as `Would remove`, while
 managed artwork is listed as `Would quarantine`.
 Enable DEBUG only when exact cache keys, YAML season/episode entries, asset
 paths, or preserved unmanaged files are needed. In Plex mode the report labels

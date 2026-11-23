@@ -201,6 +201,7 @@ from helper.upgrade_canary import (
     write_upgrade_canary_report_from_state,
 )
 from modules.cleanup import CleanupError, CleanupResult, cleanup_title_orphans
+from modules.cleanup_scope import cleanup_scopes
 from modules.processing import plex_metadata_dict, process_library
 
 shutdown_requested = threading.Event()
@@ -1671,14 +1672,22 @@ async def metafusion_main(config, logger):
                             ),
                         }
 
+            config["_cleanup_scopes"] = {}
             cleanup_result = CleanupResult(
                 mode=config.get("settings", {}).get("mode", "kometa")
             )
             if run_feature_flags.get("cleanup", False):
                 safe_library_types = set()
+                partial_scopes = {}
                 if not failures:
                     safe_library_types = complete_inventory_types(
                         all_libraries, successful_sections
+                    )
+                    scanned = {section.title for section in successful_sections}
+                    partial_scopes, config["_cleanup_scopes"] = await cleanup_scopes(
+                        plex, all_libraries,
+                        [scope for scope in scan_scopes if scope["library_name"] in scanned],
+                        safe_library_types, config,
                     )
                 kometa_root = config.get("settings", {}).get("path", ".")
                 asset_path = Path(kometa_root) / "assets"
@@ -1689,6 +1698,7 @@ async def metafusion_main(config, logger):
                         preloaded_plex_metadata=plex_metadata_dict,
                         feature_flags=run_feature_flags,
                         safe_library_types=safe_library_types,
+                        partial_scopes=partial_scopes,
                     )
                 except CleanupError as error:
                     cleanup_result = error.result or CleanupResult(

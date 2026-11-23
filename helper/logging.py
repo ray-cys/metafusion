@@ -2063,6 +2063,12 @@ def log_final_summary(
                 )
             )
 
+    for kind, description in config.get("_cleanup_scopes", {}).items():
+        pending = getattr(cleanup_result, "pending_by_type", {}).get(kind, 0)
+        lines.extend(box_line(f"Cleanup scope | {kind.upper()} | {description} | Pending records: {pending}", box_width))
+    if getattr(cleanup_result, "ownership_deferred", 0):
+        lines.extend(box_line(f"Cleanup ownership retained | Disabled artwork: {cleanup_result.ownership_deferred}", box_width))
+
     if cleanup_result is not None and getattr(cleanup_result, "failed_reason", None):
         cleanup_mode = str(getattr(cleanup_result, "mode", "unknown")).title()
         lines.extend(
