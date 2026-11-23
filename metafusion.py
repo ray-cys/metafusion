@@ -63,6 +63,7 @@ from helper.diagnostics import (
     write_support_report,
     write_unresolved_work_report,
 )
+from helper.episode_order_audit import audit_episode_order
 from helper.fanart import (
     begin_fanart_cache,
     fanart_response_cache,
@@ -75,9 +76,10 @@ from helper.incremental import (
     mark_library_scan_complete,
     mark_library_scan_started,
 )
+from helper.inventory_guard import evaluate_inventories
 from helper.item_explanation import run_item_explanation
 from helper.kometa_application_verification import run_kometa_application_audit
-from helper.kometa_coordination import acquire_kometa_output_lock
+from helper.kometa_coordination import LockWaitInterrupted, acquire_kometa_output_lock
 from helper.kometa_reconciliation import reconcile_kometa_metadata
 from helper.logging import (
     begin_run_file_logging,
@@ -546,7 +548,15 @@ def parse_cli_args(argv=None):
             "current limits work to the active race"
         ),
     )
-    return parser.parse_args(argv)
+    parser.add_argument("--accept-inventory-drop", metavar="TOKEN",
+                        help="Confirm one exact inventory drop reviewed with --library-audit.")
+    args = parser.parse_args(argv)
+    if args.accept_inventory_drop and any(
+        value != parser.get_default(key) for key, value in vars(args).items()
+        if key != "accept_inventory_drop"
+    ):
+        parser.error("--accept-inventory-drop must be used alone")
+    return args
 
 
 def override_config_with_cli(config, args):
@@ -675,6 +685,10 @@ def override_config_with_cli(config, args):
         "metadata_audit": bool(args.metadata_audit or args.plan),
         "explain_selection": bool(args.explain_selection),
     }
+    if args.accept_inventory_drop:
+        config["metafusion_run"] = True
+        config["settings"]["schedule"] = False
+        execution.update(full_scan=True, accept_inventory_drop=args.accept_inventory_drop)
     if tmdb_ids:
         execution["tmdb_ids"] = tmdb_ids
     if media_types:
@@ -1554,6 +1568,11 @@ async def metafusion_main(config, logger):
                         library_config["_adoption_audit_records"] = config.setdefault(
                             "_adoption_audit_records", []
                         )
+                        if execution.get("library_audit") and normalize_library_type(section.type) == "tv":
+                            audit_record = next(r for r in config["_library_audit_records"] if r["library"] == section.title)
+                            audit_record["episode_order"] = await audit_episode_order(
+                                section, selected_inventory, section_inventory_records[section.title], library_config, session
+                            )
                         scope = next(
                             candidate
                             for candidate in scan_scopes
@@ -1672,6 +1691,17 @@ async def metafusion_main(config, logger):
                             ),
                         }
 
+            scanned_names = {s.title for s in successful_sections}
+            reports, held = evaluate_inventories(
+                config, [s for s in scan_scopes if s["library_name"] in scanned_names],
+                section_inventory_records, scan_decisions, logger,
+                writable=not (targeted or failures or missing_discovered_libraries
+                              or config.get("settings", {}).get("dry_run", False)),
+            )
+            config["_held_inventory_scopes"] = {reconciliation_scopes[name] for name in held}
+            for record in config.get("_library_audit_records", []):
+                record["inventory_guard"] = reports.get(record["library"], {})
+            cleanup_sections = [s for s in successful_sections if s.title not in held]
             config["_cleanup_scopes"] = {}
             cleanup_result = CleanupResult(
                 mode=config.get("settings", {}).get("mode", "kometa")
@@ -1681,9 +1711,9 @@ async def metafusion_main(config, logger):
                 partial_scopes = {}
                 if not failures:
                     safe_library_types = complete_inventory_types(
-                        all_libraries, successful_sections
+                        all_libraries, cleanup_sections
                     )
-                    scanned = {section.title for section in successful_sections}
+                    scanned = {section.title for section in cleanup_sections}
                     partial_scopes, config["_cleanup_scopes"] = await cleanup_scopes(
                         plex, all_libraries,
                         [scope for scope in scan_scopes if scope["library_name"] in scanned],
@@ -1769,6 +1799,12 @@ def request_shutdown(_signum=None, _frame=None):
         ).start()
 
 
+def _record_lock_wait(logger, runtime_status):
+    logger.info("[Scheduler] Waiting for Kometa output lock")
+    if runtime_status:
+        runtime_status.waiting_for_kometa()
+
+
 def run_metafusion_job(config, logger, runtime_status=None):
     configure_reporting(config)
     global _active_loop, _active_task
@@ -1779,7 +1815,16 @@ def run_metafusion_job(config, logger, runtime_status=None):
         job_lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
         try:
             job_lock.acquire()
-            output_lock = acquire_kometa_output_lock(config, wait_seconds=7200)
+            output_lock = acquire_kometa_output_lock(
+                config, wait_seconds=7200, shutdown=shutdown_requested,
+                on_wait=lambda: _record_lock_wait(logger, runtime_status),
+            )
+        except LockWaitInterrupted as error:
+            job_lock.release()
+            logger.info("[Scheduler] Interrupted before processing | %s", error)
+            if runtime_status:
+                runtime_status.run_finished(False, error=error, interrupted=True)
+            return False
         except (JobAlreadyRunningError, OSError) as error:
             job_lock.release()
             if isinstance(error, JobAlreadyRunningError):

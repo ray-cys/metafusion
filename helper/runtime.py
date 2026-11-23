@@ -338,6 +338,9 @@ class RuntimeStatus:
     def idle(self):
         self._update(state="idle")
 
+    def waiting_for_kometa(self):
+        self._update(state="waiting_for_kometa_output_lock", last_run_started=utc_now())
+
     def run_started(self):
         self._update(state="running", last_run_started=utc_now(), last_error=None)
 
@@ -347,12 +350,13 @@ class RuntimeStatus:
         error=None,
         library_results=None,
         metrics=None,
+        interrupted=False,
     ):
         now = utc_now()
         values = {
             "state": "idle",
             "last_run_finished": now,
-            "last_run_status": "success" if success else "failed",
+            "last_run_status": "interrupted" if interrupted else ("success" if success else "failed"),
             "last_error": None if success else str(error or "Unknown run failure"),
         }
         if success:

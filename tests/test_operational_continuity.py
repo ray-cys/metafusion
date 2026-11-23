@@ -916,3 +916,10 @@ def test_cleanup_reports_automatic_quarantine_purge_and_deferred_failure(
             )
         )
     assert "Expired purge deferred" in caplog.text
+
+    config["_held_inventory_scopes"] = {"server|tv"}
+    monkeypatch.setattr(cleanup_module, "purge_expired_quarantine",
+                        lambda *a, **kw: pytest.fail("shared quarantine must remain recoverable"))
+    asyncio.run(cleanup_module.cleanup_title_orphans(
+        config, flags, preloaded_plex_metadata={}, safe_library_types={"movie"},
+    ))

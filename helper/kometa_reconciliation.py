@@ -34,22 +34,35 @@ def _identity(match, kind):
     return None
 
 
-def _present(match, kind, records):
-    identity = _identity(match, kind)
-    if identity is None:
-        return None
-    provider, value = identity
-    # Missing identifiers anywhere make an absence claim unsafe.
-    matching = [r for r in records if str(r.get(provider) or "") == value]
-    if matching:
-        if match.get("edition"):
-            return any(r.get("edition") == match["edition"] for r in matching)
-        if match.get("blank_edition"):
-            return any(not r.get("edition") for r in matching)
-        return True
-    if not records or any(not r.get(provider) for r in records):
-        return None
-    return False
+class InventoryIndex:
+    """Lookup equivalent to checking the provider evidence in one inventory."""
+
+    def __init__(self, records):
+        self.matches = {}
+        self.editions = {}
+        self.complete = {"tmdb_id", "tvdb_id", "imdb_id"} if records else set()
+        for record in records:
+            for provider in ("tmdb_id", "tvdb_id", "imdb_id"):
+                value = record.get(provider)
+                if value:
+                    identity = (provider, str(value))
+                    self.matches.setdefault(identity, []).append(record)
+                    self.editions.setdefault(identity, set()).add(record.get("edition") or None)
+                else:
+                    self.complete.discard(provider)
+
+    def present(self, match, kind):
+        identity = _identity(match, kind)
+        if identity is None:
+            return None
+        matching = self.matches.get(identity)
+        if matching:
+            if match.get("edition"):
+                return isinstance(match["edition"], str) and match["edition"] in self.editions[identity]
+            if match.get("blank_edition"):
+                return None in self.editions[identity]
+            return True
+        return False if identity[0] in self.complete else None
 
 
 def _import_legacy_catalogue(root, kind, markers, entries, pending):
@@ -146,28 +159,29 @@ def reconcile_kometa_metadata(config, inventories, *, complete):
         compact = copy.deepcopy(pending)
 
         def target(match, kind=kind):
-            return (_identity(match, kind), match.get("edition"), bool(match.get("blank_edition")))
+            edition = match.get("edition")
+            if isinstance(edition, (dict, list)):
+                edition = (yaml.safe_dump(edition, sort_keys=True),)
+            return (_identity(match, kind), edition, bool(match.get("blank_edition")))
 
-        current_matches = [
+        global_index = InventoryIndex(records)
+        grouped = {}
+        for record in records:
+            grouped.setdefault(record.get("scope"), []).append(record)
+        scoped_indexes = {key: InventoryIndex(group) for key, group in grouped.items()}
+        current_matches = {
             target(v.get("match") or {}) for v in entries.values() if isinstance(v, dict)
-        ]
+        }
         for name, entry in pending.items():
             match = entry.get("match") or {}
             if name in active or target(match) in current_matches:
                 continue  # Never overwrite a fresh/manual definition or alias.
-            if _present(match, kind, records) is True:
+            if global_index.present(match, kind) is True:
                 active[name] = copy.deepcopy(entry)
                 identity = _identity(match, kind)
-                libraries = {
-                    r.get("library_name")
-                    for r in records
-                    if identity and str(r.get(identity[0]) or "") == identity[1]
-                }
-                scopes = {
-                    r.get("scope")
-                    for r in records
-                    if identity and str(r.get(identity[0]) or "") == identity[1]
-                }
+                matches = global_index.matches[identity]
+                libraries = {r.get("library_name") for r in matches}
+                scopes = {r.get("scope") for r in matches}
                 owned[name] = {
                     "match": copy.deepcopy(match),
                     "library": next(iter(libraries)) if len(libraries) == 1 else None,
@@ -179,13 +193,14 @@ def reconcile_kometa_metadata(config, inventories, *, complete):
         for name, claim in list(owned.items()):
             match = claim["match"]
             scope = claim.get("scope")
-            scoped_records = [r for r in records if r.get("scope") == scope] if scope else []
+            index = scoped_indexes.get(scope) if scope else None
             if name not in entries:
                 continue
             if entries[name].get("match") != match:
                 result["protected"] += 1
                 continue
-            present = _present(match, kind, scoped_records)
+            held = scope in config.get("_held_inventory_scopes", ())
+            present = index.present(match, kind) if index and not held else None
             if present is False:
                 compact[name] = copy.deepcopy(entries[name])
                 active.pop(name, None)

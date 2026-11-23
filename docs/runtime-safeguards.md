@@ -241,3 +241,11 @@ status recovers completed outcomes from the existing SQLite job history. Latest
 failure and last successful completion remain distinct. PID/heartbeat liveness
 is always newly established; interrupted jobs are never fabricated as successful.
 Unavailable history falls back to unknown outcomes without preventing startup.
+
+### Large inventory drops and Docker stops
+
+Each successful, untargeted, writable full scan records the Plex rating keys and titles for each library in SQLite. If at least 20 previously present titles disappear and they represent at least 25% of that baseline, MetaFusion holds absence-based cleanup and Kometa deferrals for that library. Newly added titles cannot offset disappearances. Visible items still process normally. Automatic expiry of shared quarantine files pauses while any library is held. The first full scan establishes the baseline. Restoring the library automatically clears the hold on the next verified scan.
+
+Run `metafusion --library-audit` to see the missing titles and their Plex IDs. If the removal was intentional, run `metafusion --accept-inventory-drop TOKEN` with the token from that audit. This starts a full run and accepts only that exact change in that library. Normal cleanup ownership and grace rules still apply.
+
+During a wait for the shared Kometa output lock, runtime status shows `waiting_for_kometa_output_lock`. A Docker stop interrupts the wait, releases the local job lock and records an interrupted run before processing.

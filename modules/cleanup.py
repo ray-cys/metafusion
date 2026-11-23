@@ -132,7 +132,7 @@ async def cleanup_title_orphans(
         1, int(cleanup_config.get("confirmation_scans", 2))
     )
     grace_hours = max(0.0, float(cleanup_config.get("grace_hours", 48.0)))
-    if not dry_run:
+    if not dry_run and not config.get("_held_inventory_scopes"):
         try:
             purged = purge_expired_quarantine(config, source="automated")
             purge_count = sum(

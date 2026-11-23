@@ -140,7 +140,7 @@ def test_corrupt_state_and_legacy_fail_closed(tmp_path):
     ],
 )
 def test_exact_provider_and_edition_matching(match, kind, records, expected):
-    assert module._present(match, kind, records) is expected
+    assert module.InventoryIndex(records).present(match, kind) is expected
 
 
 def test_fresh_alias_wins_legacy_and_unknown_identity_is_preserved(tmp_path):
@@ -152,7 +152,7 @@ def test_fresh_alias_wins_legacy_and_unknown_identity_is_preserved(tmp_path):
     )
     result = module.reconcile_kometa_metadata(config, records, complete=True)
     assert result["restored"] == 0 and "Old Alias" not in read(path)
-    assert module._present({"mapping_id": 1}, "movie", []) is None
+    assert module.InventoryIndex([]).present({"mapping_id": 1}, "movie") is None
     # A malformed/generated document never authorizes deletion of a manual file.
     path.unlink()
     assert module.reconcile_kometa_metadata(config, records, complete=True)["status"] == "ok"
@@ -192,3 +192,17 @@ def test_permission_denied_retries_without_blocking_native_reconciliation(tmp_pa
     for method in ("stat", "open"):
         monkeypatch.setattr(Path, method, forbid_legacy(getattr(Path, method)))
     assert module.reconcile_kometa_metadata(config, records, complete=True)["imported"] == 0
+
+
+def test_hold_preserves_owned_and_manual_compound_edition(tmp_path):
+    config, path, _, records = setup(tmp_path)
+    document = read(path)
+    document["Manual"]["match"]["edition"] = ["One", "Two"]
+    path.write_text(yaml.safe_dump({"metadata": document}))
+    original = path.read_bytes()
+    module.reconcile_kometa_metadata(config, records, complete=True)
+    records[0]["tmdb_id"] = "2"
+    config["_held_inventory_scopes"] = {"server|library"}
+    result = module.reconcile_kometa_metadata(config, records, complete=True)
+    assert result["protected"] == 1 and not result["actions"]
+    assert path.read_bytes() == original

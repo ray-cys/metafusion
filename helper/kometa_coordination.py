@@ -6,7 +6,11 @@ from pathlib import Path
 from helper.runtime import JobAlreadyRunningError, JobRunLock
 
 
-def acquire_kometa_output_lock(config, *, wait_seconds=0):
+class LockWaitInterrupted(InterruptedError):
+    pass
+
+
+def acquire_kometa_output_lock(config, *, wait_seconds=0, shutdown=None, on_wait=None):
     if config.get("settings", {}).get("dry_run", False):
         return None
     if config.get("settings", {}).get("mode", "kometa").lower() != "kometa":
@@ -17,9 +21,17 @@ def acquire_kometa_output_lock(config, *, wait_seconds=0):
     root = Path(output_root)
     deadline = time.monotonic() + wait_seconds
     while True:
+        if shutdown is not None and shutdown.is_set():
+            raise LockWaitInterrupted("Shutdown requested before Kometa output lock acquisition")
         try:
             return JobRunLock(root / ".metafusion" / "output.lock").acquire()
         except JobAlreadyRunningError:
             if time.monotonic() >= deadline:
                 raise
-            time.sleep(1)
+            if on_wait is not None:
+                on_wait()
+                on_wait = None
+            if shutdown is None:
+                time.sleep(1)
+            else:
+                shutdown.wait(1)
