@@ -765,3 +765,15 @@ def test_metafusion_change_feed_canary_and_performance_success(
         "plex_inventory",
         "library_processing",
     }
+
+
+def test_output_lock_released_after_cache_initialization_failure(monkeypatch, tmp_path):
+    from helper.kometa_coordination import acquire_kometa_output_lock
+    _patch_job_services(monkeypatch, tmp_path)
+    config = {"settings": {"mode": "kometa", "path": str(tmp_path / "output")}, "plex": {}, "tmdb": {}}
+    monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: (_ for _ in ()).throw(RuntimeError("cache init")))
+    with pytest.raises(RuntimeError, match="cache init"):
+        metafusion.run_metafusion_job(config, logging.getLogger("output-lock-init"))
+    # The output lock must be reusable even though no normal run finalized.
+    lock = acquire_kometa_output_lock(config)
+    lock.release()

@@ -281,6 +281,7 @@ class RuntimeStatus:
             last_error=None,
             version=self._build["version"],
             commit=self._build["commit"],
+            capabilities={"kometa_metadata_reconciliation": 1, "kometa_artwork_max_bytes": 10_000_000, "kometa_output_lock": 1},
         )
         self._thread = threading.Thread(
             target=self._heartbeat_loop,
@@ -327,6 +328,8 @@ class RuntimeStatus:
             values["last_success"] = now
         if library_results is not None:
             values["library_results"] = library_results
+        if metrics is not None:
+            values["metrics"] = metrics
         if self.state_database is not None:
             try:
                 record_job_run(

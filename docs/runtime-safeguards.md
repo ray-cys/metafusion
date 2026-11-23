@@ -150,3 +150,64 @@ titles before attaching a report to a public issue.
 Use the [diagnostics guide](diagnostics.md) for all report commands and the
 [operations guide](operations.md) for incremental scheduling and checkpoint
 behavior.
+
+## Native Kometa metadata reconciliation (develop)
+
+Develop builds advertise `kometa_metadata_reconciliation: 1`,
+`kometa_output_lock: 1` and `kometa_artwork_max_bytes: 10000000` in the runtime
+status `capabilities`. The existing `develop` version plus full source commit
+continues to identify builds; this change does not create a stable release tag.
+
+After a successful, untargeted inventory run (including incremental runs),
+MetaFusion reconciles definitions it generated against exact Plex external IDs.
+Movie IDs are TMDb, series IDs TVDB, and explicit IMDb matches remain supported.
+Edition constraints are honoured. Manual/unclaimed entries, changed identities,
+missing identifier evidence and unavailable/unselected library scopes are
+protected. Dry runs and incomplete/failed inventories do not reconcile.
+
+Absent owned definitions are preserved in
+`<Kometa root>/.metafusion/metadata-reconciliation.json`; exact returning targets
+can be restored without overwriting newer active aliases. The old
+`.preflight/*.deferred.yml` catalogues are imported non-destructively and retained
+as migration evidence. A durable catalogue superset precedes YAML removal;
+restored YAML precedes catalogue compaction. The existing validated writer,
+backups, permissions and concurrent-change checks are reused. Unchanged catalogue
+state is not rewritten. Per-run counts/actions are included in logs, job metrics
+and runtime status; no second notification sender is introduced.
+
+## Artwork upload ceiling
+
+All newly published provider artwork and Formula 1 renders must be at most
+10,000,000 bytes, below Kometa's observed 10,480,000-byte upload ceiling. Compliant
+payloads remain byte-for-byte unchanged. Oversized images are recompressed and,
+if required, reduced in dimensions while preserving format, PNG transparency and
+PNG provenance text. Provider minimum dimensions are enforced; an image that
+cannot fit is rejected before replacing existing artwork. Normalization logs the
+old/new byte sizes and dimensions. Download-size limits remain independent.
+Formula 1 renderer revisions are advanced so managed renders can refresh through
+normal ownership policy; manual artwork is not forcibly rewritten.
+
+## Coordinating a separate Kometa container
+
+Both applications must use the same physical Kometa-root bind mount. MetaFusion
+holds `.metafusion/output.lock` during real Kometa-mode jobs. For the consumer,
+run `tools/kometa_coordinator.py` using Kometa's Python runtime **instead of** its
+internal scheduler. It runs one `kometa.py --run` child at each local four-hour
+boundary, waits up to two hours for the shared lock, forwards termination signals,
+and stays resident between runs. A second scheduler is refused. MetaFusion also
+waits up to two hours for the consumer; no YAML/artwork writes start before its
+lock is acquired. Read-only and Plex-mode jobs do not require this output lock.
+
+Example container entrypoint/command (adapt paths to the Kometa image):
+
+```text
+entrypoint: /tini
+command: -s /.venv/bin/python3 /config/.metafusion/kometa_coordinator.py --python /.venv/bin/python3 --script /kometa.py
+```
+
+Copy the launcher from this repository to that mounted path. Preserve `TZ` and
+all existing container mounts/environment. This replaces the native scheduler;
+do not also invoke scheduled `--run` commands elsewhere. The host's preflight v2
+requires native capabilities, a fresh coordinator receipt and the same exclusive
+lock before editing personal overlay/collection templates. It does not rewrite
+generated metadata. Unraid backup/maintenance locks remain a host responsibility.

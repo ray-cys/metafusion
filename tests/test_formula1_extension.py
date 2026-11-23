@@ -1377,7 +1377,7 @@ def test_artwork_path_commands_fonts_logo_and_fallback(
 
 
 def test_country_flag_background_resolution_and_visual_structure(tmp_path, monkeypatch):
-    assert RENDERER_VERSION == 6
+    assert RENDERER_VERSION == 7
     for code in set(COUNTRY_FLAG_CODES.values()):
         with Image.open(FLAG_ASSET_ROOT / f"{code}.png") as flag:
             flag.verify()

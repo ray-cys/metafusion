@@ -19,6 +19,7 @@ from helper.identity import (
 )
 from helper.incremental import same_source_verification_due
 from helper.io import atomic_replace_file, sha256_file
+from helper.kometa_reconciliation import record_generated_definition
 from helper.logging import format_fields, log_asset_status, log_builder_event
 from helper.metadata_provenance import kometa_provenance_records
 from helper.plex import get_plex_country
@@ -1991,6 +1992,7 @@ async def _build_movie(
             existing_metadata, generated_entry, "movie"
         )
         if mode_check(config, "kometa"):
+            record_generated_definition(config, meta.get("library_type"), full_title, generated_entry)
             record_kometa_metadata_audit(
                 config,
                 library=config.get("_library_name") or "Unknown library",
@@ -3299,6 +3301,7 @@ async def _build_tv(
             authoritative_episodes=inventory,
         )
         if mode_check(config, "kometa"):
+            record_generated_definition(config, meta.get("library_type"), full_title, generated_entry)
             record_kometa_metadata_audit(
                 config,
                 library=config.get("_library_name") or "Unknown library",

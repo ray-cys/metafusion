@@ -1741,7 +1741,7 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
     ) == 64
     with Image.open(poster) as image:
         assert image.size == (600, 900)
-        assert image.info["MetaFusion renderer"] == "show-poster-v17"
+        assert image.info["MetaFusion renderer"] == "show-poster-v18"
         assert (
             image.info["MetaFusion design"]
             == "adaptive-concept-a-v5-speed-accent"
@@ -1773,12 +1773,12 @@ def test_renderers_use_branding_and_preserve_dimensions(tmp_path, config, show, 
         assert image.getpixel((0, 3))[0] < 180
     with Image.open(episode) as image:
         assert image.size == (1280, 720)
-        assert image.info["MetaFusion renderer"] == "episode-poster-v5"
+        assert image.info["MetaFusion renderer"] == "episode-poster-v6"
         assert image.info["MetaFusion design"] == "cinematic-broadcast-minimal-v4"
         assert image.info["MetaFusion text side"] in {"left", "right"}
         assert image.getpixel((0, 3))[0] < 180
-    assert SHOW_RENDERER_VERSION == 17
-    assert EPISODE_RENDERER_VERSION == 5
+    assert SHOW_RENDERER_VERSION == 18
+    assert EPISODE_RENDERER_VERSION == 6
     assert _asset_reference(config, "2026/test.png").endswith("/2026/test.png")
     assert _episode_reference(config, show.episodes[0]).endswith(
         "/2026/round-01/episodes/episode-01.png"
@@ -2678,13 +2678,13 @@ def test_missing_poster_is_restored_without_background_acquisition(
         )
     )
     assert restored.action == "restored"
-    assert restored.poster_renderer_version == 17
+    assert restored.poster_renderer_version == 18
     assert restored.poster_checksum == _checksum(poster)
     assert background.read_bytes() == background_content
     current = state.show_rotation("show:2026")
     assert current["background_checksum"] == background_checksum
     with Image.open(poster) as image:
-        assert image.info["MetaFusion renderer"] == "show-poster-v17"
+        assert image.info["MetaFusion renderer"] == "show-poster-v18"
         assert (
             image.info["MetaFusion design"]
             == "adaptive-concept-a-v5-speed-accent"

@@ -77,6 +77,8 @@ from helper.incremental import (
 )
 from helper.item_explanation import run_item_explanation
 from helper.kometa_application_verification import run_kometa_application_audit
+from helper.kometa_coordination import acquire_kometa_output_lock
+from helper.kometa_reconciliation import reconcile_kometa_metadata
 from helper.logging import (
     begin_run_file_logging,
     check_sys_requirements,
@@ -1093,6 +1095,7 @@ async def metafusion_main(config, logger):
                 config,
                 plex=plex,
             )
+            section_inventory_records = {}
             requested_media_types = set(execution.get("media_types") or [])
             if requested_media_types:
                 sections = [
@@ -1148,6 +1151,7 @@ async def metafusion_main(config, logger):
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
             scan_scopes = build_scan_scopes(plex, sections, config)
+            reconciliation_scopes = {scope["library_name"]: f'{scope["server_id"]}|{scope["library_uuid"]}' for scope in scan_scopes}
             if execution.get("retry_failed"):
                 retry_status = execution.get("retry_status", "all")
                 statuses = None if retry_status == "all" else [retry_status]
@@ -1429,6 +1433,9 @@ async def metafusion_main(config, logger):
                     maintenance_failures = list(failures)
                     for section in sections:
                         library_config = config_for_library(config, section.title)
+                        library_config["_kometa_reconciliation_library"] = section.title
+                        library_config["_kometa_reconciliation_scope"] = reconciliation_scopes.get(section.title)
+                        library_config["_kometa_generated_definitions"] = config.setdefault("_kometa_generated_definitions", {})
                         inventory = await load_plex_library_inventory(
                             section,
                             runtime_config,
@@ -1519,6 +1526,9 @@ async def metafusion_main(config, logger):
                             execution.get("tmdb_ids"),
                         )
                         library_config = config_for_library(config, section.title)
+                        library_config["_kometa_reconciliation_library"] = section.title
+                        library_config["_kometa_reconciliation_scope"] = reconciliation_scopes.get(section.title)
+                        library_config["_kometa_generated_definitions"] = config.setdefault("_kometa_generated_definitions", {})
                         library_config["_metadata_provenance_records"] = (
                             config.setdefault("_metadata_provenance_records", [])
                         )
@@ -1693,6 +1703,12 @@ async def metafusion_main(config, logger):
                     "cleanup_skipped_run_scope", reason=cleanup_skip_reason
                 )
             config["_cleanup_result"] = cleanup_result
+            reconciliation = reconcile_kometa_metadata(
+                config,
+                [{**record, "library_name": name, "scope": reconciliation_scopes.get(name)} for name, records in section_inventory_records.items() for record in records],
+                complete=not failures and not targeted and not missing_discovered_libraries,
+            )
+            logger.info("[Kometa] Metadata reconciliation | %s", reconciliation)
 
             elapsed_time = (datetime.now().astimezone() - start_time).total_seconds()
             log_final_summary(
@@ -1747,19 +1763,25 @@ def run_metafusion_job(config, logger, runtime_status=None):
     configure_reporting(config)
     global _active_loop, _active_task
     job_lock = None
+    output_lock = None
     run_log_handler = None
     if not config.get("settings", {}).get("dry_run", False):
         job_lock = JobRunLock(Path(BASE_CONFIG_DIR) / ".metafusion-run.lock")
         try:
             job_lock.acquire()
+            output_lock = acquire_kometa_output_lock(config, wait_seconds=7200)
         except JobAlreadyRunningError as error:
             log_main_event("main_job_already_running", error=error, logger=logger)
             if runtime_status:
                 runtime_status.run_started()
                 runtime_status.run_finished(False, error=error)
+            if job_lock is not None:
+                job_lock.release()
             return False
     config["_metadata_audit_records"] = []
     config["_metadata_provenance_records"] = []
+    config["_kometa_generated_definitions"] = {}
+    config["_kometa_reconciliation"] = {}
     try:
         run_log_handler = begin_run_file_logging(config, logger)
         begin_cache_session(
@@ -1774,6 +1796,8 @@ def run_metafusion_job(config, logger, runtime_status=None):
         try:
             finish_run_file_logging(config, logger, run_log_handler)
         finally:
+            if output_lock is not None:
+                output_lock.release()
             if job_lock is not None:
                 job_lock.release()
         raise
@@ -2072,6 +2096,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
                         else {}
                     ),
                     concurrency=config.get("_concurrency_snapshot", {}),
+                    kometa_reconciliation=config.get("_kometa_reconciliation", {}),
                 )
                 runtime_status.run_finished(
                     success,
@@ -2101,6 +2126,8 @@ def run_metafusion_job(config, logger, runtime_status=None):
             try:
                 finish_run_file_logging(config, logger, run_log_handler)
             finally:
+                if output_lock is not None:
+                    output_lock.release()
                 if job_lock is not None:
                     job_lock.release()
     return success

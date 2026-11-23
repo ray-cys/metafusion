@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from helper.artwork_limits import fit_artwork_bytes
 from helper.cache import load_cache
 from helper.concurrency import CircuitOpenError, runtime_slot
 from helper.config import mode_check
@@ -1385,6 +1386,14 @@ async def save_poster(
 ):
     try:
         loop = asyncio.get_running_loop()
+        image_settings = (config or {}).get({
+            "poster": "poster_set", "season": "season_set", "background": "background_set",
+        }.get(asset_type, "poster_set"), {})
+        image_content = await asyncio.to_thread(
+            fit_artwork_bytes, image_content,
+            minimum=(max(1, int(image_settings.get("min_width") or 1)),
+                     max(1, int(image_settings.get("min_height") or 1))),
+        )
         analysis = await loop.run_in_executor(
             None,
             lambda: analyze_image_content(
