@@ -1780,13 +1780,15 @@ def run_metafusion_job(config, logger, runtime_status=None):
         try:
             job_lock.acquire()
             output_lock = acquire_kometa_output_lock(config, wait_seconds=7200)
-        except JobAlreadyRunningError as error:
-            log_main_event("main_job_already_running", error=error, logger=logger)
+        except (JobAlreadyRunningError, OSError) as error:
+            job_lock.release()
+            if isinstance(error, JobAlreadyRunningError):
+                log_main_event("main_job_already_running", error=error, logger=logger)
+            else:
+                logger.error("[Lock] Job could not start | %s | Check write access for the container user and group.", error)
             if runtime_status:
                 runtime_status.run_started()
                 runtime_status.run_finished(False, error=error)
-            if job_lock is not None:
-                job_lock.release()
             return False
     config["_metadata_audit_records"] = []
     config["_metadata_provenance_records"] = []

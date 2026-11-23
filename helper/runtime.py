@@ -210,20 +210,30 @@ class JobRunLock:
 
     def acquire(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.path.open("a+", encoding="utf-8")
         try:
-            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            self._handle.close()
-            self._handle = None
-            raise JobAlreadyRunningError(
-                "Another MetaFusion job is already using the configured output"
-            ) from error
-        self._handle.seek(0)
-        self._handle.truncate()
-        self._handle.write(f"{os.getpid()}\n")
-        self._handle.flush()
-        os.chmod(self.path, 0o664)
+            handle = self.path.open("x+", encoding="utf-8")
+        except FileExistsError:
+            handle = self.path.open("r+", encoding="utf-8")
+            created = False
+        else:
+            created = True
+        try:
+            if created:
+                os.fchmod(handle.fileno(), 0o664)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise JobAlreadyRunningError(
+                    "Another MetaFusion job is already using the configured output"
+                ) from error
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{os.getpid()}\n")
+            handle.flush()
+        except BaseException:
+            handle.close()
+            raise
+        self._handle = handle
         return self
 
     def release(self):
