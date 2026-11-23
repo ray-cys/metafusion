@@ -513,3 +513,18 @@ def test_plex_partial_scope_preserves_excluded_folder_and_disabled_season(monkey
     assert poster.exists() and season.exists()
     assert result.ownership_deferred == 1
     assert cache["tv:plex:9"]["seasons"]["2"]["season_checksum"] == cleanup.sha256_file(season)
+
+
+def test_cleanup_exception_matches_durable_plex_key(monkeypatch, tmp_path):
+    _patch_state(monkeypatch)
+    cache = {"movie:plex:141": {"media_type": "movie", "title": "Protected", "year": 2020}}
+    monkeypatch.setattr(cleanup, "load_cache", lambda: cache)
+    monkeypatch.setattr(cleanup, "load_item_exceptions", lambda: [{"rating_key": "141", "output_type": "cleanup"}])
+    path = tmp_path / "metadata/movie_metadata.yml"
+    path.parent.mkdir()
+    path.write_text("metadata:\n  Protected (2020): {}\n")
+    result = asyncio.run(cleanup.cleanup_title_orphans(
+        _config(tmp_path), _flags(), safe_library_types={"movie"}, preloaded_plex_metadata={},
+    ))
+    assert result.cache_entries == result.yaml_entries == 0
+    assert cache and "Protected (2020)" in path.read_text()

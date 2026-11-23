@@ -277,6 +277,13 @@ async def cleanup_title_orphans(
             log_confirmed_outcomes()
         return CleanupError(message, result=result)
 
+    def cached_rating_key(key, entry):
+        stored = entry.get("rating_key")
+        prefix, separator, rating_key = str(key).partition(":plex:")
+        if not stored and separator and prefix in {"movie", "tv"}:
+            stored = rating_key
+        return str(stored) if stored is not None else None
+
     def candidate_record(key, entry=None, meta=None, reason=None):
         entry = entry if isinstance(entry, dict) else {}
         meta = meta if isinstance(meta, dict) else {}
@@ -285,7 +292,7 @@ async def cleanup_title_orphans(
             "server_id": meta.get("server_id") or entry.get("server_id"),
             "library_uuid": meta.get("library_uuid") or entry.get("library_uuid"),
             "library_name": meta.get("library_name") or entry.get("library_name"),
-            "rating_key": meta.get("ratingKey") or entry.get("rating_key"),
+            "rating_key": meta.get("ratingKey") or cached_rating_key(key, entry),
             "cache_key": key,
             "media_type": normalize_library_type(
                 meta.get("library_type") or cached_media_type(key, entry)
@@ -349,6 +356,7 @@ async def cleanup_title_orphans(
     eligible_title_keys = set()
     eligible_season_keys = set()
     title_candidate_records = {}
+
     def authorized(key, entry):
         scope = partial_scopes.get(cached_media_type(key, entry))
         if not scope:
@@ -356,7 +364,7 @@ async def cleanup_title_orphans(
         return (
             isinstance(entry, dict)
             and (entry.get("server_id"), entry.get("library_uuid")) in scope.owners
-            and str(key).rsplit(":", 1)[-1] not in scope.protected_keys
+            and cached_rating_key(key, entry) not in scope.protected_keys
             and _cache_identity(key, entry) not in scope.protected_titles
         )
 
@@ -546,7 +554,8 @@ async def cleanup_title_orphans(
                 if len(eligible_records) != len(records) or not path.exists():
                     continue
                 resolved_path = path.resolve(strict=False)
-                scope = partial_scopes.get(cached_media_type(eligible_records[0]["cache_key"], cache[eligible_records[0]["cache_key"]]))
+                primary_key = eligible_records[0]["cache_key"]
+                scope = partial_scopes.get(cached_media_type(primary_key, cache[primary_key]))
                 if scope and any(resolved_path.is_relative_to(root.resolve(strict=False)) for root in scope.protected_dirs):
                     result.assets_preserved += 1
                     continue
