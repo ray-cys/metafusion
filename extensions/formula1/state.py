@@ -123,6 +123,10 @@ class Formula1State:
                     created_at TEXT NOT NULL,
                     UNIQUE(logical_key, trigger_round, source)
                 );
+                CREATE TABLE IF NOT EXISTS championship_outputs (
+                    year INTEGER PRIMARY KEY, scope TEXT NOT NULL, rating_key TEXT NOT NULL,
+                    metadata_dir TEXT NOT NULL, yaml_digest TEXT, missing_since TEXT, missing_scans INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS show_bindings (
                     season_year INTEGER PRIMARY KEY,
                     plex_rating_key TEXT NOT NULL,
@@ -183,6 +187,16 @@ class Formula1State:
                 raise Formula1StateError(
                     f"Unsupported Formula 1 state schema {row['version']}; expected {SCHEMA_VERSION}"
                 )
+
+    def load_preview(self, path):
+        """Copy existing state into the in-memory dry run without migrating the live file."""
+        if Path(path).is_file():
+            source = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                source.backup(self.connection)
+            finally:
+                source.close()
+            self._initialize()
 
     def close(self):
         self.connection.close()

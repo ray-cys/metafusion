@@ -775,6 +775,16 @@ retained for the same period. After eligibility, YAML, binding state, and an
 otherwise-unused byte-identical managed poster are reconciled together. If
 cleanup is disabled, inventory absence alone never prunes generated records.
 
+### Removing a whole past championship
+
+Enable `cleanup.enabled: true` in `/config/formula1/formula1.yml`. The default is off. After upgrading, let the extension complete an ordinary run **while the show is still in Plex**. This records its library identity and establishes which yearly YAML the extension can reproduce. A year already absent at upgrade requires manual review.
+
+For example, after you remove **Formula 1 (2025)**, a successful inventory of the same Plex server and library starts the absence clock. Both confirmation scans and grace hours must elapse (defaults: 2 scans and 48 hours). If Plex still lists the show, even with zero usable episodes, or the show returns during the grace period, it is preserved. Whole-year retirement applies only to years before the current UTC calendar year. Targeted runs and artwork upgrade commands do not confirm a year’s absence.
+
+An eligible run removes the verified `formula1_2025.yml`, checksum-matching tracked round and episode posters, and tracked show poster/background rotations with matching checksums. Edited or unverified yearly YAML protects the whole set so its artwork references continue to work. Edited images, untracked files, media, backup YAML and shared source caches stay in place. Empty asset directories may remain. The extension records the year, Plex identity and per-file outcomes in its private SQLite cleanup history.
+
+Use the ordinary `--dry_run` option to preview the next observation from a copy of the existing state. Normal runs write the year, first missing time and observation count to the Formula 1 log. Dry runs show the cleanup file count in the console summary by default. Set the extension’s `logging.console` to `full` for the detailed preview. A preview does not advance the live confirmation count.
+
 With `verification.enabled: true`, output-changing runs place an expectation in
 the private SQLite database. After `verification.delay_hours` (default one
 hour), a later run reads Plex without changing it and compares generated show,

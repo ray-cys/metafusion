@@ -1,5 +1,6 @@
 """Kometa Formula 1 metadata document generation and safe merging."""
 
+import hashlib
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -291,4 +292,10 @@ def write_show_metadata(
             library_type="tv",
             backup_count=3,
         )
+    # A merged document can contain manual fields. Only the exact serialization
+    # generated from an empty document can establish whole-file ownership.
+    pristine, _ = merge_generated_metadata({}, generated, "show")
+    expected = {"metadata": {mapping_name: _normalize_show_order(pristine)}}
+    encoded = yaml.dump(expected, allow_unicode=True, default_flow_style=False, sort_keys=False).encode()
+    diagnostics["generated_digest"] = hashlib.sha256(encoded).hexdigest()
     return destination, changed, diagnostics

@@ -135,6 +135,9 @@ class Show:
 
 class Section:
     type = "show"
+    uuid = "f1-library"
+    class _server:
+        machineIdentifier = "f1-server"
 
     def __init__(self, title, shows):
         self.title = title
@@ -1832,7 +1835,11 @@ def test_runner_adoption_dry_run_disabled_outputs_and_failure(tmp_path, core, sc
         )
 
 
-def test_runner_cleanup_removes_only_owned_unchanged_round(tmp_path, core, schedule_payload):
+@pytest.mark.parametrize("whole_year", [False, True])
+def test_runner_cleanup_removes_only_owned_unchanged_round(tmp_path, core, schedule_payload, monkeypatch, whole_year):
+    from datetime import datetime, timezone
+    monkeypatch.setattr("extensions.formula1.championship_cleanup.utc_now",
+                        lambda: datetime(2028, 1, 1, tzinfo=timezone.utc))
     media = tmp_path / "S01E01 - Australia Grand Prix - Race.mkv"
     populated = Section("Formula 1", [Show("F1 2026", [Season(1, [Episode(1, media)])])])
     empty = Section("Formula 1", [])
@@ -1865,12 +1872,30 @@ def test_runner_cleanup_removes_only_owned_unchanged_round(tmp_path, core, sched
         __import__("hashlib").sha256(episode_poster.read_bytes()).hexdigest(),
     )
     state.close()
+    # A Plex show with an empty episode list is still a present championship.
+    registered = Section("Formula 1", [Show("F1 2026", [])])
+    for section, settings in [(registered, core), (empty, {**core, "_execution": {"targeted": True}})]:
+        result = asyncio.run(run_formula1_extension(
+            [section], settings, session, logging.getLogger("protected"), base_config_dir=base
+        ))
+        assert result["cleanup_removed"] == 0 and episode_poster.exists()
+    if not whole_year:
+        # A new round remains available after the first was removed.
+        races = schedule_payload["MRData"]["RaceTable"]["Races"]
+        races.append({**races[0], "round": "2"})
+        state = Formula1State(private / "cache/formula1.sqlite3")
+        state.connection.execute("DELETE FROM provider_cache")
+        state.connection.commit()
+        state.close()
+        second = tmp_path / "S02E01 - Australia Grand Prix - Race.mkv"
+        empty = Section("Formula 1", [Show("F1 2026", [Season(2, [Episode(1, second)])])])
     cleaned = asyncio.run(
         run_formula1_extension(
             [empty], core, session, logging.getLogger("cleanup-empty"), base_config_dir=base
         )
     )
-    assert cleaned["cleanup_removed"] == 2
+    assert cleaned["cleanup_removed"] == (3 if whole_year else 2)
+    assert (tmp_path / "kometa/metadata/formula1_2026.yml").exists() == (not whole_year)
     assert not poster.exists()
     assert not episode_poster.exists()
 
@@ -2469,3 +2494,80 @@ def test_formula1_operator_guide_covers_the_private_runtime_contract():
             image.verify()
         with Image.open(path) as image:
             assert image.size == dimensions
+
+
+def test_whole_year_retirement_guards_and_restarts(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from extensions.formula1.championship_cleanup import (
+        reconcile_championships,
+        remember_championship,
+        section_identity,
+    )
+    from helper.io import sha256_file
+
+    path = tmp_path / "db"
+    state = Formula1State(path)
+    config = {"paths": {k: tmp_path / k for k in ("metadata", "assets", "show_assets")},
+              "dry_run": False, "cleanup": {"enabled": True, "confirmation_scans": 2, "grace_hours": 48}}
+    for root in config["paths"].values():
+        root.mkdir()
+    year = 2024
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    meta = config["paths"]["metadata"]
+    yaml_path = meta / "formula1_2024.yml"
+    yaml_path.write_text("original")
+    scope = '["server","library"]'
+    issues = []
+    def scan(days, *, years=(), keys=(), library=scope):
+        return reconcile_championships(state, config, library, years, keys, issues, now=now + timedelta(days=days))
+    assert section_identity([]) is None
+    remember_championship(state, year, scope, "10", meta, sha256_file(yaml_path))
+    remember_championship(state, 2027, scope, "11", meta, None)
+    assert scan(0, library="other") == 0
+    assert scan(0) == scan(1) == 0
+    assert scan(2, keys=["10"]) == 0
+    assert scan(3) == 0
+    state.close()
+    state = Formula1State(path)
+    yaml_path.write_text("edited")
+    assert scan(5) == 0 and "edited YAML" in issues[-1]
+    yaml_path.write_text("original")
+    folder = config["paths"]["show_assets"] / "2024" / "round-01"
+    folder.mkdir(parents=True)
+    poster, bg = folder / "poster.png", folder / "background.png"
+    poster.write_bytes(b"poster")
+    bg.write_bytes(b"background")
+    checks = {"poster": sha256_file(poster), "background": sha256_file(bg)}
+    state.save_show_rotation("show:2024", 2024, 1, "team", {"generated_checksums": checks},
+                             poster, checks["poster"], bg, checks["background"])
+    other = tmp_path / "media.mkv"
+    other.write_text("external")
+    state.save_artwork("2024:r02", other, "a", sha256_file(other))
+    state.save_artwork("2024:r01", config["paths"]["assets"] / "2024" / "missing.png", "b", "absent")
+    bg.write_text("user edit")
+    state.close()
+    state = Formula1State(":memory:")
+    state.load_preview(path)
+    config["dry_run"] = True
+    assert scan(6) == 2 and poster.exists() and yaml_path.exists()
+    state.close()
+    state = Formula1State(path)
+    config["dry_run"] = False
+    assert scan(6) == 2
+    assert scan(7) == 0
+    assert not poster.exists() and not yaml_path.exists()
+    assert bg.read_text() == "user edit" and other.exists()
+    assert state.connection.execute("SELECT count(*) FROM cleanup_history").fetchone()[0] == 1
+    state.close()
+
+
+def test_cleanup_configuration_requires_an_explicit_boolean(tmp_path, core):
+    private = tmp_path / "formula1"
+    private.mkdir()
+    active = private / "formula1.yml"
+    active.write_text('cleanup: {enabled: "false"}')
+    assert load_formula1_config(core, tmp_path, dry_run=True)["cleanup"]["enabled"] is False
+    active.write_text('cleanup: {enabled: maybe}')
+    with pytest.raises(Formula1ConfigError, match=r"cleanup\.enabled"):
+        load_formula1_config(core, tmp_path, dry_run=True)

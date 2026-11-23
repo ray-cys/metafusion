@@ -12,6 +12,11 @@ from extensions.formula1.artwork import (
     render_round_poster,
     validate_branding,
 )
+from extensions.formula1.championship_cleanup import (
+    reconcile_championships,
+    remember_championship,
+    section_identity,
+)
 from extensions.formula1.config import formula1_requested, load_formula1_config
 from extensions.formula1.facts import enrich_race_facts
 from extensions.formula1.inventory import (
@@ -163,6 +168,8 @@ def _authoritative_children(keys, year):
 async def _prepare_plans(sections, core_config, session, state, config, logger, summary, issues):
     inventory_config = {"runtime": core_config.get("runtime", {}), "formula1": config}
     shows = []
+    years_present = set()
+    rating_keys_present = set()
     for section in sections:
         section_type = str(
             getattr(section, "type", None) or getattr(section, "TYPE", "")
@@ -172,6 +179,8 @@ async def _prepare_plans(sections, core_config, session, state, config, logger, 
         inventory = await discover_formula1_inventory(section, inventory_config, logger)
         issues.extend(inventory.issues)
         shows.extend(inventory.shows)
+        years_present.update(inventory.years_present)
+        rating_keys_present.update(inventory.rating_keys_present)
         summary["libraries"] += 1
     grouped: dict[int, list] = {}
     for show in shows:
@@ -270,7 +279,7 @@ async def _prepare_plans(sections, core_config, session, state, config, logger, 
         if accepted:
             plans.append((show, races, race_by_round))
     summary["shows"] = len(plans)
-    return plans, shows, deferred_keys
+    return plans, shows, deferred_keys, years_present, rating_keys_present
 
 
 async def run_formula1_extension(
@@ -336,14 +345,16 @@ async def run_formula1_extension(
     issues: list[str] = []
     upgrade_records: list[dict] = []
     current_keys = set()
-    state.start_run(run_id)
     try:
+        if dry_run:
+            state.load_preview(config["paths"]["database"])
+        state.start_run(run_id)
         detail_logger.info("[Startup] Formula 1 extension | Run: %s", run_id)
         branding_warnings = validate_branding(config)
         summary["branding_warnings"] = len(branding_warnings)
         for warning in branding_warnings:
             detail_logger.warning("[Branding] %s", warning)
-        plans, discovered_shows, deferred_keys = await _prepare_plans(
+        plans, discovered_shows, deferred_keys, years_present, rating_keys_present = await _prepare_plans(
             sections, core_config, session, state, config, detail_logger, summary, issues
         )
         shows = [plan[0] for plan in plans]
@@ -363,6 +374,13 @@ async def run_formula1_extension(
             str(verification_report) if verification_report else None
         )
         existing_keys = set(state.bindings())
+        scope = section_identity(sections)
+        ordinary_scan = not (core_config.get("_execution", {}).get("targeted") or config["upgrade_scope"])
+        # A year that vanished entirely is handled as one unit. Do not remove
+        # children while its YAML is awaiting confirmation or ownership proof.
+        planned_years = {show.year for show in shows}
+        planned_prefixes = tuple(f"{year}:r" for year in planned_years)
+        current_keys.update(k for k in existing_keys if not k.startswith(planned_prefixes))
         stale = state.reconcile_bindings(
             current_keys,
             cleanup=bool(config["cleanup"].get("enabled", False)),
@@ -621,6 +639,7 @@ async def run_formula1_extension(
                             (episode.round_number, episode.episode_number),
                             _episode_asset_reference(config, episode),
                         )
+                yaml_digest = None
                 if config["metadata"].get("enabled", True):
                     authoritative_seasons, authoritative_episodes = _authoritative_children(
                         retained_keys, show.year
@@ -644,6 +663,8 @@ async def run_formula1_extension(
                         previous_title=previous_title,
                         episode_poster_references=episode_poster_references,
                     )
+                    if changed or previous_show:
+                        yaml_digest = diagnostics["generated_digest"]
                     summary["metadata_updated" if changed else "metadata_unchanged"] += 1
                     detail_logger.info(
                         "[Metadata] %s | Action: %s | Destination: %s | Fields: %d",
@@ -711,6 +732,8 @@ async def run_formula1_extension(
                         )
                     if not dry_run:
                         state.bind_show(show.year, show.plex_rating_key, show.title)
+                if ordinary_scan and not dry_run:
+                    remember_championship(state, show.year, scope, show.plex_rating_key, config["paths"]["metadata"], yaml_digest)
                 for episode in show.episodes:
                     if not dry_run:
                         state.bind(
@@ -748,6 +771,13 @@ async def run_formula1_extension(
                 removed_rounds.add(round_key)
             if not dry_run:
                 state.remove_binding(binding["logical_key"], binding)
+        if ordinary_scan:
+            retired = reconcile_championships(
+                state, config, scope, years_present, rating_keys_present, issues, logger=detail_logger
+            )
+            summary["cleanup_removed"] += retired
+            if retired:
+                detail_logger.info("[Cleanup] Whole championship cleanup | Files: %d | Dry run: %s", retired, dry_run)
         summary["issues"] = len(issues)
         if config.get("upgrade_scope"):
             upgrade_report = write_upgrade_report(
@@ -768,7 +798,7 @@ async def run_formula1_extension(
                 "Episode artwork created/updated/preserved/unchanged: %d/%d/%d/%d | "
                 "Circuit facts resolved/missing: %d/%d | Circuit profiles resolved/missing: "
                 "%d/%d | Event mismatches: %d | Verification applied/partial: %d/%d | "
-                "Pending schedules: %d | Event identities learned: %d | Issues: %d",
+                "Pending schedules: %d | Event identities learned: %d | Cleanup files: %d | Issues: %d",
                 summary["libraries"],
                 summary["shows"],
                 summary["episodes"],
@@ -792,6 +822,7 @@ async def run_formula1_extension(
                 summary["verification_partial"],
                 summary["schedules_pending"],
                 summary["event_identities_learned"],
+                summary["cleanup_removed"],
                 summary["issues"],
             )
             if config.get("upgrade_scope"):

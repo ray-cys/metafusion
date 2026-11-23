@@ -130,6 +130,8 @@ class Formula1Show:
 
 @dataclass
 class InventoryResult:
+    years_present: set[int | None] = field(default_factory=set)
+    rating_keys_present: set[str] = field(default_factory=set)
     shows: list[Formula1Show] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     profiles: dict[str, int] = field(default_factory=lambda: {"current": 0, "kometa": 0})
@@ -311,7 +313,9 @@ async def discover_formula1_inventory(section, config, detail_logger):
     seen = {}
     duplicates = set()
     for show in shows:
+        result.rating_keys_present.add(str(getattr(show, "ratingKey", "")))
         year = _show_year(show)
+        result.years_present.add(year)
         if year is None:
             result.issues.append(f"Ignored show without a championship year: {show.title}")
             continue

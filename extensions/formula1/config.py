@@ -336,6 +336,10 @@ def load_formula1_config(core_config, base_config_dir, *, dry_run=False):
     )
 
     cleanup = config.setdefault("cleanup", {})
+    enabled = str(cleanup.get("enabled", False)).strip().casefold()
+    if enabled not in {"true", "false"}:
+        raise Formula1ConfigError("cleanup.enabled must be true or false")
+    cleanup["enabled"] = enabled == "true"
     cleanup["confirmation_scans"] = _bounded_int(
         cleanup.get("confirmation_scans", 2), "cleanup.confirmation_scans", 1, 20
     )
