@@ -306,6 +306,15 @@ async def cleanup_title_orphans(
             "reason": reason,
         }
 
+    def record_asset_cleanup(path, records, status):
+        for owner in records:
+            key = owner["cache_key"]
+            subject = candidate_record(key, cache.get(key))
+            subject["season_number"] = owner.get("season")
+            config.setdefault("_native_observations", []).append((
+                subject, "cleanup/" + str(path), status, status == "removed", {"destination": str(path)},
+            ))
+
     def observe(key, record, scope, *, season=None, episode=None):
         decision = observe_cleanup_candidate(
             key,
@@ -557,11 +566,13 @@ async def cleanup_title_orphans(
                 primary_key = eligible_records[0]["cache_key"]
                 scope = partial_scopes.get(cached_media_type(primary_key, cache[primary_key]))
                 if scope and any(resolved_path.is_relative_to(root.resolve(strict=False)) for root in scope.protected_dirs):
+                    record_asset_cleanup(path, eligible_records, "protected_output")
                     result.assets_preserved += 1
                     continue
                 if not plex_roots or not any(
                     resolved_path.is_relative_to(root) for root in plex_roots
                 ):
+                    record_asset_cleanup(path, eligible_records, "protected_output")
                     result.assets_preserved += 1
                     continue
                 enabled = (
@@ -576,14 +587,17 @@ async def cleanup_title_orphans(
                     if record.get("checksum")
                 }
                 if path.is_symlink() or not checksums:
+                    record_asset_cleanup(path, eligible_records, "protected_output")
                     result.assets_preserved += 1
                     continue
                 try:
                     actual_checksum = await asyncio.to_thread(sha256_file, path)
                 except OSError:
+                    record_asset_cleanup(path, eligible_records, "protected_output")
                     result.assets_preserved += 1
                     continue
                 if actual_checksum not in checksums:
+                    record_asset_cleanup(path, eligible_records, "protected_output")
                     result.assets_preserved += 1
                     continue
                 if dry_run:
@@ -610,6 +624,7 @@ async def cleanup_title_orphans(
                         season_number=primary.get("season"),
                         checksum=actual_checksum,
                     )
+                    record_asset_cleanup(path, eligible_records, "removed")
                     log_cleanup_event(
                         "cleanup_removing_asset",
                         description="Plex managed artwork",
@@ -992,6 +1007,7 @@ async def cleanup_title_orphans(
                 result.assets_skipped += 1
                 return
             if path.is_symlink():
+                record_asset_cleanup(path, eligible_records, "protected_output")
                 result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
@@ -1006,6 +1022,7 @@ async def cleanup_title_orphans(
                 if record.get("checksum")
             }
             if not expected_checksums:
+                record_asset_cleanup(path, eligible_records, "protected_output")
                 result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
@@ -1017,6 +1034,7 @@ async def cleanup_title_orphans(
             try:
                 current_checksum = await asyncio.to_thread(sha256_file, path)
             except OSError as error:
+                record_asset_cleanup(path, eligible_records, "protected_output")
                 result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
@@ -1026,6 +1044,7 @@ async def cleanup_title_orphans(
                 )
                 return
             if current_checksum not in expected_checksums:
+                record_asset_cleanup(path, eligible_records, "protected_output")
                 result.assets_preserved += 1
                 log_cleanup_event(
                     "cleanup_preserving_modified_asset",
@@ -1054,6 +1073,7 @@ async def cleanup_title_orphans(
                         season_number=primary.get("season"),
                         checksum=current_checksum,
                     )
+                    record_asset_cleanup(path, eligible_records, "removed")
                     deleted_dirs.add(_path_key(path.parent))
                     log_cleanup_event(
                         "cleanup_removing_asset", description=description, path=path

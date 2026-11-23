@@ -2571,3 +2571,14 @@ def test_cleanup_configuration_requires_an_explicit_boolean(tmp_path, core):
     active.write_text('cleanup: {enabled: maybe}')
     with pytest.raises(Formula1ConfigError, match=r"cleanup\.enabled"):
         load_formula1_config(core, tmp_path, dry_run=True)
+
+
+def test_championship_application_findings_use_plex_identity(monkeypatch, tmp_path, core):
+    async def verified(*args):
+        return [{"season_year": 2026, "plex_rating_key":"10","status":"partial"}],None
+    monkeypatch.setattr("extensions.formula1.runner.verify_due_applications", verified)
+    asyncio.run(run_formula1_extension([Section("Formula 1",[])], core, Session({},""),
+                                       logging.getLogger("findings"), base_config_dir=tmp_path))
+    subject, operation, status, recovered, evidence = core["_native_observations"][0]
+    assert (operation,status,recovered,evidence["year"]) == ("application/championship","partial",False,2026)
+    assert subject["rating_key"]=="10"

@@ -84,6 +84,7 @@ async def verify_due_applications(
             records.append(
                 {
                     "season_year": queued["season_year"],
+                    "plex_rating_key": queued["plex_rating_key"],
                     "status": "unverifiable",
                     "reason": "the original Plex show identity is not present",
                 }

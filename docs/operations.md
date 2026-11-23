@@ -901,3 +901,6 @@ runtime/cleanup, or feature request. Attach only the redacted report and log
 section relevant to the selected form; explain when requested evidence is not
 available. Never attach `config.yml`, tokens, API keys, Docker inspection
 output, or unredacted host paths.
+
+For automated weekly reviews, read the [native findings snapshot](diagnostics.md#native-findings-for-weekly-reviews)
+after a scheduled run. It includes unresolved items, verified recoveries and the libraries actually checked.

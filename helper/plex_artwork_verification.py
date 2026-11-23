@@ -122,6 +122,7 @@ async def verify_plex_artwork(sections, config, rating_keys, session):
             for claim in claims:
                 destination = Path(claim["destination"])
                 record = {
+                    "server_id": str(server_id), "library_uuid": str(library_uuid),
                     "library": section.title,
                     "plex_rating_key": rating_key,
                     "tmdb_id": state.get("tmdb_id"),

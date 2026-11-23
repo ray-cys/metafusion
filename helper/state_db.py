@@ -206,6 +206,14 @@ def _initialize_schema(connection):
                 ON DELETE CASCADE
         ) WITHOUT ROWID;
 
+        CREATE TABLE IF NOT EXISTS native_findings (
+            id TEXT NOT NULL, first_seen TEXT NOT NULL, resolved_at TEXT, payload TEXT NOT NULL,
+            PRIMARY KEY(id, first_seen)
+        );
+        CREATE INDEX IF NOT EXISTS findings_resolution ON native_findings(resolved_at);
+        CREATE TABLE IF NOT EXISTS findings_runs (
+            run_id TEXT PRIMARY KEY, finished_at TEXT NOT NULL, payload TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS application_state (
             state_key TEXT PRIMARY KEY,
             state_value TEXT NOT NULL,

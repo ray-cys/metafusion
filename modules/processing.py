@@ -221,6 +221,7 @@ def _record_artwork_evaluation(
     path,
     *,
     season_number=None,
+    provider=None,
 ):
     """Record an exact, successful destination check for ledger reconciliation."""
     records = config.get("_artwork_evaluations")
@@ -241,6 +242,7 @@ def _record_artwork_evaluation(
                 "title": metadata_key_for_meta(meta),
                 "asset_type": report_asset,
                 "action": action,
+                "provider": provider,
                 "destination_state": "present",
                 "destination": str(path.resolve()),
             },
@@ -706,16 +708,10 @@ async def process_item(
                     }
                 )
                 artwork_file_counts["present"] += 1
-                artwork_current_providers[
-                    _current_artwork_provider(
-                        stats,
-                        cached_entry,
-                        asset_type,
-                        action,
-                        path,
-                        season_number=season_number,
-                    )
-                ] += 1
+                provider = _current_artwork_provider(
+                    stats, cached_entry, asset_type, action, path, season_number=season_number
+                )
+                artwork_current_providers[provider] += 1
                 _record_artwork_evaluation(
                     config,
                     meta,
@@ -723,6 +719,7 @@ async def process_item(
                     asset_type,
                     action,
                     path,
+                    provider=provider,
                     season_number=season_number,
                 )
             except OSError:
@@ -1663,6 +1660,12 @@ async def process_library(
                 server_id,
                 library_uuid,
                 successful_retry_keys,
+            )
+
+            config.setdefault("_native_observations", []).extend(
+                ({"server_id": server_id, "library_uuid": library_uuid, "library": library_name,
+                  "rating_key": key}, "item_processing", "retry_succeeded", True, {})
+                for key in successful_retry_keys
             )
 
         run_metadata = feature_flags["metadata_basic"] or feature_flags["metadata_enhanced"]

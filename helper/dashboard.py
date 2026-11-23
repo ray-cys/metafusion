@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import sqlite3
 from collections import Counter
@@ -96,6 +97,9 @@ def collect_dashboard_snapshot(*, path=STATE_DATABASE):
     provider_health = _readonly_rows(
         path, "provider_health", order_by="provider", limit=100
     )
+    findings = [json.loads(r["payload"]) for r in _readonly_rows(
+        path, "native_findings", order_by="resolved_at, first_seen DESC", limit=250
+    ) if r["resolved_at"] is None]
     unresolved = load_unresolved_work(statuses=["open"], path=path, limit=250)
     retries = load_item_retries(statuses=["pending", "parked", "running"], path=path)
     reviews = load_identity_reviews(statuses=["open"], path=path)
@@ -125,6 +129,7 @@ def collect_dashboard_snapshot(*, path=STATE_DATABASE):
             "pending_cleanup": len(cleanup_pending),
             "field_provenance": len(provenance),
         },
+        "findings": findings,
         "databases": databases,
         "libraries": libraries,
         "scan_state": scans,
@@ -263,6 +268,7 @@ def render_dashboard(snapshot):
         )
         for row in snapshot.get("provider_health") or []
     ]
+    finding_rows = [(r.get("library"),r.get("title"),r["operation"],r["reason_code"],r["last_seen"]) for r in snapshot.get("findings", [])]
     provenance = snapshot.get("metadata_provenance") or []
     source_counts = Counter(row.get("source_provider") or "Unknown" for row in provenance)
     action_counts = Counter(row.get("action") or "unknown" for row in provenance)
@@ -352,7 +358,7 @@ section {{ display:none; margin:18px 0 30px; }} section.active {{ display:block;
 <div class="toolbar"><input id="filter" type="search" placeholder="Filter visible table rows…"><button id="print">Print / Save PDF</button></div>
 <section id="overview" class="active"><div class="panel"><h2>Run overview</h2><div class="metrics">{card_html}</div></div><div class="panel"><h2>SQLite health</h2><div class="databases">{database_cards}</div></div><div class="panel"><h2>Recent jobs</h2>{_table(('Finished','Mode','Status','Error'), jobs_rows)}</div></section>
 <section id="libraries"><div class="panel"><h2>Recorded libraries</h2><p>Inventory and scan timestamps are historical SQLite evidence, not a live Plex query.</p>{_table(('Library','Type','Active','Last seen','Last full scan','Last incremental'), library_rows)}</div></section>
-<section id="problems"><div class="panel"><h2>Unresolved work</h2>{_table(('Library','Title','Output','Category','Detail','Last seen'), unresolved_rows)}</div><div class="panel"><h2>Retry queue</h2>{_table(('Library','Rating key','Status','Class','Error type','Next retry'), retry_rows)}</div><div class="panel"><h2>Identity review queue</h2>{_table(('Library','Title','Category','Proposed TMDb','Reason','Last seen'), review_rows)}</div></section>
+<section id="problems"><div class="panel"><h2>Open findings</h2>{_table(("Library","Item","Operation","Reason","Last seen"), finding_rows)}</div><div class="panel"><h2>Unresolved work</h2>{_table(('Library','Title','Output','Category','Detail','Last seen'), unresolved_rows)}</div><div class="panel"><h2>Retry queue</h2>{_table(('Library','Rating key','Status','Class','Error type','Next retry'), retry_rows)}</div><div class="panel"><h2>Identity review queue</h2>{_table(('Library','Title','Category','Proposed TMDb','Reason','Last seen'), review_rows)}</div></section>
 <section id="cleanup"><div class="panel"><h2>Pending cleanup</h2><p>These entries remain protected by confirmation and grace-period policy.</p>{_table(('Library','Title','Scope','Confirmations','Eligible after','Reason'), cleanup_rows)}</div><div class="panel"><h2>Recent cleanup history</h2>{_table(('Occurred','Source','Status','Library','Item','Action','Output'), cleanup_history_rows)}</div></section>
 <section id="providers"><div class="panel"><h2>Recorded provider health</h2><p>No provider was contacted to create this dashboard.</p>{_table(('Provider','Consecutive failures','Circuit open until','Last success','Updated'), provider_rows)}</div></section>
 <section id="provenance"><div class="panel"><h2>Field-level metadata provenance</h2><p class="notice">Values are never retained. Source summary: {html.escape(source_summary)}. Decision summary: {html.escape(action_summary)}.</p>{_table(('Library','Title','Target','Field','Effective source','Decision','Policy','Fingerprint','Recorded'), provenance_rows)}</div></section>

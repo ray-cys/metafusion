@@ -295,6 +295,7 @@ async def run_formula1_extension(
         return None
     dry_run = bool(core_config.get("settings", {}).get("dry_run", False))
     config = load_formula1_config(core_config, base_config_dir, dry_run=dry_run)
+    config["_native_observations"] = core_config.setdefault("_native_observations", [])
     run_id = run_identifier()
     detail_logger, log_path = create_formula1_logger(config, run_id)
     state = Formula1State(":memory:" if dry_run else config["paths"]["database"])
@@ -364,6 +365,12 @@ async def run_formula1_extension(
         verification_records, verification_report = await verify_due_applications(
             state, discovered_shows, config, core_config, session, run_id, detail_logger
         )
+        for row in verification_records:
+            config["_native_observations"].append((
+                {"component": "formula1", "library_uuid": section_identity(sections),
+                 "title": f"Formula 1 ({row.get('season_year')})", "rating_key": row.get("plex_rating_key")},
+                "application/championship", row["status"], row["status"] == "applied", {"year": row.get("season_year")},
+            ))
         summary["verification_applied"] = sum(
             record.get("status") == "applied" for record in verification_records
         )

@@ -263,6 +263,8 @@ async def verify_kometa_application(sections, config, rating_keys, session):
                 item_report_record(
                     {
                         "library": section.title,
+                        "server_id": getattr(getattr(section,"_server",None),"machineIdentifier",None),
+                        "library_uuid": getattr(section,"uuid",None),
                         "media_type": item_type,
                         "title": meta.get("title"),
                         "year": meta.get("year"),

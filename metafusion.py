@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiohttp
@@ -69,6 +69,7 @@ from helper.fanart import (
     fanart_response_cache,
     flush_fanart_cache,
 )
+from helper.findings import publish_findings
 from helper.identity_diagnostics import run_identity_inspection
 from helper.incremental import (
     config_fingerprint,
@@ -1166,6 +1167,7 @@ async def metafusion_main(config, logger):
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
             scan_scopes = build_scan_scopes(plex, sections, config)
+            config["_findings_scopes"] = {s["library_name"]: s for s in scan_scopes}
             reconciliation_scopes = {scope["library_name"]: f'{scope["server_id"]}|{scope["library_uuid"]}' for scope in scan_scopes}
             if execution.get("retry_failed"):
                 retry_status = execution.get("retry_status", "all")
@@ -1556,6 +1558,7 @@ async def metafusion_main(config, logger):
                         library_config["_artwork_gaps"] = config.setdefault(
                             "_artwork_gaps", []
                         )
+                        library_config["_native_observations"] = config.setdefault("_native_observations", [])
                         library_config["_artwork_evaluations"] = config.setdefault(
                             "_artwork_evaluations", []
                         )
@@ -1698,6 +1701,13 @@ async def metafusion_main(config, logger):
                 writable=not (targeted or failures or missing_discovered_libraries
                               or config.get("settings", {}).get("dry_run", False)),
             )
+            config["_findings_guard"] = reports
+            if not (targeted or failures or missing_discovered_libraries):
+                config["_findings_inventory"] = {
+                    (s["server_id"], s["library_uuid"]): {str(r["rating_key"]) for r in section_inventory_records[s["library_name"]]}
+                    for s in scan_scopes if s["library_name"] in config.get("_successful_full_scan_libraries", [])
+                    and s["library_name"] not in held and reports.get(s["library_name"], {}).get("status") in {"trusted", "accepted"}
+                }
             config["_held_inventory_scopes"] = {reconciliation_scopes[name] for name in held}
             for record in config.get("_library_audit_records", []):
                 record["inventory_guard"] = reports.get(record["library"], {})
@@ -1863,6 +1873,12 @@ def run_metafusion_job(config, logger, runtime_status=None):
 
     success = False
     error = None
+    config["_findings_started"] = datetime.now(timezone.utc).isoformat()
+    config["_findings_scopes"] = {}
+    config["_findings_inventory"] = {}
+    config["_findings_guard"] = {}
+    config["_findings_job_error"] = {}
+    config["_native_observations"] = []
     config["_job_library_results"] = {}
     config["_artwork_gaps"] = []
     config["_artwork_evaluations"] = []
@@ -1902,6 +1918,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
         error = "Shutdown requested; active run was cancelled"
         log_main_event("main_shutdown_requested", logger=logger)
     except Exception as caught:
+        config["_findings_job_error"] = {"error_type": type(caught).__name__, "errno": getattr(caught,"errno",None)}
         error = redact_secrets(
             caught,
             config.get("plex", {}).get("token"),
@@ -2138,6 +2155,13 @@ def run_metafusion_job(config, logger, runtime_status=None):
             tmdb_response_cache.reset_memory()
             fanart_response_cache.reset_memory()
         try:
+            if not config.get("settings", {}).get("dry_run", False):
+                try:
+                    counts = publish_findings(config, success, path=STATE_DATABASE, base_dir=BASE_CONFIG_DIR)
+                    logger.info("[Findings] New: %d | Persistent: %d | Resolved: %d | Not rechecked: %d",
+                                counts["new"], counts["persistent"], counts["resolved"], counts["not_rechecked"])
+                except (OSError, StateDatabaseError, sqlite3.Error, ValueError) as caught:
+                    logger.warning("[Findings] Export unavailable; check the snapshot timestamp | %s", caught)
             if runtime_status:
                 metrics = performance_tracker.snapshot()
                 cleanup_result = config.get("_cleanup_result")

@@ -125,7 +125,12 @@ def reconcile_championships(
         ):
             continue
         present = None in years or year in years or row["rating_key"] in rating_keys
+        subject = {"component": "formula1", "title": f"Formula 1 ({year})",
+                   "library_uuid": scope, "rating_key": row["rating_key"]}
+        findings = config.setdefault("_native_observations", [])
         if present or not cleanup["enabled"]:
+            if year in years or row["rating_key"] in rating_keys:
+                findings.append((subject, "championship_cleanup", "championship_present", True, {"year": year}))
             if row["missing_scans"]:
                 with state.connection as db:
                     db.execute(
@@ -151,5 +156,10 @@ def reconcile_championships(
         if scans >= cleanup["confirmation_scans"] and current - since >= timedelta(
             hours=cleanup["grace_hours"]
         ):
+            before = len(issues)
             removed += _retire(state, config, row, issues)
+            protected = len(issues) - before
+            findings.append((subject, "championship_cleanup", "protected_output" if protected else "retired",
+                             not protected, {"year": year, "protected_outputs": protected}))
+
     return removed

@@ -373,3 +373,44 @@ Follow the [support and version policy](../SUPPORT.md) when opening an issue.
   unsupported command combination.
 - Docker forwards public arguments, for example
   `docker run --rm IMAGE --support-report`.
+
+## Native findings for weekly reviews
+
+Each processing run that reaches finalization outside dry-run mode atomically replaces
+`/config/reports/findings-latest.json`. Both Kometa and Plex mode publish it automatically,
+including incomplete runs. No extra setting or scheduled report command is required.
+An offline dashboard's **Problems → Open findings** table shows up to 250 open records.
+Filter by library or title. Automation should read the JSON for the complete list.
+
+| JSON field | How to use it |
+| --- | --- |
+| `schema_version`, `generated_at` | Check format and freshness before interpreting any counts. A stopped container or a failure before job initialization leaves the previous snapshot in place. |
+| `run`, `run_history` | Compare build, mode, enabled operations, targeted runs, full-scan libraries, processing results and cleanup counts. An absent library has no coverage from that run. |
+| `open`, `open_by_reason` | Group outstanding issues by reason. Each item includes a stable ID, affected operation, available Plex and external IDs, last observation, evidence and suggested next action. |
+| `recently_resolved` | Read the resolution and its evidence. A verified local write can identify the fallback provider. Plex application requires a separate readback. |
+| `run.changes` | New, persistent, resolved and previously open findings without fresh confirmation in this run. |
+
+For example, if a season poster is missing on Monday and Tuesday's incremental run skips
+the show, Monday remains its last observation. A later verified local poster can close
+the gap. A plain file-presence check cannot clear a checksum or ownership conflict.
+A trusted complete library inventory can establish that an entire Plex item was
+removed. A season can also close as removed when automated cleanup confirms that exact
+season in the same trusted scan. Absence from an incremental or targeted run cannot
+establish removal.
+
+The export uses provider attempts, recorded field decisions, retry state, episode mapping,
+inventory holds, protected cleanup outputs, Formula 1 championship cleanup and verification evidence when available.
+For an explicit Plex artwork or post-Kometa verification to contribute readback findings,
+generate its JSON companion with `REPORT_FORMAT=json` or `both`. A subsequent processing
+run imports the retained report. Text-only audits remain readable separately.
+The `issue_groups` counts group repeated errors (for example, permission failures)
+and link up to three affected findings per group. The export contains private library titles, IDs and local output destinations. Review
+these fields before sharing it.
+
+**Retention.** Open findings remain until evidence resolves them. SQLite retains
+resolved occurrences and run summaries for 30 days after resolution or run completion,
+then prunes them at the next publication. A recurring issue can have multiple
+occurrences under the same finding ID. Readers always get one complete JSON snapshot.
+No timestamped findings files accumulate. Existing diagnostic reports keep their own
+retention settings. Deleting the JSON alone lets the next processing run recreate it
+from SQLite.

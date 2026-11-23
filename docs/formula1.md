@@ -867,3 +867,6 @@ redacted Formula 1 log excerpt, naming profile, one representative media filenam
 Plex show/season/episode identity, and the relevant redacted JSON report. Never
 share Plex tokens, private RSS URLs, NZB contents, indexer credentials, or an
 unredacted private configuration.
+
+Championship cleanup holds and application verification also appear in MetaFusion's
+[native findings snapshot](diagnostics.md#native-findings-for-weekly-reviews).

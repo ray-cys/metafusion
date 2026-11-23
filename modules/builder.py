@@ -662,6 +662,9 @@ def _record_artwork_gap(
     asset_type="metadata",
     detail=None,
     identity=None,
+    attempts=None,
+    destination=None,
+    conflicting_owner=None,
 ):
     gaps = config.get("_artwork_gaps")
     if gaps is None:
@@ -688,6 +691,9 @@ def _record_artwork_gap(
             "year": identity.get("year") if isinstance(identity, dict) else None,
             "asset_type": asset_type,
             "detail": detail,
+            **({"conflicting_owner": conflicting_owner} if conflicting_owner else {}),
+            **({"provider_attempts": attempts} if attempts is not None else {}),
+            **({"destination": str(destination)} if destination else {}),
         }, identity, season_number=season_number)
     )
 
@@ -1038,6 +1044,9 @@ def protected_asset_destination(
             destination=asset_path,
             owner=owner,
         )
+        _record_artwork_gap(config, "ownership_collision", media_type, full_title,
+                            f"season {season_number} poster" if season_number is not None else asset_type,
+                            destination=asset_path, conflicting_owner=owner)
         raise AssetDestinationCollisionError(
             f"Artwork destination {asset_path} is already claimed by {owner}"
         )
@@ -1855,6 +1864,10 @@ async def _build_movie(
             "background_action": "failed" if run_background else background_action,
             **result,
         }
+    config.setdefault("_native_observations", []).append((
+        {k: meta.get(k) for k in ("library_name","server_id","library_uuid","ratingKey","title","tmdb_id")},
+        "metadata", "identity_verified", True, {},
+    ))
     if identity_reason.startswith("trusted external ID"):
         log_builder_event(
             "builder_tmdb_identity_alias",
@@ -2070,10 +2083,12 @@ async def _build_movie(
             poster_action = "not_due"
             return
         images = get_meta_field(details, "posters", [], path=["images"])
+        provider_attempts: list[dict[str, Any]] = []
         best = await _select_artwork_with_fallback(
             config, meta, images, asset_type="poster", media_type="movie",
             tmdb_id=tmdb_id, session=session,
             canonical_path=details.get("poster_path"),
+            attempts_out=provider_attempts,
         )
         candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
@@ -2089,6 +2104,7 @@ async def _build_movie(
                 "No provider supplied a replacement; existing artwork was preserved"
                 if preserved
                 else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
+                attempts=provider_attempts, destination=existing_path,
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
@@ -2331,10 +2347,12 @@ async def _build_movie(
             background_action = "not_due"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
+        provider_attempts: list[dict[str, Any]] = []
         best = await _select_artwork_with_fallback(
             config, meta, images, asset_type="background", media_type="movie",
             tmdb_id=tmdb_id, session=session,
             canonical_path=details.get("backdrop_path"),
+            attempts_out=provider_attempts,
         )
         candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
@@ -2350,6 +2368,7 @@ async def _build_movie(
                 "No provider supplied a replacement; existing artwork was preserved"
                 if preserved
                 else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
+                attempts=provider_attempts, destination=existing_path,
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
@@ -2824,6 +2843,10 @@ async def _build_tv(
             "season_poster_actions": season_poster_actions,
             **result,
         }
+    config.setdefault("_native_observations", []).append((
+        {k: meta.get(k) for k in ("library_name","server_id","library_uuid","ratingKey","title","tmdb_id")},
+        "metadata", "identity_verified", True, {},
+    ))
     if identity_reason.startswith("trusted external ID"):
         log_builder_event(
             "builder_tmdb_identity_alias",
@@ -3261,6 +3284,14 @@ async def _build_tv(
                         full_title=full_title, count=len(unresolved_pairs),
                         episodes=_episode_pair_labels(unresolved_pairs),
                     )
+        for season, episode in wanted_pairs:
+            subject = {"library": config.get("_library_name"), "rating_key": meta.get("ratingKey"),
+                       "title": full_title, "media_type": "tv", "tmdb_id": tmdb_id,
+                       "season_number": season, "episode_number": episode}
+            mapped = episode in seasons_data.get(season, {}).get("episodes", {})
+            if mapped or (season, episode) in pending_pairs or (season, episode) in unresolved_pairs:
+                reason = "mapped" if mapped else "awaiting_provider_episode" if (season, episode) in pending_pairs else "episode_order_unresolved"
+                config.setdefault("_native_observations", []).append((subject, "episode_mapping", reason, mapped, {}))
         metadata_pending_count = len(pending_pairs)
         if failed_seasons:
             metadata_fetch_failed = True
@@ -3402,12 +3433,14 @@ async def _build_tv(
             poster_action = "policy_preserved" if present else "policy_missing"
             return
         images = get_meta_field(details, "posters", [], path=["images"])
+        provider_attempts: list[dict[str, Any]] = []
         best = await _select_artwork_with_fallback(
             config, meta, images, asset_type="poster", media_type="tv",
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
             session=session,
             canonical_path=details.get("poster_path"),
+            attempts_out=provider_attempts,
         )
         candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
@@ -3423,6 +3456,7 @@ async def _build_tv(
                 "No provider supplied a replacement; existing artwork was preserved"
                 if preserved
                 else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
+                attempts=provider_attempts, destination=existing_path,
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
@@ -3663,12 +3697,14 @@ async def _build_tv(
             background_action = "policy_preserved" if present else "policy_missing"
             return
         images = get_meta_field(details, "backdrops", [], path=["images"])
+        provider_attempts: list[dict[str, Any]] = []
         best = await _select_artwork_with_fallback(
             config, meta, images, asset_type="background", media_type="tv",
             tmdb_id=tmdb_id,
             tvdb_id=tvdb_id or (details.get("external_ids") or {}).get("tvdb_id"),
             session=session,
             canonical_path=details.get("backdrop_path"),
+            attempts_out=provider_attempts,
         )
         candidate_pool = list((best or {}).get("candidate_pool") or [])
         if not best:
@@ -3684,6 +3720,7 @@ async def _build_tv(
                 "No provider supplied a replacement; existing artwork was preserved"
                 if preserved
                 else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
+                attempts=provider_attempts, destination=existing_path,
             )
             if not feature_flags.get("dry_run", False):
                 await meta_cache_async(
@@ -3935,6 +3972,7 @@ async def _build_tv(
                 "No provider supplied a replacement; existing artwork was preserved"
                 if preserved
                 else "TMDb, Fanart.tv, Plex, and best-available fallback had no candidate",
+                attempts=provider_attempts, destination=existing_path,
             )
             season_candidate_sources[int(season_number)] = ""
             if preserved:
