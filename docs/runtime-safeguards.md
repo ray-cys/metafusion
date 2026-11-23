@@ -187,10 +187,20 @@ old/new byte sizes and dimensions. Download-size limits remain independent.
 Formula 1 renderer revisions are advanced so managed renders can refresh through
 normal ownership policy; manual artwork is not forcibly rewritten.
 
-## Coordinating a separate Kometa container
+## Optional consumer coordination: explicit authorization required
 
-Both applications must use the same physical Kometa-root bind mount. MetaFusion
-holds `.metafusion/output.lock` during real Kometa-mode jobs. For the consumer,
+The Hubble installation keeps stock Kometa's original image, entrypoint and
+internal scheduler. Third-party container startup changes are outside its
+ownership boundary. `kometa_output_lock: 1` advertises a MetaFusion writer lock;
+it does not establish that an unmodified consumer participates. Preflight v2.1
+uses native activity observations and this writer lock, with schedule-based
+coordination rather than guaranteed consumer mutual exclusion.
+
+The launcher below is an optional tool, not installed or invoked automatically.
+It requires separate explicit permission to change the consumer's startup.
+If authorized, both applications must use the same physical Kometa-root bind
+mount. MetaFusion holds `.metafusion/output.lock` during real Kometa-mode jobs.
+For an explicitly opted-in consumer,
 run `tools/kometa_coordinator.py` using Kometa's Python runtime **instead of** its
 internal scheduler. It runs one `kometa.py --run` child at each local four-hour
 boundary, waits up to two hours for the shared lock, forwards termination signals,
@@ -210,9 +220,9 @@ launcher's `--python`/`--script` arguments as its own options.
 
 Copy the launcher from this repository to that mounted path. Preserve `TZ` and
 all existing container mounts/environment. This replaces the native scheduler;
-do not also invoke scheduled `--run` commands elsewhere. The host's preflight v2
-requires native capabilities, a fresh coordinator receipt and the same exclusive
-lock before editing personal overlay/collection templates. It does not rewrite
+do not also invoke scheduled `--run` commands elsewhere. The host's preflight v2.1 requires native MetaFusion capabilities and its writer
+lock before editing personal overlay/collection templates. It observes stock
+Kometa's run logs without installing a consumer launcher and does not rewrite
 generated metadata. Unraid backup/maintenance locks remain a host responsibility.
 
 When the RAM-backed heartbeat is absent after container recreation, runtime
