@@ -3,7 +3,6 @@
 import copy
 import hashlib
 import json
-import logging
 from pathlib import Path
 
 import yaml
@@ -65,39 +64,11 @@ class InventoryIndex:
         return False if identity[0] in self.complete else None
 
 
-def _import_legacy_catalogue(root, kind, markers, entries, pending):
-    if kind in markers:
-        return 0
-    path = root / ".preflight" / f"{kind}_metadata.yml.deferred.yml"
-    try:
-        source = path.read_bytes()
-    except FileNotFoundError:
-        return 0
-    except OSError as error:
-        logging.getLogger(__name__).warning(
-            "[Kometa] Legacy import pending | %s | %s | Native reconciliation continues; "
-            "will retry on the next eligible run.", path, error,
-        )
-        return 0
-
-    imported = yaml.safe_load(source) or {}
-    if not isinstance(imported, dict):
-        raise TypeError("Invalid legacy deferred catalogue; originals preserved")
-    additions = {}
-    for name, entry in imported.items():
-        if name not in entries and name not in pending and isinstance(entry, dict):
-            validate_metadata_document({"metadata": {name: entry}})
-            additions[name] = entry
-    pending.update(additions)
-    markers[kind] = hashlib.sha256(source).hexdigest()
-    return len(additions)
-
-
 def reconcile_kometa_metadata(config, inventories, *, complete):
     """Run even on incremental jobs, but never infer absence from partial scans.
 
-    Freshly generated entries establish ownership. The old preflight's deferred
-    catalogue is imported non-destructively; unowned active entries stay intact.
+    Freshly generated entries establish ownership. Restore deferred definitions
+    from the native catalogue and preserve unowned active entries.
     Persist a catalogue superset before replacing YAML, then compact afterwards.
     """
     result = {
@@ -125,7 +96,6 @@ def reconcile_kometa_metadata(config, inventories, *, complete):
     ):
         raise ValueError("Unsupported Kometa reconciliation catalogue; originals preserved")
     state = copy.deepcopy(state)
-    state.setdefault("legacy_imports", {})
     saved_state = copy.deepcopy(state)
 
     def persist_state():
@@ -149,9 +119,6 @@ def reconcile_kometa_metadata(config, inventories, *, complete):
         entries = document.get("metadata") or {}
         owned = state["owned"].setdefault(kind, {})
         pending = state["deferred"].setdefault(kind, {})
-        result["imported"] += _import_legacy_catalogue(
-            root, kind, state["legacy_imports"], entries, pending
-        )
         for name, claim in config.get("_kometa_generated_definitions", {}).get(kind, {}).items():
             if name in entries and entries[name].get("match") == claim["match"]:
                 owned[name] = copy.deepcopy(claim)

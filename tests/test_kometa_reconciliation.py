@@ -78,13 +78,18 @@ def test_partial_dry_run_and_plex_have_no_writes(tmp_path):
     assert path.read_bytes() == original and not (tmp_path / ".metafusion").exists()
 
 
-def test_legacy_import_durable_interruption_and_restore(tmp_path, monkeypatch):
+def seed_catalogue(root, deferred):
+    path = root / ".metafusion/metadata-reconciliation.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({
+        "schema": 1, "owned": {}, "deferred": {"movie": deferred},
+        "legacy_imports": {"movie": "previously-imported"},
+    }))
+
+
+def test_native_catalogue_durable_interruption_and_restore(tmp_path, monkeypatch):
     config, path, _, records = setup(tmp_path)
-    legacy = tmp_path / ".preflight/movie_metadata.yml.deferred.yml"
-    legacy.parent.mkdir()
-    legacy.write_text(
-        yaml.safe_dump({"Legacy": {"match": {"mapping_id": 2}, "summary": "retained"}})
-    )
+    seed_catalogue(tmp_path, {"Legacy": {"match": {"mapping_id": 2}, "summary": "retained"}})
     module.reconcile_kometa_metadata(config, records, complete=True)
     records[0]["tmdb_id"] = "2"
     writer = module.write_kometa_metadata
@@ -100,21 +105,14 @@ def test_legacy_import_durable_interruption_and_restore(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "write_kometa_metadata", writer)
     result = module.reconcile_kometa_metadata(config, records, complete=True)
     assert result["restored"] == 1 and "Legacy" in read(path)
-    assert legacy.exists()
 
 
-def test_corrupt_state_and_legacy_fail_closed(tmp_path):
+def test_corrupt_native_state_fails_closed(tmp_path):
     config, _path, _, records = setup(tmp_path)
     state = tmp_path / ".metafusion/metadata-reconciliation.json"
     state.parent.mkdir()
     state.write_text('{"schema":2}')
     with pytest.raises(ValueError):
-        module.reconcile_kometa_metadata(config, records, complete=True)
-    state.unlink()
-    legacy = tmp_path / ".preflight/movie_metadata.yml.deferred.yml"
-    legacy.parent.mkdir()
-    legacy.write_text("- invalid")
-    with pytest.raises(TypeError):
         module.reconcile_kometa_metadata(config, records, complete=True)
 
 
@@ -145,11 +143,7 @@ def test_exact_provider_and_edition_matching(match, kind, records, expected):
 
 def test_fresh_alias_wins_legacy_and_unknown_identity_is_preserved(tmp_path):
     config, path, _, records = setup(tmp_path)
-    legacy = tmp_path / ".preflight/movie_metadata.yml.deferred.yml"
-    legacy.parent.mkdir()
-    legacy.write_text(
-        yaml.safe_dump({"Old Alias": {"match": {"mapping_id": 1, "title": "Old Name"}}})
-    )
+    seed_catalogue(tmp_path, {"Old Alias": {"match": {"mapping_id": 1, "title": "Old Name"}}})
     result = module.reconcile_kometa_metadata(config, records, complete=True)
     assert result["restored"] == 0 and "Old Alias" not in read(path)
     assert module.InventoryIndex([]).present({"mapping_id": 1}, "movie") is None
@@ -158,40 +152,29 @@ def test_fresh_alias_wins_legacy_and_unknown_identity_is_preserved(tmp_path):
     assert module.reconcile_kometa_metadata(config, records, complete=True)["status"] == "ok"
 
 
-def test_permission_denied_retries_without_blocking_native_reconciliation(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize("kind", ["movie", "tv"])
+def test_native_reconciliation_never_probes_preflight(tmp_path, monkeypatch, kind):
     from pathlib import Path
 
-    config, path, _, records = setup(tmp_path)
-    legacy = tmp_path / ".preflight/movie_metadata.yml.deferred.yml"
-    legacy.parent.mkdir()
-    legacy.write_text("Legacy:\n  match:\n    mapping_id: 2\n")
-    state = tmp_path / ".metafusion/metadata-reconciliation.json"
-    records[0]["tmdb_id"] = "2"
-    original = Path.read_bytes
-
-    def denied(target):
-        if target == legacy:
-            raise PermissionError(13, "Permission denied", str(target))
-        return original(target)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, "read_bytes", denied)
-        result = module.reconcile_kometa_metadata(config, records, complete=True)
-    assert result["deferred"] == 1 and "Owned" not in read(path)
-    assert "movie" not in json.loads(state.read_text())["legacy_imports"]
-    assert "Legacy import pending" in caplog.text and str(legacy) in caplog.text
-    assert module.reconcile_kometa_metadata(config, records, complete=True)["restored"] == 1
-    assert "Legacy" in read(path)
+    config, path, _, records = setup(tmp_path, kind)
+    legacy_dir = tmp_path / ".preflight"
+    legacy_dir.mkdir()
+    (legacy_dir / f"{kind}_metadata.yml.deferred.yml").write_text("invalid: [")
+    provider = "tmdb_id" if kind == "movie" else "tvdb_id"
+    records[0][provider] = "2"
 
     def forbid_legacy(operation):
         def checked(target, *args, **kwargs):
-            assert legacy.parent not in target.parents, "Completed import accessed .preflight"
+            assert target != legacy_dir and legacy_dir not in target.parents
             return operation(target, *args, **kwargs)
         return checked
 
-    for method in ("stat", "open"):
+    for method in ("stat", "open", "iterdir"):
         monkeypatch.setattr(Path, method, forbid_legacy(getattr(Path, method)))
-    assert module.reconcile_kometa_metadata(config, records, complete=True)["imported"] == 0
+    assert module.reconcile_kometa_metadata(config, records, complete=True)["deferred"] == 1
+    records[0][provider] = "1"
+    assert module.reconcile_kometa_metadata(config, records, complete=True)["restored"] == 1
+    assert "Owned" in read(path)
 
 
 def test_hold_preserves_owned_and_manual_compound_edition(tmp_path):

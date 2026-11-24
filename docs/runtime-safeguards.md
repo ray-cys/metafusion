@@ -167,12 +167,10 @@ protected. Dry runs and incomplete/failed inventories do not reconcile.
 
 Absent owned definitions are preserved in
 `<Kometa root>/.metafusion/metadata-reconciliation.json`; exact returning targets
-can be restored without overwriting newer active aliases. The old
-`.preflight/*.deferred.yml` catalogues are imported non-destructively and retained
-as migration evidence. After a successful import, MetaFusion never probes that
-legacy file again while its import marker remains in the native catalogue. An
-unreadable legacy file logs a warning and stays pending for the next eligible
-run. Native reconciliation continues. Errors reading an existing native
+can be restored without overwriting newer active aliases. MetaFusion uses only this native catalogue.
+You can remove the legacy `.preflight` directory if no other script uses it.
+Previously imported definitions remain available in the native catalogue.
+Keep the `.metafusion` directory. Errors reading an existing native
 catalogue or active metadata file still stop reconciliation. A durable catalogue superset precedes YAML removal;
 restored YAML precedes catalogue compaction. The existing validated writer,
 backups, permissions and concurrent-change checks are reused. Unchanged catalogue
