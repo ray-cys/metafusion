@@ -223,11 +223,11 @@ def _apply(db, opened, item, code, resolved, evidence, stamp, run_id, changes):
     )
 
 
-def _audit_events(folder, after, cutoff, stem, report_type, fields):
+def _audit_events(folder, after, cutoff, stem, report_type, fields, receipts):
     # Read only the existing retained JSON reports; explicit diagnostic commands
     # keep their read-only database contract.
     for path in sorted(folder.glob(f"{stem}-[0-9]*.json")):
-        if path.name <= after:
+        if path.name in receipts:
             continue
         try:
             audit = json.loads(path.read_text(encoding="utf-8"))
@@ -241,7 +241,11 @@ def _audit_events(folder, after, cutoff, stem, report_type, fields):
             # An unreadable audit supplies no evidence about its subjects.
             yield path.name, None, []
             continue
-        if audit.get("report_type") != report_type or audit["generated_at"] < cutoff:
+        if audit.get("report_type") != report_type:
+            continue
+        if path.name <= after or audit["generated_at"] < cutoff:
+            # Validate historical input without replaying stale decisions over newer observations.
+            yield path.name, audit["generated_at"], []
             continue
         events = []
         for field in fields:
@@ -327,6 +331,11 @@ def publish_findings(config, success, *, path, base_dir, now=None):
             }
             changes = {"new": 0, "persistent": 0, "resolved": 0}
             audit_errors = []
+            previous = db.execute(
+                "SELECT state_value FROM application_state WHERE state_key='findings_audit_receipts'"
+            ).fetchone()
+            receipts = json.loads(previous[0]) if previous else {}
+            initial_count = len(receipts)
             for mode, stem, report_type, fields in (
                 (
                     "kometa",
@@ -341,18 +350,24 @@ def publish_findings(config, success, *, path, base_dir, now=None):
                     "SELECT state_value FROM application_state WHERE state_key=?", (cursor_key,)
                 ).fetchone()
                 for name, checked, events in _audit_events(
-                    folder, cursor[0] if cursor else "", cutoff, stem, report_type, fields
+                    folder, cursor[0] if cursor else "", cutoff, stem, report_type, fields, receipts
                 ):
                     if checked is None:
                         audit_errors.append(name)
                         continue
+                    receipts[name] = True
                     for record, operation, code, resolved, evidence in events:
                         item = _finding({"settings": {"mode": mode}}, record, operation)
                         _apply(db, opened, item, code, resolved, evidence, checked, run_id, changes)
                     db.execute(
                         "INSERT OR REPLACE INTO application_state(state_key,state_value,updated_at) VALUES(?,?,?)",
-                        (cursor_key, name, stamp),
+                        (cursor_key, max(name, cursor[0]) if cursor else name, stamp),
                     )
+            if len(receipts) != initial_count:
+                db.execute(
+                    "INSERT OR REPLACE INTO application_state VALUES(?,?,?)",
+                    ("findings_audit_receipts", json.dumps(receipts), stamp),
+                )
             observed = set()
             recoveries = {}
 

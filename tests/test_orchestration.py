@@ -550,7 +550,7 @@ def test_two_consecutive_dry_run_jobs_reinitialize_cleanly(monkeypatch):
     monkeypatch.setattr(metafusion, "begin_cache_session", lambda **_kwargs: None)
     monkeypatch.setattr(metafusion, "begin_tmdb_cache", lambda _config: None)
     monkeypatch.setattr(metafusion, "begin_plex_metadata_run", lambda _config: None)
-    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: None)
+    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config, **kwargs: None)
     monkeypatch.setattr(metafusion, "flush_cache", lambda: flushed.append("metadata"))
     monkeypatch.setattr(metafusion, "flush_tmdb_cache", lambda: flushed.append("tmdb"))
     monkeypatch.setattr(

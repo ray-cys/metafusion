@@ -1658,7 +1658,7 @@ settings:
   compose_order: 75
 - name: ADOPTION_AUDIT
   section: Runtime, incremental, cache, and output
-  description: Post-write artwork audit reporting policy. Anomalies reports only verification problems, all reports every verified write or adoption, and off suppresses this report without disabling verification.
+  description: Select evidence for on-demand artwork adoption reports. Anomalies records verification problems, all includes verified writes and adoptions, and off skips capture while verification continues.
   path:
   - output
   - adoption_audit

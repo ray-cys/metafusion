@@ -109,7 +109,7 @@ def test_scalar_tag_helpers_reporter_lifecycle_and_child_mapping(monkeypatch, tm
     monkeypatch.setattr(plex_metadata, "write_diagnostic_report", lambda *_a, **_k: tmp_path / "report.txt")
     monkeypatch.setattr(plex_metadata, "retain_diagnostic_reports", lambda *_a, **_k: None)
     plex_metadata._reporter = None
-    assert plex_metadata.finish_plex_metadata_run(config).name.startswith("plex-metadata-")
+    assert plex_metadata.finish_plex_metadata_run(config).name == "report.txt"
     monkeypatch.setattr(
         plex_metadata,
         "write_diagnostic_report",

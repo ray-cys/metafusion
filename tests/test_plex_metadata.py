@@ -556,7 +556,9 @@ def test_reporter_empty_report_retention_and_run_lifecycle(tmp_path, monkeypatch
     config["output"] = {"report_retention": 1}
     reports = tmp_path / "reports"
     reports.mkdir()
-    stale = reports / "plex-metadata-old.txt"
+    personal = reports / "plex-metadata-old.txt"
+    personal.write_text("personal notes", encoding="utf-8")
+    stale = reports / "plex-metadata-20200101-120000.txt"
     stale.write_text("old", encoding="utf-8")
 
     reporter = begin_plex_metadata_run(config)
@@ -568,6 +570,7 @@ def test_reporter_empty_report_retention_and_run_lifecycle(tmp_path, monkeypatch
     assert "no eligible metadata fields" in contents
     assert "No items required metadata changes" in contents
     assert not stale.exists()
+    assert personal.read_text() == "personal notes"
     replacement = get_plex_metadata_reporter(config)
     assert replacement is not reporter
     plex_metadata_module._reporter = None

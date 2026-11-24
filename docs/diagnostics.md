@@ -6,6 +6,35 @@ Commands that retain a report write only that report under `/config/reports`.
 Use the [complete command-line reference](operations.md#command-line-reference)
 for every public flag and supported value.
 
+## On-demand exports and retention
+
+By default, scheduled processing refreshes `/config/reports/findings-latest.json`.
+Review it for open issues and verified recoveries. Use `--export-report` to write a detailed file. For example, run
+`docker exec metafusion metafusion --export-report artwork-gaps` (substitute your container name).
+
+| Command | Evidence |
+| --- | --- |
+| `--export-report artwork-gaps` | Latest recorded gap snapshot, including runs with zero open gaps. |
+| `--export-report adoption-audit` | Most recent run with verification records meeting the adoption audit policy. |
+| `--export-report destination-history` | Most recent run that reconciled renamed artwork destinations. Exporting reads the saved decisions. |
+| `--export-report plex-metadata` | Latest recorded direct Plex metadata run, including field actions and policy skips. |
+| `--export-report unresolved-work` or `--identity-review-queue` | Current SQLite ledger or review queue. |
+
+The first four exports use a single replaceable SQLite snapshot per type. Check its
+observation time, especially after changing mode or disabling a feature. On upgrade,
+each snapshot becomes available after its first qualifying run. For a fresh live
+comparison use `--asset-audit`, `--metadata-audit`, `--plex-artwork-verify` or
+`--kometa-application-audit`. The optional dashboard and Formula 1 extension keep
+their own generation behavior.
+
+After the first successful non-dry job that publishes findings each UTC day,
+MetaFusion sweeps the core reports directory using `REPORT_RETENTION` (default 10)
+per type. Text and JSON companions count together, as do timestamped dashboard pairs.
+Only regular files matching a known MetaFusion report name and timestamp are eligible.
+Keep personal files under distinct names. Latest snapshots, subdirectories and
+symbolic links are excluded. Unconsumed verification JSON and its text companion
+are protected. Dry runs skip the sweep. Run-log counts and rotation are independent.
+
 ## Choose the right command
 
 | Need | Command | External access | Retained output |
@@ -333,10 +362,9 @@ TMDb/IMDb/TVDb/Plex identity fields. Choose either or both with `REPORT_FORMAT`.
 `both` (the default). `REPORT_RETENTION` keeps the newest logical reports
 independently for each report type; the default is `10`. The HTML dashboard
 always keeps its JSON data companion, and sanitized replay capture always keeps
-its required JSON payload. Routine processing additionally produces
-artwork-gap, destination-history, unresolved-work, post-application adoption,
-and Plex-metadata reports. The artwork-gap report is an always-present run
-snapshot, including an explicit zero-open result. It separates current
+its required JSON payload. Use the [on-demand exports](#on-demand-exports-and-retention) for artwork gaps,
+destination history, unresolved work, post-write adoption and Plex metadata.
+The recorded artwork-gap snapshot includes an explicit zero-open result. It separates current
 observations, carried-forward open work, and recently resolved history; its
 structured JSON form also records destination state and recheck timing. This applies
 to movie posters and backgrounds as well as show posters, backgrounds, and

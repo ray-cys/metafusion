@@ -9,7 +9,7 @@ from pathlib import Path
 from helper.config import BASE_CONFIG_DIR
 from helper.io import sha256_file
 from helper.plex import get_plex_metadata, load_plex_library_inventory
-from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
+from helper.reporting import write_diagnostic_report
 from helper.state_db import find_media_state, load_asset_ownership
 from modules.utils import analyze_image_content
 
@@ -237,5 +237,4 @@ def write_plex_artwork_verification_report(records, *, base_dir=None, retention=
         data={"entries": records},
         generated_at=generated,
     )
-    retain_diagnostic_reports(report_dir, "plex-artwork-verification", retention)
     return path

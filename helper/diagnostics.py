@@ -18,6 +18,7 @@ from helper.config import (
 )
 from helper.incremental import adaptive_artwork_days
 from helper.io import sha256_file
+from helper.report_archive import record_report
 from helper.report_identity import (
     item_report_record,
     item_report_records,
@@ -29,7 +30,10 @@ from helper.state_db import STATE_DATABASE
 from helper.tmdb_cache import PersistentTTLCache
 
 
-def _write_report(path, lines, report_type, data, retention):
+def _write_report(path, lines, report_type, data, retention, *, record_only=False):
+    if record_only:
+        record_report(path.name.rsplit("-", 2)[0], "\n".join(lines), data)
+        return None
     path = write_diagnostic_report(
         path,
         "\n".join(lines).rstrip() + "\n",
@@ -1005,6 +1009,7 @@ def write_artwork_gap_report(
     base_dir=None,
     retention=10,
     *,
+    record_only=False,
     persistent_records=None,
     recorded_gaps=None,
     cache=None,
@@ -1054,6 +1059,7 @@ def write_artwork_gap_report(
         "artwork_gaps",
         snapshot,
         retention,
+        record_only=record_only,
     )
 
 
@@ -1214,6 +1220,7 @@ def write_destination_history_report(
     base_dir=None,
     retention=10,
     *,
+    record_only=False,
     config=None,
 ):
     """Report and safely reconcile checksum-proven renamed managed artwork."""
@@ -1312,6 +1319,7 @@ def write_destination_history_report(
         "destination_history",
         {"entries": results},
         retention,
+        record_only=record_only,
     )
 
 
@@ -1364,7 +1372,7 @@ def write_unresolved_work_report(records, base_dir=None, retention=10):
     )
 
 
-def write_adoption_audit_report(records, base_dir=None, retention=10):
+def write_adoption_audit_report(records, base_dir=None, retention=10, *, record_only=False):
     """Report post-write local installation and ownership verification."""
     records = item_report_records(records)
     if not records:
@@ -1404,6 +1412,7 @@ def write_adoption_audit_report(records, base_dir=None, retention=10):
         "adoption_audit",
         {"summary": counts, "entries": records},
         retention,
+        record_only=record_only,
     )
 
 

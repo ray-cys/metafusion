@@ -15,6 +15,7 @@ from helper.build_info import build_info
 from helper.config import BASE_CONFIG_DIR
 from helper.database_maintenance import DATABASES, inspect_database
 from helper.io import atomic_write_json, atomic_write_text
+from helper.report_retention import trim_reports
 from helper.state_db import (
     STATE_DATABASE,
     load_cleanup_candidates,
@@ -373,20 +374,6 @@ document.getElementById('print').addEventListener('click',()=>window.print());
 </body></html>"""
 
 
-def _retain_dashboard_reports(report_dir, retention):
-    reports = sorted(
-        Path(report_dir).glob("metafusion-dashboard-[0-9]*.html"),
-        key=lambda candidate: (candidate.stat().st_mtime_ns, candidate.name),
-        reverse=True,
-    )
-    for stale in reports[max(1, int(retention)) :]:
-        for candidate in (stale, stale.with_suffix(".json")):
-            try:
-                candidate.unlink()
-            except OSError:
-                pass
-
-
 def write_dashboard_report(
     *, base_dir=None, retention=10, path=STATE_DATABASE, snapshot=None
 ):
@@ -409,5 +396,5 @@ def write_dashboard_report(
     atomic_write_json(report.with_suffix(".json"), companion)
     atomic_write_text(latest, rendered)
     atomic_write_json(latest.with_suffix(".json"), latest_companion)
-    _retain_dashboard_reports(report_dir, retention)
+    trim_reports(report_dir, retention, {}, stem="metafusion-dashboard")
     return report

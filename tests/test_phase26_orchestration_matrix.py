@@ -408,7 +408,7 @@ def _patch_job_services(monkeypatch, tmp_path, *, fail_job=None):
             raise fail_job
 
     monkeypatch.setattr(metafusion, "metafusion_main", job)
-    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: tmp_path / "plex.txt")
+    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config, **kwargs: tmp_path / "plex.txt")
     monkeypatch.setattr(
         metafusion, "write_dashboard_report", lambda **_kwargs: tmp_path / "dashboard.html"
     )
@@ -548,7 +548,7 @@ def test_run_job_degrades_optional_reports_and_maintenance(monkeypatch, tmp_path
     monkeypatch.setattr(
         metafusion,
         "finish_plex_metadata_run",
-        lambda _config: (_ for _ in ()).throw(OSError("plex report")),
+        lambda _config, **kwargs: (_ for _ in ()).throw(OSError("plex report")),
     )
     assert metafusion.run_metafusion_job(config, logging.getLogger("plex-report")) is False
 

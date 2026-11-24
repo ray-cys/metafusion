@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from helper.io import atomic_write_json, atomic_write_text
+from helper.report_retention import REPORT_TYPES, trim_reports
 
 REPORT_SCHEMA_VERSION = 1
 REPORT_FORMATS = frozenset({"text", "json", "both"})
@@ -64,6 +65,9 @@ def retain_diagnostic_reports(report_dir, stem, retention, *, output_format=None
     """Retain configured report representations as logical report units."""
     report_dir = Path(report_dir)
     keep = max(1, int(retention))
+    if stem in REPORT_TYPES:
+        trim_reports(report_dir, keep, {}, stem=stem)
+        return
     selected = report_format() if output_format is None else str(output_format)
     if selected == "json":
         json_reports = sorted(

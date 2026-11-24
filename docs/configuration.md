@@ -113,7 +113,7 @@ creating the two required user credentials.
 | `SCHEDULE_CATCH_UP_MAX_HOURS` | `24` | Maximum age of a missed slot eligible for startup catch-up. |
 | `RUN_TIMES` | `06:00,18:30` | Comma-separated daily `HH:MM` times. |
 | `TZ` | `UTC` | Timezone used by the scheduler. |
-| `DRY_RUN` | `False` | Calculate without normal writes/deletions. A direct Plex metadata dry-run still writes a redacted audit report. |
+| `DRY_RUN` | `False` | Calculate without normal writes/deletions. Use `--metadata-audit` for a detailed preview. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `LOG_MAX_MB` | `10` | Split an individual run log before it exceeds this many MiB; `0` keeps every run in exactly one file. |
 | `LOG_BACKUP_COUNT` | `14` | Number of newest per-run log groups retained. |
@@ -204,7 +204,7 @@ Do not use Compose `user:` or Docker `--user`; those options bypass
 | `OUTPUT_BACKUP_COUNT` | `3` | Kometa metadata backups retained per file. |
 | `REPORT_RETENTION` | `10` | Number of reports retained per report type under `/config/reports`, including Plex metadata and read-only diagnostics. |
 | `REPORT_FORMAT` | `both` | Write conventional diagnostic reports as `text`, `json`, or `both`. The offline dashboard and sanitized replay keep their required structured companions. |
-| `ADOPTION_AUDIT` | `anomalies` | Report only abnormal post-write artwork verification; use `all` for every verification or `off` to suppress this report without disabling verification or unresolved-work tracking. |
+| `ADOPTION_AUDIT` | `anomalies` | Record only abnormal post-write artwork verification for on-demand export; use `all` for every verification or `off` to suppress this report without disabling verification or unresolved-work tracking. |
 | `DASHBOARD_ENABLED` | `False` | Refresh the offline HTML dashboard automatically after successful non-dry runs. The explicit `--dashboard-report` command remains available when false. |
 | `ALLOW_AMBIGUOUS_EDITIONS` | `False` | Permit unsafe duplicate-edition matching. Leave false unless accepting that risk. |
 | `COMPATIBILITY_PROFILE` | `auto` | Select the declared output contract from `RUN_MODE`; explicit `kometa-2.4` or `plex-api-v1` values must match the mode. |

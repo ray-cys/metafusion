@@ -116,9 +116,8 @@ warnings.
 provider, provider image ID when available, selection reason, candidate count,
 and provider stages attempted, including the missing-only relaxed stage when it
 is eligible. `--explain-item` reports the saved provider and
-destinations but does not perform live candidate scoring. When every stage
-fails, `/config/reports/artwork-gaps-*.txt` retains the bounded
-missing/preserved entry. A successful non-dry run now writes this report even
+destinations but does not perform live candidate scoring. After processing, use
+`--export-report artwork-gaps` to export the last recorded gap snapshot, even
 when the open count is zero. Its sections distinguish gaps observed during the
 current run, open gaps carried forward from durable SQLite state, and recently
 resolved gaps. Per-library warnings show persistent open and not-due counts,

@@ -15,7 +15,7 @@ from helper.plex import get_plex_metadata, load_plex_library_inventory
 from helper.plex_artwork_verification import verify_plex_artwork
 from helper.plex_metadata import TAG_ATTRIBUTES, _existing_children
 from helper.report_identity import item_report_record, item_report_records
-from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
+from helper.reporting import write_diagnostic_report
 from modules.kometa import validate_metadata_document
 
 SCALAR_ATTRIBUTES = {
@@ -359,7 +359,6 @@ def write_kometa_application_report(
         data=data,
         generated_at=generated,
     )
-    retain_diagnostic_reports(report_dir, "kometa-application-audit", retention)
     return path
 
 

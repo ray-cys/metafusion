@@ -103,6 +103,7 @@ or `config.yml` values.
 | Diagnostics | `--explain-item` | None | Run a standalone unified item explanation covering identity, scheduled selection, policies, TV mapping, retries, cached artwork source, and destinations. Requires `--rating-key`; writes only a report. |
 | Diagnostics | `--compatibility-check` | None | Test connectors, paths, and the configured Kometa/Plex output contract, write a compatibility report, and exit. |
 | Diagnostics | `--status` | None | Print current runtime status and recent durable job history as JSON, then exit. |
+| Diagnostics | `--export-report` | `artwork-gaps`, `adoption-audit`, `destination-history`, `plex-metadata`, `unresolved-work` | Export recorded evidence from SQLite. See [on-demand exports and retention](diagnostics.md#on-demand-exports-and-retention). |
 | Diagnostics | `--problems` | None | Print the persistent open unresolved-work ledger as JSON without contacting Plex or an artwork provider. |
 | Diagnostics | `--support-report` | None | Perform a local value-free configuration/build/state inventory, write it under `/config/reports`, and exit without contacting providers. |
 | Diagnostics | `--capture-replay` | None | Capture sanitized support data for items selected by `--rating-key`; writes a text manifest and JSON companion without changing metadata, artwork, or state. |
@@ -478,8 +479,8 @@ DRY_RUN=True
 ```
 
 Run one job and review the final report. Restore normal values afterward. A
-dry run does not update YAML, artwork, cache, or durable state. Direct Plex
-metadata dry runs retain one redacted audit report as the deliberate exception.
+dry run leaves YAML, artwork, cache and durable state untouched. Use
+`--metadata-audit` to generate a detailed preview.
 
 Real cleanup moves eligible checksum-proven managed artwork to
 `/config/quarantine/cleanup` instead of deleting it immediately. The default
@@ -631,8 +632,8 @@ Shared reports and logs are:
 ```
 
 Artwork-gap reports identify missing/rejected artwork and identity failures.
-A successful non-dry job always writes one, including when the open count is
-zero. It combines current-run observations with open SQLite-ledger records and
+A processing run records the snapshot in SQLite, including a zero open count.
+Use `--export-report artwork-gaps` to write it to the reports directory. It combines current-run observations with open SQLite-ledger records and
 pre-ledger missing evidence already recorded in media state. Current,
 carried-forward, not-due, and recently resolved counts are logged and retained;
 the report also records the last check, next recheck, and recorded destination
@@ -656,8 +657,7 @@ Automatic HTML-dashboard refresh is disabled by default. Set
 `output.dashboard_enabled: true` or `DASHBOARD_ENABLED=True` to refresh it
 after successful non-dry runs; `--dashboard-report` always works on demand.
 
-Post-write artwork verification always runs. `ADOPTION_AUDIT=anomalies` writes
-an adoption report only for checksum mismatches, missing destinations, or
+Post-write artwork verification always runs. `ADOPTION_AUDIT=anomalies` records evidence for the on-demand adoption export only for checksum mismatches, missing destinations, or
 verification failures; `all` also reports successful verified writes and
 adoptions; `off` suppresses only this report. An abnormal verification is also
 added to the persistent artwork-gap/unresolved-work ledger regardless of this
@@ -789,7 +789,7 @@ The run summary also reconciles artwork destinations evaluated during that run
 as present or absent and separates current installed sources from write sources
 for the run. The older standalone per-library summary
 blocks are intentionally omitted. Plex locked-field, conflict, and write-limit
-totals are warnings; the corresponding `plex-metadata-*.txt` report retains
+totals are warnings; `--export-report plex-metadata` exports
 field-level audit details.
 
 Startup records use human-readable `Label: value` fields and are not padded or

@@ -317,7 +317,7 @@ PLEX_METADATA_MAX_WRITES_PER_RUN=25
 DRY_RUN=True
 ```
 
-Review `/config/reports/plex-metadata-*.txt`, then disable dry-run and increase
+Use `--metadata-audit` for a fresh detailed preview, then disable dry-run and increase
 the cap gradually. Reports contain field names and outcomes, not metadata
 summaries, tokens, or API keys.
 

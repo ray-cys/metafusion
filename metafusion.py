@@ -142,6 +142,7 @@ from helper.recovery import (
     create_recovery_bundle,
     verify_recovery_bundle,
 )
+from helper.report_archive import RECORDED_REPORTS, export_recorded_report, sweep_reports
 from helper.reporting import configure_reporting
 from helper.run_history import write_run_history_report
 from helper.runtime import (
@@ -495,6 +496,7 @@ def parse_cli_args(argv=None):
         choices=["list", "set", "remove"],
         help="List or maintain an explicit Plex-item to TMDb identity override",
     )
+    parser.add_argument("--export-report", choices=(*RECORDED_REPORTS,"unresolved-work"), help="Export recorded evidence without contacting providers")
     parser.add_argument(
         "--identity-review-queue",
         action="store_true",
@@ -1931,7 +1933,7 @@ def run_metafusion_job(config, logger, runtime_status=None):
         _active_task = None
         try:
             try:
-                report_path = finish_plex_metadata_run(config)
+                report_path = finish_plex_metadata_run(config, record_only=True)
                 if report_path:
                     logger.info(
                         "[Diagnostics] Plex metadata report saved to %s",
@@ -1943,7 +1945,6 @@ def run_metafusion_job(config, logger, runtime_status=None):
                 log_main_event("main_unhandled_exception", error=error, logger=logger)
             if not config.get("settings", {}).get("dry_run", False):
                 try:
-                    retention = report_retention(config)
                     cache_snapshot = dict(load_cache().items())
                     recorded_gaps = recorded_missing_artwork_gaps(
                         cache_snapshot,
@@ -1965,62 +1966,17 @@ def run_metafusion_job(config, logger, runtime_status=None):
                         cache=cache_snapshot,
                         config=config,
                     )
-                    gap_report = write_artwork_gap_report(
-                        config.get("_artwork_gaps"),
-                        retention=retention,
-                        snapshot=gap_snapshot,
-                    )
-                    log_artwork_gap_snapshot(
-                        logger,
-                        gap_snapshot,
-                        gap_report,
-                    )
-                    destination_report = write_destination_history_report(
-                        cache_snapshot,
-                        retention=retention,
-                        config=config,
-                    )
-                    if destination_report:
-                        logger.info(
-                            "[Diagnostics] Artwork destination history saved to %s",
-                            destination_report,
-                        )
-                    identity_reviews = reconcile_identity_reviews(
-                        config.get("_artwork_gaps")
-                    )
-                    if identity_reviews:
-                        review_report = write_identity_review_report(
-                            load_identity_reviews(statuses=["open"]),
-                            retention=retention,
-                        )
-                        logger.info(
-                            "[Diagnostics] Identity review queue saved to %s",
-                            review_report,
-                        )
-                    ledger_report = write_unresolved_work_report(
-                        ledger,
-                        retention=retention,
-                    )
-                    if ledger_report:
-                        logger.info(
-                            "[Diagnostics] Unresolved-work ledger saved to %s",
-                            ledger_report,
-                        )
+                    write_artwork_gap_report(config.get("_artwork_gaps"), snapshot=gap_snapshot, record_only=True)
+                    log_artwork_gap_snapshot(logger, gap_snapshot, "--export-report artwork-gaps")
+                    write_destination_history_report(load_cache(), config=config, record_only=True)
+                    reconcile_identity_reviews(config.get("_artwork_gaps"))
                     audit_policy = config.get("output", {}).get(
                         "adoption_audit", "anomalies"
                     )
                     audit_records = adoption_audit_records(
                         config.get("_adoption_audit_records"), audit_policy
                     )
-                    adoption_report = write_adoption_audit_report(
-                        audit_records,
-                        retention=retention,
-                    )
-                    if adoption_report:
-                        logger.info(
-                            "[Diagnostics] Post-application adoption audit saved to %s",
-                            adoption_report,
-                        )
+                    write_adoption_audit_report(audit_records, record_only=True)
                 except (OSError, StateDatabaseError) as caught:
                     logger.warning(
                         "[Diagnostics] Unable to complete persistent reports: %s",
@@ -2162,6 +2118,13 @@ def run_metafusion_job(config, logger, runtime_status=None):
                                 counts["new"], counts["persistent"], counts["resolved"], counts["not_rechecked"])
                 except (OSError, StateDatabaseError, sqlite3.Error, ValueError) as caught:
                     logger.warning("[Findings] Export unavailable; check the snapshot timestamp | %s", caught)
+                else:
+                    if success:
+                        try:
+                            removed = sweep_reports(BASE_CONFIG_DIR, report_retention(config), path=STATE_DATABASE)
+                            logger.debug("[Maintenance] Expired diagnostic report files removed: %d", removed)
+                        except (OSError, StateDatabaseError) as caught:
+                            logger.warning("[Maintenance] Report cleanup deferred | %s", caught)
             if runtime_status:
                 metrics = performance_tracker.snapshot()
                 cleanup_result = config.get("_cleanup_result")
@@ -2254,12 +2217,19 @@ async def plex_artwork_verification_connectors(config, rating_keys):
 
 def _handle_sqlite_only_command(args):
     retention = max(1, int(getattr(args, "_report_retention", 10)))
+    if args.export_report:
+        if args.export_report == "unresolved-work":
+            report = write_unresolved_work_report(load_unresolved_work(path=STATE_DATABASE), retention=retention)
+        else:
+            report = export_recorded_report(args.export_report, BASE_CONFIG_DIR, path=STATE_DATABASE)
+        print(f"Report saved to {report}" if report else "No recorded evidence for this report yet.")
+        return 0
     if args.upgrade_canary_report:
         report = write_upgrade_canary_report_from_state(retention=retention)
         print(f"Upgrade canary report saved to {report}")
         return 0
     if args.dashboard_report:
-        report = write_dashboard_report(path=STATE_DATABASE)
+        report = write_dashboard_report(path=STATE_DATABASE, retention=retention)
         print(f"Offline diagnostics dashboard saved to {report}")
         return 0
     if args.state_report:
@@ -2270,6 +2240,7 @@ def _handle_sqlite_only_command(args):
             media_types=["tv" if value == "show" else value for value in (args.media_type or [])],
             section=args.state_section,
             include_items=args.include_state_items,
+            retention=retention,
         )
         print(f"SQLite state report saved to {report}")
         return 0
@@ -2278,11 +2249,12 @@ def _handle_sqlite_only_command(args):
             libraries=_cli_values(args.library),
             rating_keys=_cli_values(args.rating_key),
             sources=args.history_source,
+            retention=retention,
         )
         print(f"Cleanup history report saved to {report}")
         return 0
     if args.cleanup_quarantine_report:
-        report = write_quarantine_report()
+        report = write_quarantine_report(retention=retention)
         print(f"Cleanup quarantine report saved to {report}")
         return 0
     if args.identity_review_queue:
@@ -2290,7 +2262,7 @@ def _handle_sqlite_only_command(args):
             libraries=_cli_values(args.library),
             rating_keys=_cli_values(args.rating_key),
         )
-        report = write_identity_review_report(records)
+        report = write_identity_review_report(records, retention=retention)
         print(f"Identity review report saved to {report}")
         return 0
     if args.verify_recovery:
@@ -2554,6 +2526,7 @@ def main(argv=None):
         return 77
     args = parse_cli_args(argv)
     new_primary_commands = [
+        args.export_report,
         args.state_report,
         args.dashboard_report,
         args.cleanup_history_report,
@@ -2677,6 +2650,7 @@ def main(argv=None):
         return 2
     sqlite_only = any(
         (
+            args.export_report,
             args.state_report,
             args.dashboard_report,
             args.cleanup_history_report,

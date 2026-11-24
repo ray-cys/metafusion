@@ -10,6 +10,7 @@ from helper.config import BASE_CONFIG_DIR, mode_check, report_retention
 from helper.identity import cache_key_for_meta
 from helper.logging import format_fields
 from helper.metadata_provenance import provenance_record
+from helper.report_archive import record_report
 from helper.report_identity import item_report_record
 from helper.reporting import retain_diagnostic_reports, write_diagnostic_report
 from helper.state_db import (
@@ -219,7 +220,7 @@ class PlexMetadataReporter:
     def writes(self):
         return self._writes
 
-    def write(self, base_dir=None):
+    def write(self, base_dir=None, *, record_only=False):
         if not self.enabled:
             return None
         if self.audit_mode:
@@ -251,22 +252,21 @@ class PlexMetadataReporter:
                 lines.append(
                     f"- [{library}] {title} | {child} | {field}: {action}{suffix}"
                 )
-        written_path = write_diagnostic_report(
-            path,
-            "\n".join(lines),
-            report_type="plex_metadata",
-            data={
-                "policy": self.policy,
-                "dry_run": self.dry_run,
-                "writes": self.writes,
-                "write_limit": self.max_writes,
-                "summary": dict(self.counts),
-                "items": self.item_entries,
-            },
-        )
-        if written_path.suffix == ".json":
-            path = written_path
-        retain_diagnostic_reports(report_dir, "plex-metadata", self.retention)
+        data = {
+            "policy": self.policy,
+            "dry_run": self.dry_run,
+            "writes": self.writes,
+            "write_limit": self.max_writes,
+            "summary": dict(self.counts),
+            "items": self.item_entries,
+        }
+        if record_only:
+            if not self.dry_run:
+                record_report("plex-metadata", "\n".join(lines), data)
+            path = None
+        else:
+            path = write_diagnostic_report(path, "\n".join(lines), report_type="plex_metadata", data=data)
+            retain_diagnostic_reports(report_dir, "plex-metadata", self.retention)
         logger = logging.getLogger(__name__)
         logger.debug(
             "[Metadata] Plex report | %s",
@@ -282,7 +282,7 @@ class PlexMetadataReporter:
                 ),
                 ("Source missing", self.counts.get("source_missing", 0)),
                 ("Failed", self.counts.get("failed", 0)),
-                ("Report", path),
+                ("Report", path or "--export-report plex-metadata"),
             ),
         )
         safety_counts = {
@@ -300,7 +300,7 @@ class PlexMetadataReporter:
                         safety_counts["conflicts preserved"],
                     ),
                     ("Write-limit skips", safety_counts["write-limit skips"]),
-                    ("Report", path),
+                    ("Report", path or "--export-report plex-metadata"),
                 ),
             )
         if self.dry_run:
@@ -323,14 +323,14 @@ def begin_plex_metadata_run(config):
     return _reporter
 
 
-def finish_plex_metadata_run(config):
+def finish_plex_metadata_run(config, *, record_only=False):
     global _reporter
     reporter = _reporter
     _reporter = None
     if reporter is None:
         reporter = PlexMetadataReporter(config)
     reporter.queue_provenance(config)
-    return reporter.write()
+    return reporter.write(record_only=record_only)
 
 
 def get_plex_metadata_reporter(config):

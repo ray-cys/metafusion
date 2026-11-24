@@ -876,7 +876,7 @@ def test_successful_job_commits_canary_and_change_checkpoint_last(monkeypatch, t
     monkeypatch.setattr(
         metafusion, "finish_run_file_logging", lambda *_args, **_kwargs: None
     )
-    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config: None)
+    monkeypatch.setattr(metafusion, "finish_plex_metadata_run", lambda _config, **kwargs: None)
     monkeypatch.setattr(metafusion, "write_artwork_gap_report", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         metafusion, "write_destination_history_report", lambda *_args, **_kwargs: None
