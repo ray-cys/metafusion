@@ -227,3 +227,42 @@ def test_release_documentation_explains_operational_automation():
         "AMD64 and ARM64",
     ):
         assert phrase in docs
+
+
+def test_canary_github_quota_and_token_scope(monkeypatch):
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    import pytest
+
+    canary = _load_script("provider_canary.py")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-only")
+    monkeypatch.setattr(canary.time, "time", lambda: 100)
+    sleeps = []
+    calls = []
+    monkeypatch.setattr(canary.time, "sleep", sleeps.append)
+
+    def reject(request, timeout):
+        calls.append(request)
+        raise HTTPError(request.full_url, 403, "Forbidden", headers, BytesIO())
+
+    monkeypatch.setattr(canary, "urlopen", reject)
+    for headers, expected_delays in [
+        ({"Retry-After": "3"}, [3, 3]),
+        ({"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "105"}, [6, 6]),
+        ({"Retry-After": "900"}, []),
+        ({}, []),
+    ]:
+        calls.clear()
+        sleeps.clear()
+        with pytest.raises(canary.CanaryError, match="403") as exc:
+            canary.check_circuit_source()
+        assert sleeps == expected_delays
+        assert len(calls) == (len(sleeps) + 1 if headers else 2)
+        assert isinstance(exc.value, canary.GitHubThrottled) == bool(headers)
+        assert all(req.get_header("Authorization") == "Bearer test-only" for req in calls)
+        assert all("Authorization" not in req.headers for req in calls)
+
+    with pytest.raises(canary.CanaryError):
+        canary._request("SVG", "https://raw.githubusercontent.com/example/circuit.svg")
+    assert calls[-1].get_header("Authorization") is None
