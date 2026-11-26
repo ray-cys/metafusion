@@ -40,6 +40,24 @@ class CanaryError(RuntimeError):
     """Raised when a live provider violates the bounded canary contract."""
 
 
+class GitHubThrottled(CanaryError):
+    """Both circuit manifests share the same GitHub API quota."""
+
+
+def _github_retry_delay(headers):
+    if "Retry-After" in headers:
+        try:
+            return max(0, int(headers["Retry-After"]))
+        except ValueError:
+            return 60
+    if headers.get("X-RateLimit-Remaining") == "0":
+        try:
+            return max(1, int(headers["X-RateLimit-Reset"]) - int(time.time()) + 1)
+        except (KeyError, ValueError):
+            return 60
+    return None
+
+
 def _redact(value, secrets):
     text = str(value)
     for secret in secrets:
@@ -68,7 +86,10 @@ def _request(
     for attempt in range(1, max(1, int(attempts)) + 1):
         started = time.monotonic()
         try:
-            with urlopen(Request(url, headers=request_headers), timeout=20) as response:
+            request = Request(url, headers=request_headers)
+            if path in CIRCUIT_MANIFESTS and (token := os.environ.get("GITHUB_TOKEN")):
+                request.add_unredirected_header("Authorization", f"Bearer {token}")
+            with urlopen(request, timeout=20) as response:
                 status = int(response.status)
                 body = response.read(maximum_bytes + 1)
                 response_headers = response.headers
@@ -83,6 +104,19 @@ def _request(
                 body = error.read(maximum_bytes + 1)
                 return status, body, error.headers, time.monotonic() - started
             last_error = CanaryError(f"{provider} returned HTTP {status}")
+            if path in CIRCUIT_MANIFESTS and status in (403, 429):
+                delay = _github_retry_delay(error.headers)
+                if delay is None and status == 429:
+                    delay = 60
+                if delay is not None:
+                    error.close()
+                    if attempt < attempts and delay <= 60:
+                        time.sleep(delay)
+                        continue
+                    raise GitHubThrottled(
+                        f"{provider} throttled by GitHub (HTTP {status}, retry in {delay}s, "
+                        f"attempt {attempt}/{attempts})"
+                    ) from None
             if status == 429 and attempt < attempts:
                 try:
                     retry_after = float(error.headers.get("Retry-After", "1"))
@@ -299,6 +333,8 @@ def check_circuit_source():
                     }
                 except CanaryError as error:
                     failures.append(str(error))
+        except GitHubThrottled:
+            raise
         except (CanaryError, ValueError) as error:
             failures.append(str(error))
     raise CanaryError(f"all circuit sources failed: {'; '.join(failures)}")

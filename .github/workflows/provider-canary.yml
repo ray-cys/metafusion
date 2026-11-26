@@ -44,6 +44,7 @@ jobs:
 
       - name: Run bounded read-only provider checks
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           TMDB_CANARY_API_KEY: ${{ secrets.TMDB_CANARY_API_KEY }}
           REQUIRE_TMDB: ${{ inputs.require_tmdb || false }}
         shell: bash
