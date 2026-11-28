@@ -34,6 +34,9 @@ def inspect_inventory(scope, records, *, accept=None, full=False, writable=False
         status = "initializing"
     if full and writable and (previous is None or current != previous["items"]):
         save_application_record(key, {"generation": uuid4().hex, "items": current}, path=path)
+    elif writable and previous is not None and current.keys() - previous["items"].keys():
+        # An incremental scan can prove presence. Only a full scan can retire a key.
+        save_application_record(key, {"generation": uuid4().hex, "items": previous["items"] | current}, path=path)
     return {"status": status}
 
 

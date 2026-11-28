@@ -40,7 +40,7 @@ with relevant Plex/provider IDs, destination, checksum, action, and reason.
 
 ## Cleanup confirmation, grace, and history
 
-Cleanup still requires a successful authoritative full inventory. A missing
+Cleanup requires a verified full inventory for the affected library. A sibling library may run incrementally. Shared outputs require complete inventory or unique ownership with the sibling inventory protected. Global quarantine expiry waits for a complete cleanup scope. A missing
 item is recorded as pending, not immediately deleted. Defaults require two
 separate full scans and 48 hours from first detection. A returning item cancels
 the candidate:

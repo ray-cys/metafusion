@@ -132,7 +132,7 @@ async def cleanup_title_orphans(
         1, int(cleanup_config.get("confirmation_scans", 2))
     )
     grace_hours = max(0.0, float(cleanup_config.get("grace_hours", 48.0)))
-    if not dry_run and not config.get("_held_inventory_scopes"):
+    if not dry_run and not config.get("_held_inventory_scopes") and not config.get("_partial_inventory_run"):
         try:
             purged = purge_expired_quarantine(config, source="automated")
             purge_count = sum(
@@ -163,6 +163,7 @@ async def cleanup_title_orphans(
             metadata_key_for_meta(meta)
             for meta in safe_metadata
             if normalize_library_type(meta.get("library_type")) == "tv"
+            and not (partial_scopes.get("tv") and str(meta.get("ratingKey")) in partial_scopes["tv"].protected_keys)
             and not isinstance(meta.get("seasons_episodes"), dict)
         ]
         if incomplete_shows:

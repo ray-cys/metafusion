@@ -155,6 +155,7 @@ from helper.runtime import (
     validate_runtime_identity,
     validate_runtime_paths,
 )
+from helper.scan_planner import LibraryObservation, quiet_opportunity, scan_deadline, schedule_after
 from helper.state_db import (
     SCHEMA_VERSION as STATE_SCHEMA_VERSION,
 )
@@ -1228,7 +1229,14 @@ async def metafusion_main(config, logger):
                 )
             run_feature_flags = dict(feature_flags)
             cleanup_skip_reason = None
-            all_full_scan = False
+            observations = {}
+            durations = {}
+            slot = config.get("_scheduled_slot")
+            slots = config.get("settings", {}).get("run_times", []) if config.get("settings", {}).get("schedule") else []
+            interval_hours = max(1.0, float(config.get("incremental", {}).get("full_scan_interval_hours", 168)))
+            adaptive = not (targeted or explain_selection or execution.get("library_audit")
+                            or feature_flags.get("dry_run"))
+            config["_scan_summary"] = []
 
             missing_discovered_libraries = []
             if config.get("_library_discovery_auto", False):
@@ -1292,7 +1300,7 @@ async def metafusion_main(config, logger):
                             scan_decisions[
                                 (scope["server_id"], scope["library_uuid"])
                             ] = True
-                all_full_scan = bool(scan_decisions) and all(scan_decisions.values())
+                            scope["scan_reason"] = "missing Kometa output"
                 if targeted and feature_flags.get("cleanup", False):
                     cleanup_skip_reason = (
                         "targeted run; full reconciliation requires every configured "
@@ -1304,12 +1312,6 @@ async def metafusion_main(config, logger):
                         cleanup_skip_reason = (
                             "previously discovered Plex library unavailable; cleanup "
                             "requires a complete stable inventory"
-                        )
-                    run_feature_flags["cleanup"] = False
-                elif not all_full_scan:
-                    if feature_flags.get("cleanup", False):
-                        cleanup_skip_reason = (
-                            "incremental run; full reconciliation required"
                         )
                     run_feature_flags["cleanup"] = False
                 section_inventory_records = {}
@@ -1591,12 +1593,30 @@ async def metafusion_main(config, logger):
                             for candidate in scan_scopes
                             if candidate["library_name"] == section.title
                         )
-                        section_full_scan = scan_decisions.get(
-                            (scope["server_id"], scope["library_uuid"]), True
-                        )
-                        if (section_full_scan and not targeted and not failures and not missing_discovered_libraries
+                        key = (scope["server_id"], scope["library_uuid"])
+                        section_full_scan = scan_decisions.get(key, True)
+                        if execution.get("full_scan"):
+                            scope["scan_reason"] = "requested full scan"
+                        elif tmdb_change_plan.get("force_full_scan"):
+                            scope["scan_reason"] = "TMDb baseline required"
+                        if adaptive and not missing_discovered_libraries:
+                            observation = LibraryObservation(scope, section_inventory_records[section.title])
+                            observations[section.title] = observation
+                            if observation.valid and not section_full_scan:
+                                if observation.confirm:
+                                    scope["scan_reason"] = "confirm observed disappearance"
+                                    section_full_scan = True
+                                elif quiet_opportunity(observation.history, slot, slots,
+                                                       start_time, scan_deadline(scope, interval_hours), interval_hours):
+                                    scope["scan_reason"] = "quieter scheduled slot near deadline"
+                                    section_full_scan = True
+                                scan_decisions[key] = section_full_scan
+                        if ((section_full_scan or (section.title in observations and observations[section.title].missing))
+                                and not targeted and not failures and not missing_discovered_libraries
                                 and not execution.get("library_audit") and not explain_selection
                                 and not feature_flags.get("dry_run") and getattr(section, "type", None) == "movie"
+                                and all(lib["title"] in section_inventory_records for lib in all_libraries
+                                        if normalize_library_type(lib.get("type")) == "movie")
                                 and inspect_inventory(scope, section_inventory_records[section.title])["status"] == "trusted"):
                             context = movie_rebind_context(library_config, scope, section_inventory_records)
                             asset_destination_registry.reconcile_departed_movies(context, cache_store)
@@ -1637,6 +1657,7 @@ async def metafusion_main(config, logger):
                                 .get(section.title, set()),
                             )
                         finally:
+                            durations[section.title] = time.monotonic() - library_started
                             performance = tracker_for(config)
                             if performance:
                                 performance.add_duration(
@@ -1682,12 +1703,6 @@ async def metafusion_main(config, logger):
                                 library_summary.get("incremental_skipped", 0)
                             ),
                         }
-                        if not targeted and not explain_selection:
-                            mark_library_scan_complete(
-                                [scope],
-                                full_scan=section_full_scan,
-                                dry_run=feature_flags.get("dry_run", False),
-                            )
                     except asyncio.CancelledError:
                         raise
                     except Exception as error:
@@ -1711,11 +1726,11 @@ async def metafusion_main(config, logger):
                             ),
                         }
 
-            scanned_names = {s.title for s in successful_sections}
+            scanned_names = {s.title for s in successful_sections if not library_results[s.title]["items_failed"]}
             reports, held = evaluate_inventories(
                 config, [s for s in scan_scopes if s["library_name"] in scanned_names],
                 section_inventory_records, scan_decisions, logger,
-                writable=not (targeted or failures or missing_discovered_libraries
+                writable=not (targeted or explain_selection or execution.get("library_audit") or missing_selected or missing_discovered_libraries
                               or config.get("settings", {}).get("dry_run", False)),
             )
             config["_findings_guard"] = reports
@@ -1728,7 +1743,34 @@ async def metafusion_main(config, logger):
             config["_held_inventory_scopes"] = {reconciliation_scopes[name] for name in held}
             for record in config.get("_library_audit_records", []):
                 record["inventory_guard"] = reports.get(record["library"], {})
-            cleanup_sections = [s for s in successful_sections if s.title not in held]
+            verified = scanned_names - held
+            config["_successful_full_scan_libraries"] = [
+                name for name in config.get("_successful_full_scan_libraries", []) if name in verified
+            ]
+            config["_successful_full_scan_work"] = {
+                name: work for name, work in config.get("_successful_full_scan_work", {}).items() if name in verified
+            }
+            for scope in scan_scopes:
+                name = scope["library_name"]
+                full = scan_decisions.get((scope["server_id"], scope["library_uuid"]), True)
+                healthy = name in verified
+                if adaptive and slot and name not in observations and name in library_results and not missing_discovered_libraries:
+                    observations[name] = LibraryObservation(scope, [])
+                if adaptive and name in observations:
+                    observations[name].finish(success=healthy and not missing_discovered_libraries and not missing_selected,
+                                              full=full, slot=slot, elapsed=durations.get(name, 0))
+                if healthy and not missing_discovered_libraries and not missing_selected and not targeted and not explain_selection and not execution.get("library_audit"):
+                    mark_library_scan_complete([scope], full_scan=full, dry_run=feature_flags.get("dry_run", False))
+                    if full and adaptive:
+                        scope["last_full"] = datetime.now(timezone.utc).isoformat()
+            full_names = {s["library_name"] for s in scan_scopes
+                          if scan_decisions.get((s["server_id"], s["library_uuid"]), True)}
+            cleanup_sections = [s for s in successful_sections if s.title in verified and s.title in full_names]
+            if run_feature_flags.get("cleanup") and not any(scan_decisions.values()):
+                cleanup_skip_reason = "incremental run; full reconciliation required"
+                run_feature_flags["cleanup"] = False
+            config["_partial_inventory_run"] = len(cleanup_sections) != len([lib for lib in all_libraries
+                if normalize_library_type(lib.get("type")) in {"movie", "tv"}])
             config["_cleanup_scopes"] = {}
             cleanup_result = CleanupResult(
                 mode=config.get("settings", {}).get("mode", "kometa")
@@ -1736,7 +1778,7 @@ async def metafusion_main(config, logger):
             if run_feature_flags.get("cleanup", False):
                 safe_library_types = set()
                 partial_scopes = {}
-                if not failures:
+                if not missing_selected:
                     safe_library_types = complete_inventory_types(
                         all_libraries, cleanup_sections
                     )
@@ -1746,6 +1788,11 @@ async def metafusion_main(config, logger):
                         [scope for scope in scan_scopes if scope["library_name"] in scanned],
                         safe_library_types, config,
                     )
+                for lib in all_libraries:
+                    kind = normalize_library_type(lib.get("type"))
+                    if lib["title"] in (held | (set(library_results) - scanned_names)) and kind in partial_scopes:
+                        del partial_scopes[kind]
+                        config["_cleanup_scopes"][kind] = "Deferred | Sibling inventory held or incomplete"
                 kometa_root = config.get("settings", {}).get("path", ".")
                 asset_path = Path(kometa_root) / "assets"
                 try:
@@ -1769,6 +1816,21 @@ async def metafusion_main(config, logger):
                 log_cleanup_event(
                     "cleanup_skipped_run_scope", reason=cleanup_skip_reason
                 )
+            authorized_names = {s.title for s in cleanup_sections}
+            for scope in scan_scopes:
+                name = scope["library_name"]
+                kind = next((normalize_library_type(lib.get("type")) for lib in all_libraries if lib["title"] == name), None)
+                authority = config["_cleanup_scopes"].get(kind, "deferred")
+                eligible = name in authorized_names and run_feature_flags.get("cleanup") and not missing_selected
+                deadline = scan_deadline(scope, interval_hours)
+                pending = name in observations and bool(observations[name].missing) and name not in full_names
+                next_slot = schedule_after(start_time if pending else max(start_time, deadline or start_time),
+                                           slots, inclusive=not pending)
+                if pending and name in verified and not missing_selected and not missing_discovered_libraries:
+                    scope["scan_reason"] = "incremental; disappearance queued for confirmation"
+                config["_scan_summary"].append((name, scope.get("scan_reason", "targeted" if targeted else "full scan"),
+                    scope.get("last_full") or "none", deadline or "next eligible run", next_slot or "manual",
+                    authority if eligible else "held" if name in held else cleanup_skip_reason or "ineligible"))
             config["_cleanup_result"] = cleanup_result
             reconciliation = reconcile_kometa_metadata(
                 config,
@@ -3350,8 +3412,12 @@ def main(argv=None):
                 ),
             )
 
-            def scheduled_run():
-                return run_metafusion_job(config, logger, runtime_status)
+            def scheduled_run(slot):
+                config["_scheduled_slot"] = slot
+                try:
+                    return run_metafusion_job(config, logger, runtime_status)
+                finally:
+                    config.pop("_scheduled_slot", None)
 
             def register_scheduled_jobs():
                 schedule.clear("metafusion-jobs")
@@ -3364,7 +3430,7 @@ def main(argv=None):
                 count = 0
                 for run_time in current_settings.get("run_times", []):
                     try:
-                        schedule.every().day.at(run_time).do(scheduled_run).tag(
+                        schedule.every().day.at(run_time).do(lambda slot=run_time: scheduled_run(slot)).tag(
                             "metafusion-jobs"
                         )
                         count += 1

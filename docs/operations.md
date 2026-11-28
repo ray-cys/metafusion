@@ -233,6 +233,33 @@ selected again when its Plex update marker changes, a metadata/artwork recheck
 becomes due, required generated output is missing, or a full reconciliation is
 required.
 
+MetaFusion tracks each Plex library separately in SQLite. The configured full-scan
+interval is measured from its last verified full scan, including time the
+container was stopped. The next scheduled opportunity after the interval runs
+a full scan. With several daily slots, MetaFusion can bring that scan forward
+by up to 10% of the interval (at most six hours). It compares the last four
+scheduled incremental processing durations per library and slot. It needs at
+least two samples in each slot, a healthy current slot and either a 20% faster
+median or evidence of failure in the following slot. It never postpones an
+already-due scan to learn timings. No additional configuration is needed.
+
+When an ordinary incremental inventory loses a previously seen Plex movie or
+show key, it queues a confirmation for that library. If the key is still
+absent on the next successful observation, that library gets a full scan.
+Reappearance cancels the early scan. An episode removal changes the parent
+show's child inventory rather than removing a top-level key. The existing
+large-disappearance guard, confirmation count and cleanup grace period apply.
+The final summary lists each library's scan reason, last verified full scan,
+routine due time, next eligible scheduled slot and cleanup scope.
+
+Plex show ordering overrides and configured show mappings are checked per
+show. Changing the library default selects shows that inherit it. A recreated
+movie can recover its former asset ownership on an incremental run when the
+previous key has disappeared and the destination, library, TMDb identity
+and file checksum all agree. An installation with an existing non-default
+ordering or mapping fingerprint may take one full scan to establish the new
+baseline.
+
 With `TMDB_CHANGE_RECHECKS=True`, an incremental job also reads TMDb's bounded
 movie and TV change feeds from the last successfully committed checkpoint. A
 locally known TMDb ID returned by that feed selects its Plex item even when

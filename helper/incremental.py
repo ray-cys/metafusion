@@ -43,7 +43,7 @@ def item_updated_at(item):
     return None if value is None else str(value)
 
 
-def child_inventory_fingerprint(item):
+def child_inventory_fingerprint(item, config=None, identity=None):
     """Fingerprint Plex's show-level season and episode inventory counters."""
     if isinstance(item, dict):
         media_type = item.get("type") or item.get("library_type")
@@ -70,8 +70,20 @@ def child_inventory_fingerprint(item):
         except (TypeError, ValueError):
             counters[target] = str(value)
     if not isinstance(item, dict):
-        from helper.plex import show_ordering
-        order = show_ordering(item)
+        from helper.plex import _external_ids, show_ordering
+        from helper.provider_mappings import resolve_episode_overrides, resolve_split_series_mapping
+        config = config or {}
+        order = show_ordering(item) or config.get("plex", {}).get("_library_order")
+        tmdb = config.get("tmdb", {})
+        if tmdb.get("split_series_mappings") or tmdb.get("episode_overrides"):
+            ids = {f"{k}_id": v for k, v in _external_ids(item).items()}
+            ids = {key: value or (identity or {}).get(key) for key, value in ids.items()}
+            mapping = resolve_split_series_mapping(config, **ids)
+            overrides = resolve_episode_overrides(config, **ids)
+            if mapping:
+                counters["mapping"] = mapping
+            if overrides:
+                counters["overrides"] = sorted(overrides.items())
         if order:
             counters["ordering"] = order
     if not counters:
@@ -83,7 +95,7 @@ def child_inventory_fingerprint(item):
 def config_fingerprint(config):
     relevant = {
         "library_name": config.get("_library_name"),
-        "library_order": config.get("plex", {}).get("_library_order"),
+        "library_order": None,  # Effective ordering is tracked per show.
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
         "kometa": config.get("kometa", {}),
@@ -107,12 +119,8 @@ def config_fingerprint(config):
             "split_series_show_policy": config.get("tmdb", {}).get(
                 "split_series_show_policy"
             ),
-            "split_series_mappings": config.get("tmdb", {}).get(
-                "split_series_mappings", {}
-            ),
-            "episode_overrides": config.get("tmdb", {}).get(
-                "episode_overrides", {}
-            ),
+            "split_series_mappings": {},
+            "episode_overrides": {},
         },
         "poster_set": config.get("poster_set", {}),
         "season_set": config.get("season_set", {}),
@@ -177,10 +185,6 @@ def library_full_scan_decisions(
     scopes = list(scopes or [])
     if not scopes:
         return {}
-    if not config.get("incremental", {}).get("enabled", True):
-        return {_scope_key(scope): True for scope in scopes}
-    if targeted:
-        return {_scope_key(scope): False for scope in scopes}
     now = utc_now() if now is None else now
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -193,11 +197,18 @@ def library_full_scan_decisions(
     states = load_state(path=path, scopes=scopes).get("libraries", {})
     decisions = {}
     for scope in scopes:
-        key = (
-            str(scope.get("server_id") or "unknown"),
-            str(scope.get("library_uuid") or scope.get("library_name")),
-        )
+        key = _scope_key(scope)
         library_state = states.get(key)
+        scope["last_full"] = (library_state or {}).get("last_full_scan_completed")
+        if not config.get("incremental", {}).get("enabled", True):
+            scope["scan_reason"] = "incremental disabled"
+            decisions[key] = True
+            continue
+        if targeted:
+            scope["scan_reason"] = "targeted"
+            decisions[key] = False
+            continue
+        scope["scan_reason"] = "initial baseline"
         if library_state is None:
             decisions[key] = True
             continue
@@ -208,11 +219,13 @@ def library_full_scan_decisions(
             and stored_fingerprint
             and expected_fingerprint != stored_fingerprint
         ):
+            scope["scan_reason"] = "configuration changed"
             decisions[key] = True
             continue
         decisions[key] = _timestamp_is_due(
             library_state.get("last_full_scan_completed"), interval, now
         )
+        scope["scan_reason"] = "full scan due" if decisions[key] else "incremental interval"
     return decisions
 
 
@@ -841,8 +854,8 @@ def plan_items(
     for item in candidates:
         rating_key = str(getattr(item, "ratingKey", ""))
         updated_at = item_updated_at(item)
-        child_fingerprint = child_inventory_fingerprint(item)
         cached = cache_by_rating_key.get(rating_key)
+        child_fingerprint = child_inventory_fingerprint(item, config, cached)
         selection_causes = set()
         if rating_key in changed_keys:
             selection_causes.add("tmdb_change_detected")

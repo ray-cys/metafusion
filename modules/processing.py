@@ -1276,13 +1276,12 @@ async def process_library(
                         if "metadata" in planned.reasons
                         else None
                     )
+                    item_identity = meta_by_rating_key.get(str(getattr(item, "ratingKey", "")))
                     pending_incremental.append(
                         (
-                            meta_by_rating_key.get(
-                                str(getattr(item, "ratingKey", ""))
-                            ),
+                            item_identity,
                             pending_count,
-                            child_inventory_fingerprint(item),
+                            child_inventory_fingerprint(item, config, item_identity),
                         )
                     )
 

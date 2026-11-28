@@ -1677,6 +1677,9 @@ def log_final_summary(
             f"Mode: {str(config.get('settings', {}).get('mode', 'kometa')).title()}"
         )
     )
+    for name, reason, last, due, scheduled, cleanup in config.get("_scan_summary", []):
+        lines.extend(box_line(f"Scan | {name} | Reason: {reason} | Last full: {last} | "
+                              f"Routine full due: {due} | Next eligible slot: {scheduled} | Cleanup: {cleanup}"))
     processed_libraries = [
         lib["title"] for lib in libraries if lib["title"] in selected_libraries
     ]

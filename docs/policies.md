@@ -379,8 +379,7 @@ DRY_RUN=True
 
 Restore normal incremental settings after the test.
 
-Cleanup starts only after every configured library of the relevant media type
-completes successfully. When another library of the same type is excluded,
+A verified full Movies scan can authorize movie cleanup while TV runs incrementally, and vice versa. When another library of the same type is incremental or excluded,
 MetaFusion protects its Plex inventory and limits cleanup to verified owners
 in the scanned libraries. If that inventory is unavailable, the affected type
 is deferred. See [cleanup scope and ownership](lifecycle-management.md#when-another-library-of-the-same-type-is-excluded). Cleanup is skipped when there is a missing library,
