@@ -10,6 +10,12 @@ from helper.cache import load_cache, meta_cache_async
 from helper.concurrency import bounded_callables, bounded_map
 from helper.config import get_image_upgrade_days, mode_check
 from helper.diagnostics import record_kometa_metadata_audit
+from helper.episode_identity import (
+    anthology_sources,
+    episode_evidence,
+    episode_target,
+    verified_group,
+)
 from helper.fanart import fanart_artwork_candidates
 from helper.identity import (
     cache_key_for_meta,
@@ -2881,8 +2887,17 @@ async def _build_tv(
         match_reason=f"{consensus_reason}; {identity_reason}",
     )
 
+    async def installment(identifier):
+        return await tmdb_api_request(config, f"tv/{identifier}/season/1", session=session)
+
+    series_mapping = await anthology_sources(meta or {}, series_mapping, installment)
     if not feature_flags.get("dry_run", False):
-        cache_fields = {}
+        cache_fields = {
+            "episode_mapping": {
+                "ordering": meta.get("episode_ordering"),
+                "season_sources": (series_mapping or {}).get("seasons", {}),
+            }
+        }
         if recovery_source_id is not None:
             cache_fields["tmdb_recovery_source_id"] = recovery_source_id
             cache_fields["tmdb_recovery_identity_fingerprint"] = (
@@ -2972,6 +2987,7 @@ async def _build_tv(
         )
     season_infos = [
         season_info_by_number[number] for number in sorted(season_info_by_number)
+        if not (series_mapping or {}).get("ambiguous_installments") or number in season_sources
     ]
     plex_season_numbers = {
         int(number)
@@ -3143,11 +3159,8 @@ async def _build_tv(
 
             episode_sources: dict[int, list[tuple[int, int]]] = {}
             for plex_episode in inventory[season_number]:
-                default_target_season = season_source(season_number)[1]
-                target_season, target_episode = episode_overrides.get(
-                    (int(season_number), int(plex_episode)),
-                    (default_target_season, int(plex_episode)),
-                )
+                target = episode_target(series_mapping, episode_overrides, tmdb_id, int(season_number), int(plex_episode))
+                _, target_season, target_episode = target
                 episode_sources.setdefault(int(target_season), []).append(
                     (int(plex_episode), int(target_episode))
                 )
@@ -3167,7 +3180,8 @@ async def _build_tv(
                     if episode.get("episode_number") is not None
                 }
                 for plex_episode, target_episode in pairs:
-                    if target_episode in indexed:
+                    evidence = meta.get("episode_evidence", {}).get((season_number, plex_episode), {})
+                    if target_episode in indexed and episode_evidence(evidence, indexed[target_episode]) != "conflict":
                         episodes[plex_episode] = episode_metadata(
                             indexed[target_episode]
                         )
@@ -3211,16 +3225,15 @@ async def _build_tv(
         pending_pairs = set()
         unresolved_pairs = set()
         if missing_pairs:
-            group_mapping = None if episode_overrides else await resolve_episode_group_mapping(
+            group_mapping = None if episode_overrides or series_mapping else await resolve_episode_group_mapping(
                 config,
                 tmdb_id,
                 inventory,
                 episode_ordering=meta.get("episode_ordering"),
                 session=session,
             )
+            group_mapping = verified_group(meta, group_mapping, missing_pairs)
             if group_mapping:
-                seasons_data = {}
-                plex_seasons = {}
                 for (season_number, episode_number), episode in sorted(
                     group_mapping["episodes"].items()
                 ):

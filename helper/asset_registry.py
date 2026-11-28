@@ -245,3 +245,54 @@ class AssetDestinationRegistry:
 
     def __len__(self):
         return len(self._entries)
+
+    def reconcile_departed_movies(self, context, store):
+        for destination, candidates in context["destinations"].items():
+            if len(candidates) != 1 or destination not in self._entries:
+                continue
+            candidate = candidates[0]
+            if candidate["library_name"] == context["scope"]["library_name"]:
+                self.rebind_departed_movie(context, store, destination, f"movie:plex:{candidate['rating_key']}",
+                                           "poster" if Path(destination).name == "poster.jpg" else "background",
+                                           candidate.get("tmdb_id"))
+
+    def rebind_departed_movie(self, context, store, destination, cache_key, asset, tmdb_id):
+        """Transfer only a checksum-proven claim to the sole live destination."""
+        if not context or asset not in {"poster", "background"} or not tmdb_id:
+            return False
+        key = str(destination)
+        entry = self._entries[key]
+        if entry["runtime_owners"] or len(entry["owners"]) != 1 or cache_key in entry["owners"]:
+            return False
+        old_key, ownership = next(iter(entry["owners"].items()))
+        old = store.get(old_key, {})
+        current = context["destinations"].get(key, [])
+        if len(current) != 1:
+            return False
+        replacement = current[0]
+        scope = context["scope"]
+        if (
+            old.get("server_id") != scope["server_id"] or old.get("library_uuid") != scope["library_uuid"]
+            or not old.get("rating_key") or str(old["rating_key"]) in context["live"]
+            or cache_key != f"movie:plex:{replacement['rating_key']}"
+            or str(replacement.get("tmdb_id")) != str(tmdb_id)
+            or str(ownership.get("tmdb_id")) != str(tmdb_id)
+            or ownership.get("media_type") != "movie" or ownership.get("asset_type") != asset
+            or not ownership.get("checksum") or Path(destination).resolve() != Path(destination)
+            or not Path(destination).is_file() or self._current_checksum(key) != ownership["checksum"]
+        ):
+            return False
+        new = dict(store.get(cache_key, {}))
+        if new and (str(new.get("tmdb_id")) != str(tmdb_id) or new.get("library_uuid") != scope["library_uuid"] or new.get("server_id") != scope["server_id"]
+                    or new.get(f"{asset}_path")):
+            return False
+        old = dict(old)
+        new.update({**replacement, **{k: scope[k] for k in ("server_id", "library_uuid", "library_name")}})
+        for field in list(old):
+            if field.startswith(asset + "_"):
+                new[field] = old.pop(field)
+        store[old_key] = old
+        store[cache_key] = new
+        del entry["owners"][old_key]
+        self.add_persisted({**ownership, "cache_key": cache_key})
+        return True

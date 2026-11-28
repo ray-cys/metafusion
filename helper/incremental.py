@@ -69,6 +69,11 @@ def child_inventory_fingerprint(item):
             counters[target] = int(value)
         except (TypeError, ValueError):
             counters[target] = str(value)
+    if not isinstance(item, dict):
+        from helper.plex import show_ordering
+        order = show_ordering(item)
+        if order:
+            counters["ordering"] = order
     if not counters:
         return None
     encoded = json.dumps(counters, sort_keys=True, separators=(",", ":"))
@@ -78,6 +83,7 @@ def child_inventory_fingerprint(item):
 def config_fingerprint(config):
     relevant = {
         "library_name": config.get("_library_name"),
+        "library_order": config.get("plex", {}).get("_library_order"),
         "mode": config.get("settings", {}).get("mode"),
         "metadata": config.get("metadata", {}),
         "kometa": config.get("kometa", {}),

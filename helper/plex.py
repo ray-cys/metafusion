@@ -5,6 +5,9 @@ import re
 import time
 from pathlib import Path
 
+import requests
+from plexapi.exceptions import PlexApiException
+from plexapi.library import ShowSection
 from plexapi.server import PlexServer
 
 from helper.concurrency import CircuitOpenError, runtime_slot
@@ -299,6 +302,24 @@ def get_plex_country(code):
     return PLEX_COUNTRY_OVERRIDES.get(code) or ISO_COUNTRY_NAMES.get(code) or code
 
 
+async def read_library_order(section):
+    try:
+        settings = await asyncio.to_thread(section.settings)
+        return next((s.value for s in settings if s.id in {"showOrdering", "episodeOrdering"}), None)
+    except (AttributeError, OSError, requests.RequestException, PlexApiException):
+        return None
+
+
+def show_ordering(item):
+    data = getattr(item, "_data", None)
+    pref = data.find(".//Setting[@id='showOrdering']") if data is not None else None
+    value = (pref.get("value") if pref is not None else data.get("showOrdering")) if data is not None else (
+        getattr(item, "showOrdering", None) or getattr(item, "episodeOrdering", None)
+        or getattr(item, "episodeOrder", None)
+    )
+    return None if value in (None, "", "default", "-1") else str(value)
+
+
 def _external_ids(item):
     """Read modern and legacy Plex agent GUID formats."""
     values = []
@@ -587,7 +608,10 @@ def plex_inventory_record(item):
         media_type = "tv"
     elif media_type == "movies":
         media_type = "movie"
+    movie_dirs = {str(Path(part.file).parent) for media in getattr(item, "media", []) or []
+                  for part in getattr(media, "parts", []) or [] if getattr(part, "file", None)} if media_type == "movie" else set()
     return {
+        **({"movie_dir": next(iter(movie_dirs))} if len(movie_dirs) == 1 else {}),
         "rating_key": (
             None
             if getattr(item, "ratingKey", None) is None
@@ -630,16 +654,19 @@ async def load_plex_library_inventory(section, runtime=None, *, records_only=Fal
     seen_rating_keys = set()
     results = []
 
+    def page_items(start):
+        paging = {"container_start": start, "container_size": page_size, "maxresults": page_size}
+        if isinstance(section, ShowSection):
+            return section.fetchItems(
+                f"/library/sections/{section.key}/all?type=2&includeGuids=1&includePreferences=1",
+                **paging,
+            )
+        return section.all(**paging)
+
     while True:
         if supports_paging:
             page = await plex_operation(
-                lambda start=offset: list(
-                    section.all(
-                        container_start=start,
-                        container_size=page_size,
-                        maxresults=page_size,
-                    )
-                ),
+                lambda start=offset: list(page_items(start)),
                 runtime,
                 description=(
                     f"List library {library_name} page starting at {offset}"
@@ -726,7 +753,10 @@ async def get_plex_metadata(
     try:
         item_key = getattr(item, 'ratingKey', id(item))
         if item_key in _plex_cache:
-            return _plex_cache[item_key]
+            cached = _plex_cache[item_key]
+            if cached.get("library_type") in {"tv", "show"} and "_library_order" in _plex_config:
+                cached["episode_ordering"] = show_ordering(item) or _plex_config["_library_order"]
+            return cached
     except Exception as e:
         log_plex_event("plex_failed_extract_item_id", title=title, year=year, error=e)
 
@@ -744,8 +774,14 @@ async def get_plex_metadata(
     title_year = f"{title} ({year})" if title and year else None
     ratingKey = getattr(item, "ratingKey", None)
 
+    tmdb_ids = []
     try:
         ids = _external_ids(item)
+        if library_type in {"tv", "show"}:
+            tmdb_ids = list(dict.fromkeys(
+                match.group(1) for guid in getattr(item, "guids", []) or []
+                if (match := re.search(r"(?:tmdb|themoviedb)(?:://|/)(\d+)", str(getattr(guid, "id", guid)), re.I))
+            ))
         tmdb_id = ids["tmdb"]
         imdb_id = ids["imdb"]
         tvdb_id = ids["tvdb"]
@@ -858,6 +894,7 @@ async def get_plex_metadata(
                 error=e,
             )
     
+    episode_evidence = {}
     seasons_episodes = None
     plex_season_artwork = {}
     plex_seasons = set()
@@ -878,6 +915,11 @@ async def get_plex_metadata(
                 if season_number is None or episode_number is None:
                     continue
                 season_number = int(season_number)
+                episode_evidence[(season_number, int(episode_number))] = {
+                    "tmdb_id": _external_ids(episode)["tmdb"],
+                    "date": str(getattr(episode, "originallyAvailableAt", "") or "")[:10],
+                    "title": getattr(episode, "title", None),
+                }
                 plex_seasons.add(season_number)
                 seasons_episodes.setdefault(season_number, []).append(episode_number)
                 season_thumb = getattr(episode, "parentThumb", None)
@@ -938,6 +980,8 @@ async def get_plex_metadata(
             )
         ),
         "edition_title": edition_title,
+        "episode_evidence": episode_evidence,
+        "plex_tmdb_ids": tmdb_ids,
         "plex_provider_tmdb_id": tmdb_id,
         "tmdb_id": tmdb_id,
         "identity_source": "plex_tmdb_guid" if tmdb_id else None,
@@ -957,8 +1001,8 @@ async def get_plex_metadata(
             "seasons": plex_season_artwork,
         },
         "episode_ordering": (
-            getattr(item, "episodeOrdering", None)
-            or getattr(item, "episodeOrder", None)
+            show_ordering(item)
+            or _plex_config.get("_library_order")
         ),
         "server_id": getattr(
             getattr(getattr(item, "librarySection", None), "_server", None),

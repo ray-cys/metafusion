@@ -167,6 +167,8 @@ def _apply(db, opened, item, code, resolved, evidence, stamp, run_id, changes):
     if resolved:
         # A healthy file can coexist with a policy conflict, failed upgrade or
         # verification error. File presence proves only a previous missing file.
+        if code == "filesystem_verified" and old["reason_code"] == "ownership_collision":
+            return
         if code == "destination_present" and old["reason_code"] not in {
             "no_eligible_candidate",
             "no_candidate_returned",
@@ -195,6 +197,7 @@ def _apply(db, opened, item, code, resolved, evidence, stamp, run_id, changes):
             reason_code=code,
             status="open",
             next_action=(
+                "await_provider_update" if code == "source_missing" else
                 "review_ownership"
                 if code in {"protected_output", "ownership_collision", "locked_skipped"}
                 else "verify_application"
@@ -414,6 +417,23 @@ def publish_findings(config, success, *, path, base_dir, now=None):
                 ):
                     if old["plex_rating_key"] not in inventory:
                         _apply(db, opened, old, "item_removed", True, {}, stamp, run_id, changes)
+                    elif old["reason_code"] == "ownership_collision":
+                        evidence = old["evidence"]
+                        destination = evidence.get("destination")
+                        owner = evidence.get("conflicting_owner")
+                        candidates = config.get("_verified_movie_destinations", {}).get(
+                            (old["server_id"], old["library_uuid"]), {}
+                        ).get(str(destination), [])
+                        if (destination and owner and owner.startswith("movie:plex:")
+                                and owner.removeprefix("movie:plex:") not in inventory and len(candidates) == 1
+                                and candidates[0]["rating_key"] == old["plex_rating_key"]
+                                and old["tmdb_id"] and str(candidates[0].get("tmdb_id")) == old["tmdb_id"]
+                                and not db.execute(
+                            "SELECT 1 FROM asset_ownership WHERE destination=? AND cache_key!=?",
+                            (str(Path(destination).resolve()), f"movie:plex:{old['plex_rating_key']}"),
+                        ).fetchone() and old["operation"] in {"poster", "background"} and old["media_type"] in {"movie", "Movie"}):
+                            _apply(db, opened, old, "ownership_conflict_cleared", True,
+                                   {"destination": destination, "previous_owner": owner}, stamp, run_id, changes)
                     elif (
                         old["server_id"],
                         old["library_uuid"],
@@ -493,6 +513,7 @@ def publish_findings(config, success, *, path, base_dir, now=None):
             "open": sorted(opened.values(), key=lambda r: r["finding_id"]),
             "recently_resolved": recent,
             "issue_groups": groups,
+            "provider_field_gaps": sum(row["reason_code"] == "source_missing" for row in opened.values()),
             "open_by_reason": dict(Counter(r["reason_code"] for r in opened.values())),
         }
         atomic_write_json(folder / "findings-latest.json", payload)

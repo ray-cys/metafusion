@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -150,6 +151,21 @@ def compare_kometa_entry(entry, item, item_type):
     }
 
 
+def audio_language_warnings(config):
+    """Extract only language codes and Plex keys from the latest 1 MiB of Kometa output."""
+    path = Path(config.get("settings", {}).get("path", "/kometa")) / "logs" / "meta.log"
+    try:
+        with path.open("rb") as stream:
+            stream.seek(max(0, path.stat().st_size - 1048576))
+            lines = stream.read(1048576).decode(errors="replace")
+    except OSError:
+        return {}
+    return {key: language for language, key in re.findall(
+        r"\baudio_language\s+([a-z]{2,3}(?:-[a-z]{2,4})?)\s+Not Found[^\r\n]*?rating key\D{0,8}(\d+)",
+        lines, re.IGNORECASE,
+    )}
+
+
 def _load_documents(config):
     root = Path(config.get("settings", {}).get("path", "/kometa")) / "metadata"
     documents = {}
@@ -176,6 +192,7 @@ def _load_documents(config):
 async def verify_kometa_application(sections, config, rating_keys, session):
     """Compare generated YAML and managed artwork with current Plex selections."""
     requested = {str(value) for value in rating_keys or [] if str(value).strip()}
+    language_warnings = await asyncio.to_thread(audio_language_warnings, config)
     documents = await asyncio.to_thread(_load_documents, config)
     identity_counts = Counter()
     edition_counts = Counter()
@@ -270,6 +287,7 @@ async def verify_kometa_application(sections, config, rating_keys, session):
                         "year": meta.get("year"),
                         "yaml_entry": entry_key,
                         "yaml_path": documents[item_type]["path"],
+                        **({"kometa_audio_language_warning": language_warnings[rating_key]} if rating_key in language_warnings else {}),
                         **result,
                     },
                     identity,
@@ -331,6 +349,8 @@ def write_kometa_application_report(
             f"{record.get('title')} | rating key={record.get('plex_rating_key')} | "
             f"fields={record.get('fields_matched', 0)}/{record.get('fields_checked', 0)}"
         )
+        if record.get("kometa_audio_language_warning"):
+            lines.append(f"  - Plex item exists. Kometa reported an unsupported audio_language value: {record['kometa_audio_language_warning']}.")
         for mismatch in (record.get("mismatches") or [])[:10]:
             lines.append(
                 f"  - {mismatch.get('child')} | {mismatch.get('field')}: {mismatch.get('reason')}"

@@ -442,3 +442,13 @@ occurrences under the same finding ID. Readers always get one complete JSON snap
 No timestamped findings files accumulate. Existing diagnostic reports keep their own
 retention settings. Deleting the JSON alone lets the next processing run recreate it
 from SQLite.
+
+### TV ordering and artwork ownership after a Plex change
+
+Use `--mapping-diagnose --rating-key KEY` to compare Plex episode slots with the TMDb installment, season and episode used for metadata. The library episode ordering is inherited unless the show supplies its own. A change to the library ordering or a visible show override triggers a metadata recheck on the next eligible scan. Kometa YAML retains Plex numbering. Direct Plex updates target the same Plex episodes. A translated title alone does not invalidate a match.
+
+For an anthology, configured season mappings take precedence. For a new installment exposed by Plex, MetaFusion checks season 1 of each remaining TMDb series. It needs a unique episode ID or two matching episode titles and air dates, with no conflicting episode evidence. An ambiguous or unavailable installment stays unresolved. Under TMDb ordering an alternate group may fill an unmatched slot with corroborating evidence. MetaFusion does not rename media or change Plex preferences.
+
+On a trusted full movie scan MetaFusion can move an artwork ownership claim when Plex recreates an item under a new rating key. The server, library, TMDb identity, unique live destination, and file checksum must agree. The transfer changes SQLite ownership only. Edited files and competing editions remain protected. A verified removal of the competing claim can also close an old collision in `findings-latest.json`. The export counts unavailable provider fields separately under `provider_field_gaps`.
+
+If Kometa reports `audio_language zh Not Found` against a rating key, use `--kometa-application-audit` with that key. The audit correlates language warnings in the most recent 1 MiB of the mounted Kometa `logs/meta.log` with items actually found in Plex. A language warning on a present item does not require rematching the show.

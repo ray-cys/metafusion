@@ -626,6 +626,9 @@ def test_kometa_application_runner_matches_yaml_and_reports_missing_key(monkeypa
         yaml.safe_dump({"metadata": {"Example (2020)": {"title": "Example"}}}),
         encoding="utf-8",
     )
+    log = metadata_dir.parent / "logs" / "meta.log"
+    log.parent.mkdir()
+    log.write_text("audio_language zh Not Found for rating key: 1")
     section = SimpleNamespace(title="Movies")
     item = Reloadable(ratingKey="1", title="Example", reload_count=0)
 
@@ -663,6 +666,8 @@ def test_kometa_application_runner_matches_yaml_and_reports_missing_key(monkeypa
             [section], config, ["1", "999"], object(), base_dir=tmp_path
         )
     )
+    assert metadata_records[0]["kometa_audio_language_warning"] == "zh"
+    assert "Plex item exists" in report.read_text()
     assert metadata_records[0]["status"] == "applied"
     assert metadata_records[1]["status"] == "not_found"
     assert artwork_records[0]["status"] == "selected"

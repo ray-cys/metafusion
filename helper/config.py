@@ -274,6 +274,8 @@ def config_for_library(config, library_name):
     """Apply an advanced library's artwork cadence over global defaults."""
     effective = copy.deepcopy(config)
     effective["_library_name"] = library_name
+    if library_name in config.get("_library_orders", {}):
+        effective.setdefault("plex", {})["_library_order"] = config["_library_orders"][library_name]
     override = config.get("library_overrides", {}).get(library_name, {})
     if isinstance(override, dict):
         upgrades = override.get("image_upgrades")

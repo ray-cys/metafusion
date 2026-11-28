@@ -304,20 +304,9 @@ def test_mapping_and_provider_mapping_edge_paths(tmp_path, monkeypatch):
     ) == {(1, 2)}
     assert mapping_diagnostics._offset_override_proposal({(1, 1)}, {(0, 0), (2, 2)}) == {}
 
-    async def tmdb_request(_config, _endpoint, **_kwargs):
-        return {"episodes": [{}, {"episode_number": "bad"}, {"episode_number": 1}]}
-
-    monkeypatch.setattr(mapping_diagnostics, "tmdb_api_request", tmdb_request)
-    pairs = asyncio.run(
-        mapping_diagnostics._standard_episode_pairs({}, "1", {1: [1]}, None)
-    )
-    assert pairs == {(1, 1)}
-    pairs = asyncio.run(
-        mapping_diagnostics._split_series_pairs(
-            {}, "1", {1: [1]}, {"seasons": {1: {"tmdb_id": 2, "season_number": 3}}}, None
-        )
-    )
-    assert pairs == {(1, 1)}
+    assert mapping_diagnostics._numbered_episodes(
+        {"episodes": [{}, {"episode_number": "bad"}, {"episode_number": 1}]}
+    ) == {1: {"episode_number": 1}}
 
     report = mapping_diagnostics.write_mapping_diagnosis_report(
         [

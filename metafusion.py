@@ -77,7 +77,7 @@ from helper.incremental import (
     mark_library_scan_complete,
     mark_library_scan_started,
 )
-from helper.inventory_guard import evaluate_inventories
+from helper.inventory_guard import evaluate_inventories, inspect_inventory
 from helper.item_explanation import run_item_explanation
 from helper.kometa_application_verification import run_kometa_application_audit
 from helper.kometa_coordination import LockWaitInterrupted, acquire_kometa_output_lock
@@ -98,6 +98,7 @@ from helper.logging import (
     redact_secrets,
 )
 from helper.mapping_diagnostics import run_mapping_diagnosis
+from helper.movie_rebinding import movie_rebind_context
 from helper.output_management import (
     OutputManagementError,
     apply_output_management,
@@ -118,6 +119,7 @@ from helper.plex import (
     connect_plex_server,
     get_plex_metadata,
     load_plex_library_inventory,
+    read_library_order,
 )
 from helper.plex_artwork_verification import (
     verify_plex_artwork,
@@ -977,6 +979,10 @@ def validate_inventory_snapshot(library_name, inventory, discovery_records):
         )
 
 
+async def library_orders(sections):
+    return {s.title: await read_library_order(s) for s in sections if getattr(s, "type", None) == "show"}
+
+
 def build_scan_scopes(plex, sections, config):
     server_id = getattr(plex, "machineIdentifier", None) or "unknown"
     scopes = []
@@ -1168,6 +1174,8 @@ async def metafusion_main(config, logger):
                     failures.append(f"Formula 1: {error}")
             targeted = bool(execution.get("targeted"))
             explain_selection = bool(execution.get("explain_selection"))
+            config["_verified_movie_destinations"] = {}
+            config["_library_orders"] = await library_orders(sections)
             scan_scopes = build_scan_scopes(plex, sections, config)
             config["_findings_scopes"] = {s["library_name"]: s for s in scan_scopes}
             reconciliation_scopes = {scope["library_name"]: f'{scope["server_id"]}|{scope["library_uuid"]}' for scope in scan_scopes}
@@ -1586,6 +1594,13 @@ async def metafusion_main(config, logger):
                         section_full_scan = scan_decisions.get(
                             (scope["server_id"], scope["library_uuid"]), True
                         )
+                        if (section_full_scan and not targeted and not failures and not missing_discovered_libraries
+                                and not execution.get("library_audit") and not explain_selection
+                                and not feature_flags.get("dry_run") and getattr(section, "type", None) == "movie"
+                                and inspect_inventory(scope, section_inventory_records[section.title])["status"] == "trusted"):
+                            context = movie_rebind_context(library_config, scope, section_inventory_records)
+                            asset_destination_registry.reconcile_departed_movies(context, cache_store)
+                            config.setdefault("_verified_movie_destinations", {})[(scope["server_id"], scope["library_uuid"])] = context["destinations"]
                         library_flags = dict(get_feature_flags(library_config))
                         if not section_full_scan:
                             library_flags["cleanup"] = False

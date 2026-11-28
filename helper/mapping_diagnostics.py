@@ -7,7 +7,13 @@ import yaml
 
 from helper.build_info import build_info
 from helper.config import BASE_CONFIG_DIR, report_retention
-from helper.plex import get_plex_metadata, load_plex_library_inventory
+from helper.episode_identity import (
+    anthology_sources,
+    episode_evidence,
+    episode_target,
+    verified_group,
+)
+from helper.plex import get_plex_metadata, load_plex_library_inventory, read_library_order
 from helper.provider_mappings import (
     resolve_episode_overrides,
     resolve_split_series_mapping,
@@ -40,51 +46,15 @@ def _pair_label(pair):
     return f"S{int(pair[0]):02d}E{int(pair[1]):02d}"
 
 
-async def _standard_episode_pairs(config, tmdb_id, plex_inventory, session):
-    pairs = set()
-    for season_number in sorted({pair[0] for pair in _inventory_pairs(plex_inventory)}):
-        details = await tmdb_api_request(
-            config,
-            f"tv/{tmdb_id}/season/{season_number}",
-            session=session,
-            cache=False,
-        )
-        for episode in details.get("episodes", []) if isinstance(details, dict) else []:
-            try:
-                pairs.add(
-                    (
-                        int(episode.get("season_number", season_number)),
-                        int(episode["episode_number"]),
-                    )
-                )
-            except (KeyError, TypeError, ValueError):
-                continue
-    return pairs
-
-
-async def _split_series_pairs(
-    config, tmdb_id, plex_inventory, split_mapping, session
-):
-    pairs = set()
-    sources = split_mapping.get("seasons", {}) if split_mapping else {}
-    for plex_season in sorted(
-        {pair[0] for pair in _inventory_pairs(plex_inventory)}
-    ):
-        source = sources.get(plex_season, {})
-        source_tmdb_id = str(source.get("tmdb_id") or tmdb_id)
-        source_season = int(source.get("season_number", plex_season))
-        details = await tmdb_api_request(
-            config,
-            f"tv/{source_tmdb_id}/season/{source_season}",
-            session=session,
-            cache=False,
-        )
-        for episode in details.get("episodes", []) if isinstance(details, dict) else []:
-            try:
-                pairs.add((plex_season, int(episode["episode_number"])))
-            except (KeyError, TypeError, ValueError):
-                continue
-    return pairs
+def _numbered_episodes(details):
+    episodes = {}
+    for entry in (details or {}).get("episodes", []):
+        try:
+            number = int(entry["episode_number"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        episodes[number] = entry
+    return episodes
 
 
 def _offset_override_proposal(plex_pairs, tmdb_pairs):
@@ -162,10 +132,6 @@ async def diagnose_mapping(item, config, session=None):
         )
         return record
 
-    tmdb_pairs = await _standard_episode_pairs(
-        config, tmdb_id, plex_inventory, session
-    )
-    record["tmdb_standard_episode_count"] = len(tmdb_pairs)
     split_mapping = resolve_split_series_mapping(
         config,
         tmdb_id=tmdb_id,
@@ -178,46 +144,48 @@ async def diagnose_mapping(item, config, session=None):
         tvdb_id=meta.get("tvdb_id"),
         imdb_id=meta.get("imdb_id"),
     )
-    translated_pairs = {overrides.get(pair, pair) for pair in plex_pairs}
+    cache = {}
+    async def season_data(identifier, season):
+        key = (str(identifier), season)
+        if key not in cache:
+            data = await tmdb_api_request(config, f"tv/{identifier}/season/{season}", session=session, cache=False)
+            cache[key] = data or {}
+        return cache[key]
 
-    if plex_pairs <= tmdb_pairs:
-        record.update(
-            status="aligned",
-            explanation="Every Plex episode exists in TMDb standard ordering.",
-        )
-        return record
-    if overrides and translated_pairs <= tmdb_pairs:
-        record.update(
-            status="configured_override",
-            explanation=(
-                "Configured episode overrides safely cover the complete Plex inventory."
-            ),
-            configured_overrides={
-                _pair_label(source): _pair_label(target)
-                for source, target in sorted(overrides.items())
-            },
-        )
-        return record
+    split_mapping = await anthology_sources(meta, split_mapping, lambda identifier: season_data(identifier, 1))
+    indexes = {}
+    decisions = []
+    missing_pairs = set()
+    record["episode_sources"] = decisions
+    record["episode_ordering"] = meta.get("episode_ordering")
     if split_mapping:
         record["split_series_mapping"] = split_mapping
-        split_pairs = await _split_series_pairs(
-            config,
-            tmdb_id,
-            plex_inventory,
-            split_mapping,
-            session,
-        )
-        if plex_pairs <= split_pairs:
-            record.update(
-                status="split_series",
-                explanation=(
-                    "The configured split-series season sources safely cover the "
-                    "complete Plex inventory."
-                ),
-            )
-            return record
+    for pair in sorted(plex_pairs):
+        target = episode_target(split_mapping, overrides, tmdb_id, *pair)
+        result = "unverified_installment"
+        if target:
+            source_id, season, number = target
+            key = (source_id, season)
+            if key not in indexes:
+                indexes[key] = _numbered_episodes(await season_data(source_id, season))
+            source = indexes[key].get(number)
+            result = episode_evidence(meta.get("episode_evidence", {}).get(pair, {}), source)
+        decisions.append({"plex": _pair_label(pair), "tmdb": target, "evidence": result})
+        if result in {"missing", "conflict", "unverified_installment"}:
+            missing_pairs.add(pair)
+    standard_pairs = {
+        (season, number) for (identifier, season), episodes in indexes.items()
+        if identifier == str(tmdb_id) for number in episodes
+    }
+    record["tmdb_standard_episode_count"] = len(standard_pairs)
+    if overrides:
+        record["configured_overrides"] = {_pair_label(k): _pair_label(v) for k, v in overrides.items()}
+    if not missing_pairs:
+        status = "split_series" if split_mapping else "configured_override" if overrides else "aligned"
+        record.update(status=status, explanation="All Plex episode slots have provider sources under the effective mapping.")
+        return record
 
-    episode_group = await resolve_episode_group_mapping(
+    episode_group = None if split_mapping or overrides else await resolve_episode_group_mapping(
         config,
         tmdb_id,
         plex_inventory,
@@ -225,7 +193,12 @@ async def diagnose_mapping(item, config, session=None):
         session=session,
         cache=False,
     )
+    episode_group = verified_group(meta, episode_group, missing_pairs)
     if episode_group:
+        for decision, pair in zip(decisions, sorted(plex_pairs), strict=True):
+            if pair in episode_group["episodes"]:
+                ep = episode_group["episodes"][pair]
+                decision.update(tmdb=(tmdb_id, ep.get("season_number"), ep.get("episode_number")), evidence="episode_group")
         record.update(
             status="episode_group",
             episode_group_id=episode_group.get("group_id"),
@@ -236,17 +209,19 @@ async def diagnose_mapping(item, config, session=None):
         )
         return record
 
-    missing = sorted(plex_pairs - tmdb_pairs)
+    missing = sorted(missing_pairs)
     record.update(
         status="unresolved",
         missing_standard=[_pair_label(pair) for pair in missing],
         explanation=(
             "TMDb standard ordering, configured overrides, and episode groups do "
-            "not uniquely cover the complete Plex inventory. Existing metadata is "
-            "preserved."
+            "not establish every episode identity. Unresolved episodes are preserved; "
+            "verified episodes remain eligible for updates."
         ),
     )
-    proposal = _offset_override_proposal(plex_pairs, tmdb_pairs)
+    proposal = {}
+    if not split_mapping and not overrides and all(d["evidence"] != "conflict" for d in decisions):
+        proposal = _offset_override_proposal(plex_pairs, standard_pairs)
     if proposal:
         identity = f"tmdb:{tmdb_id}"
         record["proposed_configuration"] = {
@@ -283,13 +258,16 @@ def write_mapping_diagnosis_report(records, *, base_dir=None, retention=10):
                 f"Library: {record.get('library')}",
                 f"Plex rating key: {record.get('rating_key')}",
                 f"TMDb ID: {record.get('tmdb_id') or 'unresolved'}",
+                f"Effective Plex ordering: {record.get('episode_ordering') or 'unknown'}",
                 f"Status: {record.get('status')}",
                 f"Explanation: {record.get('explanation')}",
             )
         )
+        for source in record.get("episode_sources", []):
+            lines.append(f"{source['plex']} -> TMDb {source['tmdb']} ({source['evidence']})")
         if record.get("missing_standard"):
             lines.append(
-                "Missing from standard ordering: "
+                "Unresolved Plex episode slots: "
                 + ", ".join(record["missing_standard"])
             )
         if record.get("episode_group_id"):
@@ -332,7 +310,8 @@ async def run_mapping_diagnosis(
             if rating_key not in requested:
                 continue
             found.add(rating_key)
-            records.append(await diagnose_mapping(item, config, session=session))
+            plex_config = {**config.get("plex", {}), "_library_order": await read_library_order(section)}
+            records.append(await diagnose_mapping(item, {**config, "plex": plex_config}, session=session))
     for rating_key in sorted(requested - found):
         records.append(
             {

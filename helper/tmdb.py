@@ -637,6 +637,10 @@ async def resolve_episode_group_mapping(
     )
     descriptors = listing.get("results", []) if isinstance(listing, dict) else []
     preferred_types = {
+        "tmdbairing": 1,
+        "tvdbairing": 1,
+        "tvdbabsolute": 2,
+        "tvdbdvd": 3,
         "tmdb_aired": 1,
         "tvdb_aired": 1,
         "tvdb_absolute": 2,

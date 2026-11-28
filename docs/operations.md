@@ -904,3 +904,9 @@ output, or unredacted host paths.
 
 For automated weekly reviews, read the [native findings snapshot](diagnostics.md#native-findings-for-weekly-reviews)
 after a scheduled run. It includes unresolved items, verified recoveries and the libraries actually checked.
+
+When changing a Plex TV library or show to TMDb episode ordering, use the
+[TV ordering and artwork ownership guide](diagnostics.md#tv-ordering-and-artwork-ownership-after-a-plex-change)
+to compare the episode source with the Plex destination. The same guide covers
+poster ownership after Plex recreates an edition and interpreting Kometa language
+warnings against an existing Plex rating key.
